@@ -16,11 +16,22 @@
 삭제 전 full10K 준비 완료를 관측했으나 controller의 `evaluate --help` 30초 timeout으로
 GPU 단계는 미실행이다. 최종 데이터 전체 회수가 아닌 일부 metadata만 로컬에 남았다.
 전체10K 학습 성공/새 점수로 보고하지 않는다. 기존 V8 558/900은 불변이다.
-게시 전 MMDL_test checkout에서 실험166 CPU tests(309.096초), 게시 안전3 tests,
-Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실행은 미검증이다.
+초기 게시 전 MMDL_test checkout에서 실험166 CPU tests(309.096초), 게시 안전3 tests,
+Ruff·bounded mypy2·Bash 검사를 통과했다. 당시 새 bootstrap GPU 실행은 미검증이었다.
+최신 실제 실행은 아래 재개 기록을 기준으로 확인한다.
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 15:52UTC 실제 GPU 진입: f3 고정 SHA의 F0 MMMU60 평가 PID3135가 실행 중이다.
+  15:52:30UTC4/60개 응답·GPU83%·10,039MiB를 확인했다. 추론이며 학습 완료는 아니다.
+  첫10K 전처리 후 near-image 후보25개를 제외했고 정상 전처리·오염검사를 통과한 TRACE25개로
+  보충했다. 부모9975개 원장/제외 목록/manifest는 byte 불변이며 complete_pilot은15:41:31,
+  smoke root 분리는15:46:50, 두60개 평가 cohort 준비는15:47:31까지 exit0으로 닫혔다.
+  학습 smoke4개→실측2배 예산 gate→동일 full10K4개 조건을 따르며 자동 축소하지 않는다.
+  G6 전체 학습/G7/transfer는 미완료이고 원래 과금 시작/금융 종료 한도는 불변이다.
+  닫힌 metadata와 실행 f3 코드667파일을 내부 보관·hash/mode 검증했다. metadata 회수는
+  최종 입력/이미지/학습/평가/체크포인트 전체 회수·검증이나 Pod 삭제 허가가 아니다.
+  이후 게시한 CPU 최적화 코드는 실행 Pod에 적용하지 않았으며 교수님 MMDL/V8은 불변이다.
 - 15:00UTC 실측: 같은 PID2456이 살아 있으며 GPU0MiB/0%다. TRACE 변환은14:41:46UTC,
   10,000개 후보 원장은14:42:10UTC에 생성됐지만 processor 검증/승인 완료는 아직 미관측이다.
   후보 행 수를 승인/학습 완료로 읽지 않는다. 다음 실행용 CPU 승인기는 기존 캐시가 있으면

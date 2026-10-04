@@ -24,6 +24,17 @@ also has a watchdog. The inner GPU controller ends two minutes before that outer
 deadline so its separately grouped training subprocess can close safely.
 CPU verification is not cloud execution or completion of G6/G7/transfer.
 
+Latest GPU milestone, 2026-10-04 15:52 UTC: the frozen f3 commit has completed
+full10K data preparation, smoke-root exclusion and both 60-record cohorts.
+Twenty-five near-image review candidates remain excluded; normally approved
+TRACE replacements restored the exact 10K quota without changing the 9,975
+parent records. F0 MMMU inference started at 15:47:43 UTC; at 15:52:30 it had
+saved 4/60 responses, using 83% GPU and 10,039 MiB. This is inference, not
+training completion. Four-arm smoke and the measured 2x feasibility gate still
+precede full10K training. G6/G7/transfer, final artifact recovery and cleanup
+remain incomplete; financial deadlines and the professor baseline are unchanged.
+The future CPU optimizations below are not applied to this running commit.
+
 The replacement owned A40 passed setup at exact commit
 `f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`: 180 CPU tests, actual CUDA/BF16,
 and the 13-file pinned model manifest. At 2026-10-04 14:31 UTC, its controller

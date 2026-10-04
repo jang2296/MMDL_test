@@ -1,5 +1,24 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 15:52 UTC — full10K 준비 종료·실제 GPU F0 평가 진입
+
+f3 고정 commit의 첫10K processor 검증은 통과했으나 near-image 검토 후보25개를
+학습에서 제외했다. 정상 processor/권리/오염검사를 통과한 TRACE25개로 보충했으며
+부모9975개 원장·제외 목록·manifest는 byte 불변이다. near hash 일치를 실제 오염으로
+확정하지 않는다. complete_pilot1924.334초/15:41:31UTC, smoke root 분리318.832초/
+15:46:50UTC, MMMU60 cohort26.039초·외부60 cohort15.160초/15:47:31UTC에 exit0으로 닫혔다.
+
+F0 MMMU 평가 PID3135는15:47:43UTC에 시작했고15:52:30UTC4/60응답을 저장했다.
+실제 A40 GPU83%·10,039MiB를 확인했다. 이는 새4,096출력 진단 프로토콜의 추론이며
+학습 또는 과거32K558/900 성적의 갱신이 아니다. 다음은 외부 F0→네 조건의 학습 smoke→
+실측2배 예산 gate→같은 full10K 네 조건이다. 전체 G6/G7/transfer 완료는 아직 아니다.
+원래 잔액10.77/reserve1USD/금융 종료 한도·모델/샘플링/데이터 조건을 유지한다.
+
+내부 `analysis_exports/g6_preparation_receipts_20261004/`에 닫힌 metadata·실행 f3 코드667파일을
+보존했다. 원격/로컬 hash·승인 연결·Git blob/실행권한을 검사했으며 최종 이미지/학습노출/
+체크포인트/평가 전체 회수·검증은 미완료다. 이 부분 회수만으로 Pod를 삭제하지 않는다.
+MMDL_test의 미래 CPU 최적화는 실행 f3에 적용하지 않았고 교수님 MMDL/V8은 불변이다.
+
 ## 2026-10-04 15:00 UTC — 10K 후보 변환 완료·다음 실행용 CPU 승인 중복 제거
 
 같은 소유A40의 `approve_pilot` PID2456은 실행 중이며 GPU0MiB/0%다.
