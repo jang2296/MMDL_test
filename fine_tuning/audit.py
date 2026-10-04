@@ -314,7 +314,8 @@ def check_target_identifiability(row, image_root):
 def contamination_candidates(row, image_root, index):
     text = row["user_text"]
     reasons = []
-    if text_hash(text) in index.get("_text_hashes", set(index.get("text_sha256", []))):
+    text_hashes = index["_text_hashes"] if "_text_hashes" in index else set(index.get("text_sha256", []))
+    if text_hash(text) in text_hashes:
         reasons.append("EXACT_BENCHMARK_TEXT")
     tokens = shingles(text)
     matches = set()
@@ -326,10 +327,10 @@ def contamination_candidates(row, image_root, index):
         if tokens and other and len(tokens & other)/min(len(tokens), len(other)) >= 0.8:
             reasons.append("NEAR_BENCHMARK_TEXT")
             break
-    pixels = index.get("_pixels", set(index.get("pixels_sha256", [])))
-    bytes_hashes = index.get("_bytes", set(index.get("image_bytes_sha256", [])))
+    pixels = index["_pixels"] if "_pixels" in index else set(index.get("pixels_sha256", []))
+    bytes_hashes = index["_bytes"] if "_bytes" in index else set(index.get("image_bytes_sha256", []))
     # dHash is a quarantine candidate signal, never an automatic similarity proof.
-    dhashes = index.get("_dhashes", [int(h, 16) for h in index.get("dhash", [])])
+    dhashes = index["_dhashes"] if "_dhashes" in index else [int(h, 16) for h in index.get("dhash", [])]
     for name in row["image_paths"]:
         path = image_path(image_root, name)
         with Image.open(path) as image:
@@ -362,7 +363,9 @@ def approve(records_path, image_root, sources, benchmark_index, output, input_pr
         raise ValueError("Benchmark exact requested coverage receipt is inconsistent")
     if input_preflight_receipt is None:
         raise ValueError("Actual per-record processor/model-input preflight receipt required")
-    preflight = json.loads(Path(input_preflight_receipt).read_text())
+    receipt_bytes = Path(input_preflight_receipt).read_bytes()
+    preflight = json.loads(receipt_bytes.decode("utf-8"))
+    receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
     contract = training_input_contract(training_input_protocol)
     from .modules import BASE_REVISION
     if (preflight.get("status") != "PASS" or preflight.get("kind") != "ACTUAL_PROCESSOR_PREFLIGHT"
@@ -412,10 +415,12 @@ def approve(records_path, image_root, sources, benchmark_index, output, input_pr
             quarantine.append({"id": row["id"], "reasons": reasons})
             continue
         item = dict(model_input_record(row), training_allowed=True,
-                    processor_receipt_sha256=sha(input_preflight_receipt))
+                    processor_receipt_sha256=receipt_sha256)
         train.append(item)
         for name in row["image_paths"]:
             files[name] = sha(Path(image_root)/name)
+    if sha(input_preflight_receipt) != receipt_sha256:
+        raise ValueError("Processor receipt changed during approval")
     out = Path(output)
     out.mkdir(parents=True, exist_ok=False)
     write_rows(out/"records.jsonl", train)
@@ -431,7 +436,7 @@ def approve(records_path, image_root, sources, benchmark_index, output, input_pr
         "contamination_audit": {"status": "PASS", "index_sha256": sha(benchmark_index),
             "coverage": index["coverage"], "quarantined": len(quarantine),
             "limitations": "Exact/near fingerprints and registered ancestry; not pretraining-contamination certification."},
-        "model_input_audit": {"status": "PASS", "receipt_sha256": sha(input_preflight_receipt),
+        "model_input_audit": {"status": "PASS", "receipt_sha256": receipt_sha256,
             "processor_revision": preflight["processor_revision"], "sequence_budget": preflight["sequence_budget"],
             "episode_pixels": preflight["episode_pixels"], "record_count": len(train)},
     }

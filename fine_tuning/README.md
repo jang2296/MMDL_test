@@ -35,6 +35,16 @@ bytes once; counts, raw hashes, schemas and coverage checks are unchanged.
 That CPU optimization is tested on authored Parquets, not applied to the running
 fixed commit, and has no measured cloud speedup yet.
 
+At 15:00 UTC the same pilot process was still live with zero GPU use. TRACE
+conversion and the 10,000-row proposed ledger were complete, but processor
+preflight and final approval were not yet observed complete. Proposed rows are
+not approved or trained rows. Future approval code avoids eager fallback sets
+and binds every row to the digest of the same parsed receipt bytes. A final
+receipt rehash rejects mutation before output creation; source, processor,
+rights, contamination and coverage gates stay intact. Related 40 CPU tests,
+Ruff, bounded mypy and independent delta review passed. The running commit and
+historical receipts are unchanged; new code requires fresh normal approval.
+
 ### Historical private-overlay deployment (superseded)
 
 This folder is a private overlay for the existing MMDL evaluation repository.

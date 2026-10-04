@@ -21,6 +21,14 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 15:00UTC 실측: 같은 PID2456이 살아 있으며 GPU0MiB/0%다. TRACE 변환은14:41:46UTC,
+  10,000개 후보 원장은14:42:10UTC에 생성됐지만 processor 검증/승인 완료는 아직 미관측이다.
+  후보 행 수를 승인/학습 완료로 읽지 않는다. 다음 실행용 CPU 승인기는 기존 캐시가 있으면
+  fallback set을 만들지 않고, processor receipt의 최초 bytes와 같은 digest를 모든 행에 연결한다.
+  종료 전 receipt를 다시 hash하여 변경되면 출력 생성 전에 거부한다. producer/source/권리/오염/
+  coverage 검증은 유지한다. 관련40 CPU tests(29.762초)·Ruff·mypy1·독립 검토를 통과했다.
+  실행 중인 f3 code/receipt는 변경하지 않으며 새 코드에는 새 정상 processor 승인 자료가 필요하다.
+  GPU 속도 향상·full10K/G7/transfer 완료를 주장하지 않는다.
 - 14:31UTC 실측: 모델/CUDA/BF16은 정상이나 GPU0MiB/0%이며 학습 전이다.
   benchmark 배제100파일/16,740행·index·TRACE 취득·360개 smoke CPU 승인을 통과했다.
   `approve_pilot` PID2456은 TRACE 이미지 변환 중이며 생성 이미지5,569개를 관측했다.

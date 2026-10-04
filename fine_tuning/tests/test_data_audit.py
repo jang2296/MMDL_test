@@ -137,6 +137,35 @@ class DataAuditTests(unittest.TestCase):
             self.assertIn("EXACT_BENCHMARK_TEXT", audit.contamination_candidates(
                 row, path, {"text_sha256": [expected]}))
 
+    def test_contamination_cache_matches_fallback_without_eager_construction(self):
+        class UnusableFallback:
+            def __iter__(self):
+                raise AssertionError("Cached fingerprints must not construct fallbacks")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            Image.new("RGB", (32, 32), "green").save(root/"image.png")
+            with Image.open(root/"image.png") as image:
+                fp = audit.image_fingerprint(image)
+            text = " ".join(f"word{number}" for number in range(20))
+            row = {"user_text": text, "image_paths": ["image.png"]}
+            tokens = audit.shingles(text)
+            index = {"text_sha256": [audit.text_hash(text)], "pixels_sha256": [fp["pixels_sha256"]],
+                     "image_bytes_sha256": [audit.sha(root/"image.png")], "dhash": [fp["dhash"]],
+                     "_shingle_sets": [tokens], "_inverted_shingles": {token: {0} for token in tokens}}
+            expected = ["EXACT_BENCHMARK_IMAGE", "EXACT_BENCHMARK_TEXT",
+                        "NEAR_BENCHMARK_TEXT", "NEAR_IMAGE_REVIEW_REQUIRED"]
+            self.assertEqual(audit.contamination_candidates(row, root, index), expected)
+            caches = {"_text_hashes": set(index["text_sha256"]), "_pixels": set(index["pixels_sha256"]),
+                      "_bytes": set(index["image_bytes_sha256"]), "_dhashes": [int(fp["dhash"], 16)]}
+            cached = dict(index, **caches)
+            for key in ("text_sha256", "pixels_sha256", "image_bytes_sha256", "dhash"):
+                cached[key] = UnusableFallback()
+            self.assertEqual(audit.contamination_candidates(row, root, cached), expected)
+            empty = dict(cached, _text_hashes=set(), _pixels=set(), _bytes=set(), _dhashes=[],
+                         _shingle_sets=[], _inverted_shingles={})
+            self.assertEqual(audit.contamination_candidates(row, root, empty), [])
+
     def test_placeholder_count_strip_preserves_original(self):
         row = {"id": "unit", "user_text": "<image>\nQuestion: Test", "target_text": "A", "image_paths": ["a.png"]}
         prepared = audit.model_input_record(row)
@@ -310,7 +339,9 @@ class DataAuditTests(unittest.TestCase):
                    "answer_identifiable": True, "user_text": "<image>\nIndependent synthetic task",
                    "target_text": "A", "image_paths": ["image.png"]}
             records = root/"records.jsonl"
-            audit.write_rows(records, [row])
+            rows = [row, dict(row, id="second", root_id="second-root", family_id="second-family"),
+                    dict(row, id="third", root_id="third-root", family_id="third-family")]
+            audit.write_rows(records, rows)
             registry = {"clean": {"benchmark_derived": False, "rights_approved": True, "source_known": True, "parents": []}}
             index_path = root/"index.json"
             coverage = self.coverage(root/"image.png", 1)
@@ -336,14 +367,39 @@ class DataAuditTests(unittest.TestCase):
                 input_sha256=audit.input_fingerprint(row, root), sequence_tokens=5,
                 image_grid_thw=[[1, 2, 2]], tensor_sha256={key: "fixture" for key in (
                     "input_ids", "attention_mask", "labels", "pixel_values", "image_grid_thw")})
+            for extra in rows[1:]:
+                receipt["records"][extra["id"]] = dict(receipt["records"]["unit"],
+                    input_sha256=audit.input_fingerprint(extra, root))
             good_receipt_path = root/"contract-fixture.json"
             audit.dump(good_receipt_path, receipt)
-            manifest = audit.approve(records, root, registry, index_path, root/"approved-contract-test", good_receipt_path)
-            approved = audit.read_rows(root/"approved-contract-test/records.jsonl")[0]
-            self.assertEqual(manifest["model_input_audit"]["record_count"], 1)
+            receipt_sha = audit.sha(good_receipt_path)
+            with patch.object(audit, "sha", wraps=audit.sha) as hashes, \
+                    patch.object(Path, "open", autospec=True, side_effect=Path.open) as opens:
+                manifest = audit.approve(records, root, registry, index_path,
+                                         root/"approved-contract-test", good_receipt_path)
+            self.assertEqual(sum(Path(call.args[0]) == good_receipt_path for call in hashes.call_args_list), 1)
+            self.assertEqual(sum(call.args[0] == good_receipt_path for call in opens.call_args_list), 2)
+            approved_rows = audit.read_rows(root/"approved-contract-test/records.jsonl")
+            approved = approved_rows[0]
+            self.assertEqual(manifest["model_input_audit"]["record_count"], 3)
+            self.assertEqual(manifest["model_input_audit"]["receipt_sha256"], receipt_sha)
+            self.assertEqual([item["processor_receipt_sha256"] for item in approved_rows], [receipt_sha]*3)
             self.assertNotIn("<image>", approved["user_text"])
             self.assertEqual(approved["original_user_text"], row["user_text"])
             self.assertEqual(approved["processor_receipt_sha256"], audit.sha(good_receipt_path))
+            original = good_receipt_path.read_bytes()
+            contamination = audit.contamination_candidates
+            def mutate_receipt(row, image_root, index):
+                reasons = contamination(row, image_root, index)
+                good_receipt_path.write_bytes(original+b"\n")
+                return reasons
+            destination = root/"must-not-exist"/"approved"
+            with patch.object(audit, "contamination_candidates", side_effect=mutate_receipt) as checked:
+                with self.assertRaisesRegex(ValueError, "receipt changed during approval"):
+                    audit.approve(records, root, registry, index_path, destination, good_receipt_path)
+            self.assertEqual(checked.call_count, 3)
+            self.assertFalse(destination.parent.exists())
+            self.assertEqual(json.loads(good_receipt_path.read_bytes()), receipt)
             for key, value in (("min_pixels", 131072), ("max_pixels", 524288)):
                 with self.subTest(default_receipt_budget=key):
                     path = root/("wrong-default-" + key + ".json")

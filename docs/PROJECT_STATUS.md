@@ -1,5 +1,22 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 15:00 UTC — 10K 후보 변환 완료·다음 실행용 CPU 승인 중복 제거
+
+같은 소유A40의 `approve_pilot` PID2456은 실행 중이며 GPU0MiB/0%다.
+TRACE 변환이14:41:46UTC에 닫혔고14:42:10UTC에10,000개 `proposed_records.jsonl`이
+생성됐다. 변환 원장은13,015개, 이미지16,765개이며 후보10K 승인과 다른 지표다.
+실제 processor preflight/최종 approval 완료는 아직 확인되지 않았으며 학습 전이다.
+
+다음 실행용 `audit`의 eager fallback set 생성을 제거하고 processor receipt를 최초 읽은
+bytes로 파싱·hash하여 모든 행과 manifest에 같은 digest를 연결한다. 승인 완료 직전에
+원본 receipt를 다시 hash하여 변경되면 출력 디렉터리 생성 전에 거부한다. 원본 index에서
+캐시를 검증·구성하는 단계, producer/source/processor/revision·입력/권리/오염/coverage
+검증은 유지한다. 관련40 CPU tests(29.762초)·Ruff·bounded mypy1·diff 및 독립 검토 PASS.
+자체 CPU fixture의 결과이며 실제 processor 실행이나 cloud 가속률 측정이 아니다.
+아래14:31UTC 절에서 미수정으로 기록한 두 hotspot은 이 별도 미래 수정에서 처리했다.
+실행 중인 f3 checkout/원장/승인 hash는 불변이며 새 코드로 실행하려면 새 정상 승인이 필요하다.
+교수님 MMDL·V8 558/900 불변, full10K/G7/transfer 미완료 및 원래 비용/시간 한도를 유지한다.
+
 ## 2026-10-04 14:31 UTC — GPU 대기의 실제 단계·미래 CPU 중복 계산 제거
 
 같은 소유A40의 CUDA/BF16와 지정 모델은 정상이나 GPU0MiB/0%이며 아직 학습하지 않는다.
