@@ -42,7 +42,7 @@ export PYTHONUNBUFFERED=1
 cd "$repo_root"
 "$python" -m unittest discover -s fine_tuning/tests -v
 "$python" -m mmdl.runtime.environment --output "$task_root/setup/doctor.json" --storage-path /workspace --required-gib 30
-"$python" - "$task_root" <<'PY'
+"$python" - "$task_root" "$code_commit" <<'PY'
 import json, pathlib, sys
 from mmdl.data.download import MODEL_FILES, acquire
 from mmdl.runtime.contracts import MODEL_ID, MODEL_REVISION
@@ -51,7 +51,8 @@ root=pathlib.Path(sys.argv[1])
 manifest,snapshot=acquire(MODEL_ID,MODEL_REVISION,'model',MODEL_FILES,root/'hf-cache')
 expected=json.loads(pathlib.Path('manifests/models/baseline.json').read_text())
 assert manifest['files']==expected['files'], 'Pinned model hash mismatch'
-dump(root/'setup/model.json',{'model_path':str(snapshot),'manifest':manifest,'status':'MODEL_HASH_VERIFIED'})
+dump(root/'setup/model.json',{'model_path':str(snapshot),'manifest':manifest,'status':'MODEL_HASH_VERIFIED',
+    'code_repository':'jang2296/MMDL_test','code_commit':sys.argv[2]})
 print('MODEL_READY',snapshot,flush=True)
 PY
 printf '%s\n' 'SETUP_COMPLETE_MODEL_READY; training/evaluation not automatically started'

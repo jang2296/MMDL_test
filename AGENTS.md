@@ -15,6 +15,8 @@
 삭제 전 full10K 준비 완료를 관측했으나 controller의 `evaluate --help` 30초 timeout으로
 GPU 단계는 미실행이다. 최종 데이터 전체 회수가 아닌 일부 metadata만 로컬에 남았다.
 전체10K 학습 성공/새 점수로 보고하지 않는다. 기존 V8 558/900은 불변이다.
+게시 전 MMDL_test checkout에서 실험166 CPU tests(309.096초), 게시 안전3 tests,
+Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실행은 미검증이다.
 
 ## 최종 회수·삭제 — 2026-10-03 06:18 UTC /15:18 KST
 

@@ -13,6 +13,9 @@
 `python -m fine_tuning.evaluate --help`의30초 timeout으로 BLOCKED, GPU 단계 미실행이었다.
 최종 원격 데이터/승인 전체는 회수되지 않았으며 이전 TRACE completion metadata만 로컬에 있다.
 기존1600 실험과 V8 558/900은 보존한다. 새 bootstrap GPU 성공과 전체10K 완료는 미검증이다.
+MMDL_test checkout 실험166 CPU tests(309.096초)/게시 안전3 tests/Ruff/mypy2/Bash PASS.
+게시 selector·bootstrap 독립 검토를 완료했다. vendored 코드/기존 Markdown의 역사적 공백은
+원문 hash 보존을 위해 유지했으며 이번 변경 파일의 diff 공백 검사는 통과했다.
 
 ## 최종 로컬 보존·자원 정리 — 2026-10-03 15:18 KST
 
