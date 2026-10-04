@@ -10,6 +10,9 @@
 
 승인된 Pod의 `/workspace`에서 실행한다. `MMDL_TEST_COMMIT`에는 실행할
 **전체 40자리 commit SHA**를 넣는다. branch 최신값만으로 과거 실행을 식별하지 않는다.
+SSH의 비로그인 셸에서는 컨테이너 환경이 없을 수 있다. 그 경우 실제 RunPod가 만든
+`/etc/rp_environment`를 `set -a; source /etc/rp_environment; set +a`로 먼저 읽는다.
+Pod ID를 임의로 만들어 우회하지 않는다.
 
 ```bash
 export MMDL_TEST_COMMIT='<실행할 전체 commit SHA>'

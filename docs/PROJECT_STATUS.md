@@ -1,5 +1,26 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 13:10 UTC — MMDL_test 게시·새 A40 설치 재개
+
+게시 commit `9882aacde28cf27e4c35772ea9032acf7e3aedb9`와 원격 feature HEAD를 확인했다.
+MMDL_test666파일/31,883,243bytes의 source/hash/mode 동등성, checkout22 CPU tests/4.202초,
+Ruff/Bash/diff·exact SHA setup/G6 dry-run을 검증했다. 교수님용 MMDL은 clean·`197838c…` 그대로다.
+
+새 소유Pod `qg7krba8ebl10s`/EU-SE-1/A40 1개를 생성·read-back·직접 SSH 연결했다.
+GPU $0.49/h,30GB container/160GB persistent `/workspace`, network volume 없음.
+실제 A40 46068MiB/driver580.159.04/Python3.12/cgroup RAM49,999,998,976bytes,
+CPU quota7.65코어를 확인했다. CPU OMP/MKL threads8을 적용한다. shared MFS의 df를 Pod quota로 오인하지 않는다.
+설치부터 포함한 all-in 상한$0.55/h·초기잔액$10.77·회수 reserve$1을 고정한다.
+금융 한도2026-10-05 06:50:50.820909UTC가 요청한18시간 종료보다 먼저 적용된다.
+
+첫 배포는 CPU RAM64GB 조건의 인스턴스 없음으로 실패했으며 목록0을 확인했다.
+새 재고 확인 뒤 CPU RAM32GB 조건으로 생성했다. 첫 launch는 SSH 비로그인 셸의 실제
+RunPod ENV 누락으로 파일 생성 전에 안전 중단됐다. PID1의 실제 Pod ID/OMP ENV와
+RunPod가 만든 `/etc/rp_environment`를 확인해 source한 별도 launch로 재개했다.
+코드 overlay/런타임 코드 수정은 없으며 GitHub exact SHA만 clone했다.
+로그 `/workspace/g6-control/launch-env-v2.log`. 실제 학습/전체10K/새 점수는 아직 미완료다.
+회수·검증한 뒤 이 소유Pod만 삭제한다. 증거 `analysis_exports/g6_cloud_deployment_20261004.json`.
+
 ## 2026-10-04 — 작업 재개·cold help 수정·fresh G6 실행 경로
 
 사용자 '계속 진행해'로 재개했다. RunPod 실제 목록0개, A40 48GB SECURE는

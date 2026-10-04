@@ -21,6 +21,12 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- `9882aacde28cf27e4c35772ea9032acf7e3aedb9`를 MMDL_test에 게시·666파일/hash/mode 동기화했다.
+  새 소유A40 Pod `qg7krba8ebl10s`를 생성·read-back·직접 SSH 확인했고 설치를 재개했다.
+  30GB container/160GB workspace·network volume없음, 예산 all-in$0.55/h·잔액10.77·reserve1USD,
+  금융 한도2026-10-05 06:50:50.820909UTC. 학습/전체10K 완료는 아직 아니다.
+  SSH 비로그인 ENV 누락은 실제 PID1 ENV와 `/etc/rp_environment` source로 해결한다.
+  런타임 코드 hot patch/임의 Pod ID는 쓰지 않는다. 회수·검증 뒤 소유Pod만 삭제한다.
 - `fine_tuning.evaluate --help`는 argparse를 먼저 실행해 cold Torch/model import를 피한다.
   기존 평가 함수/생성/채점 조건은 유지하며 runtime import를 차단한 실제 subprocess로 검사한다.
 - `fine_tuning.runpod_g6`는 MMDL_test exact SHA/clean origin을 검사하고 새 runtime의
