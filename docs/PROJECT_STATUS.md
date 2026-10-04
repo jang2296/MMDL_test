@@ -1,5 +1,21 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 14:07 UTC — 고정 수정본 setup 통과·G6 준비 실제 재개
+
+`f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`를 MMDL_test에 게시하고 같은 소유A40 Pod의
+clean checkout에서 실행했다. 새 `/workspace/nvw-runtime-retry1`을 사용하며 이전 venv만
+재사용했다. exact lock/pip check·전체180 CPU tests(591.522초)·실제 CUDA/BF16 연산을 통과했다.
+모델 revision `ebb281ec70b05090aa6165b016eac8ec08e71b17`의13개 파일 hash를 확인하고
+setup은749.724초/exit0으로 닫혔다. 이전 실패 로그/원장은 보존한다.
+
+G6 controller는14:05:46UTC 시작했으며 prototype 생성50.201초·검증14.865초/exit0을
+기록했다.14:07UTC에는 새 pilot pool 생성 중이다. 아직 학습/새 평가/전체10K 완료는 아니다.
+원래 과금 시작·잔액10.77·reserve1USD·상한0.55USD/h·금융 종료 한도는 재설정하지 않았다.
+10분마다 실제 Pod API/프로세스/GPU/오류를 확인한다. GPU0%인 현재 준비 단계를 학습으로
+표기하지 않는다. 증거 `analysis_exports/g6_cloud_deployment_20261004.json` 및 원격
+`/workspace/g6-control/launch-retry1-f3f37ab.log`, `runs/g6_launch/journal.jsonl`.
+교수님 MMDL·V8 558/900·기존 응답/체크포인트는 불변이며 실행 중인 f3f37ab 코드를 갱신하지 않는다.
+
 ## 2026-10-04 13:35 UTC — setup 회귀 시간 가정 실패·학습 진입 차단
 
 소유A40 `qg7krba8ebl10s`의 고정 pip 설치·pip check는 완료했으나 전체177 CPU tests는

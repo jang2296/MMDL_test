@@ -32,7 +32,8 @@ bash /workspace/MMDL_test/fine_tuning/runpod_setup.sh \
 `--execute`를 빼면 설치/다운로드 없는 dry-run이다. 설치 셸은 clean checkout·commit·
 persistent volume·고정 lock·CPU 회귀·실제 CUDA/BF16·지정 모델 hash를 검사한다.
 **이 명령만으로 학습/평가를 자동 시작하지 않는다.** 승인 데이터·cohort·Pod ID·예산·
-종료 시각을 명시하여 이후 controller를 실행한다. 새 bootstrap의 GPU 성공은 아직 미검증이다.
+종료 시각을 명시하여 이후 controller를 실행한다.2026-10-04 A40에서 수정본 `f3f37ab…`의
+180 CPU tests·CUDA/BF16·지정 모델 hash 검사와 setup 종료를 확인했다. 이는 학습 완료가 아니다.
 설치에도 같은 금융/시간 watchdog을 적용하며 추가로 최대1시간에 중단한다.
 설치된 환경만 재사용하려면 새 `--runtime-root`와 기존 `/workspace` 하위의
 `--reuse-venv /workspace/<이전-runtime>/venv`를 명시한다. 고정 lock/pip check·전체검사·

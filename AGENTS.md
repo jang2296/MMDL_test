@@ -21,6 +21,10 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 수정본 `f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`로 같은 소유A40/새 runtime에 재개했다.
+  exact lock/pip check·180 CPU tests(591.522초)·실제 CUDA/BF16·지정 모델13파일 hash를 통과했고
+  setup749.724초/exit0을 확인했다.14:07UTC G6 자체 자료 준비 중이며 학습/전체10K 완료는 아니다.
+  실행 중인 exact SHA는 문서 게시로 변경하지 않는다. 원래 과금 시작/잔액/금융·시간 한도를 유지한다.
 - 새A40 setup177 CPU tests는176통과/1 timing fixture 오류로13:35UTC 종료했다.
   중첩 Python이0.2초 안에 PID를 출력한다는 테스트 가정을 수정하며 실제 예산/종료 가드는 유지한다.
   전체검사 통과 전에는 모델/GPU/G6를 시작하지 않는다. 로그/pip freeze는 내부 회수본에 보존한다.
