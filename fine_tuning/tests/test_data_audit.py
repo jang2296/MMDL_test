@@ -225,14 +225,69 @@ class DataAuditTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "file coverage"):
                     sources.benchmark_index([], self.coverage(path, 1, dataset), root/f"missing{number}.json")
 
-    def test_missing_benchmark_image_bytes_never_complete(self):
+    def test_benchmark_repeated_bytes_decode_once_without_changing_index(self):
+        red, blue = png(), png("blue")
+        stream = io.BytesIO()
+        Image.new("RGB", (32, 32), "red").save(stream, format="PNG", compress_level=0)
+        alternate_red = stream.getvalue()
+        self.assertNotEqual(red, alternate_red)
+        fingerprints = []
+        for raw in (red, alternate_red, blue):
+            with Image.open(io.BytesIO(raw)) as image:
+                fingerprints.append(audit.image_fingerprint(image))
+        self.assertEqual(fingerprints[0], fingerprints[1])
+        question = " ".join(f"word{number}" for number in range(20))
+        rows = [{"question": question, "options": ["x", "y"],
+                 "images": [{"bytes": raw, "path": None} for raw in pair]}
+                for pair in ((red, red), (alternate_red, blue), (red, blue))]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            row = {"question": "Test?", "options": ["A"], "image_1": {"path": "missing.png", "bytes": None}}
-            path = parquet(root/"source.parquet", [row])
-            with self.assertRaisesRegex(ValueError, "bytes missing"):
-                sources.benchmark_index([path], self.coverage(path, 1), root/"index.json")
-            self.assertFalse((root/"index.json").exists())
+            paths = [parquet(root/"first.parquet", rows[:2]),
+                     parquet(root/"second.parquet", rows[2:])]
+            coverage = {"files": [self.coverage(path, count)["files"][0]
+                                  for path, count in zip(paths, (2, 1))], "record_count": 3}
+            output = root/"index.json"
+            with patch("PIL.Image.open", wraps=Image.open) as decode, \
+                    patch.object(sources, "image_fingerprint", wraps=audit.image_fingerprint) as fingerprint:
+                result = sources.benchmark_index(paths, coverage, output)
+            self.assertEqual(decode.call_count, 3)
+            self.assertEqual(fingerprint.call_count, 3)
+            self.assertEqual(result, {"status": "COMPLETE", "coverage": coverage, "record_count": 3})
+            self.assertEqual(json.loads(output.read_text()), {
+                "status": "COMPLETE", "coverage": coverage, "record_count": 3,
+                "coverage_verified": True,
+                "per_file_record_counts": {str(path.resolve()): count for path, count in zip(paths, (2, 1))},
+                "image_count": 6, "source_files": {str(path.resolve()): audit.sha(path) for path in paths},
+                "text_sha256": sorted({audit.text_hash(question), audit.text_hash(question+"\nx\ny")}),
+                "pixels_sha256": sorted({fp["pixels_sha256"] for fp in fingerprints}),
+                "image_bytes_sha256": sorted(hashlib.sha256(raw).hexdigest() for raw in (red, alternate_red, blue)),
+                "dhash": sorted({fp["dhash"] for fp in fingerprints}),
+                "long_text_shingles": [sorted(audit.shingles(question))]*3,
+                "training_allowed": False, "purpose": "exclusion_fingerprints_only",
+                "crop_and_semantic_similarity_complete": False,
+            })
+            wrong_coverage = copy.deepcopy(coverage)
+            wrong_coverage["files"][0]["records"] = 3
+            wrong_coverage["files"][1]["records"] = 0
+            with self.assertRaisesRegex(ValueError, "per-file record coverage"):
+                sources.benchmark_index(paths, wrong_coverage, root/"bad-coverage.json")
+            wrong_coverage = copy.deepcopy(coverage)
+            wrong_coverage["files"][1]["sha256"] = "0"*64
+            with self.assertRaisesRegex(ValueError, "file bytes differ"):
+                sources.benchmark_index(paths, wrong_coverage, root/"bad-hash.json")
+
+    def test_missing_or_corrupt_benchmark_image_bytes_never_complete(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for raw, error in ((None, ValueError), (b"corrupt image", OSError)):
+                with self.subTest(raw=raw):
+                    row = {"question": "Test?", "options": ["A"], "images": [
+                        {"path": None, "bytes": png()}, {"path": None, "bytes": png()},
+                        {"path": "missing.png", "bytes": raw}]}
+                    path = parquet(root/"source.parquet", [row])
+                    with self.assertRaises(error):
+                        sources.benchmark_index([path], self.coverage(path, 1), root/"index.json")
+                    self.assertFalse((root/"index.json").exists())
 
     def test_ambiguous_structure_safe_but_untrusted_letter_qa_rejected(self):
         row = {"id": "test", "root_id": "test-root", "answer_identifiable": False,

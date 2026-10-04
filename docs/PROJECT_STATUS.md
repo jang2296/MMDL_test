@@ -1,5 +1,24 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 14:31 UTC — GPU 대기의 실제 단계·미래 CPU 중복 계산 제거
+
+같은 소유A40의 CUDA/BF16와 지정 모델은 정상이나 GPU0MiB/0%이며 아직 학습하지 않는다.
+준비 controller의 benchmark 취득100파일/16,740행, 배제 index368.733초, TRACE24.344초,
+smoke360개 CPU 승인127.288초가 exit0으로 닫혔다.14:24:06UTC 시작한 `approve_pilot`
+PID2456은14:31UTC TRACE Parquet 읽기와 PNG 쓰기를 수행하며 이미지5,569개를 생성했다.
+이 수는 승인된 학습 행 수/정답률이 아니다. 전체10K 승인·보충·smoke root 분리·두 평가
+cohort를 준비한 뒤에만 GPU controller를 시작하며, 거기서도 F0 평가가 학습 smoke보다 먼저다.
+GPU 장애나 학습 중 낮은 utilization이 아니라 설치/검사/데이터 준비를 직렬 실행한 지연이다.
+
+다음 실행의 `sources.benchmark_index`는 동일 raw SHA를 이미 성공적으로 decode한 경우에만
+pixel/dHash 계산을 재사용한다. 모든 이미지 schema/count/raw SHA·파일 hash·행 coverage는 유지한다.
+실제 기존 index는19,041이미지 출현/12,168고유 raw SHA/6,873중복이다. 미래 중복 호출 감소의
+근거이지 전체 소요시간 단축 실측이 아니다. 자체 두 Parquet의 같은 byte/다른 encoding·동일 픽셀,
+corrupt/missing 이미지, per-file coverage와 hash 반례를 확인했다. 실행 중인 f3 코드와 원장은 불변이다.
+추가 CPU 승인에서 cached set의 eager fallback 및 행마다 전체 processor receipt 재해싱도 확인했지만
+이번 수정에 포함하지 않았다. 향후에는 검증을 생략하지 않고 동일 hash 결합을 유지해야 한다.
+교수님 MMDL 및 V8 558/900은 불변이며 full10K/G7/transfer는 여전히 미완료다.
+
 ## 2026-10-04 14:07 UTC — 고정 수정본 setup 통과·G6 준비 실제 재개
 
 `f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`를 MMDL_test에 게시하고 같은 소유A40 Pod의

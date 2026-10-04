@@ -139,9 +139,12 @@ def benchmark_index(paths, coverage, output):
                             raise ValueError("Benchmark image bytes missing; coverage is incomplete")
                         raw = image_entry["bytes"]
                         image_count += 1
-                        bytes_hashes.add(hashlib.sha256(raw).hexdigest())
+                        raw_sha256 = hashlib.sha256(raw).hexdigest()
+                        if raw_sha256 in bytes_hashes:
+                            continue
                         with Image.open(io.BytesIO(raw)) as image:
                             fp = image_fingerprint(image)
+                        bytes_hashes.add(raw_sha256)
                         pixels.add(fp["pixels_sha256"])
                         dhashes.add(fp["dhash"])
                 if image_count == before_images:

@@ -21,6 +21,14 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 14:31UTC 실측: 모델/CUDA/BF16은 정상이나 GPU0MiB/0%이며 학습 전이다.
+  benchmark 배제100파일/16,740행·index·TRACE 취득·360개 smoke CPU 승인을 통과했다.
+  `approve_pilot` PID2456은 TRACE 이미지 변환 중이며 생성 이미지5,569개를 관측했다.
+  이미지 수를 승인된 학습 행 수로 읽지 않는다. 전체 pilot 승인/완성/분리와 cohort 준비 뒤
+  F0 평가→학습 smoke 순서이므로 지금 지연은 CPU 준비의 직렬 실행이다.
+  다음 실행용 index는 동일 raw SHA 이미지만 decode/fingerprint를 재사용한다.
+  schema/전체 image count/raw SHA/파일·행 coverage는 유지하며 자체 Parquet 회귀를 검증한다.
+  실행 중인 f3 SHA에는 반영하지 않으며 실제 가속률/G6 완료를 주장하지 않는다.
 - 수정본 `f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`로 같은 소유A40/새 runtime에 재개했다.
   exact lock/pip check·180 CPU tests(591.522초)·실제 CUDA/BF16·지정 모델13파일 hash를 통과했고
   setup749.724초/exit0을 확인했다.14:07UTC G6 자체 자료 준비 중이며 학습/전체10K 완료는 아니다.

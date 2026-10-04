@@ -11,7 +11,7 @@ checkpoints, HF/benchmark payloads and large responses stay outside GitHub. Froz
 receipts are not rewritten to manufacture approval. Only required own-data fixtures
 and historical v18 source are bundled, not all saved results.
 
-The latest A40 Pod was deleted by the user. Its full10K controller stopped before GPU
+The previous A40 Pod was deleted by the user. Its full10K controller stopped before GPU
 stages because the evaluator `--help` preflight exceeded 30 seconds. Prepared remote
 data is not a completed training run; the entire final approval/data artifact was not
 recovered locally. The help preflight now exits before cold runtime imports.
@@ -23,6 +23,17 @@ uses the same stdlib financial/time watchdog, capped at one hour; preparation
 also has a watchdog. The inner GPU controller ends two minutes before that outer
 deadline so its separately grouped training subprocess can close safely.
 CPU verification is not cloud execution or completion of G6/G7/transfer.
+
+The replacement owned A40 passed setup at exact commit
+`f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`: 180 CPU tests, actual CUDA/BF16,
+and the 13-file pinned model manifest. At 2026-10-04 14:31 UTC, its controller
+was converting TRACE images during pilot preparation, with GPU use still zero.
+All data approval and evaluation cohorts precede the GPU controller; its F0
+evaluation then precedes training smoke. This is preparation, not a completed
+GPU training run. Future benchmark indexing fingerprints identical raw image
+bytes once; counts, raw hashes, schemas and coverage checks are unchanged.
+That CPU optimization is tested on authored Parquets, not applied to the running
+fixed commit, and has no measured cloud speedup yet.
 
 ### Historical private-overlay deployment (superseded)
 
