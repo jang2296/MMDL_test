@@ -1,0 +1,2267 @@
+{
+  "chat_template_sha256": "03f40b433e3c55503d6ce2ec4678e01dcd2c67fb958d9df0b4deb636a8da20a1",
+  "episode_pixels": 3145728,
+  "kind": "ACTUAL_PROCESSOR_PREFLIGHT",
+  "max_pixels": 1048576,
+  "min_pixels": 262144,
+  "processor_class": "Qwen3VLProcessor",
+  "processor_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "producer_sha256": "bba0ed1b202df81ab61a27760fec4921b31d92508a06141abfac5160d3fb6aae",
+  "records": {
+    "nvw-independent-v1-signal_graph-73041-1200052-A3-grounded": {
+      "assistant_tokens": 83,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "ec5c8c9d1c86ebea3634b8ea4817c8578a4eb582631a69604155fe585c6d8135",
+      "sequence_tokens": 3162,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0ba11bfa0a93d16e8077d690fa6d382a898ae6aceb0943871584f271201ecd07",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "2801c3b02a10a5ef1f221eadc6466cadaf37f7138ff58051a3ab5e4eb4608d2a",
+        "labels": "00c0f9f1eeceea33f676ce7a518f121edd1c63c82087309889012db99d97f550",
+        "pixel_values": "f2c83abf6157737264df37005186333175df6de6d74383c474e097999e0b68e2"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200052-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "ced8acbbdae3e03037a5f8186461fa16eed465d0e65e325bac04253bef359fe4",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "d252b4698167e4c1f7b2fcad543b0ee88b582877967c517d69b3a2198598aff7"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200052-A3-structure": {
+      "assistant_tokens": 1447,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "4a5d920899e4c91db21d51a813bacd8621166b723f7a5e24e4d54b29009d43f4",
+      "sequence_tokens": 2488,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "40d16ac41624f10185d1ab2b6bda0b5d8156de95ae46c96cb6800f6372dfa148",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "b76cb81132a4a33ed79fd32a869abfded0928f19897b782a023f09ae98872402",
+        "labels": "6f7e905353180f0c6f2ab0f22e2a45026093d5147dc7d74ae6d6b82991f4788c",
+        "pixel_values": "d252b4698167e4c1f7b2fcad543b0ee88b582877967c517d69b3a2198598aff7"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200076-A3-grounded": {
+      "assistant_tokens": 104,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "957195fa5bfa192e95a82cb7dc889696cd1a5f4bcd36930cf8333c47413d463a",
+      "sequence_tokens": 3183,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "90902f61b749a429cf456264931790d03e752a4ee7be4aba5fcd63034b9fe4fd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "112e1d03549404b0544c3eb58c09c7c074b20188611b8a1d526033d70991f611",
+        "labels": "bb7b73a6835da98123bda146d5ab78fcdaac904fc752168282e986b45ae9a7a6",
+        "pixel_values": "f1c95feb7adb60379b5563d16b47ced2d3a04554c2bf2b332e19fd881dfcc8f6"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200076-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5c77076f975df5c2843fa269c23e831df778537b6fa36b48c86293bc737634af",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "4638ecd959ab03c93da6708cb5af55242177775fcf59275d7f9a9131c90bead3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200076-A3-structure": {
+      "assistant_tokens": 1576,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "1a9933e244b4aab34f82c5e65ded6c7797c7b425fdd0ad4ca66a79a960b049e3",
+      "sequence_tokens": 2617,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a67e43419835f32fd843feda3d6e0d2ee19ee9e4360be8bacfdd9f1bc58a1b1b",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "8bc3b0fbc28a910aa208b465b7dccaa45b1f0c26ae96db7ab9a52685332022ef",
+        "labels": "3aa9ed9a88664f0ce3ee20aea40e766b4b9eeaba0b9b545df33252e1066f3fb7",
+        "pixel_values": "4638ecd959ab03c93da6708cb5af55242177775fcf59275d7f9a9131c90bead3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200208-A3-grounded": {
+      "assistant_tokens": 83,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "b71095f3ea9d37f8cbc452db7ad2df24660fe7532ea57c97c5a0c27c0c337f23",
+      "sequence_tokens": 3162,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0ba11bfa0a93d16e8077d690fa6d382a898ae6aceb0943871584f271201ecd07",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "acb9963ad1759f131f8966cf4bf26c88d643ef95966f261562c1f94af24183da",
+        "labels": "56d6974a5e08dbaa0ed10ba37d9a1e90c40857075f463720d98f3c20fc7bb3d8",
+        "pixel_values": "d363d8897d1680eb3d91ad5ac215a20758ff80a97e706c7a83c5ba94d1cbabcd"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200208-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c55397692ce164467d189807bd6e5435290c2239883ffee4284804c7257a8c13",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "c8a523623d91b1db40dfec4474ae3dc4c8886fef63931c689dc2069b482e839a"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200208-A3-structure": {
+      "assistant_tokens": 1676,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "8aa9791c76ffdc410c2a9a01d6640e870f35eccfaeb3b51fb381f979f4305f32",
+      "sequence_tokens": 2717,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "da2f053d74aa16706f3ed5b6190fc9be02a4ffd0b034aeb0981b100cde9610d0",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "6c7f07e7e991761f8a8a12cf6bec3d1a063482e9b1d14679f4d91023d362ec8d",
+        "labels": "bc7767915ad982fd40b85c76fd179896ab99b1bcbc5f8801367e3b01565e6435",
+        "pixel_values": "c8a523623d91b1db40dfec4474ae3dc4c8886fef63931c689dc2069b482e839a"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200357-A3-grounded": {
+      "assistant_tokens": 77,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "dc3080d8d249225fad2213fb9232f0c989227fdd08b934186b88ac21a0b7d4b1",
+      "sequence_tokens": 3156,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "cb19cdccba0e044104950a9226995619802380c1c07a6da43d343efd7481eabd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "6e264546964a407378681f9793a7753918dcd340d6347aaca8cce1ab9f5f6077",
+        "labels": "7107ddf18d7b35a409ab1d23a280cec2cc49e1a33a5c744f85d123cabfbff4ec",
+        "pixel_values": "a9764abbdae3311dd49db6cdb0f3d9e5b3f9c915cd415a05a5dd2217b73a4a94"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200357-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "15a7349e3fa4701ddf286125bb47bbf6316ffe90c041e064b54cfe278647c80c",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "9c13f5e85be8673db65441d822e49190ffeaaa56501efcfddd2c04a3d7e2c7d8"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200357-A3-structure": {
+      "assistant_tokens": 1444,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "d17ea9fedfc287374ac5c14bac9c39325c0d389e8f65f7480b1bb0f200b5400a",
+      "sequence_tokens": 2485,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "7c550b57b1cfd331274f8d78faf1b587e82b5f0e83492f6f1d483a8072aaeb97",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "e1ed0bcbfbe9418c256d766568758d2dc167b0fcb2606101c738cf07caeff733",
+        "labels": "961929f1a55c8b9e738a63634727f79377fdf55d1b7353807d3abf0cb4df795b",
+        "pixel_values": "9c13f5e85be8673db65441d822e49190ffeaaa56501efcfddd2c04a3d7e2c7d8"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200518-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "cf2c96c8b47c78a2cd81624df51b995e2d85b53907017856982e348d662ce281",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "91e9e0ddf188ce9174f85b52995315a6fdb1699406064f8f536872c68f3d2985",
+        "labels": "29f84c9a22cbc4fae3ea72d2681e90855e243b62a7cdf31c70239be2d5e8072c",
+        "pixel_values": "0dab651a66688f49c2ae5d165bc2f9c45f1bdfcd1122306d24a67f81d8d5d759"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200518-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "7486d8dda1d5a5c906c769a207dd3fad65c8278ec8bc7fa7cfcb4a5f6c17f008",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "5ac036a4fb1c2ccba6d5eabeaab997a7dfb061c5a9641b06fa6ae82ad8145b81"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200518-A3-structure": {
+      "assistant_tokens": 1445,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "4b9ab6dd47a01d3f18477340a5b6cde0f7a26fd3abea13c2ac657b4cc2e55039",
+      "sequence_tokens": 2486,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "2b88f333b8317618528c05c0d9d7ff2f64f0b2b89d74678e28de99577437a60f",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0a84798d09bea0cc3fadf54005e63bb82f37b2af4a304cfc106a5a88e964fbc8",
+        "labels": "2c41c628f58591784e21719dda8475fd80f656ce46e89056f6fc8b30fd87333a",
+        "pixel_values": "5ac036a4fb1c2ccba6d5eabeaab997a7dfb061c5a9641b06fa6ae82ad8145b81"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200553-A3-grounded": {
+      "assistant_tokens": 77,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "09ebd8238d62e4e7f9c353911a56244bc4c0c9faad4fe3fc9ae9364fa7d31e09",
+      "sequence_tokens": 3156,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "cb19cdccba0e044104950a9226995619802380c1c07a6da43d343efd7481eabd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "53303e7607f471a25e7f5c40d10612364a53d1a17ee8eac5aa819e569cf4de1c",
+        "labels": "a86f38ddc3f81d31675eebaca90735e1d35b52e4e2ec50140a4568a29893e0c6",
+        "pixel_values": "027cb3b120f97a819178196542b51e616b9a6ce5250f230ca7d615a42a4073df"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200553-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "332d468d4a3778d01ad1b151e34db37a64e72d9196641eb51fc039f886050f50",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "bc61d6c53315911d74ed5a974665a2ba0863753396bc76fc4ea11793dff71cce"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200553-A3-structure": {
+      "assistant_tokens": 1453,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "e5aa31df4eaa353c45231c5a7aca6e0c767c5de191e732e445b1cef922820ebf",
+      "sequence_tokens": 2494,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "5ec5611e548453266316640cb8e8ab87fe10b93578fb17cae00f95603a23e397",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "3cf995bd8e568730073d7091e36ea3b4a1e2f594ad9cf8b59607eef0b80d549b",
+        "labels": "289107ed5fa74e69e89ac611ada8a250aa4cc5cd6673e79a41075e447f8f90e4",
+        "pixel_values": "bc61d6c53315911d74ed5a974665a2ba0863753396bc76fc4ea11793dff71cce"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200612-A3-grounded": {
+      "assistant_tokens": 104,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "de8927cea81dbe2c59cd49c7c899ee41c4b4500a14e2739eb2d268d0ecc1bef7",
+      "sequence_tokens": 3183,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "90902f61b749a429cf456264931790d03e752a4ee7be4aba5fcd63034b9fe4fd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "f0df39620afd1e432deeff32310c179395ba559043e43904f808b813b06f6e94",
+        "labels": "d881607463f7cbca3d38f09bb2ce796ed4cabaf8a521da575d131df7338d2d62",
+        "pixel_values": "3fd51d7dabce0ee918be75a58d5b4541ddb130556be4da402110b5627e0175a3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200612-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "302671fcbc2d7047b2d70ad7f19d363818b70e31c25d60c217ef8e159a3eaa69",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "f3b8ff32362f8aebd3801250e4bc61dfbe6edfb5ea7a83bbf48331ac94b83986"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200612-A3-structure": {
+      "assistant_tokens": 1276,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5ef27155947cbc9160d5dd3c6b7bf705b9213070da4b00738c0839f836887875",
+      "sequence_tokens": 2317,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "307a50b6a733552ab7f2c4d383f430342e74764e5615deb8eff59e2cc62ad7c5",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "b0767f095035ae162bd3bb3efd6b9802419fdbcd98c7721a0eda0f2f5b496021",
+        "labels": "68e93599bc325236a1746ae602b0f91e373f5ac7c3937eeb304b65a20078930a",
+        "pixel_values": "f3b8ff32362f8aebd3801250e4bc61dfbe6edfb5ea7a83bbf48331ac94b83986"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200659-A3-grounded": {
+      "assistant_tokens": 83,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "a26a9d7feee4e88dc713780d683fae8b25b972a7c947e6fc93c71284c77e8863",
+      "sequence_tokens": 3162,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0ba11bfa0a93d16e8077d690fa6d382a898ae6aceb0943871584f271201ecd07",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "0714d8802d84ce129862eec4fefd122d0b0630c803148b0f7ca1cbe184caf785",
+        "labels": "f2f637f2124fa499f9ed59bb1e1fde7ed8fa60e7ebfa446861c48255a261f977",
+        "pixel_values": "21a7f73cc2f65cce81bf0b9f437e57de8619e2d50e55cbff86981016e0ef9726"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200659-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "a648864b091241cd62fd9f6b99909f73805cfb48dd14f9e6c4d9aa03f2016d79",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "378278cb1c6b31980814b7a963074c6ad930fe6f455ff7e754d85fb832fb7cd0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200659-A3-structure": {
+      "assistant_tokens": 1453,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "aae9e5c7d1470e9518de5c122fcd9a4802d4a28f4c52f3cc3aa6f1c5a4d33d6e",
+      "sequence_tokens": 2494,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "5ec5611e548453266316640cb8e8ab87fe10b93578fb17cae00f95603a23e397",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "c472de9a1f8fb2f6112616f350b9146d56ce4a9c993ede02de6b86a3d451b010",
+        "labels": "668c4153aa6c9e448485790bcf84e478aa99e0ee46f6683bcc6da3e253317e62",
+        "pixel_values": "378278cb1c6b31980814b7a963074c6ad930fe6f455ff7e754d85fb832fb7cd0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200717-A3-grounded": {
+      "assistant_tokens": 113,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "e39b43a26f23430623638a6ddbe5c8f0e628c8a8108b8da19fd0a9dabfa755bd",
+      "sequence_tokens": 3192,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "d38b7803ce8b81e051f23a257df65560f89aba13b7af17868e8b792f454d16d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "e22633909b0ab2b63300cf43e83efa70a59835f89b208230d3127dd4c51cc68f",
+        "labels": "bab0e860d7c6f5d3d42b7761a47226f7c51b0af8c35dc0d427405498cbd90a75",
+        "pixel_values": "475f9f0fc4fe98e78193de919da212b1c5431594bcb95214a30a2e6b676d72e3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200717-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "3338ba83feda835f88b2b429ff7de21279a80e0180eb97858193c06c2b972fb8",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "5c21c6bb99d8265b02e381517f3a5d1c20bf73be20d37817fc2b0acaa290c206"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200717-A3-structure": {
+      "assistant_tokens": 1276,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "b99019b3e293321f1321350dfc43e97193167f6e39bb1910950531a2eae94676",
+      "sequence_tokens": 2317,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "307a50b6a733552ab7f2c4d383f430342e74764e5615deb8eff59e2cc62ad7c5",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "e87e69d2a3f5a933638fd7c8b6aaaf0ecd6f5a8ed83aaf358d1166bc8e48d36f",
+        "labels": "9c2bdb2d30c7325f14006507dee108ced209cb05e56345d669e0c9a4daf17f80",
+        "pixel_values": "5c21c6bb99d8265b02e381517f3a5d1c20bf73be20d37817fc2b0acaa290c206"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200822-A3-grounded": {
+      "assistant_tokens": 83,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c2466f23caa82a5371c79e6e3613e9ca44833a13ad08429b2925e4ea2e6e6870",
+      "sequence_tokens": 3162,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0ba11bfa0a93d16e8077d690fa6d382a898ae6aceb0943871584f271201ecd07",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "f99c2580db510148df8a8cf48571038b135c4e5913c18023015b9c517f436c1f",
+        "labels": "5d7970f455db6bd343645d5be319ad490f97ca65b13fb7357dd1a1161ccd0f36",
+        "pixel_values": "b004233c25714997d4f2cd31e7bfbc6846e0e2fbe9f6d3496bdf322a748f23fd"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200822-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c6b4a46682211c200018c6c5d2e4df9b34ca3d2c1ad8fc7c0febf4e2ff594c77",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "1a7521727cb5a380ffa30daa2b3b1a4517d6ae60ce08fa6513585e93776288b8"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200822-A3-structure": {
+      "assistant_tokens": 1449,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "11aa4e5ed5a1be7cfe18561fb698c36adb5a3f4f0459a80528527291966a0b9d",
+      "sequence_tokens": 2490,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "f3f6f15e60453dce04bdefcafb8a63852ca743fbafb243e71072f877dcebb627",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "7f678324ebcdab2b86dde65c9a5427c967aedf5a2790f860989386250f3b5f48",
+        "labels": "a0fb97982321dc6e19cd116e2b0426080cac813762c3c99f7cd5e3e7f48fea78",
+        "pixel_values": "1a7521727cb5a380ffa30daa2b3b1a4517d6ae60ce08fa6513585e93776288b8"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200971-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "8e15dbfcf1bcb102983442667fe24f7c562c3e8b6b204d9e7669f764fb92b2bd",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "82a797a1377b2125220723662af8b36f6a08fcf6946ca0b86f27b1fd72f1b352",
+        "labels": "9acd81fc329cb5a43ba0eb0047c48b1764e6a3e69309c802c9431cf84d560617",
+        "pixel_values": "ca2da0984d3c76ecb162640d4bad56e627e2d1a885b8d8a0525d1db5c304e781"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200971-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "8370f68b427e55e94f8ef54c0b59f2cd94a0fa468bf1af7734526a487a17806b",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "a34f6e19c40ba91273c1040d0075f484c6f9b2355e70788e6c9e925c7b2aa5a5"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1200971-A3-structure": {
+      "assistant_tokens": 1452,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "30b9b7dea91b31c87eb2a669f4eb7b3317c331e03e0039b4daf61c5591221a0a",
+      "sequence_tokens": 2493,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "db526ed2ecafb64ee8cbd33dca06af64fae15ea94ffdd987cecaf00f0562533f",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "1505fe56cdc0b1281b80e75bcbd65e1c2272a3b0f1393755c387ccf06dfaaf9a",
+        "labels": "764c346a70be8b3559ec821492ef40bf458e0a59e0385dcc5654e174a3bc83d2",
+        "pixel_values": "a34f6e19c40ba91273c1040d0075f484c6f9b2355e70788e6c9e925c7b2aa5a5"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201171-A3-grounded": {
+      "assistant_tokens": 113,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "77f6822b26afddf88b34d8445fb39b6618c9586ff6488efad00e34b82d296d6e",
+      "sequence_tokens": 3192,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "d38b7803ce8b81e051f23a257df65560f89aba13b7af17868e8b792f454d16d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "edf6da974294c3d529a1ce16eeb04737c355a43c93233847c4e89f40c5ba0730",
+        "labels": "f2afdb1f5528b49c5408d00ed7e3cd507ade3b128c40998a8ec8e7cf35341e9e",
+        "pixel_values": "b8f9cf0887c230bd729aa9112fc80b30d5da8efa5ceee99b70633324406c2ca2"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201171-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "94008ea6f718605a9e4dde3db2d5e8ae449505fc7bb4bcdc0ca18d8f5a9ed79c",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "ea23a5d42abfb3a7c98ad2a7fc3d65677971a89d8fe995c884c4c61c1bdd9f96"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201171-A3-structure": {
+      "assistant_tokens": 1449,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "444121e2edc00d503a461c43f4f9dcbcb8e4766419ea71ff29e3455245196b51",
+      "sequence_tokens": 2490,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "f3f6f15e60453dce04bdefcafb8a63852ca743fbafb243e71072f877dcebb627",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "1bee2912ebad8e778e2b227e5346ef97560af684c11ea8fafea97ae550858898",
+        "labels": "e7d275751f073c52745975c585c27b02d2343460e54ed79eb7b36b6aab3626df",
+        "pixel_values": "ea23a5d42abfb3a7c98ad2a7fc3d65677971a89d8fe995c884c4c61c1bdd9f96"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201262-A3-grounded": {
+      "assistant_tokens": 77,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "79cfeac6e895ec561a72df268db092a670fa8206d6f1bc768a1d1c1a19ef4a00",
+      "sequence_tokens": 3156,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "cb19cdccba0e044104950a9226995619802380c1c07a6da43d343efd7481eabd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "30b79920425dd932499e73adea758a210359d46aae4546bf3c851d5a836843ec",
+        "labels": "3f3d3120292a0da3c5a73f3a8a5262cbd59dfe87de1a7db92692d8830cc27d5c",
+        "pixel_values": "4ac9fcda484430f909ff19212d2a427c976582f24b2e8878e2a9bd9387a4e908"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201262-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c093ade2a817e35c8b1d0992aed6c3304334a993f0d3c91071f948d1baab3f3e",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "355f3d37f8ae5569933b2d348f65bbf9ac1eaba836c9271bacbb90bd469f8030"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201262-A3-structure": {
+      "assistant_tokens": 1630,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "e969ce43f406579e3cdb244ce56e1fa77bda6680f07618dfc1fde344ac4ac686",
+      "sequence_tokens": 2671,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "ea64f59c5548eb7818260c3c0bb1b772335ecbc32dcc2f96357f66084d73ec0b",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "4ebb284218dbf97bb38d4eebcce97e0c09c0ebf970515c118a88cd6cd351ce1b",
+        "labels": "992f83a3eaf70e6cc174f8167bad5622419b328721efe2f12d4a05d198e2eabf",
+        "pixel_values": "355f3d37f8ae5569933b2d348f65bbf9ac1eaba836c9271bacbb90bd469f8030"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201300-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "553291d18a734befff345e1f00256929b2ed3cd4735a6d4231977e89079db8b7",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "98f35397d0a91167997df50a67cd6115e1beca159bc67ab019849f7151023b7e",
+        "labels": "449ea9609f4b7cb5c5716a1204c156a18847419d004efdeb263cea6433ff8efc",
+        "pixel_values": "a876eaf26fc8b8b10ae4893d736698c479eb082929b8960fda3f08719761fea4"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201300-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5ec94b9d4384b1faa2ed2430d21d3490125153b88547eb7cb4a3a41c253a0139",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "2a01789a0d91e1f41c1830ef602fd5de46e9f45ec97f5fb231ff1ba1e80f3cc0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201300-A3-structure": {
+      "assistant_tokens": 1330,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "bf04441940f4936d214302f469ca5e0d2a372bc24e4b86ad0c2288397ee12027",
+      "sequence_tokens": 2371,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "7a6dc8d768f0e5b269e5f0047a3bb7e696cf9a4fc73ec804e4e4b69c6cbad78f",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "b70520f318ab2fab033a06be85443ba1a987189e1abba970cc20dc68994e1ce6",
+        "labels": "e905ab6b34b854cf08b78f5fafb895e5523484a64d2af4d9610e3d2253a77205",
+        "pixel_values": "2a01789a0d91e1f41c1830ef602fd5de46e9f45ec97f5fb231ff1ba1e80f3cc0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201356-A3-grounded": {
+      "assistant_tokens": 137,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "ef1cb7d1b71d520f537827ba62ab8591805e9985a5629b8ec507528b6485a3dd",
+      "sequence_tokens": 3216,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "8936acd80861446de87687b0eff8397d0a79ae651cfc8420c889fbfdebd99ec7",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "b718fca57fe71cdf8522cabc74ad83fd47600be461927d197f03d0bd5e319fc7",
+        "labels": "5a42d5db1a5a5d87b8ce3e7e2c53167ec9e8bda080246f90092b6819500a4cd4",
+        "pixel_values": "b1842e5f0571cfa7c659018a3de3a9bb27726c90c3cf1c2fde2a6ba0f8591566"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201356-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "6d42ae436d8a528a464ec9ea7e9d89b52c7d9d021c1e77fce8c7dfad76dd7f23",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "a44f360fcd5f17320842042b294b45d0cf07c02b0a188f0866fc55b4dae1fbd3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201356-A3-structure": {
+      "assistant_tokens": 1677,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "2a954557718577784e1961724dfb661b2c90e494196667965c6768b07775866d",
+      "sequence_tokens": 2718,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "58e8c284e6fc0b83a5bbb432010cac0f0a56be68fba81d2371ebe12cc105d48b",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "5acad6565f5544a24225f4a01bcf2ce7d3923849acc1a6b4de786e24812a72ad",
+        "labels": "79007221ba32515605d646f1457fb16da66db97f4becd35e73c6ce547cfbc235",
+        "pixel_values": "a44f360fcd5f17320842042b294b45d0cf07c02b0a188f0866fc55b4dae1fbd3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201421-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "e5afad37939a6ca025236d590fb6df8cc7de000c1967b82006a10982927cc937",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "1ef5eba4f7a3ed67d76d88d33d58bfaedb877f04433a3ebc6774e8eb3711e914",
+        "labels": "54d32a56c6c5732f24a83329e0b5461c784c96d7ecebf8665020556deff44dce",
+        "pixel_values": "733380020169596c6d8437d208d7e318c065ecae1c42f77308de838799a8f04d"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201421-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "49327b7c6a51907f9bb91473ca35280ca9cfe9d2243051e2d93c98786a380487",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "1dd1c0a0d7d1aea27937f40ba148a8f2a45a65adf7c96bd51f9ca2958a80e3f9"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201421-A3-structure": {
+      "assistant_tokens": 1497,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5a7da9bd7a68e810e44bc183d8965d3cf0ebfeac22cf9987b0a4017555773ac5",
+      "sequence_tokens": 2538,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "fdbbab19c834d4687aee6611937d4b7c8046d23c5df86e41e9f17c49c5b11ced",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "62340b0d7f8c94e0d45585baf5f904c832e75dfbfd8f2f4c466d893f57968262",
+        "labels": "e97762820e4389dc3356e83c153076eb7a6b17c7f306d9af76199d0171087343",
+        "pixel_values": "1dd1c0a0d7d1aea27937f40ba148a8f2a45a65adf7c96bd51f9ca2958a80e3f9"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201547-A3-grounded": {
+      "assistant_tokens": 77,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "718b3b261dca03b98fcd2ddef38fe64dfba429ae5db666eaf2f7e02b2d4b46f8",
+      "sequence_tokens": 3156,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "cb19cdccba0e044104950a9226995619802380c1c07a6da43d343efd7481eabd",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "33462377dc10e835da1d6a189d6c829b259cf63d0d8f1edfd1ea726476111fbd",
+        "labels": "a922f8ca9327ca380816eff29f6ec289bbc22f9f6768d317fa1de8eb3b51131d",
+        "pixel_values": "b9241bf58b0a90debd9b9f2dfd3a1766e7f6c7303314516e8927e852ab4f4ca2"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201547-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5bcc95461ae4b45ad38664257106223d0aaca6a94c9fe8a3fcd82e74fefe54b9",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "daa10be92be800cadb6a91d67cea8669e4e08b1dfac4a39b540f1830a2e44976"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201547-A3-structure": {
+      "assistant_tokens": 1452,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "0f259ef583903a0ee232adf08c1bd9636aeef30b15cc28e90e75593be87a9a2a",
+      "sequence_tokens": 2493,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "db526ed2ecafb64ee8cbd33dca06af64fae15ea94ffdd987cecaf00f0562533f",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "d09c3da1dfbc9a4483684c27981062870294d03b1f8d545b703263e455b1d364",
+        "labels": "38a1fde65912ee0c6dfccde55d6cfd0fbb4613d780d309789c27fa1066873aa9",
+        "pixel_values": "daa10be92be800cadb6a91d67cea8669e4e08b1dfac4a39b540f1830a2e44976"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201611-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "319953659f2b21d7191a250588e5af5c8188bb09810d61ec41e0d9899a5837b4",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "e63d1ce7c5e13010d3e1f78bb60f08108c52428bfc2390a7667ae976e749ec46",
+        "labels": "c82ad5a2f27d0d1bbcb7cc7aae279e79f9d91a1df3b48f3310e73ebc421aec7f",
+        "pixel_values": "0b5c66ae2adeea23e37f6b8f4ee2cd4676d90369649e483f2017039a1cc5ae14"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201611-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "cc5071efa7abe7f87cd6c7a1987bf0709b90760170873a266a1cc73c408b9cea",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "ce4e231347fb6fffff78685c4b0a18a1ad488f504cc0c11a1ac3135e1d7a29a8",
+        "labels": "5eb3b30276d7b29e763d46a752753a8111396b9f0975f03db68b6424ab123988",
+        "pixel_values": "dd1c41ce1864375d6c175bbec8e9f87d83b66b004a1bd1ca7b5c2fecc683d1f4"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201611-A3-structure": {
+      "assistant_tokens": 1273,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "e94ed9f6d7e4a864c35d1331904732171cbf94bb64dd5c4eb36791b8c0d2cbb3",
+      "sequence_tokens": 2314,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "e914919a25d548d520b52a5603c728c6524188f812ad4709a418e475638de18e",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f26bacf891f0fd85374bc76d4be2f334006354d87f9635b6dbd73192b18b4b07",
+        "labels": "0a1f435e8d70f05bf70fa2fe7dd881c5a40cc4a462496008e43462e574754c35",
+        "pixel_values": "dd1c41ce1864375d6c175bbec8e9f87d83b66b004a1bd1ca7b5c2fecc683d1f4"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201681-A3-grounded": {
+      "assistant_tokens": 89,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "a7a7325dc79c1895569882f52d49da228ba43862143745c8abda0061ae26602c",
+      "sequence_tokens": 3168,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "6aa23330f0de0d5904a22d146f50b558de152a9e2b8745a8fd38de63002fa9e3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "a0ec5a75c23a620e8e082711a51aacb34cb32718470e75bc9d0bdc5174e7a23a",
+        "labels": "495babe0c145ceee32f3882a787ec7a8a0eb48f77ae9dd785aaed3ea4b11e8e6",
+        "pixel_values": "d2717f037945bfe439b2962b36ab15998020fbfd95d28d2172dca2b7dab91bfe"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201681-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c04ae56f52e6c04f296c565a44b4c2b01578c570510ba200e02aa3854f8d8d98",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "1417106890e0e9777fdd3f1626f4270e7a4d98b1ec7a864676f8a278daeb9397"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201681-A3-structure": {
+      "assistant_tokens": 1451,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "9791c1d3ddaec8993b857a31f5f9712d47dc76980348fc1bbe72dc8c5cf718cd",
+      "sequence_tokens": 2492,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "2248a8ae41d9fb263b3f11d7140e545b514b657fce2fa8d2f81fcac3b8ca5046",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "7b17a3b6f47222bb170271059b083bb6664f821283daec08427656a051c98d34",
+        "labels": "d2c60af90d42cd61ff8bf33c2d50b57d4580ae1500715b7f516b4b49ab215487",
+        "pixel_values": "1417106890e0e9777fdd3f1626f4270e7a4d98b1ec7a864676f8a278daeb9397"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201718-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "726dc815a89c6053cb1f6073ec4275d31fab2af81e6e50f1275f25722748ca2d",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "bf1755ad5630f43ca109cedf058ae13248f5a7cf4890b9690479ec840147722b",
+        "labels": "fbb691f50f8293d6253ab5586cc7393097289f7339e505b65e887ccc677b7705",
+        "pixel_values": "f3ccd30160d3d829c95f25db273eba2248820c80b5e57be4c768122f92ecbb7d"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201718-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "6571b897697bbaab551179d5e718837392410fe6bbaacc900ce95310ebfcc94f",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "4d76d23eda68fdf3b9c0649bf5f6a68dd2b211aeab86903ee32f1767fee0a9e5"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201718-A3-structure": {
+      "assistant_tokens": 1329,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "36778f38a1c72e56725a61eb93f40018e7196211af07d0c6eae8264ac6942d8d",
+      "sequence_tokens": 2370,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "dccb6ffcde91ffd3e086ba503abcaddb445a4113aa7e763f8160eb1316376ddb",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "2688adbcc7e11cb635a958f619c716b9f5543a895d1079c5d5218fb39b6bc38e",
+        "labels": "94819e1a5ee752a8d3f0c19a87a1dd0499e9c7ad0c7964f67f9018b8e0c1eb18",
+        "pixel_values": "4d76d23eda68fdf3b9c0649bf5f6a68dd2b211aeab86903ee32f1767fee0a9e5"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201842-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "adbd20cbdc9839468952de12bd67566124eff711fa4d308d5124f6614c5f6b96",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "4c73f200fb82854d2b75554a24143c38735a7c0f79abe16a7f41ea906dea05c9",
+        "labels": "39b4ac02ef5eb600c3ab0e6320dfc59f0845a65ceb750eaccbbd9b3ffb4580ff",
+        "pixel_values": "be7efc7247b930ede5ef117e10c74dcde95000d3035dc4c53ede24feaa922e83"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201842-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "eaef8e587c3349ee6a90227033b3d479602783f241f5ae436b61bb6274a47465",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "f145d619e85eeef98f15203045f0cc84ac97a01abd645edd8b4b8bdecd079d2a",
+        "labels": "145b95bdef1df0176432e84cb0830d095814ccdeb78101cd8ac0734bd677ceb5",
+        "pixel_values": "4afa29ebc1914bb41d31efad7a190c9184d7ce63c51d28e5626a329d6970cc3a"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201842-A3-structure": {
+      "assistant_tokens": 1449,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "77360f4819288fb709a5fe073619c166edcfc18ff6cac01f1e66c249287273bb",
+      "sequence_tokens": 2490,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "f3f6f15e60453dce04bdefcafb8a63852ca743fbafb243e71072f877dcebb627",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "d87a0d6153bcaa3364a793e9953e362d828b5a29ba64e402e2b568984afd6ecb",
+        "labels": "639f53acffa403237cd8baf5f42f638bfca84a085099fdd98c23ef99e5c0908b",
+        "pixel_values": "4afa29ebc1914bb41d31efad7a190c9184d7ce63c51d28e5626a329d6970cc3a"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201850-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "473d2e5c227af51c719969142026bac66e13f0aa0d56da2563622c088922f847",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "d1c1a9bae20bb9928d005293b63ec6fa3a87f78110c64ec036d66ffa0b8280e4",
+        "labels": "1e4ba76b94e2dcc73e76a0bd171747c0b94d219746de28f45bbecaf0867f912d",
+        "pixel_values": "d7f50275a21ceec473aa7d278df3f6979a3330dbccf8ef256c41858e1cbd8196"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201850-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "d009dc12ec39caf677575681144c7efc1caed79e23c18c4e8b9402efd50473c1",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "0112c6333b52bb8ef45614575b8cddb968ad2b5fc7f318374d59c5e4dd91eeb9"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201850-A3-structure": {
+      "assistant_tokens": 1671,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "6c24ba59cfea1f74c11f77b000de3a0c67ad947af24fa336c3e8ddbc450d885a",
+      "sequence_tokens": 2712,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0a7c9645b0ec0bb8d5bed19b05bd3f43f93f010d3b84c9f42121da13ade9d31c",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "465cb47b20222ec8b01c9428feee8a5cf6d4ce5de03ee60b9e124bfe78506457",
+        "labels": "915167c0951d5e815b735a900d76e83e3713b293144b29432917e71046506fbb",
+        "pixel_values": "0112c6333b52bb8ef45614575b8cddb968ad2b5fc7f318374d59c5e4dd91eeb9"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201882-A3-grounded": {
+      "assistant_tokens": 83,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "89e37f12fb65a7942ce71c0ee771ba6d6fb6aa532b0ba53f3d0b6e4ecbeedb81",
+      "sequence_tokens": 3162,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "0ba11bfa0a93d16e8077d690fa6d382a898ae6aceb0943871584f271201ecd07",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "8aae366958fe2c305177a7a01ca548daed1c987eabc1b3aee7f014b6e594c0ae",
+        "labels": "c6c0b5915a72fc954a074ff51c3e67de19d81eabf693d8f43fddd3e1ccaca673",
+        "pixel_values": "0a54f8339597abe1dd4735eec5e675602e4f4cfd006cb0b6a55c5a54af749042"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201882-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "a4f3e10a0ec6ae01c97900505be63dfe57dbca567b7d46bb8ac92b28566fa39c",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "07b767854bd0f7c56bb73ed84e484b2f27d1e0bf7e088082a933c50d2e4d64ef"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1201882-A3-structure": {
+      "assistant_tokens": 1276,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "3bf23154a6451b2b1e4341ae1c8fa14abe2917da371d01cf5198ec3a34f39ab9",
+      "sequence_tokens": 2317,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "307a50b6a733552ab7f2c4d383f430342e74764e5615deb8eff59e2cc62ad7c5",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "906bd3e0b349851f9fb2f0112c4ad7daba8268f56ebd4ca51f56c366281e000e",
+        "labels": "3791e6889d2c9e1ed1760116f1e1938874db5fbbc8c4e08b91106e1f5bed7de5",
+        "pixel_values": "07b767854bd0f7c56bb73ed84e484b2f27d1e0bf7e088082a933c50d2e4d64ef"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202117-A3-grounded": {
+      "assistant_tokens": 80,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "d386e91cd38a6ae09d1ff00404f575ae2209c404238fd4b51940d8ad891bfbb0",
+      "sequence_tokens": 3159,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "4e99a7ada91876997caf73e24980b8f0390ecae0ed5d26b5a57c4369c4ddc2cb",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "8409f50fa761fc5beb4fb30005a873f301aceac31cc6db182e074fc0e7c242a1",
+        "labels": "29a8368c6e02d37eb614d47475b4ee8fbe0544b794cf4b069df66882fc726ef6",
+        "pixel_values": "a46a089965766a8afd38b7f33378b8556f3b814db0c915eed384a855de251511"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202117-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "65d1364c56cf4e4aaeb3fd393ee87010ddf636423628fde18111ef75a48bd5ff",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "79c97a31d50952a94ed6d13fef12c0502aee0d2a03ddd0cbbd77a4e15b3fa088"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202117-A3-structure": {
+      "assistant_tokens": 1499,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "4f9ac7696479a9684ccfc2ccdf76218eda017828becfebe125680c361e6ce90e",
+      "sequence_tokens": 2540,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "85e6de32729f320e5f5c3ce9e8897de48e2207b12d682084efce5d8b5169ed29",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "1ac55f47d45f97d29912a9e27e0fa5cd7346d3861d7ce808c1b42e525e76ad89",
+        "labels": "8d7a2d9105d6eb7537ed13946e2186384a51355698a6166f1dd303920b19bdd1",
+        "pixel_values": "79c97a31d50952a94ed6d13fef12c0502aee0d2a03ddd0cbbd77a4e15b3fa088"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202124-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "5fddba94b0a36fd5a231ac069a046744e9b662654ec0e2bd4385b266836feb89",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "c7fab03af3569ddf269a503b4da9628c94a56ad3b9de4ed230f0f243ef38deb3",
+        "labels": "2e9bf4f0f343b149027a6d8755c860270229af5905f87dacb7ae6f9e88d50a8a",
+        "pixel_values": "84b9ff3eb7b2e1c5afb430022bf86bcead6737f42db35603c7b30af465520541"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202124-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "58631df358ca38b4fe92ef530d45a289e158ece45c70cf2b75c99f8402253abe",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "ce4e231347fb6fffff78685c4b0a18a1ad488f504cc0c11a1ac3135e1d7a29a8",
+        "labels": "5eb3b30276d7b29e763d46a752753a8111396b9f0975f03db68b6424ab123988",
+        "pixel_values": "20ce8c31c820f6adc9aa0685b1f6a79c95bebb7ab4cb4a25915f32ca1ff7bb51"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202124-A3-structure": {
+      "assistant_tokens": 1104,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "eacd807a77e87c966607e1d54e56a1e0622f99829d4bdaf75f646133c0e6c27d",
+      "sequence_tokens": 2145,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "c3c02dd0dba3f31d6438c29c92c83f2c2021113b9ac9fa29de5837c671ca9bf6",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "05233a4634f1870ed7f9a6b0cdf62604204ed0c667d5273010c174d5d06bf2d5",
+        "labels": "16eb01fab91cf5597f114b31779dd815c1c0a316d54efe9a64cbb55e75a56e4f",
+        "pixel_values": "20ce8c31c820f6adc9aa0685b1f6a79c95bebb7ab4cb4a25915f32ca1ff7bb51"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202127-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "bbf1800a3cba11044d570e31fa268b28626aebd6e0972bce13daebf2cf32a3d8",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "16be34a2012f2ef4e2ceac05a117671da68b2600dcb44dde606dfd06906a24d7",
+        "labels": "5d83f33b76c41dfd978c06ddd89a1bf04ce9fea8daee01ba22f83182c20fd76f",
+        "pixel_values": "ef0fb64e541097c5cd1dc28e7105f6c788ac8e0079dba9d3c9b432787b3c44b8"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202127-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "0f2c1aa4d9e7b7d069e5d5e5a93c0589f4ca1d82d55a5d4b7a70934715e7b1b8",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "26037605ba6dcf59fbeeec87a0e6dbdaad9cfbde549d57a8cb561b72f86cdd92"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202127-A3-structure": {
+      "assistant_tokens": 1624,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "755727bbd8fe04b229e4f2a26cfddbe9b1d372a89c7266b15229eebeca6a67ec",
+      "sequence_tokens": 2665,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "8200f07521b0e7f9aa08265988c50b9d33c5d7614c83a97d89b5ad2af7118ddc",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "b7ad461fd2615fea1161a45428e3f5f95b71fdd5f09723b05f7f32d4b35fcc4b",
+        "labels": "c5b4630e5540536ecd9f6eee1e0025fea68bf5381f595d341ab5200e95a39aa4",
+        "pixel_values": "26037605ba6dcf59fbeeec87a0e6dbdaad9cfbde549d57a8cb561b72f86cdd92"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202278-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "702eba72152068a92b9423a5d15cb336d3ef39a3a042a8ba59e48643f756a20c",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "32b0d8f99cb48bf5ca9fbcde2fc5920b33966981d209800c1ee183c919a111c3",
+        "labels": "4e331351bf50596a77628e7f491c27041cd4af8a7eb7c988c425673d33e72638",
+        "pixel_values": "c71b8e4150ea7a742f3a2cbffea0496f710c8fcb4bac7dfdc4c9df3ef318122c"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202278-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "21695e1907cf4da94294e940acd3d6e6b24e0f2f9c3659f9fc2f9472a697005f",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "e5a405a6511e562866424eea1bc08973ff13b2f3341593df71f0e6988279cad0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202278-A3-structure": {
+      "assistant_tokens": 1449,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "cc71664df8e5e7265600fd06aba1a8d5e42f059d38e8ef5142cfd864b82f3022",
+      "sequence_tokens": 2490,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "f3f6f15e60453dce04bdefcafb8a63852ca743fbafb243e71072f877dcebb627",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "e055bae2df658490449ab16eac0da81ce5eee3d6b1375a4b9c5d839bdb0a8134",
+        "labels": "3182fe3fee0ae390c8e69d298d35ef9a1847ac16d0e5a6ec23f7dec2839504f1",
+        "pixel_values": "e5a405a6511e562866424eea1bc08973ff13b2f3341593df71f0e6988279cad0"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202306-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c4a2664e778d8894133617de37b4908fe7925af157ff13fb18a09d2a5b2b85a3",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "de75a94e0d89862918d0f7a9827b1839f19bddbbf90254471f1fc438f0a358d9",
+        "labels": "5d5643ddc939f9c41a172f998b86107a035d5f99270cc2dfd547f54e8812427b",
+        "pixel_values": "fab31be231ec21ab722fd097e11056d3bc713357cea638c89d4dfc0ffd67bb32"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202306-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "f86ca4b59141ece36f44c88ba375628664b9ac2248aaffb735ad526a27f550eb",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "bc572a6fa89aee58164f368b9f8c165643de14432acaf1d9feae306fa6b0c2b3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202306-A3-structure": {
+      "assistant_tokens": 1622,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "29dad73de088fe63cd9e96777f808f107070c8422d27628cb5a758cf524c4623",
+      "sequence_tokens": 2663,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "8e6c4dd2b15d7162ce36a4d9e386418f8490515fb0b050df694532c66a5aab5b",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "aabcf7a8a3e9e032e28d83496d2c827f1e636dbefcfc926dd222ab453e56b192",
+        "labels": "45587d0b64f4611e748752945e5857c8b7f8b31971274e17db2241db3dc651e3",
+        "pixel_values": "bc572a6fa89aee58164f368b9f8c165643de14432acaf1d9feae306fa6b0c2b3"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202315-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "d98e18efb93b6148260bac243a458a0a803205828ad2d0d319f87512976d0214",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "b970f3950d9a132369cf8fd81fc77210e6b74d7f7650f5c22a1a0a9b55c5eb4c",
+        "labels": "de1b7ddd5a4175541d2b0b4dc5a5e2b0ee2656b05baad3b2b59c0aa4949fafcd",
+        "pixel_values": "76303ac87bb181d9c980904feb99fb00e00ab9413904915b178228ab31da2929"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202315-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "4c417485d47f37f60b2c105f0e3e9f9d53bd50dcc68ded0e4fc0e4c790430958",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "0702055ac90370a7110d05519c5818d1c03630d3e0ff82b9aad032f09dc71454",
+        "labels": "db41ea01e6c7071ea6d471b0b060a2ec1f00dd7fcd00c445517b9c8e4638f14d",
+        "pixel_values": "bf94a1f556ab268618325398616c004f1738197ccd852e0400662e7ed5fc3d86"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202315-A3-structure": {
+      "assistant_tokens": 1451,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "003e38e37274104cad776e1be6ef7ba216b27594da1b377a00ce9c246d1c8e5d",
+      "sequence_tokens": 2492,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "2248a8ae41d9fb263b3f11d7140e545b514b657fce2fa8d2f81fcac3b8ca5046",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "441110c6b0500b9c91ec69f77615ccb3895bf9219ee9235dad69b9fecf971160",
+        "labels": "97b08b10aca22fe699d0075787484f451acbd764afea744d6a3c63b08d365a21",
+        "pixel_values": "bf94a1f556ab268618325398616c004f1738197ccd852e0400662e7ed5fc3d86"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202341-A3-grounded": {
+      "assistant_tokens": 113,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c5ced81b4e7179f0324a5daa51d49492e07205a21e35ff7835bbb6e60a3b79cd",
+      "sequence_tokens": 3192,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "d38b7803ce8b81e051f23a257df65560f89aba13b7af17868e8b792f454d16d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "f06b9fbcb5474388c9f0da480ae8b06f2d631a08d02bd8961ac34086dbcb6350",
+        "labels": "b5b22dc5c1d3d5142572e97511fe60fc21ff022fd6a6e386c3cbfcef962b7903",
+        "pixel_values": "50c16eccedba97b3d674f88460559a410b3393e9051a416d3eb91c7a5820eb81"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202341-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "84cd46e2f0cf93bfaca5343c20be841ce31127e10c495281bd548bd0fa173436",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "73697aa992971c580d58a6c0e8adc775f708ed81b7413e73a7c1422de245a299",
+        "labels": "3d98cf0b94c8d8fab869b50524924008007e2eb93ac3ce92275dbd168a847717",
+        "pixel_values": "2707af07340785dc3fce4e181190859481c23eaeaa4622b8d5cd5f31bc34cf90"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202341-A3-structure": {
+      "assistant_tokens": 1572,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "fb0edf1899c7ac74ab28682a7204e068d5699c9d5811cd74c13dcab2a99ad4a0",
+      "sequence_tokens": 2613,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "cf65da8b6a933d657cf24213c805934955ae7cf50e2ccaabc9e0b69d52c7e517",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "415f510a6bf93b272f771704db93cfca70f38ed80720889e4c249f9cdf4b809e",
+        "labels": "4d9fba7fd5cab73d784902419849c6af70095e28d13ab3534127582fe1e1741e",
+        "pixel_values": "2707af07340785dc3fce4e181190859481c23eaeaa4622b8d5cd5f31bc34cf90"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202407-A3-grounded": {
+      "assistant_tokens": 125,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "f548823db95b440087720adb8eb0c58dd16104e3fc3d85235b9a3d4a70f5ab16",
+      "sequence_tokens": 3204,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "079473d8caec6efe89c01a6d928e61a12318bcf385d2da76cef9e7ab9220c6d3",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "ed0183940e537b445c08cfdc4de1721a41223f2268b939be3626e9179c2fd3ab",
+        "labels": "23c82fad310df63a1d2d71104483fe583f9b78397703a5585ac63de9b735d81e",
+        "pixel_values": "e107ac1bd6fb502d5d2131c1a266e590bea063cb6c5f2d26c27e81b5ad6ec83b"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202407-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "ce5a446b1a683fc59517dc5d6e44490b7d1657337c7394d1bdb95323de90f6ea",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "ce4e231347fb6fffff78685c4b0a18a1ad488f504cc0c11a1ac3135e1d7a29a8",
+        "labels": "5eb3b30276d7b29e763d46a752753a8111396b9f0975f03db68b6424ab123988",
+        "pixel_values": "7da28cfd57157889425be0036d1d12e6f295ed83a8148d5b13b4c14033c0a4c2"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202407-A3-structure": {
+      "assistant_tokens": 1450,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "dc9bdf9a0506bf1c192f496df5569a4855026f34a9df790d5337ca5e18bdca73",
+      "sequence_tokens": 2491,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "af92bc75417b0dd32b7a8fa2d06f341e4abd6cfb959938b8c7c1a717d565482d",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "bd24966e31746baea78c27d3f791ea4c1ab76ef3789678829ee6e9b5e2985088",
+        "labels": "5120c6036fec1e34ba99b637c7eb4ecb7a688c081e2dc0dd49a9927a67d0117b",
+        "pixel_values": "7da28cfd57157889425be0036d1d12e6f295ed83a8148d5b13b4c14033c0a4c2"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202558-A3-grounded": {
+      "assistant_tokens": 95,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ],
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "2cf5282347edbb9812360836cb7018bd2389135fba4a3dbb7d6ab6e6af3e78e6",
+      "sequence_tokens": 3174,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "eafa12ff63d8eb361a13c85f79864c378990d81079c2a3a740d908a0fbaa8db2",
+        "image_grid_thw": "79c54232b7ac1d74f033c4fc4950d200c4628aadc58edb3b8359979ceea0d784",
+        "input_ids": "015232ce8fe3b8efa90f5394393216c407455edab8caee0a73926fff18e01bde",
+        "labels": "4116c0c3c39ca7ace1739372263b50cbf42ccb2f85bcb6ee5883aa1a42eb0f8f",
+        "pixel_values": "666c24a9cf9d7fbe390bbd74e8f7f1932ca8ba3bea9a3d41c2874cdb7b8b2583"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202558-A3-qa": {
+      "assistant_tokens": 3,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "c884d9ee55b9f0dcfad683e614bfeff8eb29cbdff2b24b5b3a5e883ed204d9a1",
+      "sequence_tokens": 1044,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "a28be63581bb3e42f05f5882e8fd67f69c64e18ed42610560db1dfa9f46e4f47",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "ce4e231347fb6fffff78685c4b0a18a1ad488f504cc0c11a1ac3135e1d7a29a8",
+        "labels": "5eb3b30276d7b29e763d46a752753a8111396b9f0975f03db68b6424ab123988",
+        "pixel_values": "02a1125a7b24371d44c7a86283b4adeb687256d2765c2093cf282337d2e38f9d"
+      }
+    },
+    "nvw-independent-v1-signal_graph-73041-1202558-A3-structure": {
+      "assistant_tokens": 1451,
+      "image_grid_thw": [
+        [
+          1,
+          58,
+          70
+        ]
+      ],
+      "input_sha256": "4003d5011dbc046c50760b38144df1200cb08aad267eb24cf1330d31941951bd",
+      "sequence_tokens": 2492,
+      "status": "PASS",
+      "tensor_sha256": {
+        "attention_mask": "2248a8ae41d9fb263b3f11d7140e545b514b657fce2fa8d2f81fcac3b8ca5046",
+        "image_grid_thw": "1f03f87cda6d596b1d4ba59d61357b804adcc5d403da5e97367e023b7d33affd",
+        "input_ids": "180f11892fcc8280a7f987efab2fd42450bd1bb6cc40c96f9f75d3f8df6cca3d",
+        "labels": "d266cea9e1580fe6c0d89f94eea23a41a807cf896218d107c957d47179b606ec",
+        "pixel_values": "02a1125a7b24371d44c7a86283b4adeb687256d2765c2093cf282337d2e38f9d"
+      }
+    }
+  },
+  "records_sha256": "8b998bf16e55b82691c7c782263065a1ad3e83ca705257f7da5b79750064e3ea",
+  "sequence_budget": 4096,
+  "status": "PASS",
+  "training_allowed": false,
+  "training_input_contract": {
+    "episode_pixels": 3145728,
+    "max_pixels": 1048576,
+    "min_pixels": 262144,
+    "parent_protocol_sha256": "e6c175e1a7d0cf67a2aa7fa7b64c8f85c4a8d491c02579d35e5f3594d0157e4d",
+    "processor_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+    "protocol_id": "nvw-private-canonical-bridge-training-input-v1",
+    "protocol_sha256": "a1b96396f159ad6f761e460c6517172309ea00ee6ecc6fca0168818e09b58ad1",
+    "sequence_budget": 4096
+  },
+  "truncation": false
+}

@@ -1,0 +1,53 @@
+{
+  "parser": "team-final-answer-v6",
+  "status": "V6_REPLAY_VERIFIED_WITH_KNOWN_PARSER_LIMITATIONS",
+  "date": "2026-09-24",
+  "scoring_sha256": "ab86eeebbf3efe5ed63b6108d097c32d1c38a74e478aef02a7035cf250a4f74f",
+  "source_archive_sha256": "ffd09c4a0315df1c1ee7c96db08958d21290c5bb58615393fd3d4686c62e1193",
+  "source_files": {
+    "src/mmdl/evaluation/parsers.py": "c06ffffc30154bdfd3f118bdede31513890b353783fffab8feb145339b35e0a8",
+    "third_party/mmmu/eval_utils.py": "cc1a89b4a27f697702d340bc6a7578b5237135754ddaa9ef105239a3d9847367",
+    "src/mmdl/evaluation/final_answer_parser.py": "fc2c6a757ce7361efae13be9f22f8bedcc9c35d66373124b8815b8528b2e31a0"
+  },
+  "new_inference": false,
+  "semantic_error_free": false,
+  "audit_report": "claudedocs/mmmu_v6_v7_false_positive_audit_20260924.md",
+  "runs": {
+    "baseline_2048": {
+      "correct": 479,
+      "denominator": 900,
+      "accuracy": 0.5322222222222223,
+      "no_parse": 222,
+      "length_total": 226,
+      "length_correct": 6,
+      "source_predictions_sha256": "b3b477a7828679dc200542b99e966be7af3e4ff12c88116c86ef9152980743ee",
+      "v6_predictions_sha256": "7697be5df266bb8c347e240770a24d44d709664e88e98e9769c683a9ad250973",
+      "all_non_scoring_fields_unchanged": true,
+      "record_hashes_and_replay_verified": 900
+    },
+    "continuous_32k": {
+      "correct": 558,
+      "denominator": 900,
+      "accuracy": 0.62,
+      "no_parse": 79,
+      "length_total": 75,
+      "length_correct": 1,
+      "source_predictions_sha256": "5f0c6915516e9b82f06a5971be23aa72e116726bc613df4da9dcd94520bfa73d",
+      "v6_predictions_sha256": "4e235a4686d626fb98178f5c536f9285b2e82f57005e67ecdcef0aa081e4a78f",
+      "all_non_scoring_fields_unchanged": true,
+      "record_hashes_and_replay_verified": 900
+    },
+    "official_b2": {
+      "correct": 560,
+      "denominator": 900,
+      "accuracy": 0.6222222222222222,
+      "no_parse": 83,
+      "length_total": 90,
+      "length_correct": 8,
+      "source_predictions_sha256": "5dc87237edc66efac96bb58c2afbccdb023567c5e62644e388d48488144a2d42",
+      "v6_predictions_sha256": "e2c7e5b293fac6caa4e204cdf5028cad56e6c6b31c4923d6a129a11f2fde294e",
+      "all_non_scoring_fields_unchanged": true,
+      "record_hashes_and_replay_verified": 900
+    }
+  }
+}

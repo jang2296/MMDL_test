@@ -1,0 +1,13 @@
+{
+  "protocol_id": "mmmu-functional-diagnostic-local-offload-smoke-v1",
+  "status": "IMPLEMENTED_LOCAL_GPU_UNTESTED",
+  "modes": ["I", "T0", "P", "M", "MI"],
+  "oracle_review_policy": "ALLOW_AI_REVIEWED_DIAGNOSTIC",
+  "total_output_token_budget": 40000,
+  "final_output_limit": 4096,
+  "perception_output_limit": 1536,
+  "execution_scope": "RTX5060 laptop BF16 CPU offload smoke, not RunPod vLLM or benchmark score",
+  "overall_deadline_utc": "2026-10-03T04:22:38Z",
+  "provenance": "BENCHMARK_DERIVED",
+  "training_allowed": false
+}

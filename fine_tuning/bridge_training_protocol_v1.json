@@ -1,0 +1,21 @@
+{
+  "protocol_id": "nvw-private-canonical-bridge-training-input-v1",
+  "kind": "FROZEN_CHILD_TRAINING_INPUT_CONTRACT",
+  "status": "FROZEN_CONDITIONS_DATA_APPROVAL_AND_GPU_GATES_PENDING",
+  "parent_protocol_sha256": "e6c175e1a7d0cf67a2aa7fa7b64c8f85c4a8d491c02579d35e5f3594d0157e4d",
+  "processor_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "dtype": "bfloat16",
+  "quantization": null,
+  "sequence_budget": 4096,
+  "min_pixels": 262144,
+  "max_pixels": 1048576,
+  "episode_pixels": 3145728,
+  "automatic_resolution_precision_or_context_fallback": false,
+  "benchmark_training_allowed": false,
+  "benchmark_derived_training_allowed": false,
+  "public_upload_allowed": false,
+  "data_approval_granted": false,
+  "GPU_training_completed": false,
+  "declared_change": "A separately identified three-image canonical-bridge input contract raises only the episode pixel sum to 3 * 1048576; per-image and sequence budgets stay fixed. It does not change the original pilot or approve any dataset.",
+  "approval_policy": "Requires fresh actual per-record preflight under this exact child hash, source/rights and complete benchmark exclusion approval, then explicit matching CLI budgets before any model load. Old CPU-only receipts cannot authorize child training."
+}

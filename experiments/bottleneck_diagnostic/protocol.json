@@ -1,0 +1,18 @@
+{
+  "protocol_id": "mmmu-functional-diagnostic-ai-reviewed-v1",
+  "status": "IMPLEMENTED_GPU_UNTESTED",
+  "modes": ["I", "T0", "O0", "O1", "IO0", "P", "M", "MI"],
+  "oracle_review_policy": "ALLOW_AI_REVIEWED_DIAGNOSTIC",
+  "oracle_verification_kind": "AI_REVIEWED_NOT_HUMAN_VERIFIED",
+  "total_output_token_budget": 2000000,
+  "final_output_limit": 4096,
+  "perception_output_limit": 1536,
+  "repeat_seeds": [3407, 3408, 3409],
+  "first_run_seed": 3407,
+  "pilot_gpu_seconds_limit": 14400,
+  "overall_deadline_utc": "2026-10-03T04:22:38Z",
+  "legacy_policy": "Stored original responses remain immutable; LEGACY new calls only if separately budgeted",
+  "scope": "Functional input recovery diagnostic, not a replacement of 558/900 baseline",
+  "provenance": "BENCHMARK_DERIVED",
+  "training_allowed": false
+}

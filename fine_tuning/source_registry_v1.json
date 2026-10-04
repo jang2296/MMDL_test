@@ -1,0 +1,38 @@
+{
+  "independent-nvw-v1": {
+    "source_known": true,
+    "benchmark_derived": false,
+    "rights_approved": true,
+    "rights_scope": "Private independently authored procedural generator; no benchmark examples or teacher outputs",
+    "parents": [],
+    "generator_sha256": "bfb2913517fd72b37d39f2ea8ad502a96e4fee82301865b586c17365c280b3e9",
+    "font": {
+      "family": "Aileron",
+      "author": "Sora Sagano",
+      "embedded_copyright": "No Rights Reserved.",
+      "provider": "Pillow 11.3.0 embedded default font",
+      "ImageFont_py_sha256": "ad5426df3c274c56751d2a7839e0394c72a34dece113c1ccae73a11f39aa7c43"
+    },
+    "approval_limits": "Independent solver and geometry verification plus three-image AI inspection, not human full pixel-semantic certification",
+    "public_upload_allowed": false
+  },
+  "trace": {
+    "source_known": true,
+    "benchmark_derived": false,
+    "rights_approved": true,
+    "rights_scope": "Private research under dataset CC-BY-4.0; retain upstream attribution and third-party notices",
+    "parents": [],
+    "repo_id": "maveryn/trace",
+    "revision": "4e5b54361360296a855542b40cfd8b7f81b355fe",
+    "license": "CC-BY-4.0",
+    "attribution": "TRACE, Md Tanvirul Alam / maveryn, copyright 2026",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "source_url": "https://huggingface.co/datasets/maveryn/trace/tree/4e5b54361360296a855542b40cfd8b7f81b355fe",
+    "rights_audit_receipt_sha256": "d55af56155d5370b4a97d210ec002a3c39e8f0b4ee0430626a8e7e9dee2a34cc",
+    "dataset_license_sha256": "d16db4c0f05b0863b516130162cd2ad2cdd183dad1d44029ed3555962b235ccd",
+    "third_party_notices_sha256": "2cc4bf36c0e3f19404aa664e4f7169d55541c0057c19e5985e64f3eee5672951",
+    "approval_limits": "Source-layer rights reviewed; individual rendered asset lineage and label correctness are not independently certified",
+    "changes": "Source prompt preserved; loader image placeholders stripped after count validation; typed answer serialized as JSON; registered-family split replaces released IID split",
+    "public_upload_allowed": false
+  }
+}

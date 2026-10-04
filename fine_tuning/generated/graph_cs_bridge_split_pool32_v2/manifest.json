@@ -1,0 +1,1664 @@
+{
+  "benchmark_derived": false,
+  "count": 32,
+  "family_splits": {
+    "signal_graph-051338a909d2cea8751dcd504c7ade9bc91ba601ab9dc3d0619a0eaf7088c684": "development",
+    "signal_graph-1cfc15a9a21d8efe61351e5bad69953d5c91898a55169fae861499a0dcebb84c": "train",
+    "signal_graph-322f439b74dae4c7a9485d9d4e915ecb1548130a1669951955fe44da80010441": "train",
+    "signal_graph-335e9170a3e665bc9121faf51e206666f4ed00b7919b51a5faa8a7193be5a62e": "train",
+    "signal_graph-3bbf42943cdfde2743332aae1da370a685911de2f95ffe6ec2d4f44fdf85883e": "train",
+    "signal_graph-3f345c5d176e8fd630bea9ae9994b151ea5d0ab21cb28c3feee0f36ec8c7b450": "train",
+    "signal_graph-41b99bd0b0d74d44dc2e8b1b262944ebc04b00252919ffcf52ab3e80a2e4085b": "sealed_holdout",
+    "signal_graph-42912a372d001ff5405b65688be8eb4419810a5b58512a4e9cf2bb09fa94f614": "train",
+    "signal_graph-6974457f1d5b027ad00a959a348ed2a8fa713f33ab6237cb446c9c03081c07a9": "train",
+    "signal_graph-6e665140dad048ddf6afcaaf8062beefd86f92f0942b90bf33e6b01cbc10d01a": "development",
+    "signal_graph-724c1223273a9c38303424933f97a777ded1520ecf28d9b19bbcc8ca060dabc8": "train",
+    "signal_graph-8a9325e0265303a91874b4150aef647409dc4b25502678a8856452b303e44b37": "train",
+    "signal_graph-8b51b62ae180a5203ea35ef7422c738b74b44564c78b0d6a7554177d44abd3a2": "train",
+    "signal_graph-a723b56222eccd2369a32e728f3c937cefe09fe41e8b92a1aeb9da4d58ae9527": "train",
+    "signal_graph-a8d6d3f602811450b18147d6b154535e0957caa54c528ad9b0108e28e1bd97d1": "sealed_holdout",
+    "signal_graph-c2e50761f7ea1079aed2da2604629cd1288ef65609e04ae99235f9e8776a97eb": "train",
+    "signal_graph-c60792a5f71347dee57407b8719516cfc8ff6c96f8cfec328d0331383e1d9f4d": "train",
+    "signal_graph-ce6c5baab1c78980c45964e5a0e9dde4310648870fe217fe435d9e5c81251630": "train",
+    "signal_graph-d12eca7f7406fea6076af46d1448c0eedf74dec3d6ecd2abb8da443af9e38ee0": "train",
+    "signal_graph-e0e8139c2cadd9759dadb0d2308c5fa54e8f18fc599f84b9336a7174e07deffc": "train",
+    "signal_graph-e1a29493e92018dbd9b8bd3a44458e187a1f1a10dcb56aea082fd7d221f5ddda": "train",
+    "signal_graph-e38d298f36bd4f50432fee69db18d358ed051366a3396dfa6788a50887895c62": "train",
+    "signal_graph-e8d7332409bd91597a00fc9092ca4de7b842c898fcb9be2cd0471141498920f0": "train",
+    "signal_graph-ec7a3a0099cca5a01003c152a2c9bb7f29d7f99e326e7c12356906befeb877e7": "train",
+    "signal_graph-faf720e453dedb7c4b0d4d11ea9452fef7598beb94e8bd0d600444d001ecead7": "train"
+  },
+  "files": {
+    "A0.jsonl": {
+      "bytes": 411696,
+      "sha256": "7ef7d499d202c6cc8c9e3d776517e99e75ce3c2965f9b67fd348c54d7632ac32"
+    },
+    "A1.jsonl": {
+      "bytes": 412080,
+      "sha256": "0664a7139b539de8c8a68411f9937744b090f3cf24116164fc13ff3bb1f3cd96"
+    },
+    "A2.jsonl": {
+      "bytes": 411696,
+      "sha256": "a0d86a566ed9585d67b668f11a8d814aeeca56044ae0e3dce5be86bc99c190f7"
+    },
+    "A3.jsonl": {
+      "bytes": 412080,
+      "sha256": "8b998bf16e55b82691c7c782263065a1ad3e83ca705257f7da5b79750064e3ea"
+    },
+    "canonical_private.jsonl": {
+      "bytes": 1967404,
+      "sha256": "a9d08f3814a4d7b0523e851e94f7abc6a33d9afd892f739ae47b4cc2a27bb720"
+    },
+    "excluded_roots.jsonl": {
+      "bytes": 576980,
+      "sha256": "c424ab48a549d26a1b6f7a381793f8d7cc3c6f1be2a5c55d6dae5e836c1019db"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A0-novel.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A0-standard.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A0-standard_relayout.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A1-novel.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A1-standard.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A1-standard_relayout.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A2-novel.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A2-standard.png": {
+      "bytes": 53389,
+      "sha256": "dfdd32d914ad176e17cc245b2855a961c12d8093ad8499c0870454e41ec7b5f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A2-standard_relayout.png": {
+      "bytes": 54488,
+      "sha256": "05fc2ebadacaea0426bb2319db48f172bfa0c96ad9b7dc400b658b2ffe77e231"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A3-novel.png": {
+      "bytes": 55421,
+      "sha256": "e3573d64682140e6d9f9e6bbd3e27b40654f07da2107402b56fd8d9ceca15748"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A3-standard.png": {
+      "bytes": 53389,
+      "sha256": "dfdd32d914ad176e17cc245b2855a961c12d8093ad8499c0870454e41ec7b5f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200052-A3-standard_relayout.png": {
+      "bytes": 54488,
+      "sha256": "05fc2ebadacaea0426bb2319db48f172bfa0c96ad9b7dc400b658b2ffe77e231"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A0-novel.png": {
+      "bytes": 55826,
+      "sha256": "be7b252d188a59924b62d260949d7f3929670753f58b2b5a0a347ac64d57f1c5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A0-standard.png": {
+      "bytes": 55826,
+      "sha256": "be7b252d188a59924b62d260949d7f3929670753f58b2b5a0a347ac64d57f1c5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A0-standard_relayout.png": {
+      "bytes": 55826,
+      "sha256": "be7b252d188a59924b62d260949d7f3929670753f58b2b5a0a347ac64d57f1c5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A1-novel.png": {
+      "bytes": 55877,
+      "sha256": "efe3a7a0ea79b5fc60a56315deed7f9f9d44369625da4e400fdceddb0f7d46e1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A1-standard.png": {
+      "bytes": 55877,
+      "sha256": "efe3a7a0ea79b5fc60a56315deed7f9f9d44369625da4e400fdceddb0f7d46e1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A1-standard_relayout.png": {
+      "bytes": 55877,
+      "sha256": "efe3a7a0ea79b5fc60a56315deed7f9f9d44369625da4e400fdceddb0f7d46e1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A2-novel.png": {
+      "bytes": 55826,
+      "sha256": "be7b252d188a59924b62d260949d7f3929670753f58b2b5a0a347ac64d57f1c5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A2-standard.png": {
+      "bytes": 53532,
+      "sha256": "a39e24213abe15adff73169355a36798c382c263319019622347483c630f9c6d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A2-standard_relayout.png": {
+      "bytes": 54048,
+      "sha256": "2defcf972283e4898e5fbb175846bbe40de0dc6f4f858ae606aac002dcb458b8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A3-novel.png": {
+      "bytes": 55877,
+      "sha256": "efe3a7a0ea79b5fc60a56315deed7f9f9d44369625da4e400fdceddb0f7d46e1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A3-standard.png": {
+      "bytes": 53532,
+      "sha256": "a39e24213abe15adff73169355a36798c382c263319019622347483c630f9c6d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200076-A3-standard_relayout.png": {
+      "bytes": 54048,
+      "sha256": "2defcf972283e4898e5fbb175846bbe40de0dc6f4f858ae606aac002dcb458b8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A0-novel.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A0-standard.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A0-standard_relayout.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A1-novel.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A1-standard.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A1-standard_relayout.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A2-novel.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A2-standard.png": {
+      "bytes": 54554,
+      "sha256": "d95179807cc97a924f752a8f35afff2633f6be0386bb6bd9cd263b06f4bbcddb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A2-standard_relayout.png": {
+      "bytes": 55654,
+      "sha256": "1bf06d049d9c30f45f6336a07775afdf160f03417b59fd5f81f36e7389c20fd5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A3-novel.png": {
+      "bytes": 56947,
+      "sha256": "921a9bdf59a32c3efb5ebe32a04b0f1980d53b6757c314405fab90590f8257bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A3-standard.png": {
+      "bytes": 54554,
+      "sha256": "d95179807cc97a924f752a8f35afff2633f6be0386bb6bd9cd263b06f4bbcddb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200208-A3-standard_relayout.png": {
+      "bytes": 55654,
+      "sha256": "1bf06d049d9c30f45f6336a07775afdf160f03417b59fd5f81f36e7389c20fd5"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A0-novel.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A0-standard.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A0-standard_relayout.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A1-novel.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A1-standard.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A1-standard_relayout.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A2-novel.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A2-standard.png": {
+      "bytes": 53770,
+      "sha256": "eab3612689868998aa4fb60d809fe202e4d3801de563d1ae67286028e75ea0d1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A2-standard_relayout.png": {
+      "bytes": 53760,
+      "sha256": "ef3d55d870e14cf3bdfc26dc54789eea27e0d60ad5bc696ec9f4c4174963f6e0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A3-novel.png": {
+      "bytes": 55494,
+      "sha256": "37e2bf969e40f2b4b4df952a09c9aa058b9ccf3cd69a883a2315994f1f637669"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A3-standard.png": {
+      "bytes": 53770,
+      "sha256": "eab3612689868998aa4fb60d809fe202e4d3801de563d1ae67286028e75ea0d1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200357-A3-standard_relayout.png": {
+      "bytes": 53760,
+      "sha256": "ef3d55d870e14cf3bdfc26dc54789eea27e0d60ad5bc696ec9f4c4174963f6e0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A0-novel.png": {
+      "bytes": 55892,
+      "sha256": "f70ebb6bd3dbe3403aac6e0168aa866b5e0be10c7df8167341859713303fd89d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A0-standard.png": {
+      "bytes": 55892,
+      "sha256": "f70ebb6bd3dbe3403aac6e0168aa866b5e0be10c7df8167341859713303fd89d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A0-standard_relayout.png": {
+      "bytes": 55892,
+      "sha256": "f70ebb6bd3dbe3403aac6e0168aa866b5e0be10c7df8167341859713303fd89d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A1-novel.png": {
+      "bytes": 56005,
+      "sha256": "094ebab5cfc368f690460f8abe0377187099a9618d0908a45040a663559b5d8b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A1-standard.png": {
+      "bytes": 56005,
+      "sha256": "094ebab5cfc368f690460f8abe0377187099a9618d0908a45040a663559b5d8b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A1-standard_relayout.png": {
+      "bytes": 56005,
+      "sha256": "094ebab5cfc368f690460f8abe0377187099a9618d0908a45040a663559b5d8b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A2-novel.png": {
+      "bytes": 55892,
+      "sha256": "f70ebb6bd3dbe3403aac6e0168aa866b5e0be10c7df8167341859713303fd89d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A2-standard.png": {
+      "bytes": 53970,
+      "sha256": "4eea5e96c00c59eb7b3e14c99a8dbc2aa1b7e5244a4c88f2ddafe2f653774135"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A2-standard_relayout.png": {
+      "bytes": 53715,
+      "sha256": "bd5693a02facd13a5620b1607fb75118ff477c3d492299b75397afdd3cc80bc3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A3-novel.png": {
+      "bytes": 56005,
+      "sha256": "094ebab5cfc368f690460f8abe0377187099a9618d0908a45040a663559b5d8b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A3-standard.png": {
+      "bytes": 53970,
+      "sha256": "4eea5e96c00c59eb7b3e14c99a8dbc2aa1b7e5244a4c88f2ddafe2f653774135"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200518-A3-standard_relayout.png": {
+      "bytes": 53715,
+      "sha256": "bd5693a02facd13a5620b1607fb75118ff477c3d492299b75397afdd3cc80bc3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A0-novel.png": {
+      "bytes": 56270,
+      "sha256": "f55daac4010d527ee64b46c26169288cab27a743853173b84a630e526382ffa2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A0-standard.png": {
+      "bytes": 56270,
+      "sha256": "f55daac4010d527ee64b46c26169288cab27a743853173b84a630e526382ffa2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A0-standard_relayout.png": {
+      "bytes": 56270,
+      "sha256": "f55daac4010d527ee64b46c26169288cab27a743853173b84a630e526382ffa2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A1-novel.png": {
+      "bytes": 56279,
+      "sha256": "5c79eb095a221b3f8ab1f548c28812385a1c08b8468ab68d07bb4303475db10e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A1-standard.png": {
+      "bytes": 56279,
+      "sha256": "5c79eb095a221b3f8ab1f548c28812385a1c08b8468ab68d07bb4303475db10e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A1-standard_relayout.png": {
+      "bytes": 56279,
+      "sha256": "5c79eb095a221b3f8ab1f548c28812385a1c08b8468ab68d07bb4303475db10e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A2-novel.png": {
+      "bytes": 56270,
+      "sha256": "f55daac4010d527ee64b46c26169288cab27a743853173b84a630e526382ffa2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A2-standard.png": {
+      "bytes": 54563,
+      "sha256": "2ec17f4c0bd6a672e470abec83a5f7ae5cc56a9c46f5a684d0f50dcf3f95380b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A2-standard_relayout.png": {
+      "bytes": 54732,
+      "sha256": "c145648eb0fc8f313eaa51b1585fd67f1d9dc7b647e007a09bda93c0d8d771c6"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A3-novel.png": {
+      "bytes": 56279,
+      "sha256": "5c79eb095a221b3f8ab1f548c28812385a1c08b8468ab68d07bb4303475db10e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A3-standard.png": {
+      "bytes": 54563,
+      "sha256": "2ec17f4c0bd6a672e470abec83a5f7ae5cc56a9c46f5a684d0f50dcf3f95380b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200553-A3-standard_relayout.png": {
+      "bytes": 54732,
+      "sha256": "c145648eb0fc8f313eaa51b1585fd67f1d9dc7b647e007a09bda93c0d8d771c6"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A0-novel.png": {
+      "bytes": 55129,
+      "sha256": "5f8293ecadb714947f747207e179fae0f69eef12d27705f4295e18d3dc0eeed0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A0-standard.png": {
+      "bytes": 55129,
+      "sha256": "5f8293ecadb714947f747207e179fae0f69eef12d27705f4295e18d3dc0eeed0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A0-standard_relayout.png": {
+      "bytes": 55129,
+      "sha256": "5f8293ecadb714947f747207e179fae0f69eef12d27705f4295e18d3dc0eeed0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A1-novel.png": {
+      "bytes": 55083,
+      "sha256": "5e7509db00f6f70570ed3a21916c29f371e0e46c511ff980de9d137f1b067002"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A1-standard.png": {
+      "bytes": 55083,
+      "sha256": "5e7509db00f6f70570ed3a21916c29f371e0e46c511ff980de9d137f1b067002"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A1-standard_relayout.png": {
+      "bytes": 55083,
+      "sha256": "5e7509db00f6f70570ed3a21916c29f371e0e46c511ff980de9d137f1b067002"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A2-novel.png": {
+      "bytes": 55129,
+      "sha256": "5f8293ecadb714947f747207e179fae0f69eef12d27705f4295e18d3dc0eeed0"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A2-standard.png": {
+      "bytes": 53402,
+      "sha256": "e2ff85f850a07aaeffba3b6e0402e1b7ecca76da7ce09577f7034c8640c79759"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A2-standard_relayout.png": {
+      "bytes": 54428,
+      "sha256": "f12458cacc3297b24c2706881dc6f8935b04a658a0a005df59ab6dcfa557953d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A3-novel.png": {
+      "bytes": 55083,
+      "sha256": "5e7509db00f6f70570ed3a21916c29f371e0e46c511ff980de9d137f1b067002"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A3-standard.png": {
+      "bytes": 53402,
+      "sha256": "e2ff85f850a07aaeffba3b6e0402e1b7ecca76da7ce09577f7034c8640c79759"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200612-A3-standard_relayout.png": {
+      "bytes": 54428,
+      "sha256": "f12458cacc3297b24c2706881dc6f8935b04a658a0a005df59ab6dcfa557953d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A0-novel.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A0-standard.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A0-standard_relayout.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A1-novel.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A1-standard.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A1-standard_relayout.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A2-novel.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A2-standard.png": {
+      "bytes": 53386,
+      "sha256": "b914f5bb277744aaaf72f8985beed136cc4de8810bd3a07144f6a1072205f421"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A2-standard_relayout.png": {
+      "bytes": 54475,
+      "sha256": "b6183add312ed048c9270df5abfcae471329d07709911a4b5152fed4770a99cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A3-novel.png": {
+      "bytes": 55346,
+      "sha256": "b31659ba76a3c8960d5ac3b6ef56f5d55cd770b5d596b858ef6849667114c93c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A3-standard.png": {
+      "bytes": 53386,
+      "sha256": "b914f5bb277744aaaf72f8985beed136cc4de8810bd3a07144f6a1072205f421"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200659-A3-standard_relayout.png": {
+      "bytes": 54475,
+      "sha256": "b6183add312ed048c9270df5abfcae471329d07709911a4b5152fed4770a99cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A0-novel.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A0-standard.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A0-standard_relayout.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A1-novel.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A1-standard.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A1-standard_relayout.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A2-novel.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A2-standard.png": {
+      "bytes": 52874,
+      "sha256": "952317e5c8fe7cfca4b48114cfe2fdc516d4c8259272ef06d542613c7e20df25"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A2-standard_relayout.png": {
+      "bytes": 53015,
+      "sha256": "c4c9dc54f54e880b0792bd65168f7a6e5f90456d02b7e59d1d77ce2497dcbbd7"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A3-novel.png": {
+      "bytes": 54603,
+      "sha256": "c73b21c66620f92c15d8e15e1b834f8ba0305b30f8e32e07206b466d83a159f3"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A3-standard.png": {
+      "bytes": 52874,
+      "sha256": "952317e5c8fe7cfca4b48114cfe2fdc516d4c8259272ef06d542613c7e20df25"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200717-A3-standard_relayout.png": {
+      "bytes": 53015,
+      "sha256": "c4c9dc54f54e880b0792bd65168f7a6e5f90456d02b7e59d1d77ce2497dcbbd7"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A0-novel.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A0-standard.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A0-standard_relayout.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A1-novel.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A1-standard.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A1-standard_relayout.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A2-novel.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A2-standard.png": {
+      "bytes": 53320,
+      "sha256": "92c84ed5087def89af32bf7dd26bbf380d4da645db4a3aa9e9201cfaed6b8007"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A2-standard_relayout.png": {
+      "bytes": 53341,
+      "sha256": "841c2cb98ef427e61656906581ee9b8425b93497a7aa08285be9e43766b54d60"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A3-novel.png": {
+      "bytes": 55319,
+      "sha256": "6a2657e4845d96e3dad2265aff9be892095c41c779ebbb28d99ebb42264f8ee8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A3-standard.png": {
+      "bytes": 53320,
+      "sha256": "92c84ed5087def89af32bf7dd26bbf380d4da645db4a3aa9e9201cfaed6b8007"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200822-A3-standard_relayout.png": {
+      "bytes": 53341,
+      "sha256": "841c2cb98ef427e61656906581ee9b8425b93497a7aa08285be9e43766b54d60"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A0-novel.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A0-standard.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A0-standard_relayout.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A1-novel.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A1-standard.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A1-standard_relayout.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A2-novel.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A2-standard.png": {
+      "bytes": 53228,
+      "sha256": "e99d1a33bb1a2c8288bfb4c504b78ad457afb6bc24977d7d22e9e9e107025e5b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A2-standard_relayout.png": {
+      "bytes": 54750,
+      "sha256": "5996f4efd324f579f9017d10fdd8ecac0e65f0f2c77e2c6e21ff0222044778ad"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A3-novel.png": {
+      "bytes": 55297,
+      "sha256": "952d9f34c95427792ba14b0167c14be69723582050fb528717d3a9a371f0d69a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A3-standard.png": {
+      "bytes": 53228,
+      "sha256": "e99d1a33bb1a2c8288bfb4c504b78ad457afb6bc24977d7d22e9e9e107025e5b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1200971-A3-standard_relayout.png": {
+      "bytes": 54750,
+      "sha256": "5996f4efd324f579f9017d10fdd8ecac0e65f0f2c77e2c6e21ff0222044778ad"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A0-novel.png": {
+      "bytes": 55871,
+      "sha256": "7efa8fa65a3c34d0566e3680248c1ba33c8b8c4ceb62717239f1224a67fc0167"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A0-standard.png": {
+      "bytes": 55871,
+      "sha256": "7efa8fa65a3c34d0566e3680248c1ba33c8b8c4ceb62717239f1224a67fc0167"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A0-standard_relayout.png": {
+      "bytes": 55871,
+      "sha256": "7efa8fa65a3c34d0566e3680248c1ba33c8b8c4ceb62717239f1224a67fc0167"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A1-novel.png": {
+      "bytes": 55846,
+      "sha256": "bb19dbf6a31612e1ddd119ebd4c982a8ec117d962b6771f2e4cafdfa7835c116"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A1-standard.png": {
+      "bytes": 55846,
+      "sha256": "bb19dbf6a31612e1ddd119ebd4c982a8ec117d962b6771f2e4cafdfa7835c116"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A1-standard_relayout.png": {
+      "bytes": 55846,
+      "sha256": "bb19dbf6a31612e1ddd119ebd4c982a8ec117d962b6771f2e4cafdfa7835c116"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A2-novel.png": {
+      "bytes": 55871,
+      "sha256": "7efa8fa65a3c34d0566e3680248c1ba33c8b8c4ceb62717239f1224a67fc0167"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A2-standard.png": {
+      "bytes": 53841,
+      "sha256": "ccdd19f92a5ebe8ed5112ece0fd32b4d08ab328cac90ffbb258e436e57cbe587"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A2-standard_relayout.png": {
+      "bytes": 52658,
+      "sha256": "f59837a0e6142e695ce4744d1e8326488d2fa6b348f659ffda15d69400b98cab"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A3-novel.png": {
+      "bytes": 55846,
+      "sha256": "bb19dbf6a31612e1ddd119ebd4c982a8ec117d962b6771f2e4cafdfa7835c116"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A3-standard.png": {
+      "bytes": 53841,
+      "sha256": "ccdd19f92a5ebe8ed5112ece0fd32b4d08ab328cac90ffbb258e436e57cbe587"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201171-A3-standard_relayout.png": {
+      "bytes": 52658,
+      "sha256": "f59837a0e6142e695ce4744d1e8326488d2fa6b348f659ffda15d69400b98cab"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A0-novel.png": {
+      "bytes": 56686,
+      "sha256": "11422a0807398bac9a4b65f93452065ca94fa07b697c3143bc174a71737c7e2f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A0-standard.png": {
+      "bytes": 56686,
+      "sha256": "11422a0807398bac9a4b65f93452065ca94fa07b697c3143bc174a71737c7e2f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A0-standard_relayout.png": {
+      "bytes": 56686,
+      "sha256": "11422a0807398bac9a4b65f93452065ca94fa07b697c3143bc174a71737c7e2f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A1-novel.png": {
+      "bytes": 56809,
+      "sha256": "1864148bcb3c683c7c276eab7f35543f9928f50ea2a505f46988ba33956895cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A1-standard.png": {
+      "bytes": 56809,
+      "sha256": "1864148bcb3c683c7c276eab7f35543f9928f50ea2a505f46988ba33956895cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A1-standard_relayout.png": {
+      "bytes": 56809,
+      "sha256": "1864148bcb3c683c7c276eab7f35543f9928f50ea2a505f46988ba33956895cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A2-novel.png": {
+      "bytes": 56686,
+      "sha256": "11422a0807398bac9a4b65f93452065ca94fa07b697c3143bc174a71737c7e2f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A2-standard.png": {
+      "bytes": 54384,
+      "sha256": "44eafcb3f4f1c7df6507cf53b452cf3da7294292ef6d480f6eb4848aa30e6e1d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A2-standard_relayout.png": {
+      "bytes": 55380,
+      "sha256": "19f8d1eb06a1e7deffd08df890df9ea01f5d0d1d20690917de642e600ab46019"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A3-novel.png": {
+      "bytes": 56809,
+      "sha256": "1864148bcb3c683c7c276eab7f35543f9928f50ea2a505f46988ba33956895cc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A3-standard.png": {
+      "bytes": 54384,
+      "sha256": "44eafcb3f4f1c7df6507cf53b452cf3da7294292ef6d480f6eb4848aa30e6e1d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201262-A3-standard_relayout.png": {
+      "bytes": 55380,
+      "sha256": "19f8d1eb06a1e7deffd08df890df9ea01f5d0d1d20690917de642e600ab46019"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A0-novel.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A0-standard.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A0-standard_relayout.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A1-novel.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A1-standard.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A1-standard_relayout.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A2-novel.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A2-standard.png": {
+      "bytes": 53737,
+      "sha256": "a593a10dbdda208f6c3ecbefe9b824b4363151bc45695eaa809098a50a2e753b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A2-standard_relayout.png": {
+      "bytes": 52908,
+      "sha256": "1dd652c52f3eebad2ebbc57510e97e570a3603174767b5b184c096ee5cb35af2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A3-novel.png": {
+      "bytes": 55494,
+      "sha256": "e79f520935abc6ed82ca22c1e6f87c3d9812ccd59aa4fcf3dd7705f6dc7d923b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A3-standard.png": {
+      "bytes": 53737,
+      "sha256": "a593a10dbdda208f6c3ecbefe9b824b4363151bc45695eaa809098a50a2e753b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201300-A3-standard_relayout.png": {
+      "bytes": 52908,
+      "sha256": "1dd652c52f3eebad2ebbc57510e97e570a3603174767b5b184c096ee5cb35af2"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A0-novel.png": {
+      "bytes": 56030,
+      "sha256": "4f8f7d624948f04f34e03f1ef65aaff40d718dc2a467ad2519bbd9d83f5067f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A0-standard.png": {
+      "bytes": 56030,
+      "sha256": "4f8f7d624948f04f34e03f1ef65aaff40d718dc2a467ad2519bbd9d83f5067f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A0-standard_relayout.png": {
+      "bytes": 56030,
+      "sha256": "4f8f7d624948f04f34e03f1ef65aaff40d718dc2a467ad2519bbd9d83f5067f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A1-novel.png": {
+      "bytes": 56004,
+      "sha256": "da42cab467697e2af968566f1036323790febeb05004bb79207d882f7aac7a46"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A1-standard.png": {
+      "bytes": 56004,
+      "sha256": "da42cab467697e2af968566f1036323790febeb05004bb79207d882f7aac7a46"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A1-standard_relayout.png": {
+      "bytes": 56004,
+      "sha256": "da42cab467697e2af968566f1036323790febeb05004bb79207d882f7aac7a46"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A2-novel.png": {
+      "bytes": 56030,
+      "sha256": "4f8f7d624948f04f34e03f1ef65aaff40d718dc2a467ad2519bbd9d83f5067f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A2-standard.png": {
+      "bytes": 53578,
+      "sha256": "ac35b2628f9e34e2d8a9bf4a0b37267ffb66a57e1c2785fcd0413f79769b184b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A2-standard_relayout.png": {
+      "bytes": 55887,
+      "sha256": "78098fb3966e90d0acc1b66f46020a712e65941792d96e76eb9a22f9470c738d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A3-novel.png": {
+      "bytes": 56004,
+      "sha256": "da42cab467697e2af968566f1036323790febeb05004bb79207d882f7aac7a46"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A3-standard.png": {
+      "bytes": 53578,
+      "sha256": "ac35b2628f9e34e2d8a9bf4a0b37267ffb66a57e1c2785fcd0413f79769b184b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201356-A3-standard_relayout.png": {
+      "bytes": 55887,
+      "sha256": "78098fb3966e90d0acc1b66f46020a712e65941792d96e76eb9a22f9470c738d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A0-novel.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A0-standard.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A0-standard_relayout.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A1-novel.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A1-standard.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A1-standard_relayout.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A2-novel.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A2-standard.png": {
+      "bytes": 53913,
+      "sha256": "7de33438911463c5bdf43ce95c88108b2ec853f6ca73227a4613b0882ed35767"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A2-standard_relayout.png": {
+      "bytes": 55206,
+      "sha256": "c04e21e9c747f02611613340cae51efb50cf32a9838eb17f423e7dfa89a3b8bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A3-novel.png": {
+      "bytes": 55953,
+      "sha256": "ab4724753ce6c07b9172ea64e17d5a9cbf791eeb85374f355f926b5b646d0a97"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A3-standard.png": {
+      "bytes": 53913,
+      "sha256": "7de33438911463c5bdf43ce95c88108b2ec853f6ca73227a4613b0882ed35767"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201421-A3-standard_relayout.png": {
+      "bytes": 55206,
+      "sha256": "c04e21e9c747f02611613340cae51efb50cf32a9838eb17f423e7dfa89a3b8bb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A0-novel.png": {
+      "bytes": 55682,
+      "sha256": "0d669d44e5943eef17a5372e15866bd7298001f4e591ffee767a9977ea1be2de"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A0-standard.png": {
+      "bytes": 55682,
+      "sha256": "0d669d44e5943eef17a5372e15866bd7298001f4e591ffee767a9977ea1be2de"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A0-standard_relayout.png": {
+      "bytes": 55682,
+      "sha256": "0d669d44e5943eef17a5372e15866bd7298001f4e591ffee767a9977ea1be2de"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A1-novel.png": {
+      "bytes": 55709,
+      "sha256": "8c4ba335c424c69823f9ad9bdf431c8bcde4c4ca0b103b423c40603a28202000"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A1-standard.png": {
+      "bytes": 55709,
+      "sha256": "8c4ba335c424c69823f9ad9bdf431c8bcde4c4ca0b103b423c40603a28202000"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A1-standard_relayout.png": {
+      "bytes": 55709,
+      "sha256": "8c4ba335c424c69823f9ad9bdf431c8bcde4c4ca0b103b423c40603a28202000"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A2-novel.png": {
+      "bytes": 55682,
+      "sha256": "0d669d44e5943eef17a5372e15866bd7298001f4e591ffee767a9977ea1be2de"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A2-standard.png": {
+      "bytes": 53811,
+      "sha256": "23e35e9966ed0906449ba967f37eec0c2784e3208b38003127e554f3f3a39e04"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A2-standard_relayout.png": {
+      "bytes": 53567,
+      "sha256": "cb6ecfa20f557516df139962839fa1133cc899cc0a5824cba28aa838ddbacd59"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A3-novel.png": {
+      "bytes": 55709,
+      "sha256": "8c4ba335c424c69823f9ad9bdf431c8bcde4c4ca0b103b423c40603a28202000"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A3-standard.png": {
+      "bytes": 53811,
+      "sha256": "23e35e9966ed0906449ba967f37eec0c2784e3208b38003127e554f3f3a39e04"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201547-A3-standard_relayout.png": {
+      "bytes": 53567,
+      "sha256": "cb6ecfa20f557516df139962839fa1133cc899cc0a5824cba28aa838ddbacd59"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A0-novel.png": {
+      "bytes": 54625,
+      "sha256": "286738c35ed28ce27b3814641513c97dbc9f872f09d4926be5dbe1f338fe1897"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A0-standard.png": {
+      "bytes": 54625,
+      "sha256": "286738c35ed28ce27b3814641513c97dbc9f872f09d4926be5dbe1f338fe1897"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A0-standard_relayout.png": {
+      "bytes": 54625,
+      "sha256": "286738c35ed28ce27b3814641513c97dbc9f872f09d4926be5dbe1f338fe1897"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A1-novel.png": {
+      "bytes": 54659,
+      "sha256": "fa22788847fed15ca93a7bf7bfe0ac188f40d8706b0d3057845d9a6570548672"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A1-standard.png": {
+      "bytes": 54659,
+      "sha256": "fa22788847fed15ca93a7bf7bfe0ac188f40d8706b0d3057845d9a6570548672"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A1-standard_relayout.png": {
+      "bytes": 54659,
+      "sha256": "fa22788847fed15ca93a7bf7bfe0ac188f40d8706b0d3057845d9a6570548672"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A2-novel.png": {
+      "bytes": 54625,
+      "sha256": "286738c35ed28ce27b3814641513c97dbc9f872f09d4926be5dbe1f338fe1897"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A2-standard.png": {
+      "bytes": 52956,
+      "sha256": "4d8713f34d5508a50c8d7d5a118d255172096ac82a98aef7279429028029e95d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A2-standard_relayout.png": {
+      "bytes": 52635,
+      "sha256": "452240499aeada972a2e50bcaa3b1897bab9c358de8f9bccd6a4b4dbd9970371"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A3-novel.png": {
+      "bytes": 54659,
+      "sha256": "fa22788847fed15ca93a7bf7bfe0ac188f40d8706b0d3057845d9a6570548672"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A3-standard.png": {
+      "bytes": 52956,
+      "sha256": "4d8713f34d5508a50c8d7d5a118d255172096ac82a98aef7279429028029e95d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201611-A3-standard_relayout.png": {
+      "bytes": 52635,
+      "sha256": "452240499aeada972a2e50bcaa3b1897bab9c358de8f9bccd6a4b4dbd9970371"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A0-novel.png": {
+      "bytes": 55480,
+      "sha256": "6572c6f2d4c38552575de8f294e1883615eb277ad05478f3d8ec47d29ba8dfa1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A0-standard.png": {
+      "bytes": 55480,
+      "sha256": "6572c6f2d4c38552575de8f294e1883615eb277ad05478f3d8ec47d29ba8dfa1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A0-standard_relayout.png": {
+      "bytes": 55480,
+      "sha256": "6572c6f2d4c38552575de8f294e1883615eb277ad05478f3d8ec47d29ba8dfa1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A1-novel.png": {
+      "bytes": 55482,
+      "sha256": "b2477cb9b7f0ee52c9a65e86326d74f34a30d00d014ff9d9df72d351feccebdf"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A1-standard.png": {
+      "bytes": 55482,
+      "sha256": "b2477cb9b7f0ee52c9a65e86326d74f34a30d00d014ff9d9df72d351feccebdf"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A1-standard_relayout.png": {
+      "bytes": 55482,
+      "sha256": "b2477cb9b7f0ee52c9a65e86326d74f34a30d00d014ff9d9df72d351feccebdf"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A2-novel.png": {
+      "bytes": 55480,
+      "sha256": "6572c6f2d4c38552575de8f294e1883615eb277ad05478f3d8ec47d29ba8dfa1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A2-standard.png": {
+      "bytes": 53509,
+      "sha256": "30de80dca4e35966467667cfd651929e1ef739cb40d06c5fe27a67bcaabbd81c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A2-standard_relayout.png": {
+      "bytes": 52231,
+      "sha256": "dd6226504132d016d814004b63c8dc4b638967c7bf7861f37dc08e099f99a719"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A3-novel.png": {
+      "bytes": 55482,
+      "sha256": "b2477cb9b7f0ee52c9a65e86326d74f34a30d00d014ff9d9df72d351feccebdf"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A3-standard.png": {
+      "bytes": 53509,
+      "sha256": "30de80dca4e35966467667cfd651929e1ef739cb40d06c5fe27a67bcaabbd81c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201681-A3-standard_relayout.png": {
+      "bytes": 52231,
+      "sha256": "dd6226504132d016d814004b63c8dc4b638967c7bf7861f37dc08e099f99a719"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A0-novel.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A0-standard.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A0-standard_relayout.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A1-novel.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A1-standard.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A1-standard_relayout.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A2-novel.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A2-standard.png": {
+      "bytes": 53357,
+      "sha256": "b81d619ba42324986b9a2811c9c183fe4080ceb7f726bfbf326626132600e78c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A2-standard_relayout.png": {
+      "bytes": 53375,
+      "sha256": "3a326ddab2f0fcfdf8f542b4e79ed69219f46a56ae8963cb7809a76c247fc18f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A3-novel.png": {
+      "bytes": 55115,
+      "sha256": "32cc459ce9693bf12ddd6c9fd581723263fdc48eaba0fedea745283d3fd2d46c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A3-standard.png": {
+      "bytes": 53357,
+      "sha256": "b81d619ba42324986b9a2811c9c183fe4080ceb7f726bfbf326626132600e78c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201718-A3-standard_relayout.png": {
+      "bytes": 53375,
+      "sha256": "3a326ddab2f0fcfdf8f542b4e79ed69219f46a56ae8963cb7809a76c247fc18f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A0-novel.png": {
+      "bytes": 56087,
+      "sha256": "848f728aa08450013343a69099d603b3569f3b4505a09c664cce6d43a612381e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A0-standard.png": {
+      "bytes": 56087,
+      "sha256": "848f728aa08450013343a69099d603b3569f3b4505a09c664cce6d43a612381e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A0-standard_relayout.png": {
+      "bytes": 56087,
+      "sha256": "848f728aa08450013343a69099d603b3569f3b4505a09c664cce6d43a612381e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A1-novel.png": {
+      "bytes": 56103,
+      "sha256": "9803a3dd9e1f34b144d33518563662149a12ccee22ee6800a4ef22c41348d3ac"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A1-standard.png": {
+      "bytes": 56103,
+      "sha256": "9803a3dd9e1f34b144d33518563662149a12ccee22ee6800a4ef22c41348d3ac"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A1-standard_relayout.png": {
+      "bytes": 56103,
+      "sha256": "9803a3dd9e1f34b144d33518563662149a12ccee22ee6800a4ef22c41348d3ac"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A2-novel.png": {
+      "bytes": 56087,
+      "sha256": "848f728aa08450013343a69099d603b3569f3b4505a09c664cce6d43a612381e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A2-standard.png": {
+      "bytes": 54142,
+      "sha256": "93f75551b623d964b1bec8779875c64e2928659368c5d3455d1e249bd334203d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A2-standard_relayout.png": {
+      "bytes": 53091,
+      "sha256": "d8e9960163c147eab4c0762a58fad77662aa348110cfe8f51e44440b561e7d91"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A3-novel.png": {
+      "bytes": 56103,
+      "sha256": "9803a3dd9e1f34b144d33518563662149a12ccee22ee6800a4ef22c41348d3ac"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A3-standard.png": {
+      "bytes": 54142,
+      "sha256": "93f75551b623d964b1bec8779875c64e2928659368c5d3455d1e249bd334203d"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201842-A3-standard_relayout.png": {
+      "bytes": 53091,
+      "sha256": "d8e9960163c147eab4c0762a58fad77662aa348110cfe8f51e44440b561e7d91"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A0-novel.png": {
+      "bytes": 58313,
+      "sha256": "eb97a2b4b77171a094892255c6f5a6b1390ac8c4ee2db33f0f03d1939df2b7dc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A0-standard.png": {
+      "bytes": 58313,
+      "sha256": "eb97a2b4b77171a094892255c6f5a6b1390ac8c4ee2db33f0f03d1939df2b7dc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A0-standard_relayout.png": {
+      "bytes": 58313,
+      "sha256": "eb97a2b4b77171a094892255c6f5a6b1390ac8c4ee2db33f0f03d1939df2b7dc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A1-novel.png": {
+      "bytes": 58365,
+      "sha256": "f4dccdb1c4907e82dc0ce327f730e6df14e0c3376b0b3d0ccfdd25612d89d9b9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A1-standard.png": {
+      "bytes": 58365,
+      "sha256": "f4dccdb1c4907e82dc0ce327f730e6df14e0c3376b0b3d0ccfdd25612d89d9b9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A1-standard_relayout.png": {
+      "bytes": 58365,
+      "sha256": "f4dccdb1c4907e82dc0ce327f730e6df14e0c3376b0b3d0ccfdd25612d89d9b9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A2-novel.png": {
+      "bytes": 58313,
+      "sha256": "eb97a2b4b77171a094892255c6f5a6b1390ac8c4ee2db33f0f03d1939df2b7dc"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A2-standard.png": {
+      "bytes": 56253,
+      "sha256": "1174c0ba68ef096e766b832304b30ec4bacd72931a467d3b9afa541746f1b648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A2-standard_relayout.png": {
+      "bytes": 55658,
+      "sha256": "6ec8a82f904552a83bc15d03275426a4951bdca5d0880638fbcf58bb2761dfab"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A3-novel.png": {
+      "bytes": 58365,
+      "sha256": "f4dccdb1c4907e82dc0ce327f730e6df14e0c3376b0b3d0ccfdd25612d89d9b9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A3-standard.png": {
+      "bytes": 56253,
+      "sha256": "1174c0ba68ef096e766b832304b30ec4bacd72931a467d3b9afa541746f1b648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201850-A3-standard_relayout.png": {
+      "bytes": 55658,
+      "sha256": "6ec8a82f904552a83bc15d03275426a4951bdca5d0880638fbcf58bb2761dfab"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A0-novel.png": {
+      "bytes": 55851,
+      "sha256": "7385259463b8445e7c66b1fbd3dd50bed6679faa8ef4363bac33b769f47bfe4f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A0-standard.png": {
+      "bytes": 55851,
+      "sha256": "7385259463b8445e7c66b1fbd3dd50bed6679faa8ef4363bac33b769f47bfe4f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A0-standard_relayout.png": {
+      "bytes": 55851,
+      "sha256": "7385259463b8445e7c66b1fbd3dd50bed6679faa8ef4363bac33b769f47bfe4f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A1-novel.png": {
+      "bytes": 55815,
+      "sha256": "bb63d2e3d07c95dfd9c3d99f89bd9b069d3fd2733f8834025e3b078ab68a67c8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A1-standard.png": {
+      "bytes": 55815,
+      "sha256": "bb63d2e3d07c95dfd9c3d99f89bd9b069d3fd2733f8834025e3b078ab68a67c8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A1-standard_relayout.png": {
+      "bytes": 55815,
+      "sha256": "bb63d2e3d07c95dfd9c3d99f89bd9b069d3fd2733f8834025e3b078ab68a67c8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A2-novel.png": {
+      "bytes": 55851,
+      "sha256": "7385259463b8445e7c66b1fbd3dd50bed6679faa8ef4363bac33b769f47bfe4f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A2-standard.png": {
+      "bytes": 54291,
+      "sha256": "75b1fe9e8a8b9ac9bcd1c5d7e3f2a54dbeaeef5c2ef0a220343fe3c6293cd918"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A2-standard_relayout.png": {
+      "bytes": 53689,
+      "sha256": "f47dba5ddd5414663509b36d57a086d462495faa75a1ccac070370e74c40a4da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A3-novel.png": {
+      "bytes": 55815,
+      "sha256": "bb63d2e3d07c95dfd9c3d99f89bd9b069d3fd2733f8834025e3b078ab68a67c8"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A3-standard.png": {
+      "bytes": 54291,
+      "sha256": "75b1fe9e8a8b9ac9bcd1c5d7e3f2a54dbeaeef5c2ef0a220343fe3c6293cd918"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1201882-A3-standard_relayout.png": {
+      "bytes": 53689,
+      "sha256": "f47dba5ddd5414663509b36d57a086d462495faa75a1ccac070370e74c40a4da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A0-novel.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A0-standard.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A0-standard_relayout.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A1-novel.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A1-standard.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A1-standard_relayout.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A2-novel.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A2-standard.png": {
+      "bytes": 54550,
+      "sha256": "b38bc77a031c977f1797503cfd82b54f343666c25843b9fd9ebd64f4b1ee8a74"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A2-standard_relayout.png": {
+      "bytes": 54282,
+      "sha256": "015cb5f5552f80fdf8ef409e3291c32c5b8f9e4850a639e9f9f30b2c3ad1f43f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A3-novel.png": {
+      "bytes": 56285,
+      "sha256": "2e604da92da8dc9a9d7d984b8d262fdba2e2424395b60364e2514cf7ff1f3f5e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A3-standard.png": {
+      "bytes": 54550,
+      "sha256": "b38bc77a031c977f1797503cfd82b54f343666c25843b9fd9ebd64f4b1ee8a74"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202117-A3-standard_relayout.png": {
+      "bytes": 54282,
+      "sha256": "015cb5f5552f80fdf8ef409e3291c32c5b8f9e4850a639e9f9f30b2c3ad1f43f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A0-novel.png": {
+      "bytes": 54910,
+      "sha256": "67e0da8f6a1397c705d3bf2558cbbb2d889b2686a678e8fdf8cca4a8a662f851"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A0-standard.png": {
+      "bytes": 54910,
+      "sha256": "67e0da8f6a1397c705d3bf2558cbbb2d889b2686a678e8fdf8cca4a8a662f851"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A0-standard_relayout.png": {
+      "bytes": 54910,
+      "sha256": "67e0da8f6a1397c705d3bf2558cbbb2d889b2686a678e8fdf8cca4a8a662f851"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A1-novel.png": {
+      "bytes": 54918,
+      "sha256": "8253162a9be41368f6c0346bce9cfaab8c714f698643ca5c02e554e13bc70646"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A1-standard.png": {
+      "bytes": 54918,
+      "sha256": "8253162a9be41368f6c0346bce9cfaab8c714f698643ca5c02e554e13bc70646"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A1-standard_relayout.png": {
+      "bytes": 54918,
+      "sha256": "8253162a9be41368f6c0346bce9cfaab8c714f698643ca5c02e554e13bc70646"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A2-novel.png": {
+      "bytes": 54910,
+      "sha256": "67e0da8f6a1397c705d3bf2558cbbb2d889b2686a678e8fdf8cca4a8a662f851"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A2-standard.png": {
+      "bytes": 53592,
+      "sha256": "6d38a89011a7f23b37d20d38a7e6b2bfb4cf3ca2f2cf7b2cf01aef657e771e86"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A2-standard_relayout.png": {
+      "bytes": 52843,
+      "sha256": "2f68fb00bb2172b529374d9efc7b8263b98ec6ef7800291b2cd7a1462d99b812"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A3-novel.png": {
+      "bytes": 54918,
+      "sha256": "8253162a9be41368f6c0346bce9cfaab8c714f698643ca5c02e554e13bc70646"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A3-standard.png": {
+      "bytes": 53592,
+      "sha256": "6d38a89011a7f23b37d20d38a7e6b2bfb4cf3ca2f2cf7b2cf01aef657e771e86"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202124-A3-standard_relayout.png": {
+      "bytes": 52843,
+      "sha256": "2f68fb00bb2172b529374d9efc7b8263b98ec6ef7800291b2cd7a1462d99b812"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A0-novel.png": {
+      "bytes": 56485,
+      "sha256": "2c6772d8ac1d3792d85763b5032438139c686153e640c2cec1c782c823444497"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A0-standard.png": {
+      "bytes": 56485,
+      "sha256": "2c6772d8ac1d3792d85763b5032438139c686153e640c2cec1c782c823444497"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A0-standard_relayout.png": {
+      "bytes": 56485,
+      "sha256": "2c6772d8ac1d3792d85763b5032438139c686153e640c2cec1c782c823444497"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A1-novel.png": {
+      "bytes": 56302,
+      "sha256": "01f3eb11323815e7ecb94a9c0669698ac61f8a4296f82cc745f171d598a1b577"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A1-standard.png": {
+      "bytes": 56302,
+      "sha256": "01f3eb11323815e7ecb94a9c0669698ac61f8a4296f82cc745f171d598a1b577"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A1-standard_relayout.png": {
+      "bytes": 56302,
+      "sha256": "01f3eb11323815e7ecb94a9c0669698ac61f8a4296f82cc745f171d598a1b577"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A2-novel.png": {
+      "bytes": 56485,
+      "sha256": "2c6772d8ac1d3792d85763b5032438139c686153e640c2cec1c782c823444497"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A2-standard.png": {
+      "bytes": 54139,
+      "sha256": "0c599b260f0bd40c63bae26b821ae16481c5e627a3e8731d83a874e66905b5f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A2-standard_relayout.png": {
+      "bytes": 54680,
+      "sha256": "6d6836c1e929e83ce91f924325be961c6f79d0aabe311ae82847bad6f22dd611"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A3-novel.png": {
+      "bytes": 56302,
+      "sha256": "01f3eb11323815e7ecb94a9c0669698ac61f8a4296f82cc745f171d598a1b577"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A3-standard.png": {
+      "bytes": 54139,
+      "sha256": "0c599b260f0bd40c63bae26b821ae16481c5e627a3e8731d83a874e66905b5f1"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202127-A3-standard_relayout.png": {
+      "bytes": 54680,
+      "sha256": "6d6836c1e929e83ce91f924325be961c6f79d0aabe311ae82847bad6f22dd611"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A0-novel.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A0-standard.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A0-standard_relayout.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A1-novel.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A1-standard.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A1-standard_relayout.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A2-novel.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A2-standard.png": {
+      "bytes": 52940,
+      "sha256": "f79d30df78296e6e3b9874289579d2f308b1924176bfba5c38842c6c7e2bac96"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A2-standard_relayout.png": {
+      "bytes": 54206,
+      "sha256": "6d947dad10e050bda1a148c3e2c9e73053354f0a95517031061f3778e98f4ae9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A3-novel.png": {
+      "bytes": 55000,
+      "sha256": "35dfa2060c0c181b76808c1f971a47938c12d7bdd9574b593964aa5b4d1c0648"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A3-standard.png": {
+      "bytes": 52940,
+      "sha256": "f79d30df78296e6e3b9874289579d2f308b1924176bfba5c38842c6c7e2bac96"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202278-A3-standard_relayout.png": {
+      "bytes": 54206,
+      "sha256": "6d947dad10e050bda1a148c3e2c9e73053354f0a95517031061f3778e98f4ae9"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A0-novel.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A0-standard.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A0-standard_relayout.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A1-novel.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A1-standard.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A1-standard_relayout.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A2-novel.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A2-standard.png": {
+      "bytes": 55008,
+      "sha256": "2deecc88959424e176070bc04f4ddf8c97ad233bf227985b4ffa8ae716d04484"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A2-standard_relayout.png": {
+      "bytes": 54745,
+      "sha256": "6d64b7586f726f98d1f17953b429d507825386e6d6d79247202dd745e7c31644"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A3-novel.png": {
+      "bytes": 57108,
+      "sha256": "b46e70afcb07df75db0e31c5006bdc475fb5d04c7aee1889aac2825b61454c6b"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A3-standard.png": {
+      "bytes": 55008,
+      "sha256": "2deecc88959424e176070bc04f4ddf8c97ad233bf227985b4ffa8ae716d04484"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202306-A3-standard_relayout.png": {
+      "bytes": 54745,
+      "sha256": "6d64b7586f726f98d1f17953b429d507825386e6d6d79247202dd745e7c31644"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A0-novel.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A0-standard.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A0-standard_relayout.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A1-novel.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A1-standard.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A1-standard_relayout.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A2-novel.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A2-standard.png": {
+      "bytes": 55185,
+      "sha256": "552a4a6b3d376710424cdc860a797cf96d52b790e2a44b6807011f21cf59a9f4"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A2-standard_relayout.png": {
+      "bytes": 53613,
+      "sha256": "1f3c79f1d05d03a6595e2ba8783cc0ff52253ec587cb3a8eaee3c4ec018dd068"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A3-novel.png": {
+      "bytes": 56938,
+      "sha256": "4ab61581bca6701902d6de40a820929751528ded418bc45f5ef0571563acee65"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A3-standard.png": {
+      "bytes": 55185,
+      "sha256": "552a4a6b3d376710424cdc860a797cf96d52b790e2a44b6807011f21cf59a9f4"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202315-A3-standard_relayout.png": {
+      "bytes": 53613,
+      "sha256": "1f3c79f1d05d03a6595e2ba8783cc0ff52253ec587cb3a8eaee3c4ec018dd068"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A0-novel.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A0-standard.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A0-standard_relayout.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A1-novel.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A1-standard.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A1-standard_relayout.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A2-novel.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A2-standard.png": {
+      "bytes": 55595,
+      "sha256": "6961f8038fc629bd72739b90b725e008322e02b8009e12221f2cccc974841d27"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A2-standard_relayout.png": {
+      "bytes": 55029,
+      "sha256": "71b715fa011b95c5197cf255f83b4ed015ccf8f78d8cb02825d556bb3a819e83"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A3-novel.png": {
+      "bytes": 57654,
+      "sha256": "5fd96db32cce50090517c65f036f21cefece2e716fa541f34d4854fc78cb34eb"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A3-standard.png": {
+      "bytes": 55595,
+      "sha256": "6961f8038fc629bd72739b90b725e008322e02b8009e12221f2cccc974841d27"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202341-A3-standard_relayout.png": {
+      "bytes": 55029,
+      "sha256": "71b715fa011b95c5197cf255f83b4ed015ccf8f78d8cb02825d556bb3a819e83"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A0-novel.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A0-standard.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A0-standard_relayout.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A1-novel.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A1-standard.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A1-standard_relayout.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A2-novel.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A2-standard.png": {
+      "bytes": 54577,
+      "sha256": "59220a0fc9f70bbf839028a76f46215e0e003262aeea04ed691607c32950207f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A2-standard_relayout.png": {
+      "bytes": 54368,
+      "sha256": "6f1ba69a04475b22abfd81c79c744c6a6243b434a59b68651113ad5dc4894e8a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A3-novel.png": {
+      "bytes": 56469,
+      "sha256": "77275a60f5ba6b46d21ca8addbc352759679953e22e259375a141ac61342621e"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A3-standard.png": {
+      "bytes": 54577,
+      "sha256": "59220a0fc9f70bbf839028a76f46215e0e003262aeea04ed691607c32950207f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202407-A3-standard_relayout.png": {
+      "bytes": 54368,
+      "sha256": "6f1ba69a04475b22abfd81c79c744c6a6243b434a59b68651113ad5dc4894e8a"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A0-novel.png": {
+      "bytes": 56926,
+      "sha256": "e3fc552af63cdd0017a5d4f46ef0c7acb9fac2470ec4c8a0b4bba3f316c7188c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A0-standard.png": {
+      "bytes": 56926,
+      "sha256": "e3fc552af63cdd0017a5d4f46ef0c7acb9fac2470ec4c8a0b4bba3f316c7188c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A0-standard_relayout.png": {
+      "bytes": 56926,
+      "sha256": "e3fc552af63cdd0017a5d4f46ef0c7acb9fac2470ec4c8a0b4bba3f316c7188c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A1-novel.png": {
+      "bytes": 57015,
+      "sha256": "b0411a22e197a27f7ee8dd8e2955a713629277480bd91167c51ca1b2e497a5da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A1-standard.png": {
+      "bytes": 57015,
+      "sha256": "b0411a22e197a27f7ee8dd8e2955a713629277480bd91167c51ca1b2e497a5da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A1-standard_relayout.png": {
+      "bytes": 57015,
+      "sha256": "b0411a22e197a27f7ee8dd8e2955a713629277480bd91167c51ca1b2e497a5da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A2-novel.png": {
+      "bytes": 56926,
+      "sha256": "e3fc552af63cdd0017a5d4f46ef0c7acb9fac2470ec4c8a0b4bba3f316c7188c"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A2-standard.png": {
+      "bytes": 55188,
+      "sha256": "346d12429d42f3924d00d72f23862a07dae6d6f61ef71ccfdbe1252171b3a357"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A2-standard_relayout.png": {
+      "bytes": 55291,
+      "sha256": "31a0c987da7445812ae8b508ad5fe6a3284ffc851122fb57a0970f253a7f366f"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A3-novel.png": {
+      "bytes": 57015,
+      "sha256": "b0411a22e197a27f7ee8dd8e2955a713629277480bd91167c51ca1b2e497a5da"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A3-standard.png": {
+      "bytes": 55188,
+      "sha256": "346d12429d42f3924d00d72f23862a07dae6d6f61ef71ccfdbe1252171b3a357"
+    },
+    "images/nvw-independent-v1-signal_graph-73041-1202558-A3-standard_relayout.png": {
+      "bytes": 55291,
+      "sha256": "31a0c987da7445812ae8b508ad5fe6a3284ffc851122fb57a0970f253a7f366f"
+    },
+    "pairing.jsonl": {
+      "bytes": 76126,
+      "sha256": "df8f08576e81dc922fb4c4c96922a29e3ee7b5eb44c98bf970003fda6bbf3875"
+    },
+    "review_queue.jsonl": {
+      "bytes": 61696,
+      "sha256": "f8794a4344dd2acae00f31ea8a1aa7fed6072b04bc4e867b09516f6fc50b0cc9"
+    },
+    "sources/ablation.py": {
+      "bytes": 12588,
+      "sha256": "ea47f56ad04655033e6161035af2ea57cfdeb93a801610a17d05750577d4ad3f"
+    },
+    "sources/clean_spec.json": {
+      "bytes": 1357,
+      "sha256": "6551998f9a7812644e2ac990a7cef2395dbf411675bf9e51b28faf7f0d4b6d01"
+    },
+    "sources/graph_bridge.py": {
+      "bytes": 22322,
+      "sha256": "bea1438ed58ecf4a98c50494e543ceb0dce6003a9729898054088d30881eb43b"
+    },
+    "sources/nvw.py": {
+      "bytes": 38112,
+      "sha256": "bfb2913517fd72b37d39f2ea8ad502a96e4fee82301865b586c17365c280b3e9"
+    }
+  },
+  "fixed_endpoint_role_mapping": {
+    "SOURCE/TAIL": 0,
+    "TARGET/HEAD": 1
+  },
+  "gate": "UNAPPROVED_NOT_FOR_TRAINING_OR_PUBLICATION",
+  "image_files_per_arm": 96,
+  "image_references_per_arm": 160,
+  "limitations": [
+    "Independent synthetic unweighted 6-8 node layered DAG subset only",
+    "Inherited topology has at most two-edge paths; no broad depth generalization",
+    "Rejects three explicit shortcuts, not every possible shortcut or selection bias",
+    "Representation bridge is not non-synthetic transfer or full G7",
+    "Render semantics, actual model preprocessing and source rights review pending",
+    "Matched record/image counts do not establish matched processor tokens or GPU time"
+  ],
+  "mapping_randomization_namespace": "graph-cs-reachability-bridge-v1",
+  "next_index": 1202559,
+  "public_upload_allowed": false,
+  "records_per_arm": 96,
+  "render_assets": {
+    "font_module_sha256": "ad5426df3c274c56751d2a7839e0394c72a34dece113c1ccae73a11f39aa7c43",
+    "font_ttf_sha256": "69853909b940023570964e29cffe30da95aea8de3627736b5cd15ab30143169f",
+    "pillow_version": "11.3.0",
+    "small_font_ttf_sha256": "69853909b940023570964e29cffe30da95aea8de3627736b5cd15ab30143169f"
+  },
+  "root_count": 32,
+  "root_selection_policy": "Post-step-one growth; directed target differs from one-hop undirected, bounded undirected and reversed propagation",
+  "scope": "PARTIAL_INDEPENDENT_SYNTHETIC_GRAPH_CS_REPRESENTATION_BRIDGE",
+  "seed": 73041,
+  "source_ancestry": {
+    "independent-graph-cs-bridge-v2": {
+      "parents": [
+        "independent-nvw-v1"
+      ],
+      "rights_approved": false
+    }
+  },
+  "source_files_sha256": {
+    "sources/ablation.py": "ea47f56ad04655033e6161035af2ea57cfdeb93a801610a17d05750577d4ad3f",
+    "sources/clean_spec.json": "6551998f9a7812644e2ac990a7cef2395dbf411675bf9e51b28faf7f0d4b6d01",
+    "sources/graph_bridge.py": "bea1438ed58ecf4a98c50494e543ceb0dce6003a9729898054088d30881eb43b",
+    "sources/nvw.py": "bfb2913517fd72b37d39f2ea8ad502a96e4fee82301865b586c17365c280b3e9"
+  },
+  "source_id": "independent-graph-cs-bridge-v2",
+  "start_index": 1200000,
+  "training_allowed": false,
+  "version": "graph-cs-reachability-bridge-v2"
+}

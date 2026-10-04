@@ -1,0 +1,17 @@
+{
+  "schema_version": "nvw-clean-v1",
+  "origin": "Independent procedural specification; no benchmark examples or teacher inputs",
+  "families": {
+    "signal_graph": {"objects": "6-8 nodes in a directed acyclic graph", "rules": "synchronous Boolean reachability at bounded horizon 1-4", "tracks": ["NVW-K", "NVW-S"]},
+    "spatial_composition": {"objects": "six grid tokens with glyph and color attributes; visible regions", "rules": "FILTER, UNION, INTERSECTION, COUNT; LEFT_OF, ABOVE, INSIDE", "tracks": ["NVW-K", "NVW-S"]},
+    "finite_state": {"objects": "two unary Boolean operator glyphs, sequence length 2-4", "rules": ["IDENTITY", "FLIP", "SET_ZERO", "SET_ONE"], "tracks": ["NVW-K", "NVW-I", "NVW-S"]}
+  },
+  "random_streams": ["world", "structure", "rule", "support", "glyph", "layout", "style", "options"],
+  "split": "semantic family hash assigned before render variants or views; smoke uses only train families",
+  "views": ["qa", "structure", "grounded"],
+  "max_views_per_root": 3,
+  "input_whitelist": ["instruction", "image"],
+  "validation": ["independent solver agreement", "hypothesis enumeration", "field whitelist", "geometry bounds", "pixel and byte hashes", "family split consistency"],
+  "training_allowed": false,
+  "training_gate": "requires frozen-manifest external rights/contamination approval and model preprocessing check"
+}

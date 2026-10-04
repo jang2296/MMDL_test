@@ -1,0 +1,37 @@
+{
+  "independent-nvw-v1": {
+    "source_known": true,
+    "benchmark_derived": false,
+    "rights_approved": true,
+    "rights_scope": "Private independently authored procedural generator; no benchmark examples or teacher outputs",
+    "parents": [],
+    "generator_sha256": "bfb2913517fd72b37d39f2ea8ad502a96e4fee82301865b586c17365c280b3e9",
+    "font": {
+      "family": "Aileron",
+      "author": "Sora Sagano",
+      "embedded_copyright": "No Rights Reserved.",
+      "provider": "Pillow 11.3.0 embedded default font",
+      "ImageFont_py_sha256": "ad5426df3c274c56751d2a7839e0394c72a34dece113c1ccae73a11f39aa7c43"
+    },
+    "approval_limits": "Independent solver and geometry verification plus three-image AI inspection, not human full pixel-semantic certification",
+    "public_upload_allowed": false
+  },
+  "independent-graph-cs-bridge-v2": {
+    "source_known": true,
+    "benchmark_derived": false,
+    "rights_approved": true,
+    "rights_scope": "Private independently authored graph generator and renderer; no external questions, images or teacher outputs. Source approval is not dataset or GPU approval.",
+    "parents": ["independent-nvw-v1"],
+    "generator_sha256": "bea1438ed58ecf4a98c50494e543ceb0dce6003a9729898054088d30881eb43b",
+    "ablation_source_sha256": "ea47f56ad04655033e6161035af2ea57cfdeb93a801610a17d05750577d4ad3f",
+    "font_ttf_sha256": "69853909b940023570964e29cffe30da95aea8de3627736b5cd15ab30143169f",
+    "font_rights_evidence": "Actual Pillow11.3.0 bundled Aileron bytes match the frozen render manifest and contain No Rights Reserved.; ImageFont module hash matches the parent registry.",
+    "quality_evidence": {
+      "main_validation_sha256": "19b61fb7226fc10741fee52b0e8d0245c85b2e68355911aaec26ad4754ddaa12",
+      "bounded_independent_review_sha256": "ad37ded6b4ce306ca7cd356035d5454a7bcc3e8e8172448ba355a3f6c4843fe4",
+      "review_kind": "AI_REVIEW_NOT_HUMAN_CERTIFICATION"
+    },
+    "approval_limits": "Source rights and ancestry only; fresh processor proof and complete benchmark exclusion are still required for each approved dataset. Synthetic bounded graph reachability is not non-synthetic professional transfer or fullG7.",
+    "public_upload_allowed": false
+  }
+}

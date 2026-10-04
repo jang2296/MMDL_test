@@ -1,0 +1,27 @@
+{
+  "policy_id": "nvw-trace-substituted-private-pilot-v2-joint-tracks",
+  "seed": 3407,
+  "pilot_records": 10000,
+  "nvw_records": 1000,
+  "nvw_views": {"qa": 500, "structure": 250, "grounded": 250},
+  "nvw_tracks": {"NVW-K": 500, "NVW-I": 250, "NVW-S": 250},
+  "nvw_joint_views": {
+    "NVW-K": {"qa": 250, "structure": 125, "grounded": 125},
+    "NVW-I": {"qa": 125, "structure": 63, "grounded": 62},
+    "NVW-S": {"qa": 125, "structure": 62, "grounded": 63}
+  },
+  "track_metadata": "Canonical episode track is record metadata only; it never enters user_text, target_text or image rendering.",
+  "render_quality": "Geometric/solver checks and scoped AI visual inspection; full pixel-semantic and human certification remain pending.",
+  "trace_records": 9000,
+  "smoke_roots": 120,
+  "smoke_views": 360,
+  "module_arms": ["FL", "FM", "FV", "FML"],
+  "substitution": "Plan section 14.4: unavailable professional/public-source quotas are replaced by approved independent synthetic TRACE data. This is a 90% TRACE plus 10% NVW implementation pilot, not the original professional mixture.",
+  "claims": "Registered semantic family disjointness and selective-module comparison only. No professional-domain coverage or transfer claim, no ReGuLaR/CLEVR/music/chart/circuit source-effect claim.",
+  "ambiguous_nvw_qa": "Excluded from pilot QA selection; retained in smoke only through the unchanged canonical printed-INSUFFICIENT gate.",
+  "quarantine": "Never fill a missing quota with rejected or unapproved records. Exact approved counts required; otherwise INCOMPLETE and no common training manifest.",
+  "image_policy": "Regular exclusive-create copies preserving original NVW relative paths and canonical co-location; TRACE hashed image names share the images directory. No symlinks, overwrites or validator relaxation.",
+  "benchmark_use": "Exclusion fingerprints only; never generator or training input.",
+  "training_allowed": false,
+  "public_upload_allowed": false
+}

@@ -1,0 +1,27 @@
+{
+  "purpose": "PRIVATE_EVALUATION_ONLY_NON_SYNTHETIC_SOURCE_TRANSFER",
+  "repo_id": "HuggingFaceM4/ChartQA",
+  "revision": "b605b6e08b57faf4359aeb2fe6a3ca595f99b6c5",
+  "split": "test",
+  "released_split_records": 2500,
+  "question_origin": "human_or_machine ClassLabel0 only; machine questions excluded",
+  "file": {
+    "path": "data/test-00000-of-00001-e2cd0b7a0f9eb20d.parquet",
+    "bytes": 68898419,
+    "sha256": "efcf31333368c485eb569ec7bd4cc3694bd0e8e1a06c503124b51d27c924491d"
+  },
+  "dataset_card_license": "gpl-3.0",
+  "rights_limits": "Published dataset-card license, private evaluation only, preserve attribution; original third-party chart copyrights are not independently certified. No training or public redistribution approval.",
+  "authors": "Ahmed Masry, Do Xuan Long, Jia Qing Tan, Shafiq Joty, Enamul Hoque",
+  "metadata_checked_utc_date": "2026-10-04",
+  "source_url": "https://huggingface.co/datasets/HuggingFaceM4/ChartQA/tree/b605b6e08b57faf4359aeb2fe6a3ca595f99b6c5",
+  "paper_url": "https://aclanthology.org/2022.findings-acl.177/",
+  "upstream_repository": "https://github.com/vis-nlp/ChartQA",
+  "upstream_code_revision": "044eabfc306abfe9340c5741f0093aefc5973d06",
+  "upstream_inspected_path": "Models/VL-T5/src/vqa_data.py",
+  "upstream_inspected_file_sha256": "16afa3aaebdba8144a0686ee5631c73de2bf05e6874e8caeb8cb954911bb26b3",
+  "metric_attribution": "Team exact scalar metric, not an assertion of official relaxed accuracy. Inspected upstream evaluate_raw uses stripped exact strings; no upstream code copied.",
+  "local_payload_download_allowed": false,
+  "training_allowed": false,
+  "public_upload_allowed": false
+}

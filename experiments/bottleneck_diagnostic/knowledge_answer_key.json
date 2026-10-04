@@ -1,0 +1,437 @@
+{
+  "version": "private-knowledge-rule-probes-key-v1",
+  "casebank_version": "private-knowledge-rule-probes-v1",
+  "provenance": "BENCHMARK_DERIVED",
+  "training_allowed": false,
+  "boundary": "POST_INFERENCE_ONLY. Never load or serialize this key, rationales, checks, or sources in model requests.",
+  "verification": "AI_AUTHORED_SELF_CHECKED_NOT_HUMAN_OR_INDEPENDENTLY_VERIFIED",
+  "sources": {
+    "elementary": "Elementary definitions and arithmetic independently worked by the author; no original MMMU gold or explanation used. Formal checks verify computations, not empirical knowledge or clinical truth.",
+    "NCI_hyperplasia": "https://www.cancer.gov/publications/dictionaries/cancer-terms/def/hyperplasia",
+    "NIH_cell_death": "https://www.ncbi.nlm.nih.gov/books/NBK26873/",
+    "CDC_specificity": "https://archive.cdc.gov/www_cdc_gov/csels/dsepd/ss1978/glossary.html",
+    "CDC_incidence": "https://archive.cdc.gov/www_cdc_gov/csels/dsepd/ss1978/lesson3/section2.html"
+  },
+  "answers": {
+    "knowledge_Music_K1_01": {
+      "answer": "A",
+      "answer_text": "7",
+      "rationale": "A perfect fifth spans seven semitones in twelve-tone equal temperament.",
+      "check": "C4=0 semitones, G4=7; interval=7.",
+      "source": "elementary"
+    },
+    "knowledge_Music_K2_01": {
+      "answer": "B",
+      "answer_text": "Perfect fifth",
+      "rationale": "F,G,A,B,C span five letter names; natural F4 to natural C5 spans seven semitones.",
+      "check": "F4 pitch-class offset=5, C5 offset=12; 12-5=7.",
+      "source": "elementary"
+    },
+    "knowledge_Music_K1_02": {
+      "answer": "C",
+      "answer_text": "Two",
+      "rationale": "A quarter note is two ordinary eighth-note durations.",
+      "check": "(1/4)/(1/8)=2.",
+      "source": "elementary"
+    },
+    "knowledge_Music_K2_02": {
+      "answer": "D",
+      "answer_text": "Quarter note",
+      "rationale": "A 3/4 measure lasts six eighths. The given notes occupy four eighths, leaving two eighths, a quarter note.",
+      "check": "3/4-1/4-2*(1/8)=1/4.",
+      "source": "elementary"
+    },
+    "knowledge_Electronics_K1_01": {
+      "answer": "B",
+      "answer_text": "Open circuit",
+      "rationale": "An ideal capacitor carries no current when its voltage is constant after DC transients end.",
+      "check": "i=C*dv/dt; dv/dt=0 gives i=0.",
+      "source": "elementary"
+    },
+    "knowledge_Electronics_K2_01": {
+      "answer": "C",
+      "answer_text": "0 mA",
+      "rationale": "The capacitor interrupts the only ideal steady-state DC current path.",
+      "check": "Steady capacitor voltage is constant, so the sole series-loop current is zero.",
+      "source": "elementary"
+    },
+    "knowledge_Electronics_K1_02": {
+      "answer": "D",
+      "answer_text": "1/Req = 1/R1 + 1/R2",
+      "rationale": "Both parallel resistors have the same voltage; their currents add.",
+      "check": "I=V/R1+V/R2=V/Req.",
+      "source": "elementary"
+    },
+    "knowledge_Electronics_K2_02": {
+      "answer": "A",
+      "answer_text": "2 ohm",
+      "rationale": "Parallel conductance is 1/6+1/3=1/2 siemens.",
+      "check": "1/(1/6+1/3)=2.",
+      "source": "elementary"
+    },
+    "knowledge_Materials_K1_01": {
+      "answer": "C",
+      "answer_text": "F / A",
+      "rationale": "Average normal stress on the perpendicular section is axial force per cross-sectional area.",
+      "check": "Force/area has stress units; centered axial loading excludes bending.",
+      "source": "elementary"
+    },
+    "knowledge_Materials_K2_01": {
+      "answer": "D",
+      "answer_text": "30 MPa",
+      "rationale": "900/30=30 N/mm^2; one N/mm^2 equals one MPa.",
+      "check": "900/30=30; 1/(1e-6)=1e6 Pa.",
+      "source": "elementary"
+    },
+    "knowledge_Materials_K1_02": {
+      "answer": "A",
+      "answer_text": "(L - L0) / L0",
+      "rationale": "Engineering strain uses extension divided by original length.",
+      "check": "The original, not final, length is the engineering-strain denominator.",
+      "source": "elementary"
+    },
+    "knowledge_Materials_K2_02": {
+      "answer": "B",
+      "answer_text": "0.002",
+      "rationale": "The extension is 0.16 mm and the original length is 80 mm.",
+      "check": "(80.16-80)/80=0.002 within decimal rounding.",
+      "source": "elementary"
+    },
+    "knowledge_Computer_Science_K1_01": {
+      "answer": "D",
+      "answer_text": "Exactly one",
+      "rationale": "A complete DFA's transition function maps every state-symbol pair to one state.",
+      "check": "Completeness excludes zero; determinism excludes two or more.",
+      "source": "elementary"
+    },
+    "knowledge_Computer_Science_K2_01": {
+      "answer": "A",
+      "answer_text": "Ends in q1 and accepts",
+      "rationale": "Each x toggles the state and y preserves it. The input has three x symbols.",
+      "check": "q0 -> q1 -> q1 -> q0 -> q1 -> q1.",
+      "source": "elementary"
+    },
+    "knowledge_Computer_Science_K1_02": {
+      "answer": "B",
+      "answer_text": "Slot (i + 1) mod m",
+      "rationale": "Unit-step linear probing visits the next slot with wraparound.",
+      "check": "Successive probe indices differ by one modulo table length.",
+      "source": "elementary"
+    },
+    "knowledge_Computer_Science_K2_02": {
+      "answer": "C",
+      "answer_text": "5",
+      "rationale": "All three hashes are 3; 10 takes slot 3, 17 takes slot 4, and 24 takes slot 5.",
+      "check": "10%7=17%7=24%7=3; first free positions are 3,4,5.",
+      "source": "elementary"
+    },
+    "knowledge_Biology_K1_01": {
+      "answer": "A",
+      "answer_text": "Thymine",
+      "rationale": "Ordinary DNA has complementary A-T and G-C base pairs.",
+      "check": "Uracil is not the ordinary DNA adenine partner.",
+      "source": "elementary"
+    },
+    "knowledge_Biology_K2_01": {
+      "answer": "B",
+      "answer_text": "3'-TCAG-5'",
+      "rationale": "Apply A->T, G->C, T->A, C->G at aligned antiparallel positions.",
+      "check": "AGTC translates to TCAG when complementary positions are written 3' to 5'.",
+      "source": "elementary"
+    },
+    "knowledge_Biology_K1_02": {
+      "answer": "C",
+      "answer_text": "aa only",
+      "rationale": "The fully penetrant recessive phenotype requires two recessive alleles under the stipulated simple model.",
+      "check": "AA and Aa each have a dominant A allele.",
+      "source": "elementary"
+    },
+    "knowledge_Biology_K2_02": {
+      "answer": "D",
+      "answer_text": "1/4",
+      "rationale": "Each parent transmits a with probability one-half. Both a transmissions are needed.",
+      "check": "(1/2)*(1/2)=1/4; genotype outcomes AA,Aa,aA,aa.",
+      "source": "elementary"
+    },
+    "knowledge_Accounting_K1_01": {
+      "answer": "B",
+      "answer_text": "Beginning inventory + purchases - ending inventory",
+      "rationale": "Available raw materials either remain at period end or were used, absent other adjustments.",
+      "check": "Beginning + purchases = used + ending.",
+      "source": "elementary"
+    },
+    "knowledge_Accounting_K2_01": {
+      "answer": "C",
+      "answer_text": "$3,800",
+      "rationale": "Materials used are beginning stock plus purchases less ending stock.",
+      "check": "1100+3600-900=3800.",
+      "source": "elementary"
+    },
+    "knowledge_Accounting_K1_02": {
+      "answer": "D",
+      "answer_text": "Collecting a customer's receivable in cash",
+      "rationale": "Collection brings in cash; payment removes cash, while credit purchase and depreciation do not themselves move cash.",
+      "check": "Only the collection option is an immediate cash inflow.",
+      "source": "elementary"
+    },
+    "knowledge_Accounting_K2_02": {
+      "answer": "A",
+      "answer_text": "$9,150",
+      "rationale": "Only the receipt and cash payment change the cash balance; the credit purchase does not.",
+      "check": "8400+1700-950=9150.",
+      "source": "elementary"
+    },
+    "knowledge_Physics_K1_01": {
+      "answer": "C",
+      "answer_text": "Displacement",
+      "rationale": "Integrating signed velocity over time gives signed position change; absolute areas give distance.",
+      "check": "Delta x = integral v dt.",
+      "source": "elementary"
+    },
+    "knowledge_Physics_K2_01": {
+      "answer": "D",
+      "answer_text": "6 m",
+      "rationale": "The two signed displacements are +12 m and -6 m.",
+      "check": "3*4+(-2)*3=6.",
+      "source": "elementary"
+    },
+    "knowledge_Physics_K1_02": {
+      "answer": "A",
+      "answer_text": "F_net = m*a",
+      "rationale": "Newton's second law for constant mass in an inertial frame equates net force and mass times acceleration.",
+      "check": "Force units are kg*m/s^2.",
+      "source": "elementary"
+    },
+    "knowledge_Physics_K2_02": {
+      "answer": "B",
+      "answer_text": "2 m/s^2 to the right",
+      "rationale": "The net force is 6 N rightward, divided by mass 3 kg.",
+      "check": "(10-4)/3=2.",
+      "source": "elementary"
+    },
+    "knowledge_Public_Health_K1_01": {
+      "answer": "D",
+      "answer_text": "All people without the disease",
+      "rationale": "Specificity is the proportion of disease-absent people correctly classified negative.",
+      "check": "Specificity = TN/(TN+FP).",
+      "source": "CDC_specificity"
+    },
+    "knowledge_Public_Health_K2_01": {
+      "answer": "A",
+      "answer_text": "90%",
+      "rationale": "Among the 100 disease-absent people, 90 test negative.",
+      "check": "90/(90+10)*100=90.",
+      "source": "CDC_specificity"
+    },
+    "knowledge_Public_Health_K1_02": {
+      "answer": "B",
+      "answer_text": "New cases / disease-free people at the start",
+      "rationale": "Incidence proportion uses new first onsets over the initially disease-free population at risk.",
+      "check": "This is a proportion over a fixed period, not a person-time incidence rate.",
+      "source": "CDC_incidence"
+    },
+    "knowledge_Public_Health_K2_02": {
+      "answer": "C",
+      "answer_text": "10%",
+      "rationale": "Twelve first onsets among 120 initially disease-free people give one-tenth.",
+      "check": "12/120*100=10.",
+      "source": "CDC_incidence"
+    },
+    "knowledge_Diagnostics_and_Laboratory_Medicine_K1_01": {
+      "answer": "A",
+      "answer_text": "Hyperplasia",
+      "rationale": "Hyperplasia denotes increased cell number; hypertrophy denotes increased individual cell size.",
+      "check": "Definition, not a clinical diagnosis.",
+      "source": "NCI_hyperplasia"
+    },
+    "knowledge_Diagnostics_and_Laboratory_Medicine_K2_01": {
+      "answer": "B",
+      "answer_text": "Hyperplasia",
+      "rationale": "The stipulated change doubles cell number without changing individual cell volume or type.",
+      "check": "2000>1000; individual volume unchanged; category is increased cell number.",
+      "source": "NCI_hyperplasia"
+    },
+    "knowledge_Diagnostics_and_Laboratory_Medicine_K1_02": {
+      "answer": "C",
+      "answer_text": "Cell shrinkage with membrane-bound cellular fragments",
+      "rationale": "Classical apoptosis has cell shrinkage and membrane-bound fragments; early lytic necrosis is associated with membrane disruption.",
+      "check": "Restricted to introductory classical morphology, not every regulated cell-death subtype.",
+      "source": "NIH_cell_death"
+    },
+    "knowledge_Diagnostics_and_Laboratory_Medicine_K2_02": {
+      "answer": "D",
+      "answer_text": "Apoptosis",
+      "rationale": "The supplied shrinkage, chromatin condensation, and contained fragmentation form the classical apoptotic pattern.",
+      "check": "No patient diagnosis or etiology is inferred; only a stipulated basic morphology category.",
+      "source": "NIH_cell_death"
+    },
+    "knowledge_Architecture_and_Engineering_K1_01": {
+      "answer": "B",
+      "answer_text": "Multiply plan length by n",
+      "rationale": "At 1:n, one plan unit represents n ground units.",
+      "check": "Ground/plan length ratio=n for consistent units.",
+      "source": "elementary"
+    },
+    "knowledge_Architecture_and_Engineering_K2_01": {
+      "answer": "C",
+      "answer_text": "100 m",
+      "rationale": "Four centimeters times 2,500 is 10,000 centimeters, or 100 meters.",
+      "check": "4*2500/100=100.",
+      "source": "elementary"
+    },
+    "knowledge_Architecture_and_Engineering_K1_02": {
+      "answer": "D",
+      "answer_text": "L*(1-p)",
+      "rationale": "Center spacing equals ground-footprint length minus the overlap length pL.",
+      "check": "L-p*L=L*(1-p).",
+      "source": "elementary"
+    },
+    "knowledge_Architecture_and_Engineering_K2_02": {
+      "answer": "A",
+      "answer_text": "200 m",
+      "rationale": "The overlapping length is 300 m, so equal footprint centers are separated by 200 m.",
+      "check": "500*(1-0.60)=200.",
+      "source": "elementary"
+    },
+    "knowledge_Mechanical_Engineering_K1_01": {
+      "answer": "C",
+      "answer_text": "F*d",
+      "rationale": "Moment magnitude is force multiplied by the perpendicular distance to its line of action.",
+      "check": "Moment units are force*length.",
+      "source": "elementary"
+    },
+    "knowledge_Mechanical_Engineering_K2_01": {
+      "answer": "D",
+      "answer_text": "20 N m",
+      "rationale": "The end force is perpendicular, so the full 0.25 m is the moment arm.",
+      "check": "80*0.25=20.",
+      "source": "elementary"
+    },
+    "knowledge_Mechanical_Engineering_K1_02": {
+      "answer": "A",
+      "answer_text": "(1/2)*k*x^2",
+      "rationale": "Stored energy is the integral of the linear spring force k*x from zero deformation to x.",
+      "check": "Integral from 0 to x of k*s ds=(1/2)*k*x^2.",
+      "source": "elementary"
+    },
+    "knowledge_Mechanical_Engineering_K2_02": {
+      "answer": "B",
+      "answer_text": "1 J",
+      "rationale": "Energy is one-half times stiffness times compression squared.",
+      "check": "0.5*200*0.10^2=1.",
+      "source": "elementary"
+    },
+    "knowledge_Geography_K1_01": {
+      "answer": "D",
+      "answer_text": "Vertical elevation difference between adjacent contour levels",
+      "rationale": "The contour interval is the elevation increment represented by consecutive contour levels.",
+      "check": "It describes vertical elevation, not horizontal drawing spacing.",
+      "source": "elementary"
+    },
+    "knowledge_Geography_K2_01": {
+      "answer": "A",
+      "answer_text": "25 m",
+      "rationale": "Both differences between the stated consecutive levels are 25 m.",
+      "check": "125-100=150-125=25.",
+      "source": "elementary"
+    },
+    "knowledge_Geography_K1_02": {
+      "answer": "B",
+      "answer_text": "Equator",
+      "rationale": "Latitude measures angular position north or south from the equator.",
+      "check": "The prime meridian defines zero longitude, not latitude.",
+      "source": "elementary"
+    },
+    "knowledge_Geography_K2_02": {
+      "answer": "C",
+      "answer_text": "5 degrees south",
+      "rationale": "The smallest absolute latitude is five degrees.",
+      "check": "min(abs(12),abs(40),abs(-5),abs(-18))=5.",
+      "source": "elementary"
+    },
+    "knowledge_Chemistry_K1_01": {
+      "answer": "A",
+      "answer_text": "Moles of solute / liters of solution",
+      "rationale": "Molar concentration uses total solution volume rather than pure solvent volume.",
+      "check": "Molar concentration unit is mol/L of solution.",
+      "source": "elementary"
+    },
+    "knowledge_Chemistry_K2_01": {
+      "answer": "B",
+      "answer_text": "2.0 mol/L",
+      "rationale": "Divide the solute amount by the final solution volume.",
+      "check": "0.60/0.30=2.",
+      "source": "elementary"
+    },
+    "knowledge_Chemistry_K1_02": {
+      "answer": "C",
+      "answer_text": "The ion's net charge",
+      "rationale": "Oxidation numbers sum to zero for a neutral species and to net charge for an ion.",
+      "check": "The ion is explicitly charged, so an always-zero rule is false.",
+      "source": "elementary"
+    },
+    "knowledge_Chemistry_K2_02": {
+      "answer": "D",
+      "answer_text": "+6",
+      "rationale": "Four oxygen atoms contribute -8 and the ion has total charge -2, requiring sulfur +6.",
+      "check": "S+4*(-2)=-2 implies S=6.",
+      "source": "elementary"
+    },
+    "knowledge_Math_K1_01": {
+      "answer": "B",
+      "answer_text": "It is strictly convex",
+      "rationale": "An everywhere positive second derivative makes the slope strictly increasing and the function strictly convex on the interval.",
+      "check": "Strict positivity is stronger than the nonnegative-second-derivative convexity condition.",
+      "source": "elementary"
+    },
+    "knowledge_Math_K2_01": {
+      "answer": "C",
+      "answer_text": "Strictly convex everywhere",
+      "rationale": "The second derivative of this quadratic is the positive constant 6.",
+      "check": "f'=6*x-4; f''=6>0.",
+      "source": "elementary"
+    },
+    "knowledge_Math_K1_02": {
+      "answer": "D",
+      "answer_text": "The multiset of vertex degrees",
+      "rationale": "A graph isomorphism preserves adjacency and therefore the number of incident edges at corresponding vertices.",
+      "check": "Names, drawing coordinates, and edge-list order do not define abstract graph structure.",
+      "source": "elementary"
+    },
+    "knowledge_Math_K2_02": {
+      "answer": "A",
+      "answer_text": "They are not isomorphic: G has a degree-3 vertex and H does not",
+      "rationale": "G is a four-vertex star with degrees 3,1,1,1; H is a path with degrees 2,2,1,1.",
+      "check": "sorted(deg(G))=[1,1,1,3] differs from sorted(deg(H))=[1,1,2,2].",
+      "source": "elementary"
+    },
+    "knowledge_Energy_and_Power_K1_01": {
+      "answer": "C",
+      "answer_text": "Delta U = Q - W",
+      "rationale": "With entering heat positive and work done by the system positive, work removes energy from the closed system.",
+      "check": "Bulk kinetic/potential changes are excluded, so Delta U=Q-W.",
+      "source": "elementary"
+    },
+    "knowledge_Energy_and_Power_K2_01": {
+      "answer": "D",
+      "answer_text": "+230 J",
+      "rationale": "Heat adds 350 J and outgoing work removes 120 J.",
+      "check": "350-120=230.",
+      "source": "elementary"
+    },
+    "knowledge_Energy_and_Power_K1_02": {
+      "answer": "A",
+      "answer_text": "m_dot*g*h",
+      "rationale": "Raising each kilogram adds potential energy g*h; multiplying by kilograms per second gives power.",
+      "check": "(kg/s)*(m/s^2)*m=kg*m^2/s^3=W.",
+      "source": "elementary"
+    },
+    "knowledge_Energy_and_Power_K2_02": {
+      "answer": "B",
+      "answer_text": "100 W",
+      "rationale": "The device adds gravitational potential energy at a rate of 2*10*5 joules per second.",
+      "check": "2*10*5=100.",
+      "source": "elementary"
+    }
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "status": "SOURCE_SUPPORT_VERIFIED_INSTALL_AND_GPU_UNTESTED",
+  "verified_date": "2026-10-03",
+  "model_id": "google/gemma-4-E4B-it",
+  "model_revision": "ee0ef6023621cff504d758262d4e04895a5af4a2",
+  "dtype": "bfloat16",
+  "python_minor": "3.12",
+  "platform": "Linux x86_64, glibc >= 2.28",
+  "vllm": {
+    "version": "0.24.0+cu129",
+    "commit": "ee0da84ab9e04ac7610e28580af62c365e898389",
+    "wheel_url": "https://github.com/vllm-project/vllm/releases/download/v0.24.0/vllm-0.24.0%2Bcu129-cp38-abi3-manylinux_2_28_x86_64.whl",
+    "wheel_sha256": "597949743f2a00c0539d9e2ff0f67b32c608a378e973f99e7529fd6fa9445f70",
+    "wheel_bytes": 504590984,
+    "published_at": "2026-06-29T19:41:59Z",
+    "artifact_digest_provenance": "GitHub release asset digest, not a local downloaded-wheel verification",
+    "release_api": "https://api.github.com/repos/vllm-project/vllm/releases/tags/v0.24.0"
+  },
+  "required_distribution_versions": {
+    "torch": "2.11.0+cu129",
+    "torchaudio": "2.11.0+cu129",
+    "torchvision": "0.26.0+cu129",
+    "transformers": "5.5.3",
+    "huggingface-hub": "1.5.0"
+  },
+  "torch_cuda_runtime": "12.9",
+  "dependency_evidence": {
+    "cuda_requirements": "https://raw.githubusercontent.com/vllm-project/vllm/ee0da84ab9e04ac7610e28580af62c365e898389/requirements/cuda.txt",
+    "common_requirements": "https://raw.githubusercontent.com/vllm-project/vllm/ee0da84ab9e04ac7610e28580af62c365e898389/requirements/common.txt",
+    "torchvision_metadata": "https://download.pytorch.org/whl/cu129/torchvision-0.26.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl.metadata",
+    "torchvision_requires_torch": "==2.11.0",
+    "torchaudio_metadata": "https://download.pytorch.org/whl/cu129/torchaudio-2.11.0%2Bcu129-cp312-cp312-manylinux_2_28_x86_64.whl.metadata",
+    "torchaudio_metadata_sha256": "a54cd94dad51db00b8206ccecfe479ccba303ff000ae49d6a5dfa0cf77c70ffc",
+    "torchaudio_requires_dist": [],
+    "torchaudio_native_abi_not_proven_by_metadata": true,
+    "rejected_candidate": "vLLM0.30.0 cu129 source requires torch2.13.0 / torchaudio2.11.0 / torchvision0.28.0. No torchaudio Requires-Dist conflict is declared, but cross-version native ABI was not verified. Prefer matched torch/audio2.11 with vLLM0.24.0; do not omit torchaudio or use --no-deps."
+  },
+  "package_source_sha256": {
+    "vllm/model_executor/models/registry.py": "ab52495073a046b79d00a314cbc96e719e3ed916ea8a8bf6f3202015062b5676",
+    "vllm/model_executor/models/gemma4.py": "63ae961a88eb46c676dcecabaa714bc384d93eae4303f289d49452ebdca4d6dc",
+    "vllm/model_executor/models/gemma4_mm.py": "cd0ba3ed0d6b09bed313b0ab65b5d6246f379d0b97da6506e72de20476bc4846",
+    "vllm/entrypoints/serve/tokenize/protocol.py": "5cc5cb021b827ae34e5e3ce8fdd72ee0e07b6e6b95de74d3f075f3b3edb8ac21",
+    "vllm/entrypoints/openai/chat_completion/protocol.py": "4da7062753a0d78c75c7b887461834b6f3e0e79fb8df95e0fe41f24060c651f5"
+  },
+  "expected_model_files": {
+    "model.safetensors": {
+      "bytes": 15992595884,
+      "sha256": "cfbd3d2f1cd71bd471c37fe2bf8546d5028d41e5736f64e1ca6c6b8893125503",
+      "provenance": "HF pinned revision LFS metadata; verify actual downloaded bytes"
+    },
+    "tokenizer.json": {
+      "bytes": 32169626,
+      "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+      "provenance": "HF pinned revision LFS metadata; verify actual downloaded bytes"
+    },
+    "config.json": {"bytes": 5145, "sha256": "33b10c02df3c2e8536cf323d29d53262aaa2f4d11dbe19bc729373fbe90295d4"},
+    "chat_template.jinja": {"bytes": 18569, "sha256": "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5"},
+    "tokenizer_config.json": {"bytes": 3082, "sha256": "9f4fec4b1dc6ecddf8f4a92e9caea5971c0e67d81309f3f9066a2bee8c362633"},
+    "processor_config.json": {"bytes": 1689, "sha256": "32bdf45d2ad4cc29a0822ddd157a182de76644f0419a6228d151495256e9813c"},
+    "generation_config.json": {"bytes": 208, "sha256": "d4226bbe3117d2d253ba4609720ba82c6c4ce4627a9a6ae05387c78983ac03de"}
+  },
+  "text_config": {
+    "architecture": "Gemma4ForConditionalGeneration",
+    "hidden_size": 2560,
+    "num_hidden_layers": 42,
+    "num_attention_heads": 8,
+    "num_key_value_heads": 2,
+    "head_dim": 256,
+    "global_head_dim": 512,
+    "num_kv_shared_layers": 18,
+    "sliding_window": 512,
+    "max_position_embeddings": 131072
+  },
+  "server_policy": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "max_model_len": 131072,
+    "max_num_seqs": 1,
+    "max_num_batched_tokens": 4096,
+    "enforce_eager": true,
+    "gpu_memory_utilization": 0.90,
+    "language_model_only": true,
+    "limit_mm_per_prompt": {"image": 0, "audio": 0, "video": 0},
+    "enable_thinking": false,
+    "temperature": 0,
+    "generation_config": "vllm",
+    "output_tokens": 1024,
+    "response_format": "json_schema",
+    "token_count_endpoint": "/tokenize",
+    "input_truncation": false,
+    "automatic_quantization_fallback": false,
+    "automatic_context_reduction": false
+  },
+  "readiness_blockers": [
+    "No isolated Pod installation / pip check / native import has run.",
+    "Full131072 context BF16 memory, attention backend compatibility, and throughput on RTX3090 are unmeasured.",
+    "Transitive dependencies must be resolved normally on the Pod and frozen before the first judge call; full resolved lock not invented now.",
+    "Tokenize all900 complete gold-blind messages with the pinned Gemma tokenizer on the Pod; Qwen token counts do not establish Gemma token counts.",
+    "Check model identity, thinking-off schema output, /tokenize versus completion usage, synthetic semantic pairs and longest input before full audit."
+  ],
+  "sources": [
+    "https://docs.vllm.ai/projects/recipes/en/latest/Google/Gemma4.html",
+    "https://github.com/vllm-project/vllm/releases/tag/v0.24.0",
+    "https://huggingface.co/api/models/google/gemma-4-E4B-it/revision/ee0ef6023621cff504d758262d4e04895a5af4a2?blobs=true",
+    "https://huggingface.co/google/gemma-4-E4B-it/raw/ee0ef6023621cff504d758262d4e04895a5af4a2/config.json",
+    "https://pypi.org/pypi/transformers/5.5.3/json",
+    "https://pypi.org/pypi/huggingface-hub/1.5.0/json"
+  ]
+}

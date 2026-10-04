@@ -1,0 +1,874 @@
+{
+  "version": "private-knowledge-rule-probes-v1",
+  "provenance": "BENCHMARK_DERIVED",
+  "training_allowed": false,
+  "scope": "Independently authored, simpler text-only diagnostic probes; benchmark-informed skill selection only. Not training data, an MMMU score, or identical-item paired interventions.",
+  "authorship": "AI_AUTHORED_NOT_HUMAN_VERIFIED",
+  "sampling": {
+    "subjects": 15,
+    "items_per_subject": 4,
+    "K1_per_subject": 2,
+    "K2_per_subject": 2,
+    "selection": "Purposive broad coverage informed by the closed 102-item subject/question metadata; not random or representative.",
+    "pairing": "Each pair shares a general skill. K1 recalls a definition/rule; K2 applies it to new exact text state without supplying the rule or result.",
+    "comparison_limit": "K1/K2 and stored original-image K3 differ in item content and complexity; counts or accuracy cannot establish module responsibility or a causal knowledge deficit.",
+    "model_id": "Qwen/Qwen3-VL-4B-Instruct",
+    "model_revision": "ebb281ec70b05090aa6165b016eac8ec08e71b17",
+    "dtype": "bfloat16",
+    "backend": "same_frozen_Qwen_VLM_text_only",
+    "base_seed": 3407,
+    "repetitions": 1,
+    "generation": {
+      "temperature": 0.7,
+      "top_p": 0.8,
+      "top_k": 20,
+      "repetition_penalty": 1.0,
+      "presence_penalty": 1.5,
+      "max_new_tokens": 4096
+    },
+    "prompt_contract": "Use the existing T0 final-answer instruction with A-D options. No answer-key content, images, prior responses, or pair partner may enter the independent request.",
+    "skill_selection_evidence": "analysis_exports/bottleneck_20261003/export_all30_102_v2/source_hashes.json"
+  },
+  "items": [
+    {
+      "id": "knowledge_Music_K1_01",
+      "subject": "Music",
+      "stage": "K1",
+      "pair_id": "Music_01",
+      "skill": "diatonic_interval",
+      "question": "In twelve-tone equal temperament, how many semitones span a perfect fifth?",
+      "options": [
+        "7",
+        "5",
+        "6",
+        "8"
+      ]
+    },
+    {
+      "id": "knowledge_Music_K2_01",
+      "subject": "Music",
+      "stage": "K2",
+      "pair_id": "Music_01",
+      "skill": "diatonic_interval",
+      "question": "In standard Western pitch notation, what is the ascending interval from F4 natural to C5 natural?",
+      "options": [
+        "Perfect fourth",
+        "Perfect fifth",
+        "Minor sixth",
+        "Major sixth"
+      ]
+    },
+    {
+      "id": "knowledge_Music_K1_02",
+      "subject": "Music",
+      "stage": "K1",
+      "pair_id": "Music_02",
+      "skill": "notated_duration",
+      "question": "Without dots or tuplets, one quarter note has the same duration as how many eighth notes?",
+      "options": [
+        "One",
+        "Four",
+        "Two",
+        "Eight"
+      ]
+    },
+    {
+      "id": "knowledge_Music_K2_02",
+      "subject": "Music",
+      "stage": "K2",
+      "pair_id": "Music_02",
+      "skill": "notated_duration",
+      "question": "A 3/4 measure already contains one quarter note and two eighth notes. There are no dots or tuplets. Which single note exactly fills the remaining duration?",
+      "options": [
+        "Whole note",
+        "Half note",
+        "Eighth note",
+        "Quarter note"
+      ]
+    },
+    {
+      "id": "knowledge_Electronics_K1_01",
+      "subject": "Electronics",
+      "stage": "K1",
+      "pair_id": "Electronics_01",
+      "skill": "capacitor_dc_steady_state",
+      "question": "In an ideal circuit after all transients have ended under a constant DC supply, how is an ideal capacitor represented for steady-state current analysis?",
+      "options": [
+        "Short circuit",
+        "Open circuit",
+        "Independent current source",
+        "Negative resistance"
+      ]
+    },
+    {
+      "id": "knowledge_Electronics_K2_01",
+      "subject": "Electronics",
+      "stage": "K2",
+      "pair_id": "Electronics_01",
+      "skill": "capacitor_dc_steady_state",
+      "question": "A 12 V ideal DC source, a 2 kiloohm resistor, and a 5 microfarad ideal capacitor form a single series loop. There is no leakage path. After all transients have ended, what is the loop current?",
+      "options": [
+        "6 mA",
+        "12 mA",
+        "0 mA",
+        "24 mA"
+      ]
+    },
+    {
+      "id": "knowledge_Electronics_K1_02",
+      "subject": "Electronics",
+      "stage": "K1",
+      "pair_id": "Electronics_02",
+      "skill": "parallel_resistance",
+      "question": "For positive ideal resistors R1 and R2 connected in parallel, which relation gives their equivalent resistance Req?",
+      "options": [
+        "Req = R1 + R2",
+        "Req = R1 - R2",
+        "Req = R1 * R2",
+        "1/Req = 1/R1 + 1/R2"
+      ]
+    },
+    {
+      "id": "knowledge_Electronics_K2_02",
+      "subject": "Electronics",
+      "stage": "K2",
+      "pair_id": "Electronics_02",
+      "skill": "parallel_resistance",
+      "question": "A 6 ohm ideal resistor and a 3 ohm ideal resistor are connected between the same two nodes. What is the equivalent resistance between those nodes?",
+      "options": [
+        "2 ohm",
+        "9 ohm",
+        "3 ohm",
+        "18 ohm"
+      ]
+    },
+    {
+      "id": "knowledge_Materials_K1_01",
+      "subject": "Materials",
+      "stage": "K1",
+      "pair_id": "Materials_01",
+      "skill": "average_axial_stress",
+      "question": "For a straight bar under centered axial force F, which expression gives the average normal stress across a cross-section perpendicular to the bar axis with area A?",
+      "options": [
+        "F * A",
+        "A / F",
+        "F / A",
+        "F / sqrt(A)"
+      ]
+    },
+    {
+      "id": "knowledge_Materials_K2_01",
+      "subject": "Materials",
+      "stage": "K2",
+      "pair_id": "Materials_01",
+      "skill": "average_axial_stress",
+      "question": "A straight bar carries a centered axial tensile force of 900 N. A cross-section perpendicular to its axis has area 30 square millimeters. What is the average tensile stress on that section?",
+      "options": [
+        "3 MPa",
+        "300 MPa",
+        "0.03 MPa",
+        "30 MPa"
+      ]
+    },
+    {
+      "id": "knowledge_Materials_K1_02",
+      "subject": "Materials",
+      "stage": "K1",
+      "pair_id": "Materials_02",
+      "skill": "engineering_normal_strain",
+      "question": "Which expression defines engineering normal strain for an original length L0 and final length L?",
+      "options": [
+        "(L - L0) / L0",
+        "L / L0",
+        "(L - L0) / L",
+        "L0 / L"
+      ]
+    },
+    {
+      "id": "knowledge_Materials_K2_02",
+      "subject": "Materials",
+      "stage": "K2",
+      "pair_id": "Materials_02",
+      "skill": "engineering_normal_strain",
+      "question": "A specimen's gauge length increases from 80.00 mm to 80.16 mm under tension. What is its engineering normal strain, expressed as a dimensionless fraction?",
+      "options": [
+        "1.002",
+        "0.002",
+        "0.2",
+        "0.0002"
+      ]
+    },
+    {
+      "id": "knowledge_Computer_Science_K1_01",
+      "subject": "Computer_Science",
+      "stage": "K1",
+      "pair_id": "Computer_Science_01",
+      "skill": "deterministic_automaton_transition",
+      "question": "In a complete deterministic finite automaton, how many outgoing transitions does each state have for each individual alphabet symbol?",
+      "options": [
+        "Zero",
+        "At least two",
+        "Any number",
+        "Exactly one"
+      ]
+    },
+    {
+      "id": "knowledge_Computer_Science_K2_01",
+      "subject": "Computer_Science",
+      "stage": "K2",
+      "pair_id": "Computer_Science_01",
+      "skill": "deterministic_automaton_transition",
+      "question": "A DFA has states q0 and q1, starts in q0, and only q1 is accepting. Its transition table is q0: x->q1, y->q0; q1: x->q0, y->q1. What happens on input xyxxy?",
+      "options": [
+        "Ends in q1 and accepts",
+        "Ends in q0 and accepts",
+        "Ends in q0 and rejects",
+        "Ends in q1 and rejects"
+      ]
+    },
+    {
+      "id": "knowledge_Computer_Science_K1_02",
+      "subject": "Computer_Science",
+      "stage": "K1",
+      "pair_id": "Computer_Science_02",
+      "skill": "linear_probing_hash_insert",
+      "question": "In standard open addressing with linear probing and unit step, what slot is checked immediately after an occupied slot i in a table of length m?",
+      "options": [
+        "Slot 2*i without wraparound",
+        "Slot (i + 1) mod m",
+        "Slot (i - 1) mod m",
+        "Only slot i again"
+      ]
+    },
+    {
+      "id": "knowledge_Computer_Science_K2_02",
+      "subject": "Computer_Science",
+      "stage": "K2",
+      "pair_id": "Computer_Science_02",
+      "skill": "linear_probing_hash_insert",
+      "question": "An empty hash table has slots 0 through 6, h(k)=k mod 7, and standard linear probing with unit step. Insert distinct keys 10, 17, and 24 in that order. Which slot contains 24?",
+      "options": [
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    },
+    {
+      "id": "knowledge_Biology_K1_01",
+      "subject": "Biology",
+      "stage": "K1",
+      "pair_id": "Biology_01",
+      "skill": "DNA_complementarity",
+      "question": "In ordinary double-stranded DNA, which base pairs with adenine?",
+      "options": [
+        "Thymine",
+        "Cytosine",
+        "Guanine",
+        "Uracil"
+      ]
+    },
+    {
+      "id": "knowledge_Biology_K2_01",
+      "subject": "Biology",
+      "stage": "K2",
+      "pair_id": "Biology_01",
+      "skill": "DNA_complementarity",
+      "question": "A DNA strand is written 5'-AGTC-3'. Which sequence gives its complementary strand written in the aligned 3'-to-5' direction?",
+      "options": [
+        "3'-AGTC-5'",
+        "3'-TCAG-5'",
+        "3'-GACT-5'",
+        "3'-UCAG-5'"
+      ]
+    },
+    {
+      "id": "knowledge_Biology_K1_02",
+      "subject": "Biology",
+      "stage": "K1",
+      "pair_id": "Biology_02",
+      "skill": "Mendelian_recessive_inheritance",
+      "question": "For a fully penetrant autosomal recessive trait with recessive allele a and dominant allele A, which genotype expresses the recessive trait?",
+      "options": [
+        "AA only",
+        "Aa only",
+        "aa only",
+        "AA and Aa"
+      ]
+    },
+    {
+      "id": "knowledge_Biology_K2_02",
+      "subject": "Biology",
+      "stage": "K2",
+      "pair_id": "Biology_02",
+      "skill": "Mendelian_recessive_inheritance",
+      "question": "Two parents both have genotype Aa for a fully penetrant autosomal recessive trait. Assume ordinary Mendelian segregation and no other genetic effects. What is the probability that one child expresses the recessive trait?",
+      "options": [
+        "0",
+        "1/2",
+        "3/4",
+        "1/4"
+      ]
+    },
+    {
+      "id": "knowledge_Accounting_K1_01",
+      "subject": "Accounting",
+      "stage": "K1",
+      "pair_id": "Accounting_01",
+      "skill": "raw_material_inventory_flow",
+      "question": "With no inventory losses, returns, or other adjustments, which expression gives raw materials used during a period?",
+      "options": [
+        "Ending inventory + purchases - beginning inventory",
+        "Beginning inventory + purchases - ending inventory",
+        "Beginning inventory - purchases - ending inventory",
+        "Purchases + beginning inventory + ending inventory"
+      ]
+    },
+    {
+      "id": "knowledge_Accounting_K2_01",
+      "subject": "Accounting",
+      "stage": "K2",
+      "pair_id": "Accounting_01",
+      "skill": "raw_material_inventory_flow",
+      "question": "Raw-material inventory starts at $1,100. Purchases during the period total $3,600. Raw-material inventory ends at $900. There are no losses, returns, or other adjustments. What is the cost of raw materials used?",
+      "options": [
+        "$3,400",
+        "$5,600",
+        "$3,800",
+        "$1,600"
+      ]
+    },
+    {
+      "id": "knowledge_Accounting_K1_02",
+      "subject": "Accounting",
+      "stage": "K1",
+      "pair_id": "Accounting_02",
+      "skill": "cash_transaction_classification",
+      "question": "Which transaction increases a company's cash balance at the time of the transaction?",
+      "options": [
+        "Paying a supplier in cash",
+        "Buying supplies on account",
+        "Recording depreciation",
+        "Collecting a customer's receivable in cash"
+      ]
+    },
+    {
+      "id": "knowledge_Accounting_K2_02",
+      "subject": "Accounting",
+      "stage": "K2",
+      "pair_id": "Accounting_02",
+      "skill": "cash_transaction_classification",
+      "question": "A company starts the day with $8,400 cash. It collects $1,700 cash from customers, pays $950 cash to a supplier, and buys $600 supplies on account without paying cash. There are no other transactions. What is its ending cash balance?",
+      "options": [
+        "$9,150",
+        "$8,550",
+        "$11,050",
+        "$7,450"
+      ]
+    },
+    {
+      "id": "knowledge_Physics_K1_01",
+      "subject": "Physics",
+      "stage": "K1",
+      "pair_id": "Physics_01",
+      "skill": "velocity_displacement",
+      "question": "On a signed velocity-versus-time graph for one-dimensional motion, what quantity equals the signed area between the curve and the time axis over an interval?",
+      "options": [
+        "Final acceleration",
+        "Speed at the start",
+        "Displacement",
+        "Always the total distance traveled"
+      ]
+    },
+    {
+      "id": "knowledge_Physics_K2_01",
+      "subject": "Physics",
+      "stage": "K2",
+      "pair_id": "Physics_01",
+      "skill": "velocity_displacement",
+      "question": "An object moves on a straight axis at +3 m/s for 4 seconds and then at -2 m/s for 3 seconds. Ignore the instantaneous change between the two constant velocities. What is its net displacement?",
+      "options": [
+        "18 m",
+        "-6 m",
+        "12 m",
+        "6 m"
+      ]
+    },
+    {
+      "id": "knowledge_Physics_K1_02",
+      "subject": "Physics",
+      "stage": "K1",
+      "pair_id": "Physics_02",
+      "skill": "Newton_second_law",
+      "question": "For a constant-mass object in an inertial frame, which relation connects net force F_net, mass m, and acceleration a?",
+      "options": [
+        "F_net = m*a",
+        "F_net = m/a",
+        "F_net = a/m",
+        "F_net = m*a^2"
+      ]
+    },
+    {
+      "id": "knowledge_Physics_K2_02",
+      "subject": "Physics",
+      "stage": "K2",
+      "pair_id": "Physics_02",
+      "skill": "Newton_second_law",
+      "question": "A 3 kg object has two horizontal forces: 10 N to the right and 4 N to the left. There are no other horizontal forces, and the reference frame is inertial. What is its horizontal acceleration?",
+      "options": [
+        "2 m/s^2 to the left",
+        "2 m/s^2 to the right",
+        "14/3 m/s^2 to the right",
+        "6 m/s^2 to the right"
+      ]
+    },
+    {
+      "id": "knowledge_Public_Health_K1_01",
+      "subject": "Public_Health",
+      "stage": "K1",
+      "pair_id": "Public_Health_01",
+      "skill": "screening_specificity",
+      "question": "A test is compared with a reference determination of disease status. Which group is the denominator when calculating specificity?",
+      "options": [
+        "All test-positive people",
+        "All people with the disease",
+        "All tested people",
+        "All people without the disease"
+      ]
+    },
+    {
+      "id": "knowledge_Public_Health_K2_01",
+      "subject": "Public_Health",
+      "stage": "K2",
+      "pair_id": "Public_Health_01",
+      "skill": "screening_specificity",
+      "question": "A screening study has these counts relative to reference disease status: true positives 30, false negatives 20, true negatives 90, false positives 10. What is the test specificity?",
+      "options": [
+        "90%",
+        "60%",
+        "75%",
+        "80%"
+      ]
+    },
+    {
+      "id": "knowledge_Public_Health_K1_02",
+      "subject": "Public_Health",
+      "stage": "K1",
+      "pair_id": "Public_Health_02",
+      "skill": "incidence_proportion",
+      "question": "For a closed population followed completely over a fixed period, which expression gives incidence proportion for first onset of a disease?",
+      "options": [
+        "All existing cases / total person-time",
+        "New cases / disease-free people at the start",
+        "Deaths / new cases",
+        "Existing cases at the start / all residents"
+      ]
+    },
+    {
+      "id": "knowledge_Public_Health_K2_02",
+      "subject": "Public_Health",
+      "stage": "K2",
+      "pair_id": "Public_Health_02",
+      "skill": "incidence_proportion",
+      "question": "A closed cohort has 120 disease-free people at the start of a year. All are followed for the full year with no losses, deaths, or migration. Twelve people develop their first occurrence of the disease during that year. What is the annual incidence proportion?",
+      "options": [
+        "12%",
+        "1%",
+        "10%",
+        "90%"
+      ]
+    },
+    {
+      "id": "knowledge_Diagnostics_and_Laboratory_Medicine_K1_01",
+      "subject": "Diagnostics_and_Laboratory_Medicine",
+      "stage": "K1",
+      "pair_id": "Diagnostics_and_Laboratory_Medicine_01",
+      "skill": "cellular_adaptation_number",
+      "question": "Which term means an increase in the number of cells in a tissue, rather than an increase in individual cell size?",
+      "options": [
+        "Hyperplasia",
+        "Hypertrophy",
+        "Atrophy",
+        "Necrosis"
+      ]
+    },
+    {
+      "id": "knowledge_Diagnostics_and_Laboratory_Medicine_K2_01",
+      "subject": "Diagnostics_and_Laboratory_Medicine",
+      "stage": "K2",
+      "pair_id": "Diagnostics_and_Laboratory_Medicine_01",
+      "skill": "cellular_adaptation_number",
+      "question": "In a simplified tissue experiment, the total cell count rises from 1,000 to 2,000, while average individual cell volume and cell type remain unchanged. Which cellular adaptation describes this change?",
+      "options": [
+        "Hypertrophy",
+        "Hyperplasia",
+        "Atrophy",
+        "Metaplasia"
+      ]
+    },
+    {
+      "id": "knowledge_Diagnostics_and_Laboratory_Medicine_K1_02",
+      "subject": "Diagnostics_and_Laboratory_Medicine",
+      "stage": "K1",
+      "pair_id": "Diagnostics_and_Laboratory_Medicine_02",
+      "skill": "classical_cell_death_morphology",
+      "question": "In introductory cell pathology, which feature is characteristic of classical apoptosis rather than early lytic necrosis?",
+      "options": [
+        "Early plasma-membrane rupture with cell swelling",
+        "Release of cell contents with prominent inflammation",
+        "Cell shrinkage with membrane-bound cellular fragments",
+        "An increase in the number of viable cells"
+      ]
+    },
+    {
+      "id": "knowledge_Diagnostics_and_Laboratory_Medicine_K2_02",
+      "subject": "Diagnostics_and_Laboratory_Medicine",
+      "stage": "K2",
+      "pair_id": "Diagnostics_and_Laboratory_Medicine_02",
+      "skill": "classical_cell_death_morphology",
+      "question": "A simplified microscopy record describes individual cells becoming smaller, showing condensed chromatin, and separating into membrane-bound fragments without an inflammatory response. Among these broad categories, which classical cell-death pattern best fits?",
+      "options": [
+        "Hyperplasia",
+        "Hypertrophy",
+        "Early lytic necrosis",
+        "Apoptosis"
+      ]
+    },
+    {
+      "id": "knowledge_Architecture_and_Engineering_K1_01",
+      "subject": "Architecture_and_Engineering",
+      "stage": "K1",
+      "pair_id": "Architecture_and_Engineering_01",
+      "skill": "map_scale_conversion",
+      "question": "On a plan drawn at scale 1:n using the same units for plan and ground, how is ground length obtained from plan length?",
+      "options": [
+        "Divide plan length by n",
+        "Multiply plan length by n",
+        "Subtract n from plan length",
+        "Square plan length"
+      ]
+    },
+    {
+      "id": "knowledge_Architecture_and_Engineering_K2_01",
+      "subject": "Architecture_and_Engineering",
+      "stage": "K2",
+      "pair_id": "Architecture_and_Engineering_01",
+      "skill": "map_scale_conversion",
+      "question": "A straight road segment measures 4 cm on a plan at scale 1:2,500. What is its ground length in meters?",
+      "options": [
+        "10 m",
+        "1,000 m",
+        "100 m",
+        "6,250 m"
+      ]
+    },
+    {
+      "id": "knowledge_Architecture_and_Engineering_K1_02",
+      "subject": "Architecture_and_Engineering",
+      "stage": "K1",
+      "pair_id": "Architecture_and_Engineering_02",
+      "skill": "longitudinal_photo_overlap",
+      "question": "Successive equal rectangular aerial photographs cover ground length L along a straight flight line. Their longitudinal overlap fraction is p. What is the ground spacing between successive photo centers?",
+      "options": [
+        "L*p",
+        "L/(1-p)",
+        "L*(1+p)",
+        "L*(1-p)"
+      ]
+    },
+    {
+      "id": "knowledge_Architecture_and_Engineering_K2_02",
+      "subject": "Architecture_and_Engineering",
+      "stage": "K2",
+      "pair_id": "Architecture_and_Engineering_02",
+      "skill": "longitudinal_photo_overlap",
+      "question": "Each of two successive vertical aerial photographs covers a 500 m ground length along a straight flight line. The longitudinal overlap is 60% of this length. Ground is flat and the rectangular footprints have identical orientation. How far apart are the photo centers along the flight line?",
+      "options": [
+        "200 m",
+        "300 m",
+        "500 m",
+        "800 m"
+      ]
+    },
+    {
+      "id": "knowledge_Mechanical_Engineering_K1_01",
+      "subject": "Mechanical_Engineering",
+      "stage": "K1",
+      "pair_id": "Mechanical_Engineering_01",
+      "skill": "force_moment",
+      "question": "For a force of magnitude F with perpendicular distance d from a pivot to its line of action, what is the magnitude of its moment about that pivot?",
+      "options": [
+        "F/d",
+        "d/F",
+        "F*d",
+        "F*d^2"
+      ]
+    },
+    {
+      "id": "knowledge_Mechanical_Engineering_K2_01",
+      "subject": "Mechanical_Engineering",
+      "stage": "K2",
+      "pair_id": "Mechanical_Engineering_01",
+      "skill": "force_moment",
+      "question": "A rigid wrench extends 0.25 m from its pivot. An 80 N force acts at the end perpendicular to the wrench in the plane of rotation. What is the magnitude of the torque about the pivot?",
+      "options": [
+        "320 N m",
+        "5 N m",
+        "80 N m",
+        "20 N m"
+      ]
+    },
+    {
+      "id": "knowledge_Mechanical_Engineering_K1_02",
+      "subject": "Mechanical_Engineering",
+      "stage": "K1",
+      "pair_id": "Mechanical_Engineering_02",
+      "skill": "linear_spring_energy",
+      "question": "An ideal linear spring has stiffness k and deformation x from its unstressed position. Which expression gives its stored elastic energy?",
+      "options": [
+        "(1/2)*k*x^2",
+        "k*x",
+        "k*x^2",
+        "(1/2)*k^2*x"
+      ]
+    },
+    {
+      "id": "knowledge_Mechanical_Engineering_K2_02",
+      "subject": "Mechanical_Engineering",
+      "stage": "K2",
+      "pair_id": "Mechanical_Engineering_02",
+      "skill": "linear_spring_energy",
+      "question": "An ideal linear spring with stiffness 200 N/m is compressed by 0.10 m from its unstressed position. What elastic energy does it store?",
+      "options": [
+        "2 J",
+        "1 J",
+        "20 J",
+        "0.1 J"
+      ]
+    },
+    {
+      "id": "knowledge_Geography_K1_01",
+      "subject": "Geography",
+      "stage": "K1",
+      "pair_id": "Geography_01",
+      "skill": "contour_interval",
+      "question": "On a topographic map with regularly spaced contour elevations, what does the contour interval specify?",
+      "options": [
+        "Horizontal ground distance between contours",
+        "Map distance between any two cities",
+        "Altitude of the highest point only",
+        "Vertical elevation difference between adjacent contour levels"
+      ]
+    },
+    {
+      "id": "knowledge_Geography_K2_01",
+      "subject": "Geography",
+      "stage": "K2",
+      "pair_id": "Geography_01",
+      "skill": "contour_interval",
+      "question": "Three consecutive contour levels on a topographic map are labeled 100 m, 125 m, and 150 m above sea level. There are no intervening contour levels. What is the contour interval?",
+      "options": [
+        "25 m",
+        "50 m",
+        "100 m",
+        "125 m"
+      ]
+    },
+    {
+      "id": "knowledge_Geography_K1_02",
+      "subject": "Geography",
+      "stage": "K1",
+      "pair_id": "Geography_02",
+      "skill": "latitude_equator_distance",
+      "question": "Which reference line has latitude zero degrees?",
+      "options": [
+        "Prime meridian",
+        "Equator",
+        "Tropic of Cancer",
+        "Arctic Circle"
+      ]
+    },
+    {
+      "id": "knowledge_Geography_K2_02",
+      "subject": "Geography",
+      "stage": "K2",
+      "pair_id": "Geography_02",
+      "skill": "latitude_equator_distance",
+      "question": "Four sites have latitudes 12 degrees north, 40 degrees north, 5 degrees south, and 18 degrees south. Which site is closest to the equator in latitude?",
+      "options": [
+        "12 degrees north",
+        "40 degrees north",
+        "5 degrees south",
+        "18 degrees south"
+      ]
+    },
+    {
+      "id": "knowledge_Chemistry_K1_01",
+      "subject": "Chemistry",
+      "stage": "K1",
+      "pair_id": "Chemistry_01",
+      "skill": "molar_concentration",
+      "question": "Which expression defines the molar concentration of a solute in a solution?",
+      "options": [
+        "Moles of solute / liters of solution",
+        "Grams of solvent / liters of solution",
+        "Liters of solution / moles of solute",
+        "Moles of solute / liters of pure solvent"
+      ]
+    },
+    {
+      "id": "knowledge_Chemistry_K2_01",
+      "subject": "Chemistry",
+      "stage": "K2",
+      "pair_id": "Chemistry_01",
+      "skill": "molar_concentration",
+      "question": "A solution contains 0.60 mol of dissolved solute and has a final total volume of 0.30 L. What is its molar concentration?",
+      "options": [
+        "0.50 mol/L",
+        "2.0 mol/L",
+        "0.18 mol/L",
+        "0.90 mol/L"
+      ]
+    },
+    {
+      "id": "knowledge_Chemistry_K1_02",
+      "subject": "Chemistry",
+      "stage": "K1",
+      "pair_id": "Chemistry_02",
+      "skill": "oxidation_number_balance",
+      "question": "What must the sum of the oxidation numbers of all atoms in a polyatomic ion equal?",
+      "options": [
+        "Always zero",
+        "The number of atoms",
+        "The ion's net charge",
+        "The ion's molar mass"
+      ]
+    },
+    {
+      "id": "knowledge_Chemistry_K2_02",
+      "subject": "Chemistry",
+      "stage": "K2",
+      "pair_id": "Chemistry_02",
+      "skill": "oxidation_number_balance",
+      "question": "In the sulfate ion SO4^2-, each oxygen has oxidation number -2. What is the sulfur oxidation number?",
+      "options": [
+        "-6",
+        "+4",
+        "+8",
+        "+6"
+      ]
+    },
+    {
+      "id": "knowledge_Math_K1_01",
+      "subject": "Math",
+      "stage": "K1",
+      "pair_id": "Math_01",
+      "skill": "second_derivative_convexity",
+      "question": "A twice-differentiable real function has a strictly positive second derivative everywhere on an interval. Which conclusion follows on that interval?",
+      "options": [
+        "It is strictly concave",
+        "It is strictly convex",
+        "It must be linear",
+        "It must be decreasing"
+      ]
+    },
+    {
+      "id": "knowledge_Math_K2_01",
+      "subject": "Math",
+      "stage": "K2",
+      "pair_id": "Math_01",
+      "skill": "second_derivative_convexity",
+      "question": "For f(x)=3*x^2-4*x+5 on the whole real line, which description of its curvature is correct?",
+      "options": [
+        "Strictly concave everywhere",
+        "Linear everywhere",
+        "Strictly convex everywhere",
+        "Convex only for positive x and concave only for negative x"
+      ]
+    },
+    {
+      "id": "knowledge_Math_K1_02",
+      "subject": "Math",
+      "stage": "K1",
+      "pair_id": "Math_02",
+      "skill": "graph_isomorphism_degree_invariant",
+      "question": "Which property must be preserved by an isomorphism of two finite simple undirected graphs?",
+      "options": [
+        "The spelling of every vertex name",
+        "The coordinates used to draw vertices",
+        "The order in which edges are listed",
+        "The multiset of vertex degrees"
+      ]
+    },
+    {
+      "id": "knowledge_Math_K2_02",
+      "subject": "Math",
+      "stage": "K2",
+      "pair_id": "Math_02",
+      "skill": "graph_isomorphism_degree_invariant",
+      "question": "Simple undirected graph G has vertices a,b,c,d and exactly edges ab,ac,ad. Graph H has vertices u,v,w,x and exactly edges uv,vw,wx. Which statement is correct?",
+      "options": [
+        "They are not isomorphic: G has a degree-3 vertex and H does not",
+        "They are isomorphic because both have three edges",
+        "They are isomorphic because both are connected",
+        "They are not isomorphic solely because their vertex names differ"
+      ]
+    },
+    {
+      "id": "knowledge_Energy_and_Power_K1_01",
+      "subject": "Energy_and_Power",
+      "stage": "K1",
+      "pair_id": "Energy_and_Power_01",
+      "skill": "closed_system_first_law",
+      "question": "For a closed system with negligible changes in bulk kinetic and potential energy, let Q be heat entering and W be work done by the system on its surroundings. Which relation gives the internal-energy change?",
+      "options": [
+        "Delta U = Q + W",
+        "Delta U = W - Q",
+        "Delta U = Q - W",
+        "Delta U = Q * W"
+      ]
+    },
+    {
+      "id": "knowledge_Energy_and_Power_K2_01",
+      "subject": "Energy_and_Power",
+      "stage": "K2",
+      "pair_id": "Energy_and_Power_01",
+      "skill": "closed_system_first_law",
+      "question": "A closed system absorbs 350 J of heat and does 120 J of work on its surroundings. Changes in bulk kinetic and potential energy are negligible. What is its internal-energy change?",
+      "options": [
+        "+470 J",
+        "-230 J",
+        "-470 J",
+        "+230 J"
+      ]
+    },
+    {
+      "id": "knowledge_Energy_and_Power_K1_02",
+      "subject": "Energy_and_Power",
+      "stage": "K1",
+      "pair_id": "Energy_and_Power_02",
+      "skill": "gravitational_lifting_power",
+      "question": "An ideal device raises material continuously by height h at mass flow rate m_dot in gravity g, with no speed change or losses. Which expression gives the required mechanical power?",
+      "options": [
+        "m_dot*g*h",
+        "m_dot*g/h",
+        "m_dot*h/g",
+        "m_dot*g*h^2"
+      ]
+    },
+    {
+      "id": "knowledge_Energy_and_Power_K2_02",
+      "subject": "Energy_and_Power",
+      "stage": "K2",
+      "pair_id": "Energy_and_Power_02",
+      "skill": "gravitational_lifting_power",
+      "question": "An ideal lifting device raises water at 2 kg/s through a vertical height of 5 m. Take gravitational acceleration as 10 m/s^2. There are no losses or changes in inlet/outlet pressure or speed. What mechanical power is required?",
+      "options": [
+        "10 W",
+        "100 W",
+        "50 W",
+        "20 W"
+      ]
+    }
+  ]
+}

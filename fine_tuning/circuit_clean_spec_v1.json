@@ -1,0 +1,15 @@
+{
+  "version": "independent-dc-circuit-bridge-v1",
+  "origin": "Independent authored component laws and procedural parameters; no benchmark examples or source payloads",
+  "components": ["positive ideal DC voltage source", "three positive ohmic resistors", "one ideal open/closed switch"],
+  "topology": "Source and series resistor feed two return branches; the second return resistor is controlled by the switch",
+  "units": {"source": "V", "resistance": "ohm", "current": "A"},
+  "solver": "Exact rational nodal KCL, independently checked by series/parallel reduction; no numeric tolerance or rounding",
+  "representations": ["novel component glyphs plus complete legend", "standard resistor/source/switch symbols", "horizontally relaid-out standard circuit"],
+  "conditions": ["A0 fixed/no bridge", "A1 randomized/no bridge", "A2 fixed/bridge", "A3 randomized/bridge"],
+  "views": ["qa", "structure", "grounded"],
+  "family": "Topology, switch state and normalized resistor ratios; voltage and render variations stay in the same family",
+  "training_allowed": false,
+  "public_upload_allowed": false,
+  "gate": "Requires independent render/rights/contamination and actual pinned processor approval before any training"
+}
