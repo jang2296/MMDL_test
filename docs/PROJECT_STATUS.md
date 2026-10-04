@@ -1,5 +1,24 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 13:35 UTC — setup 회귀 시간 가정 실패·학습 진입 차단
+
+소유A40 `qg7krba8ebl10s`의 고정 pip 설치·pip check는 완료했으나 전체177 CPU tests는
+176통과/1오류(552.173초)로 종료했다. watchdog의 실제 종료 테스트가0.2초 안에 중첩 Python의
+PID 출력이 나온다고 가정해, 안전 종료 JSON을 PID로 읽었다. watchdog 자체는 BUDGET_STOP과
+소유 child cleanup을 수행했다. GPU doctor/모델 취득/G6 학습에는 진입하지 않았다.
+원격 프로세스211/213/219/434 종료와 GPU0MiB를 확인했다. 실패 로그·pip freeze를
+`analysis_exports/g6_setup_failure_20261004/`에 보존했다. 실패를 PASS로 바꾸지 않는다.
+
+테스트는 의도적인0.35초 cold-start 지연과5초 유한 timeout으로 수정하고,
+별도0.05초 빠른 timeout 검사·실제 worker 종료/회수 검사는 유지한다.
+로컬 관련21 CPU tests(10.298초)와 Ruff를 통과했다. 실제 금융/시간 watchdog 값은 변경하지 않는다.
+새 GitHub exact SHA로 닫힌 checkout을 갱신하고 새 runtime에서 검사를 다시 실행한다.
+설치된 venv 재사용은 정상 lock 설치/pip check/전체검사/doctor/모델 hash 검사를 생략하지 않는다.
+원래 과금 시작13:05:01.730UTC/잔액10.77/reserve1/상한0.55h/최종 한도는 유지한다.
+10분마다 소유Pod API/단계/오류/예산을 확인하며 기존 Controller의600초 HEALTH_POLL도 기록한다.
+과거 속도로는 보수적2배 G6 비용 gate를 통과하기 어려우며 실제 새 smoke/F0 측정으로 판단한다.
+교수님 MMDL·V8 558/900·기존 학습 결과는 불변이고, 전체10K 완료는 아직 미검증이다.
+
 ## 2026-10-04 13:10 UTC — MMDL_test 게시·새 A40 설치 재개
 
 게시 commit `9882aacde28cf27e4c35772ea9032acf7e3aedb9`와 원격 feature HEAD를 확인했다.

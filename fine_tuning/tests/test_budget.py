@@ -91,23 +91,30 @@ class BudgetTests(unittest.TestCase):
         environment = dict(os.environ, RUNPOD_POD_ID='fixture-owned-pod')
         for interrupted in (signal.SIGTERM, signal.SIGINT, None):
             with self.subTest(interrupted=interrupted):
-                watchdog = subprocess.Popen(self.command([sys.executable, '-c', leader()], '10' if interrupted else '.2'),
+                # Cold shared-volume Python startup can exceed the old 0.2s fixture budget.
+                # Keep the real timeout test, including deliberately delayed readiness.
+                child = 'import time; time.sleep(.35); ' + leader()
+                watchdog = subprocess.Popen(self.command([sys.executable, '-S', '-c', child], '10' if interrupted else '5'),
                     env=environment, cwd=Path(__file__).resolve().parents[2], stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, text=True)
-                worker = int(watchdog.stdout.readline())
+                worker = None
                 try:
+                    worker = int(watchdog.stdout.readline())
                     if interrupted:
                         watchdog.send_signal(interrupted)
                     stdout, stderr = watchdog.communicate(timeout=20)
                     self.assertEqual(128+interrupted if interrupted else 124, watchdog.returncode, stderr)
                     self.assertEqual('INTERRUPTED' if interrupted else 'BUDGET_STOP', json.loads(stdout)['status'])
-                    self.reap_worker(worker)
                 finally:
-                    if watchdog.poll() is None:
-                        watchdog.send_signal(signal.SIGTERM)
-                        watchdog.wait(timeout=20)
-                    watchdog.stdout.close()
-                    watchdog.stderr.close()
+                    try:
+                        if watchdog.poll() is None:
+                            watchdog.send_signal(signal.SIGTERM)
+                            watchdog.wait(timeout=20)
+                    finally:
+                        watchdog.stdout.close()
+                        watchdog.stderr.close()
+                        if worker is not None:
+                            self.reap_worker(worker)
 
     def test_controller_cleans_success_timeout_journal_error_and_sigterm(self):
         from fine_tuning.run_experiment import Controller

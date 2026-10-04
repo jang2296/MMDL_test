@@ -21,6 +21,13 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 새A40 setup177 CPU tests는176통과/1 timing fixture 오류로13:35UTC 종료했다.
+  중첩 Python이0.2초 안에 PID를 출력한다는 테스트 가정을 수정하며 실제 예산/종료 가드는 유지한다.
+  전체검사 통과 전에는 모델/GPU/G6를 시작하지 않는다. 로그/pip freeze는 내부 회수본에 보존한다.
+  재개는 새 GitHub exact SHA·새 runtime이며, 설치된 venv만 명시적으로 재사용할 수 있다.
+  정상 lock 설치/pip check/전체검사/doctor/pinned hash를 생략하지 않는다. 과금 시작/한도는 재설정하지 않는다.
+  사용자 요청대로10분마다 Pod/프로세스/오류/예산을 점검하고600초 HEALTH_POLL을 활용한다.
+  watchdog의 process 종료는 Pod 과금 중단이 아니므로 결과 회수·검증 뒤 실제 소유Pod를 삭제한다.
 - `9882aacde28cf27e4c35772ea9032acf7e3aedb9`를 MMDL_test에 게시·666파일/hash/mode 동기화했다.
   새 소유A40 Pod `qg7krba8ebl10s`를 생성·read-back·직접 SSH 확인했고 설치를 재개했다.
   30GB container/160GB workspace·network volume없음, 예산 all-in$0.55/h·잔액10.77·reserve1USD,

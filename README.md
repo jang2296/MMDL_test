@@ -34,6 +34,10 @@ persistent volume·고정 lock·CPU 회귀·실제 CUDA/BF16·지정 모델 hash
 **이 명령만으로 학습/평가를 자동 시작하지 않는다.** 승인 데이터·cohort·Pod ID·예산·
 종료 시각을 명시하여 이후 controller를 실행한다. 새 bootstrap의 GPU 성공은 아직 미검증이다.
 설치에도 같은 금융/시간 watchdog을 적용하며 추가로 최대1시간에 중단한다.
+설치된 환경만 재사용하려면 새 `--runtime-root`와 기존 `/workspace` 하위의
+`--reuse-venv /workspace/<이전-runtime>/venv`를 명시한다. 고정 lock/pip check·전체검사·
+doctor·모델 hash 검사는 다시 수행하며 이전 실행 결과를 덮어쓰지 않는다.
+이때 G6도 실제 선택한 venv의 Python으로 실행하고 새 runtime 경로를 전달한다.
 가중치·체크포인트·HF/MMMU 원문/이미지·HTML/PDF·대형 응답·비밀키·강의 원본은 게시하지 않는다.
 모델/HF 데이터는 RunPod에서 취득한다. 공개된 자체 fixture를 새 비공개 holdout이라고 부르지 않는다.
 
