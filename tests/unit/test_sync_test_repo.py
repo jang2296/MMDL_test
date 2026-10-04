@@ -4,10 +4,43 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.sync_test_repo import fingerprint, sync
+from scripts.sync_test_repo import POOL, PROOF, fingerprint, selected_files, sync
 
 
 class TestRepoSyncTests(unittest.TestCase):
+    def test_actual_selection_excludes_payloads_and_refuses_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture_paths = [f"{POOL}/manifest.json", "env/test-repo.gitignore",
+                "fine_tuning/generated/graph_cs_bridge_development_cohort_v1/pairing.jsonl"]
+            for arm in ("A0", "A1", "A2", "A3"):
+                fixture_paths += [f"{PROOF}/{arm}_processor.json",
+                    f"{PROOF}/{arm}_approved/manifest.json", f"{PROOF}/{arm}_approved/records.jsonl"]
+            for name in fixture_paths:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('{"files": {}}' if name.endswith("manifest.json") else "")
+            excluded = ["experiments/demo/predictions.jsonl", "fine_tuning/benchmark_records.json",
+                        "fine_tuning/model.safetensors", ".env", "docs/P1/raw.md"]
+            for name in excluded:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("not for publication")
+            source = root / "fine_tuning/example.py"
+            source.write_text("print('source')")
+            selected = selected_files(root)
+            self.assertIn("fine_tuning/example.py", selected)
+            self.assertFalse(set(excluded) & selected.keys())
+            source.write_text("hf_" + "a" * 32)
+            with self.assertRaisesRegex(ValueError, "credential"):
+                selected_files(root)
+            source.write_text("print('source')")
+            payload = root / "manifests/datasets/leak.json"
+            payload.parent.mkdir(parents=True)
+            payload.write_text('{"question":"benchmark payload"}')
+            with self.assertRaisesRegex(ValueError, "Benchmark payload"):
+                selected_files(root)
+
     def test_wrong_remote_dirty_checkout_and_extra_files_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

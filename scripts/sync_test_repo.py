@@ -14,7 +14,20 @@ from pathlib import Path
 REPOSITORY = "jang2296/MMDL_test"
 CODE_DIRS = ("src", "tests", "scripts", "configs", "env", "prompts", "manifests",
              "third_party", "assignment", "reports", "experiments")
-SUFFIXES = {".py", ".sh", ".json", ".jsonl", ".yaml", ".yml", ".toml", ".txt", ".md", ".lock", ".csv"}
+SUFFIXES = {".py", ".sh", ".yaml", ".yml", ".toml", ".md", ".lock"}
+AUTHORED_JSON = {
+    "bridge_input_protocol_v1.json", "bridge_training_protocol_v1.json",
+    "chartqa_transfer_source_v1.json", "circuit_clean_spec_v1.json", "clean_spec.json",
+    "mixture_policy_v1.json", "protocol.json", "source_inventory_20261004.json",
+    "source_registry_bridge_v2.json", "source_registry_v1.json",
+}
+EXPERIMENT_JSON = {
+    "experiments/bottleneck_diagnostic/knowledge_cases.json",
+    "experiments/bottleneck_diagnostic/knowledge_answer_key.json",
+    "experiments/bottleneck_diagnostic/local_smoke_protocol.json",
+    "experiments/bottleneck_diagnostic/protocol.json",
+    "experiments/gemma_verifier/deployment.json",
+}
 SECRET = re.compile(rb"(?:hf_|sk-|gh[pousr]_|github_pat_|rpa_|rps_)[A-Za-z0-9_-]{24,}|-----BEGIN [A-Z ]*PRIVATE KEY-----")
 POOL = "fine_tuning/generated/graph_cs_bridge_split_pool32_v2"
 PROOF = "fine_tuning/runs/recovered_graph_pool32_child_approval_v2/proof"
@@ -28,6 +41,7 @@ def selected_files(root: Path) -> dict[str, Path]:
       for base, directories, names in os.walk(root / folder, followlinks=False):
         directories[:] = [name for name in directories
                           if name not in {"__pycache__", ".git", "P0", "P1"}
+                          and not name.endswith(".egg-info")
                           and not (folder == "fine_tuning" and name in {"runs", "generated"})]
         for name in names:
             path = Path(base) / name
@@ -36,7 +50,12 @@ def selected_files(root: Path) -> dict[str, Path]:
                 continue
             if folder in {"docs", "claudedocs"} and path.suffix != ".md":
                 continue
-            if path.is_file() and (path.suffix in SUFFIXES or path.name == "LICENSE"):
+            authored_data = (path.suffix == ".json" and
+                (folder in {"manifests", "configs"} or relative.as_posix() in EXPERIMENT_JSON
+                 or folder in {"fine_tuning", HISTORICAL} and path.name in AUTHORED_JSON))
+            plain_text = path.suffix == ".txt" and folder in {"env", "prompts"}
+            if path.is_file() and (path.suffix in SUFFIXES or authored_data or plain_text
+                                  or path.name in {"LICENSE", "test-repo.gitignore"}):
                 files[relative.as_posix()] = path
     for folder in ("results/scoring-v6-20260924", "results/scoring-v8-20260924"):
         for path in (root / folder).glob("*"):
@@ -66,8 +85,12 @@ def selected_files(root: Path) -> dict[str, Path]:
         data = path.read_bytes()
         if SECRET.search(data):
             raise ValueError(f"Possible credential; publication refused: {name}")
-        if name.startswith("results/") and any(f'"{k}"'.encode() in data for k in ("question", "raw_response", "gold_explanation")):
-            raise ValueError(f"Benchmark payload in result: {name}")
+        if path.suffix == ".json" and not name.startswith((POOL, PROOF)):
+            prohibited: tuple[str, ...] = ("raw_response", "gold_explanation")
+            if name != "experiments/bottleneck_diagnostic/knowledge_cases.json":
+                prohibited += ("question",)
+            if any(f'"{k}"'.encode() in data for k in prohibited):
+                raise ValueError(f"Benchmark payload in source metadata: {name}")
     return dict(sorted(files.items()))
 
 
@@ -85,12 +108,17 @@ def sync(root: Path, write: bool) -> dict:
         raise ValueError("Destination origin is not the approved MMDL_test repository")
     selected = selected_files(root)
     existing = {}
-    for path in destination.rglob("*"):
-        if ".git" in path.relative_to(destination).parts or "__pycache__" in path.parts:
-            continue
+    for base, directories, names in os.walk(destination, followlinks=False):
+      for directory in directories:
+        if (Path(base) / directory).is_symlink():
+            raise ValueError("Destination contains a symlink")
+      directories[:] = [name for name in directories
+                        if name not in {".git", "__pycache__", ".ruff_cache", ".mypy_cache", ".pytest_cache"}]
+      for name in names:
+        path = Path(base) / name
         if path.is_symlink():
             raise ValueError("Destination contains a symlink")
-        if path.is_file() and not any(p in {".ruff_cache", ".mypy_cache", ".pytest_cache"} for p in path.parts):
+        if path.is_file():
             existing[path.relative_to(destination).as_posix()] = path
     extras = sorted(existing.keys() - selected.keys())
     if extras:
