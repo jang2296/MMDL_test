@@ -14,7 +14,17 @@ and historical v18 source are bundled, not all saved results.
 The latest A40 Pod was deleted by the user. Its full10K controller stopped before GPU
 stages because the evaluator `--help` preflight exceeded 30 seconds. Prepared remote
 data is not a completed training run; the entire final approval/data artifact was not
-recovered locally. This publication starts no replacement Pod or GPU execution.
+recovered locally. The help preflight now exits before cold runtime imports.
+The new `python -m fine_tuning.runpod_g6 --help` entrypoint rebuilds the own-generated
+pools, normally approves data for the current source, excludes smoke roots, and runs
+the original full10K four-arm controller from F0. See the root README for exact
+commit, owned Pod, financial deadline and recovery-reserve arguments. Installation
+uses the same stdlib financial/time watchdog, capped at one hour; preparation
+also has a watchdog. The inner GPU controller ends two minutes before that outer
+deadline so its separately grouped training subprocess can close safely.
+CPU verification is not cloud execution or completion of G6/G7/transfer.
+
+### Historical private-overlay deployment (superseded)
 
 This folder is a private overlay for the existing MMDL evaluation repository.
 Do not copy it into the local public `MMDL/` checkout or publish it to GitHub
@@ -45,13 +55,13 @@ The design document is the existing parent file
 `Qwen3_VL_4B_Novel_Visual_World_Expanded_Plan_20261003.md.md`; its double suffix
 is intentional in this workspace.
 
-## Entrypoints
+## Historical overlay entrypoints (superseded)
 
-The private `runpod_setup.sh` pins public commit
+The historical private `runpod_setup.sh` pinned public commit
 `342ceff1d0baaaa57aa63c644b9f64b007caa174`, the actual successful cloud checkout.
 Its direct parent is the unchanged local public checkout `197838c…`; the only
 commit difference is one report sentence, not executable code. The private
-setup also pins `qwen-vl-utils==0.0.14` and its `av==19.0.1` dependency to the
+setup also pinned `qwen-vl-utils==0.0.14` and its `av==19.0.1` dependency to the
 recovered successful environment. Historical setup receipts are not rewritten;
 their original script remains in `runs/bootstrap/private_overlay_v1.tar.gz`.
 

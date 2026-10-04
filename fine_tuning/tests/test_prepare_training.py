@@ -663,7 +663,7 @@ class PreparationTests(unittest.TestCase):
             self.assertFalse((output/"completion_receipt.json").exists())
             self.assertFalse(json.loads((output/"candidate_preparation.json").read_text())["training_allowed"])
 
-    def completion_fixture(self, root):
+    def completion_fixture(self, root, ready=False):
         parent, original_source = root/"parent", root/"original_source"
         (parent/"images").mkdir(parents=True)
         original_source.mkdir()
@@ -671,11 +671,13 @@ class PreparationTests(unittest.TestCase):
         for name in ("train.py", "modules.py", "audit.py", "sources.py"):
             shutil.copyfile(Path(preparation.__file__).with_name(name), original_source/name)
         # A training-only source change must be bound, not mislabeled as a new processor run.
-        with (original_source/"train.py").open("a") as stream:
-            stream.write("\n# previous frozen training version\n")
+        if not ready:
+            with (original_source/"train.py").open("a") as stream:
+                stream.write("\n# previous frozen training version\n")
         expected = preparation.policy()
+        nvw_source = "nvw-independent-procedural-v1" if ready else "nvw"
         registered = {name: {"source_known": True, "rights_approved": True,
-                            "benchmark_derived": False, "parents": []} for name in ("nvw", "trace")}
+                            "benchmark_derived": False, "parents": []} for name in (nvw_source, "trace")}
         audit.dump(root/"registry.json", registered)
         coverage = {"files": [{"path": str(root/"excluded-source"), "records": 1}], "record_count": 1}
         audit.dump(root/"index.json", {"status": "COMPLETE", "coverage_verified": True,
@@ -691,7 +693,7 @@ class PreparationTests(unittest.TestCase):
         nvw_rows = []
         for track, values in expected["nvw_joint_views"].items():
             for view, count in values.items():
-                nvw_rows.extend(make(f"nvw_{track}_{view}_{i}", "nvw", view, nvw_track=track)
+                nvw_rows.extend(make(f"nvw_{track}_{view}_{i}", nvw_source, view, nvw_track=track)
                                 for i in range(count))
         trace_rows = [make(f"trace_{i}", "trace") for i in range(expected["trace_records"])]
         deltas = [make(f"delta_{i}", "trace") for i in range(25)]
@@ -700,10 +702,11 @@ class PreparationTests(unittest.TestCase):
         raw = preparation.order(nvw_rows+trace_rows)
         audit.write_rows(parent/"proposed_records.jsonl", raw)
         audit.write_rows(parent/"records.jsonl", trace_rows+[development])
-        audit.dump(parent/"conversion.json", {"status": "CONVERTED_NOT_APPROVED"})
+        audit.dump(parent/"conversion.json", {"status": "CONVERTED_NOT_APPROVED",
+            "train_count": len(trace_rows), "dev_count": 1, "holdout_count": 0})
         audit.write_rows(parent/"canonical_private.jsonl", [{"root_id": row["root_id"],
             "image": "images/shared.png", "image_sha256": audit.sha(parent/"images/shared.png")} for row in nvw_rows])
-        rejected = {row["id"] for row in trace_rows[:25]}
+        rejected = {row["id"] for row in trace_rows[:0 if ready else 25]}
         def contamination(row, image_root, index):
             return ["NEAR_IMAGE_REVIEW_REQUIRED"] if row["id"] in rejected else []
         self.enterContext(patch.object(audit, "contamination_candidates", side_effect=contamination))
@@ -721,7 +724,27 @@ class PreparationTests(unittest.TestCase):
                     for row in rows}}
             audit.dump(output, receipt)
             return rows, receipt
+        preflight = self.enterContext(patch.object(audit, "preflight_records", side_effect=processor))
+        if ready:
+            preparation.freeze_approved(parent/"proposed_records.jsonl", parent, root/"registry.json",
+                root/"index.json", root/"model", parent, expected["pilot_records"], selection={
+                    "required_joint_views": expected["nvw_joint_views"],
+                    "trace_conversion_sha256": audit.sha(parent/"conversion.json"),
+                    "trace_downloads_sha256": audit.sha(root/"downloads.json")})
+            preflight.reset_mock()
+        else:
+            self.incomplete_completion_parent(parent, original_source, root, processor)
+        self.enterContext(patch.object(preparation, "trace_paths", return_value=[root/"cached-source"]))
+        def conversion(paths, output, seed, train_limit):
+            (output/"images").mkdir(parents=True)
+            shutil.copyfile(parent/"images/shared.png", output/"images/shared.png")
+            return trace_rows+deltas+[development]
+        self.enterContext(patch.object(preparation.sources, "trace_records", side_effect=conversion))
+        return parent, original_source, preflight, rejected, deltas
+
+    def incomplete_completion_parent(self, parent, original_source, root, processor):
         processor(parent/"proposed_records.jsonl", parent, root/"model", parent/"processor_preflight.json")
+        registered = preparation.registry(root/"registry.json")
         manifest = audit.approve(parent/"proposed_records.jsonl", parent, registered, root/"index.json",
                                  parent/"approved", parent/"processor_preflight.json")
         manifest["source_sha256"] = {name: audit.sha(original_source/name) for name in ("train.py", "modules.py")}
@@ -732,18 +755,52 @@ class PreparationTests(unittest.TestCase):
             "model_input_receipt_sha256": audit.sha(parent/"processor_preflight.json"),
             "selection": {"trace_conversion_sha256": audit.sha(parent/"conversion.json"),
                           "trace_downloads_sha256": audit.sha(root/"downloads.json")}})
-        preflight = self.enterContext(patch.object(audit, "preflight_records", side_effect=processor))
-        self.enterContext(patch.object(preparation, "trace_paths", return_value=[root/"cached-source"]))
-        def conversion(paths, output, seed, train_limit):
-            (output/"images").mkdir(parents=True)
-            shutil.copyfile(parent/"images/shared.png", output/"images/shared.png")
-            return trace_rows+deltas+[development]
-        self.enterContext(patch.object(preparation.sources, "trace_records", side_effect=conversion))
-        return parent, original_source, preflight, rejected, deltas
 
     def complete(self, root, parent, original_source, output):
         return preparation.complete_pilot(parent, original_source, root/"downloads.json", root,
             root/"registry.json", root/"index.json", root/"model", output)
+
+    def test_ready_completion_reapproves_without_reconverting_or_modifying_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent, original_source, preflight, _, _ = self.completion_fixture(root, ready=True)
+            hashes = {str(path.relative_to(parent)): audit.sha(path) for path in parent.rglob("*") if path.is_file()}
+            output = root/"completed"
+            with patch.object(preparation, "trace_paths", side_effect=AssertionError("No cache required")), \
+                    patch.object(preparation.sources, "trace_records", side_effect=AssertionError("No reconversion")), \
+                    patch.object(audit, "approve", wraps=audit.approve) as reapproval:
+                receipt = self.complete(root, parent, original_source, output)
+            reapproval.assert_called_once()
+            self.assertFalse(preflight.called)
+            self.assertEqual((10000, 0, []), (receipt["parent_approved_reused"], receipt["new_approved_trace"], receipt["deltas"]))
+            self.assertEqual(receipt["parent_files_sha256"]["common_manifest.json"], hashes["common_manifest.json"])
+            self.assertEqual(hashes, {str(path.relative_to(parent)): audit.sha(path) for path in parent.rglob("*") if path.is_file()})
+            rows, manifest, _, _, _ = preparation.closed_pilot(output)
+            self.assertEqual(rows, audit.read_rows(parent/"approved/records.jsonl"))
+            self.assertEqual(manifest["model_input_audit"]["kind"], "COMPOSITE_PROCESSOR_RECEIPTS")
+            self.assertEqual(manifest["model_input_audit"]["delta_receipts_sha256"], [])
+
+    def test_ready_completion_rejects_corrupt_normal_manifest_and_conversion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parent, original_source, preflight, _, _ = self.completion_fixture(root, ready=True)
+            for name, field, value in (("common_manifest.json", "record_order_sha256", "corrupt"),
+                                       ("common_manifest.json", "sources", {}),
+                                       ("common_manifest.json", "model_input_audit", {}),
+                                       ("conversion.json", "dev_count", 0),
+                                       ("preparation_receipt.json", "status", "INCOMPLETE_QUOTA")):
+                with self.subTest(name=name, field=field):
+                    path = parent/name
+                    original = path.read_bytes()
+                    corrupted = json.loads(original)
+                    corrupted[field] = value
+                    path.write_text(json.dumps(corrupted))
+                    output = root/(name+"_"+field)
+                    with self.assertRaises(ValueError):
+                        self.complete(root, parent, original_source, output)
+                    self.assertFalse((output/"common_manifest.json").exists())
+                    path.write_bytes(original)
+            self.assertFalse(preflight.called)
 
     def test_completion_preserves_1000_joint_views_10k_order_and_parent_delta_proofs(self):
         with tempfile.TemporaryDirectory() as tmp:

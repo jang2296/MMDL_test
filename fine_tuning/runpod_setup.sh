@@ -5,12 +5,20 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 task_root=/workspace/nvw-runtime
 code_commit=
 execute=false
+original_arguments=("$@")
+owned_pod_id= gpu_cutoff_utc= billing_start_utc= balance_usd= reserve_usd= hourly_usd=
 while (($#)); do
   case "$1" in
     --commit) code_commit=${2:?Missing commit}; shift 2 ;;
     --runtime-root) task_root=${2:?Missing runtime root}; shift 2 ;;
+    --owned-pod-id) owned_pod_id=${2:?Missing Pod ID}; shift 2 ;;
+    --gpu-cutoff-utc) gpu_cutoff_utc=${2:?Missing cutoff}; shift 2 ;;
+    --billing-start-utc) billing_start_utc=${2:?Missing billing start}; shift 2 ;;
+    --balance-usd) balance_usd=${2:?Missing balance}; shift 2 ;;
+    --reserve-usd) reserve_usd=${2:?Missing reserve}; shift 2 ;;
+    --hourly-usd) hourly_usd=${2:?Missing rate}; shift 2 ;;
     --execute) execute=true; shift ;;
-    --help) printf '%s\n' 'Usage: bash fine_tuning/runpod_setup.sh --commit <40-char SHA> [--runtime-root /workspace/nvw-runtime] [--execute]'; exit 0 ;;
+    --help) printf '%s\n' 'Usage: bash fine_tuning/runpod_setup.sh --commit <40-char SHA> [--runtime-root /workspace/nvw-runtime] [--owned-pod-id ID --gpu-cutoff-utc UTC --billing-start-utc UTC --balance-usd USD --reserve-usd USD --hourly-usd USD --execute]'; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -25,6 +33,15 @@ if [[ $execute != true ]]; then
   exit 0
 fi
 [[ -n ${RUNPOD_POD_ID:-} ]] || { printf '%s\n' 'RunPod only'; exit 2; }
+[[ $owned_pod_id == "$RUNPOD_POD_ID" && -n $gpu_cutoff_utc && -n $billing_start_utc && -n $balance_usd && -n $reserve_usd && -n $hourly_usd ]] || { printf '%s\n' 'Exact owned Pod and explicit financial/time bounds required'; exit 2; }
+if [[ ${MMDL_BUDGET_WATCHDOG_PID:-} != "$PPID" ]]; then
+  export PYTHONPATH="$repo_root/src:$repo_root"
+  cd "$repo_root"
+  exec python3.12 -m fine_tuning.budget --owned-pod-id "$owned_pod_id" \
+    --gpu-cutoff-utc "$gpu_cutoff_utc" --billing-start-utc "$billing_start_utc" \
+    --balance-usd "$balance_usd" --reserve-usd "$reserve_usd" --hourly-usd "$hourly_usd" \
+    --max-seconds 3600 -- bash "$repo_root/fine_tuning/runpod_setup.sh" "${original_arguments[@]}"
+fi
 mountpoint -q /workspace || { printf '%s\n' 'Require persistent Pod volume'; exit 2; }
 [[ ! -e $task_root && ! -L $task_root ]] || { printf '%s\n' 'Existing runtime refused'; exit 2; }
 [[ $(realpath -m -- "$task_root") == "$task_root" ]] || { printf '%s\n' 'Non-canonical runtime path refused'; exit 2; }

@@ -303,9 +303,9 @@ class ControllerTests(unittest.TestCase):
             with patch("fine_tuning.run_experiment.subprocess.Popen", return_value=process), \
                     patch("fine_tuning.run_experiment.subprocess.run", side_effect=FileNotFoundError("probe absent")), \
                     patch("fine_tuning.run_experiment.time.monotonic", return_value=0), \
-                    patch("fine_tuning.run_experiment.os.killpg") as kill:
+                    patch("fine_tuning.run_experiment.terminate_group") as cleanup:
                 controller.stage("live", ["stage"], 1200)
-            kill.assert_not_called()
+            cleanup.assert_called_once_with(process, grace_seconds=15)
             events = [json.loads(line) for line in (root/"output/journal.jsonl").read_text().splitlines()]
             health = next(e for e in events if e["status"] == "HEALTH_POLL")
             self.assertTrue(health["process_live"])

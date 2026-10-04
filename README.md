@@ -15,13 +15,22 @@
 export MMDL_TEST_COMMIT='<실행할 전체 commit SHA>'
 git clone --branch feat/workspace-repro https://github.com/jang2296/MMDL_test.git /workspace/MMDL_test
 git -C /workspace/MMDL_test checkout --detach "$MMDL_TEST_COMMIT"
-bash /workspace/MMDL_test/fine_tuning/runpod_setup.sh --commit "$MMDL_TEST_COMMIT" --runtime-root /workspace/nvw-runtime --execute
+export MMDL_BILLING_START_UTC='<실제 Pod 과금 시작 UTC 시각>'
+export MMDL_GPU_CUTOFF_UTC='<운영 종료 UTC 시각>'
+export MMDL_INITIAL_BALANCE_USD='<생성 당시 잔액>'
+export MMDL_ALL_IN_HOURLY_USD='<디스크 포함 USD/h>'
+bash /workspace/MMDL_test/fine_tuning/runpod_setup.sh \
+  --commit "$MMDL_TEST_COMMIT" --runtime-root /workspace/nvw-runtime \
+  --owned-pod-id "$RUNPOD_POD_ID" --billing-start-utc "$MMDL_BILLING_START_UTC" \
+  --gpu-cutoff-utc "$MMDL_GPU_CUTOFF_UTC" --balance-usd "$MMDL_INITIAL_BALANCE_USD" \
+  --reserve-usd 1 --hourly-usd "$MMDL_ALL_IN_HOURLY_USD" --execute
 ```
 
 `--execute`를 빼면 설치/다운로드 없는 dry-run이다. 설치 셸은 clean checkout·commit·
 persistent volume·고정 lock·CPU 회귀·실제 CUDA/BF16·지정 모델 hash를 검사한다.
 **이 명령만으로 학습/평가를 자동 시작하지 않는다.** 승인 데이터·cohort·Pod ID·예산·
 종료 시각을 명시하여 이후 controller를 실행한다. 새 bootstrap의 GPU 성공은 아직 미검증이다.
+설치에도 같은 금융/시간 watchdog을 적용하며 추가로 최대1시간에 중단한다.
 가중치·체크포인트·HF/MMMU 원문/이미지·HTML/PDF·대형 응답·비밀키·강의 원본은 게시하지 않는다.
 모델/HF 데이터는 RunPod에서 취득한다. 공개된 자체 fixture를 새 비공개 holdout이라고 부르지 않는다.
 
@@ -29,6 +38,30 @@ persistent volume·고정 lock·CPU 회귀·실제 CUDA/BF16·지정 모델 hash
 삭제된 Pod ID·수동 archive·옛 승인 원장에 의존하므로 새 Pod의 진입점으로 쓰지 않는다.
 전체 10K 학습은 아직 완료되지 않았다. 과거 결과 재사용에는 별도 artifact가 필요하며,
 새 실행에서는 현재 코드에 대해 정상 입력 승인을 수행하고 승인 hash를 임의 변경하지 않는다.
+
+설치 완료 뒤 새 전체10K G6 진입점은 다음과 같다. 금액은 **Pod 생성 당시 잔액**,
+시작 시각은 실제 과금 시작 시각, 시간당 가격은 GPU와 디스크를 포함한 값이다.
+종료 시각과 잔액에서 계산한 한도 중 먼저 도달하는 한도를 따른다.
+
+```bash
+export PYTHONPATH=/workspace/MMDL_test/src:/workspace/MMDL_test
+/workspace/nvw-runtime/venv/bin/python -m fine_tuning.runpod_g6 \
+  --commit "$MMDL_TEST_COMMIT" --runtime-root /workspace/nvw-runtime \
+  --owned-pod-id "$RUNPOD_POD_ID" \
+  --billing-start-utc "$MMDL_BILLING_START_UTC" --gpu-cutoff-utc "$MMDL_GPU_CUTOFF_UTC" \
+  --balance-usd "$MMDL_INITIAL_BALANCE_USD" --reserve-usd 1 --hourly-usd "$MMDL_ALL_IN_HOURLY_USD" \
+  --execute
+```
+
+`--execute`가 없으면 실행 계획만 확인한다. 자체 합성 자료는 고정 seed/생성기로
+새 runtime에 생성하고, HF 자료는 RunPod에서 취득한다. 모든 split의 benchmark는
+오염 배제용으로만 사용한다. 현재 코드의 실제 processor 검사·권리/오염 승인 →
+smoke와 겹치는 root 제거 → 독립 F0/FL/FM/FV/FML 비교를 수행한다.
+모든 학습 arm은 F0에서 새로 시작하며 데이터량/설정은 자동 축소하지 않는다.
+준비 단계에도 watchdog이 적용되고 GPU child 종료에는 추가2분 여유를 둔다.
+`BUDGET_STOP`/`BLOCKED`는 완료가 아니다. G7·전문 데이터 전이 실험은 이 명령에
+자동 포함하지 않는다. 결과 회수·독립 검증 뒤 해당 Pod를 삭제하는 운영 단계는 별도로 수행한다.
+새 진입점의 CPU 검증과 실제 클라우드 완료 상태는 진행 기록에서 구분한다.
 
 로컬 게시: 상위 작업공간에서 `python -m scripts.sync_test_repo --sync`, `--check`로
 파일/hash/모드를 대조한 뒤 **MMDL_test checkout만** feature branch로 commit/push한다.

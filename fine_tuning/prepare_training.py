@@ -303,12 +303,14 @@ def complete_pilot(parent, parent_source_root, trace_downloads, trace_cache_root
     """Reapprove parent + delta into approved/records.jsonl, with assets/manifest at output root."""
     parent, parent_source_root, output = Path(parent), Path(parent_source_root), Path(output)
     expected, registered = policy(), registry(source_registry)
-    if output.exists() or (parent/"common_manifest.json").exists():
-        raise ValueError("Require an incomplete immutable parent and a new completion directory")
+    if output.exists():
+        raise ValueError("Require an immutable parent and a new completion directory")
     paths = ("proposed_records.jsonl", "processor_preflight.json", "preparation_receipt.json",
              "approved/manifest.json", "approved/records.jsonl", "approved/quarantine.jsonl",
              "records.jsonl", "conversion.json", "canonical_private.jsonl")
     frozen = {name: audit.sha(parent/name) for name in paths}
+    if (parent/"common_manifest.json").exists():
+        frozen["common_manifest.json"] = audit.sha(parent/"common_manifest.json")
     preparation = json.loads((parent/"preparation_receipt.json").read_text())
     manifest = json.loads((parent/"approved/manifest.json").read_text())
     preflight = json.loads((parent/"processor_preflight.json").read_text())
@@ -330,7 +332,7 @@ def complete_pilot(parent, parent_source_root, trace_downloads, trace_cache_root
             or audit.sha(parent_source_root/"sources.py") != audit.sha(source_root/"sources.py")
             or collator(parent_source_root) != collator(source_root)):
         raise ValueError("Parent source hashes or actual processor/collator implementation differ")
-    if (preparation.get("status") != "INCOMPLETE_QUOTA" or preparation.get("stage") != "pilot"
+    if (preparation.get("status") not in {"INCOMPLETE_QUOTA", "READY"} or preparation.get("stage") != "pilot"
             or preparation.get("mixture_policy_sha256") != audit.sha(POLICY_PATH)
             or preparation.get("expected_records") != expected["pilot_records"]
             or preparation.get("approved_records") != len(approved)
@@ -354,8 +356,22 @@ def complete_pilot(parent, parent_source_root, trace_downloads, trace_cache_root
             or preparation.get("quarantined_records") != len(rejected_ids)
             or manifest.get("contamination_audit", {}).get("quarantined") != len(rejected_ids)
             or any(raw_by_id[sid].get("source_id") != "trace" or "nvw_track" in raw_by_id[sid] for sid in rejected_ids)
-            or not 0 < len(rejected_ids) < expected["trace_records"]):
+            or (not 0 < len(rejected_ids) < expected["trace_records"] if preparation["status"] == "INCOMPLETE_QUOTA"
+                else bool(rejected_ids) or len(approved) != expected["pilot_records"])):
         raise ValueError("Only excluded TRACE quarantine may create the pilot shortfall")
+    if preparation["status"] == "READY":
+        normal_manifest = dict(manifest, stage="pilot", preparation_receipt_sha256=frozen["preparation_receipt.json"],
+            mixture_policy=expected, mixture_policy_sha256=audit.sha(POLICY_PATH),
+            record_order_sha256=hashlib.sha256(json.dumps([row["id"] for row in approved]).encode()).hexdigest(),
+            module_arms=expected["module_arms"], same_records_order_and_images_for_all_arms=True,
+            actual_arm_execution_verified=False, nvw_joint_views=joint_counts(approved),
+            nvw_tracks={track: sum(values.values()) for track, values in joint_counts(approved).items()},
+            records_path=str((parent/"approved/records.jsonl").resolve()))
+        if ("common_manifest.json" not in frozen or preparation.get("training_allowed") is not True
+                or json.loads((parent/"common_manifest.json").read_text()) != normal_manifest):
+            raise ValueError("READY parent common manifest differs from its original approval")
+    elif "common_manifest.json" in frozen:
+        raise ValueError("Incomplete parent cannot have a completed common manifest")
     for row in approved:
         original = dict(audit.model_input_record(raw_by_id[row["id"]]), training_allowed=True,
                         processor_receipt_sha256=frozen["processor_preflight.json"])
@@ -376,12 +392,27 @@ def complete_pilot(parent, parent_source_root, trace_downloads, trace_cache_root
     if reused != approved or audit.read_rows(output/"parent_reapproved/quarantine.jsonl") != quarantined:
         raise ValueError("Parent reapproval changed records or quarantine; no quota rescue")
     approved_images = dict(parent_approval["files"])
-    cached = trace_paths(trace_downloads, trace_cache_root)
-    converted = sources.trace_records(cached, output/"trace_candidates", expected["seed"], train_limit=10**9)
-    converted_by_id = {row["id"]: row for row in converted}
     parent_conversion = audit.read_rows(parent/"records.jsonl")
+    if rejected_ids:
+        cached = trace_paths(trace_downloads, trace_cache_root)
+        converted = sources.trace_records(cached, output/"trace_candidates", expected["seed"], train_limit=10**9)
+    else:
+        converted = parent_conversion
+        conversion = json.loads((parent/"conversion.json").read_text())
+        counts = Counter(row["split"] for row in converted)
+        if (conversion.get("status") != "CONVERTED_NOT_APPROVED"
+                or any(counts[split] != conversion.get(split+"_count") for split in ("train", "dev", "holdout"))
+                or set(counts) - {"train", "dev", "holdout"}
+                or counts["train"] != expected["trace_records"]
+                or len({row["id"] for row in converted}) != len(converted)
+                or any(row.get("source_id") != "trace" or row.get("original_split") != "train"
+                       for row in converted)):
+            raise ValueError("Closed TRACE conversion universe is incomplete or inconsistent")
+    converted_by_id = {row["id"]: row for row in converted}
     if any(converted_by_id.get(row["id"]) != row for row in parent_conversion):
         raise ValueError("TRACE conversion identity/family split changed")
+    if not rejected_ids and any(converted_by_id.get(row["id"]) != row for row in raw if row.get("source_id") == "trace"):
+        raise ValueError("Closed TRACE conversion differs from the READY parent records")
     used_roots = {row["root_id"] for row in raw}
     candidates = [row for row in converted if row["split"] == "train" and row["id"] not in raw_by_id
                   and row["root_id"] not in used_roots and row.get("source_id") == "trace"

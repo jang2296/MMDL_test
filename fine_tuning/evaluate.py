@@ -17,18 +17,45 @@ from collections import Counter, defaultdict
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-import torch
-from PIL import Image
 
-from mmdl.evaluation.backends.input_preparation import prepare_protocol_inputs
-from mmdl.evaluation.parsers import score_with_parser
-from mmdl.evaluation import prompt as mmmu_prompt
-from mmdl.runtime.contracts import DATA_ID, DATA_REVISION, SUBJECTS
-from mmdl.runtime.generation import GeneratedOnlyPresencePenalty
+def _parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    prepare = sub.add_parser("prepare-mmmu")
+    prepare.add_argument("--data-root", type=Path, required=True)
+    prepare.add_argument("--output", type=Path, required=True)
+    prepare.add_argument("--per-subject", type=int, default=2)
+    prepare_ext = sub.add_parser("prepare-external")
+    for field in ("nvw-root", "trace-root", "output"):
+        prepare_ext.add_argument("--"+field, type=Path, required=True)
+    prepare_ext.add_argument("--roots-per-family", type=int, default=4)
+    prepare_ext.add_argument("--trace-count", type=int, default=24)
+    for command in ("run", "run-external"):
+        run = sub.add_parser(command)
+        for field in ("model-path", "cohort", "output", "protocol"):
+            run.add_argument("--"+field, type=Path, required=True)
+        run.add_argument("--checkpoint", type=Path)
+        run.add_argument("--budget-seconds", type=int, default=14400)
+        run.add_argument("--resume-from", type=Path, help="Closed matching budget-stopped result; new output required")
+    return parser.parse_args()
 
-from .audit import dump, image_fingerprint, model_input_record, read_rows, sha, write_rows
-from .modules import BASE_ID, BASE_REVISION, load_checkpoint
-from .train import load_base
+
+# Help and argument errors must exit before cold model-library imports.
+if __name__ == "__main__":
+    _cli_args = _parse_args()
+
+import torch  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from mmdl.evaluation.backends.input_preparation import prepare_protocol_inputs  # noqa: E402
+from mmdl.evaluation.parsers import score_with_parser  # noqa: E402
+from mmdl.evaluation import prompt as mmmu_prompt  # noqa: E402
+from mmdl.runtime.contracts import DATA_ID, DATA_REVISION, SUBJECTS  # noqa: E402
+from mmdl.runtime.generation import GeneratedOnlyPresencePenalty  # noqa: E402
+
+from .audit import dump, image_fingerprint, model_input_record, read_rows, sha, write_rows  # noqa: E402
+from .modules import BASE_ID, BASE_REVISION, load_checkpoint  # noqa: E402
+from .train import load_base  # noqa: E402
 
 
 def digest(value):
@@ -584,26 +611,9 @@ def evaluate(model_path, cohort, output, protocol_path, checkpoint=None, budget_
     return summary
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    prepare = sub.add_parser("prepare-mmmu")
-    prepare.add_argument("--data-root", type=Path, required=True)
-    prepare.add_argument("--output", type=Path, required=True)
-    prepare.add_argument("--per-subject", type=int, default=2)
-    prepare_ext = sub.add_parser("prepare-external")
-    for field in ("nvw-root", "trace-root", "output"):
-        prepare_ext.add_argument("--"+field, type=Path, required=True)
-    prepare_ext.add_argument("--roots-per-family", type=int, default=4)
-    prepare_ext.add_argument("--trace-count", type=int, default=24)
-    for command in ("run", "run-external"):
-        run = sub.add_parser(command)
-        for field in ("model-path", "cohort", "output", "protocol"):
-            run.add_argument("--"+field, type=Path, required=True)
-        run.add_argument("--checkpoint", type=Path)
-        run.add_argument("--budget-seconds", type=int, default=14400)
-        run.add_argument("--resume-from", type=Path, help="Closed matching budget-stopped result; new output required")
-    args = parser.parse_args()
+def main(args=None):
+    if args is None:
+        args = _parse_args()
     if args.command == "prepare-mmmu":
         prepare_mmmu(args.data_root, args.output, args.per_subject)
     elif args.command == "prepare-external":
@@ -614,4 +624,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(_cli_args)

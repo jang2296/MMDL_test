@@ -1,5 +1,28 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-04 — 작업 재개·cold help 수정·fresh G6 실행 경로
+
+사용자 '계속 진행해'로 재개했다. RunPod 실제 목록0개, A40 48GB SECURE는
+EU-SE-1 LOW·GPU $0.49/h로 확인했다. 이 값은 디스크 포함 가격이나 잔액이 아니다.
+MCP에 잔액 조회가 없어 현재 금액을 질문했고 사용자가10.77USD를 확인했다.
+회수 reserve1USD를 남기며 설치/준비도 전체 금액·시간 한도에 포함한다.
+
+평가 CLI help를 heavy runtime import보다 먼저 처리해30초 preflight의 cold-import 경로를
+제거했다. 모델/생성/V8 채점은 불변이다. runtime import를 금지한5개 새 subprocess를 포함해
+평가/새 launch 관련16 CPU tests 및 targeted Ruff를 통과했다.
+새 `fine_tuning.runpod_g6`는 clean MMDL_test full SHA와 새 setup receipt를 요구하고
+고정 자체 생성 pool → benchmark exclusion → 정상 현재-code 승인 → smoke root 배제 →
+full10K controller를 기존 구현으로 연결한다. 준비도 시간/금액 한도에 포함하며 내부 GPU
+controller는 outer watchdog보다2분 먼저 닫는다. 새 Cloud/GPU 실행·새 점수는 아직 없다.
+일반 READY 원장의0-delta completion과 기존 quarantine completion 관련5 CPU tests를
+통과했다(219.946초; 실제 processor/GPU 검증 아님). 독립 검토에서 발견한 setup 한도 미적용과
+leader 종료 후 잔존 worker 경로를 공통 watchdog/child cleanup으로 수정했다.
+중첩 SIGTERM에서 외부45초/내부15초 grace를 분리하고 실제 소유 CPU worker의 종료·회수를
+검사했다. 관련18 tests/3.616초·전체 실험177 CPU tests/406.510초·게시 안전3 tests,
+targeted Ruff·budget/launch bounded mypy2·Bash 구문 검사를 통과했다.
+최종 독립 검토에서 해당 변경의 차단 문제는 발견되지 않았다. 새 GPU 성공은 아직 미검증이다.
+완료 판정은 실제 full exposure/reload/paired evaluation에 따르며 작은1600/Graph 결과로 대체하지 않는다.
+
 ## 2026-10-04 — MMDL_test 게시·실행 경로 전환
 
 사용자가 A40 Pod를 삭제했고 계정 Pod 목록0개를 확인했다. `jang2296/MMDL_test`는

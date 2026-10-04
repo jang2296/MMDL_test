@@ -17,27 +17,11 @@ from collections import Counter
 from pathlib import Path
 
 from .audit import dump, read_rows, sha
+from .budget import effective_deadline, terminate_group, utc
 
 ARMS = ("FL", "FM", "FV", "FML")
 PAIRED_INPUT_FIELDS = ("input_sha256", "prompt_token_ids", "image_grid_thw",
                        "processed_image_sizes", "seed")
-
-
-def utc(value: str) -> dt.datetime:
-    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("UTC deadlines require explicit timezone")
-    return parsed.astimezone(dt.timezone.utc)
-
-
-def effective_deadline(gpu_cutoff: dt.datetime, billing_start: dt.datetime,
-                       balance_usd: float, reserve_usd: float, hourly_usd: float) -> dt.datetime:
-    if not all(math.isfinite(v) for v in (balance_usd, reserve_usd, hourly_usd)):
-        raise ValueError("Nonfinite financial budget")
-    if hourly_usd <= 0 or reserve_usd < 0 or balance_usd <= reserve_usd:
-        raise ValueError("Positive rate and balance above recovery reserve required")
-    financial = billing_start + dt.timedelta(seconds=(balance_usd-reserve_usd)/hourly_usd*3600)
-    return min(gpu_cutoff, financial)
 
 
 def source_snapshot(root: Path) -> dict[str, str]:
@@ -294,7 +278,10 @@ class Controller:
             os.fsync(stream.fileno())
         print(json.dumps(value), flush=True)
 
-    def stage(self, name: str, command: list[str], maximum_seconds: float | None = None) -> None:
+    def stage(self, name: str, command: list[str], maximum_seconds: float | None = None,
+              termination_grace_seconds: float = 15) -> None:
+        if not math.isfinite(termination_grace_seconds) or termination_grace_seconds <= 0:
+            raise ValueError("Positive finite termination grace required")
         assert_source_frozen(self.source_root, self.sources)
         remaining = self.remaining()
         if remaining <= 120:
@@ -303,10 +290,15 @@ class Controller:
         self.event(stage=name, status="STARTING", command=command, timeout_seconds=allowed)
         started = time.monotonic()
         with (self.output / (name + ".log")).open("x", encoding="utf-8") as log:
-            process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
-                                       start_new_session=True, stdin=subprocess.DEVNULL)
-            self.event(stage=name, status="RUNNING", pid=process.pid)
+            process, timed_out = None, False
+            previous = signal.getsignal(signal.SIGTERM)
+            def interrupted(signum, _frame):
+                raise SystemExit(128+signum)
             try:
+                signal.signal(signal.SIGTERM, interrupted)
+                process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True, stdin=subprocess.DEVNULL)
+                self.event(stage=name, status="RUNNING", pid=process.pid)
                 stage_deadline = started + allowed
                 while True:
                     try:
@@ -326,12 +318,15 @@ class Controller:
                                    **probe,
                                    elapsed_seconds=time.monotonic()-started)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGTERM)
+                timed_out = True
+            finally:
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
                 try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=15)
+                    if process is not None:
+                        terminate_group(process, grace_seconds=termination_grace_seconds)
+                finally:
+                    signal.signal(signal.SIGTERM, previous)
+            if timed_out:
                 self.event(stage=name, status="HARD_DEADLINE_STOP", seconds=time.monotonic()-started)
                 raise TimeoutError("Owned subprocess terminated at its explicit deadline") from None
         elapsed = time.monotonic()-started

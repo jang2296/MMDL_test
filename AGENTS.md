@@ -3,7 +3,8 @@
 ## 최신 실험 저장소 정책 — 2026-10-04
 
 이 절은 아래 비공개 overlay/GitHub 게시 금지의 역사적 기록보다 우선한다.
-사용자가 A40 Pod를 삭제했고 RunPod 목록0개를 확인했다. 새 유료 실행을 자동 시작하지 않는다.
+사용자가 A40 Pod를 삭제했고 RunPod 목록0개를 확인했다. 이후 사용자의 '계속 진행해'로
+실험 작업을 재개한다. 새 Pod는 현재 잔액·운영 시간·가격을 확인하고 승인 범위에서만 시작한다.
 실험 코드·설정·문서와 필수 자체 생성 CPU fixture는 `jang2296/MMDL_test`에 게시한다.
 상위 `C:\projects\multimodel`이 원본이며 `MMDL_test/`는 별도 저장소 checkout이다.
 교수님용 `MMDL/` 및 `jang2296/MMDL`은 기존 정책/내용을 유지한다. 상위 MMDL remote로 push하지 않는다.
@@ -17,6 +18,24 @@ GPU 단계는 미실행이다. 최종 데이터 전체 회수가 아닌 일부 m
 전체10K 학습 성공/새 점수로 보고하지 않는다. 기존 V8 558/900은 불변이다.
 게시 전 MMDL_test checkout에서 실험166 CPU tests(309.096초), 게시 안전3 tests,
 Ruff·bounded mypy2·Bash 검사를 통과했다. 새 bootstrap 실제 GPU 실행은 미검증이다.
+
+### 2026-10-04 재개 — 새 저장소 G6 진입점
+
+- `fine_tuning.evaluate --help`는 argparse를 먼저 실행해 cold Torch/model import를 피한다.
+  기존 평가 함수/생성/채점 조건은 유지하며 runtime import를 차단한 실제 subprocess로 검사한다.
+- `fine_tuning.runpod_g6`는 MMDL_test exact SHA/clean origin을 검사하고 새 runtime의
+  자체 생성 pool·전체 benchmark 배제 원장·TRACE·현재 source 정상 승인을 거친다.
+  옛 approval hash/Pod ID/수동 overlay/checkpoint를 임의 재사용하지 않는다.
+- 설치와 준비에도 금융/시간 watchdog 적용(설치 추가 상한1시간),
+  내부 GPU controller는 외부 한도보다2분 먼저 닫는다. 공유 child 종료 로직은 leader가
+  먼저 끝나도 잔존 process group을 종료하고, 신호/기록 오류에서도 소유 child를 정리한다.
+  중첩 실행의 외부 grace45초/내부15초를 분리해 외부 종료가 내부 GPU cleanup을 앞서지 않게 한다.
+  full10K/FL/FM/FV/FML·이미지/출력/seed/V8 조건을 자동 축소하지 않는다.
+  G7·transfer·전체900 완료를 이 진입점의 구현만으로 주장하지 않는다.
+- 사용자가 현재 잔액10.77USD를 확인했다. reserve1USD를 남기고 실제 가격·과금 시작·
+  전체 한도를 지정한다. 설치/준비 비용도 포함하며 자동 충전이나 결제 설정은 바꾸지 않는다.
+  전체 실험177 CPU tests/406.510초·게시 안전3 tests/Ruff/bounded mypy2/Bash 검사 PASS.
+  새 GPU 성공은 아직 미검증이며 V8 558/900 및 제출 MMDL은 불변이다.
 
 ## 최종 회수·삭제 — 2026-10-03 06:18 UTC /15:18 KST
 
