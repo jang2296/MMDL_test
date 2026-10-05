@@ -1,5 +1,31 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 02:24 UTC — 새 clean GitHub 버전 검증·3090 GPU 기준 평가 진입
+
+역사적 processor fixture를 현재 승인이라고 주장하던 두 테스트만 수정했다.
+수정본447c0fb6056d2e18618dd22f21ef80197cb57103는 MMDL_test feature branch에 정상 게시됐다.
+unmocked 현재 source는 과거 producer를 거부하고, 양성 테스트는 명시적 역사 fixture의
+producer hash만 고정한다. 다른 파일 hash는 실제로 계산하며 receipt byte 변조를 거부한다.
+runtime/승인기/원본 receipt/학습 설정은 변경하지 않았다. 독립Sol 검토 PASS다.
+로컬 관련12 tests120.960초·전체182tests399.326초·Ruff/mypy2·게시 안전3tests PASS.
+새 clean checkout /workspace/MMDL_test_g6_verified에서182tests103.130초·pip check·
+GPU/BF16·storage doctor 및 지정 Qwen13파일 hash를 확인했다. setup exit0/130.951초다.
+
+소유3090 Pod22u0uqi171v0cn에서02:23:32UTC baseline_F0_mmmu가 시작됐다.
+02:24:03UTC 실제GPU66%·9260MiB를 확인했다. outer watchdog1812/innercontroller1813/
+첫 evaluator1878, 로그 /workspace/g6-control/g6_3090.log다.
+결과는 /workspace/nvw-run-verified/runs/g6_3090_resume_20261005에 따로 저장한다.
+같은3090에서 새F0/네360개 smoke를 계측한 뒤 원래full10K4종·기본2배 예산 gate를 적용한다.
+baseline은60/4096 진단 protocol이며 과거V8 900/32768 성적558/900을 대체하지 않는다.
+평가60×2의 실제 모든 이미지/역할hash·고유ID·goldID일치도 별도CPU검사로 확인했다.
+본학습 완료나900개 재평가 성공은 아직 아니다. final900/32K범위 질문은 미응답이다.
+
+과금시작01:55:08.301UTC·잔액8.42·총요율상한0.30/h·회수예약1USD는 변경하지 않는다.
+inner종료10/06 02:37:08.301UTC, outer종료02:39:08.301UTC다.
+watchdog는 프로세스만 중단하므로 결과회수/로컬검증 후 정확한Pod 삭제가 별도로 필요하다.
+기존 실패setup.log도 로컬 analysis_exports/g6_runtime_20261005/setup/initial_failed_setup.log에 보존했다.
+증거 analysis_exports/g6_cloud_deployment_20261005.json. 교수님 MMDL/기존V8는 불변이다.
+
 ## 2026-10-05 02:07 UTC — 새3090 실측·설치 테스트 실패·비공개 복원 완료
 
 기존4종/full10K/paired60를 유지하는 예산 내 적합성 검증은 재승인 범위다.

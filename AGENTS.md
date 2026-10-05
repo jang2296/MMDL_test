@@ -2,6 +2,18 @@
 
 ## 2026-10-05 재승인 — 본학습 후 MMMU 평가
 
+02:24UTC 최신: test-only 수정447c0fb6056d2e18618dd22f21ef80197cb57103를
+MMDL_test에 정상 게시하고 새 clean clone에서 전체182tests(103.130초)·pip check·
+CUDA/BF16·모델13파일hash를 통과했다. 로컬182tests(399.326초)/Ruff/mypy2/게시3검사/
+독립Sol 검토도 PASS다. runtime guard/기존 receipt/학습코드/고정protocol은 불변이다.
+소유3090의 controller는02:23:32UTC baseline_F0_mmmu PID1878로 GPU 추론을 시작했다.
+02:24:03UTC GPU66%·9260MiB를 관측했다. outer watchdog1812/inner1813,
+로그 /workspace/g6-control/g6_3090.log, 결과 /workspace/nvw-run-verified/runs/g6_3090_resume_20261005.
+같은3090의 새F0와4종360개 smoke로 계측하고 기본2배 full10K 예산 gate를 유지한다.
+한 arm이나 subset으로 자동 대체하지 않으며 모델/데이터/출력/정밀도를 축소하지 않는다.
+inner종료10/06 02:37:08.301UTC, outer금융종료02:39:08.301UTC와 원래과금시각은 고정이다.
+추론 시작은 본학습 완료가 아니며900평가 범위 질문·full10K/G7/독립 transfer는 아직 미완료다.
+
 02:07UTC 최신: 재승인은 기존4종/full10K/paired60를 유지한 유료 적합성 검증을 포함한다.
 답변 대기만으로 전체 작업을 BLOCKED 처리하지 않는다. 소유3090 Pod22u0uqi171v0cn를
 01:55:08.301UTC 생성했다. 실제RTX3090/24576MiB/driver580.65.06·PID1 ID·mount·
