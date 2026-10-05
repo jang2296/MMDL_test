@@ -1,8 +1,10 @@
 """CPU guards and synthetic journal checks; never GPU memory/update certification."""
 import json
 import random
+import shutil
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -12,16 +14,38 @@ from fine_tuning.train import order_hash
 from fine_tuning.tests import test_controller as fixtures
 
 
+@contextmanager
+def historical_processor_fixture():
+    """CPU fixture only: no processor execution or current-source reapproval."""
+    real_sha, producer = audit.sha, Path(audit.__file__).resolve()
+    def fixture_sha(path):
+        if Path(path).resolve() == producer:
+            return "bba0ed1b202df81ab61a27760fec4921b31d92508a06141abfac5160d3fb6aae"
+        return real_sha(path)
+    with patch.object(audit, "sha", side_effect=fixture_sha):
+        yield
+
+
 class BridgeSmokeTests(unittest.TestCase):
-    def test_actual_saved_approval_binds_all84_train_inputs_without_model_loading(self):
+    def test_historical_fixture_rejects_changed_producer_and_binds_all84_inputs(self):
         root = Path(run_bridge_smoke.__file__).parent
-        rows, _manifest, _records, contract, frozen = run_bridge_smoke.inputs(
-            root/"runs/recovered_graph_pool32_child_approval_v2/proof",
-            root/"generated/graph_cs_bridge_split_pool32_v2", root/"bridge_training_protocol_v1.json")
-        self.assertEqual((len(rows), len({r["root_id"] for r in rows})), (84, 28))
-        self.assertEqual({r["split"] for r in rows}, {"train"})
-        self.assertEqual(contract["episode_pixels"], 3145728)
-        self.assertTrue(all(audit.sha(Path(p)) == digest for p, digest in frozen.items()))
+        approval = root/"runs/recovered_graph_pool32_child_approval_v2/proof"
+        pool, protocol = root/"generated/graph_cs_bridge_split_pool32_v2", root/"bridge_training_protocol_v1.json"
+        with self.assertRaisesRegex(ValueError, "approval/source/processor identity mismatch"):
+            run_bridge_smoke.inputs(approval, pool, protocol)
+        with historical_processor_fixture():
+            rows, _manifest, _records, contract, frozen = run_bridge_smoke.inputs(approval, pool, protocol)
+            self.assertEqual((len(rows), len({r["root_id"] for r in rows})), (84, 28))
+            self.assertEqual({r["split"] for r in rows}, {"train"})
+            self.assertEqual(contract["episode_pixels"], 3145728)
+            self.assertTrue(all(audit.sha(Path(p)) == digest for p, digest in frozen.items()))
+            with tempfile.TemporaryDirectory() as temporary:
+                copied = Path(temporary)/"proof"
+                shutil.copytree(approval, copied)
+                receipt = copied/"A3_processor.json"
+                receipt.write_bytes(receipt.read_bytes()+b" ")
+                with self.assertRaisesRegex(ValueError, "approval/source/processor identity mismatch"):
+                    run_bridge_smoke.inputs(copied, pool, protocol)
 
     def test_complete84_journal_tail_is_checked_and_control_remains1600(self):
         with tempfile.TemporaryDirectory() as tmp:

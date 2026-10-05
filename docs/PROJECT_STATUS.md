@@ -1,5 +1,127 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 02:07 UTC — 새3090 실측·설치 테스트 실패·비공개 복원 완료
+
+기존4종/full10K/paired60를 유지하는 예산 내 적합성 검증은 재승인 범위다.
+추가 범위 질문에 답이 없다는 이유만으로 가능한 안전한 진행을 중단하지 않는다.
+01:55:08.301UTC 생성한 소유Pod22u0uqi171v0cn는 RUNNING이다.
+실제RTX3090 24576MiB/driver580.65.06/Python3.12.3 및 persistent workspace를 확인했다.
+GPU0.22USD/h·container30GB/workspace160GB·Network Volume 없음,
+보수적 총요율0.30USD/h·회수예약1USD·금융종료10/06 02:39:08.301UTC다.
+SSH의 누락된 Pod ID는 PID1 실체와 대조한 뒤 설정했다. 검사를 우회하거나 code를 패치하지 않았다.
+GitHub clean clone은38b3d230176a018062b74ddfb228937243e7ebda다.
+승인10K/smoke/cohort와 기존 닫힌 결과의 비공개 SSH 전송은 모두 exit0으로 끝났다.
+
+패키지 설치·pip check 뒤182개 CPU tests(106.222초) 중2개가 실패했고 setup exit1이다.
+두 실패는 저장 bridge processor의 producer SHA bba0ed1b…와 현재 audit.py5fb37650…의 차이다.
+실제 GPU 학습 장애가 아니라 현재 source를 요구하는 guard와 역사적 fixture의 충돌이며,
+검사를 약화하거나 receipt를 재작성하지 않는다. 테스트에서 현재 source 거부를 검증하고
+역사적 fixture의 양성 경로는 명시적 합성 producer fixture로 분리해 검증한다.
+정상 GitHub 게시/새 clean checkout/전체 검사를 통과한 뒤 모델·GPU gate와 본학습을 이어간다.
+GPU 학습/추론은 아직 미시작이고 기존V8/교수님MMDL는 불변이다.
+상태 근거 analysis_exports/g6_cloud_deployment_20261005.json,
+원격 /workspace/g6-control/setup.log. 매600초 상태 확인·회수/검증 후 소유Pod 삭제를 유지한다.
+
+## 2026-10-05 01:45 UTC — 10K 원본 전처리 증거·복원 입력 소비 검사 완료
+
+누락으로 보였던 원본 processor receipt를 pilot_raw에서 찾았고 SHA256
+732fb3eacbf40bab534395ed5d6ed0cd9e2f130d8bc292af18c5f088923961f3를 확인했다.
+최종 row ID와 각 receipt hash로9951+25+24=10000개를 모두 연결해 PASS·길이·이미지 수·
+tensor hash 필드를 확인했다. 실제 최대 input+assistant 길이는1643token/assistant867,
+최대 처리 patch cell4096이다. smoke는1738token/3000patch cell이므로
+짧은 전체 길이만으로24GB GPU 적합성을 입증하지는 않는다. 기존 receipt는 불변이다.
+
+native f3 cwd·실제 module import 경로를 확인한 CPU 호출에서 approved_records 및
+validate_training_input_contract가10000행·9773고유 이미지 SHA·공통 입력 계약을 통과했다.
+현 학습 source와 byte 일치·smoke root 중첩0·full10K/무축소를 확인했다(exit0).
+이전 common10k 폴더만 조사했을 때의 receipt 부재 한계는 해소됐으며
+증거는 analysis_exports/g6_closed_results_20261004/processor_shape_recheck_20261005.json이다.
+새 processor/GPU/학습/평가 실행이 아니며 paid 범위 질문은 아직 미응답이다.
+계정 Pod0개를 재확인했고 새 대여·GitHub 변경·V8 결과 변경은 하지 않았다.
+
+## 2026-10-05 01:36 UTC — 본학습·MMMU 평가 재승인, 실행 범위 확인 중
+
+사용자가 본학습 후 MMMU 평가를 재승인했고 현재 잔액8.42USD를 보고했다.
+목표는 다시 active이며 이전 BLOCKED 기록은 당시 상태로 보존한다. 새 Pod는 아직 생성하지 않았다.
+실시간 계정 조회는 Pod0개다. CUDA>=12.8·GPU1개 카탈로그에서 A40 SECURE는
+0.49USD/h·HIGH, RTX3090 COMMUNITY는0.22USD/h·LOW이며 A40/4090/A5000/A6000
+COMMUNITY는NONE이다. 가격은 GPU 요금이며 storage/설치/복원 비용과 구분한다.
+
+기존 full10K 네 조건·60문항 paired 평가의 재사용 forecast는83,478.931초이며,
+기본2배 학습 여유를 유지한다. 새 setup/복원 및900문항/32K 평가·G7/독립 transfer는
+이 수치에 포함되지 않는다. A40 요금에서 현 잔액으로 전 범위를 충족한다고 주장하지 않는다.
+24GB 후보는 기존 smoke의 최대 Torch reserved21.914GiB·최장1738token 근거만 있어
+4096token 본학습 전체 메모리 적합성과 속도가 검증된 것이 아니다.
+
+사용자에게 MMMU 평가 범위(900 validation/기존60)·본학습 영역(기존4종/지정1종)을
+질문했다. 학습량·정밀도·생성 조건·안전 여유를 임의로 바꾸거나 유료 실행을 시작하지 않는다.
+기존 F0/smoke/승인10K 입력은 재사용하되 과거 receipt와 V8 558/900을 변경하지 않는다.
+MMDL_test의 clean 로컬·원격 feature HEAD38b3d230176a018062b74ddfb228937243e7ebda
+일치를 재확인했다. 새 GPU 실행·본학습 완료·새 점수는 아직 없다.
+
+## 2026-10-04 17:49 UTC — 목표 BLOCKED: 추가 유료 실행의 예산/시간 승인 대기
+
+동일한 추가 예산/최대 실행시간 승인 차단을 세 연속 목표 turn에서 확인했고
+실제 목표 상태를 `BLOCKED`로 변경했다. 계정 Pod 목록0개·이전 Pod 회수/삭제 완료와
+full10K 미시작 상태를 재확인했다. 비용 없는 재개 호환성/회귀 검증은 끝났다.
+다음 실질 단계는 추가 GPU가 필요한 full10K 네 조건의 학습·재로딩·paired evaluation이다.
+그 결과 없이는 G7의 근거 있는 모듈 선택과 학습된 모델의 독립 전이 평가도 진행할 수 없다.
+과거 작은 실험이나360개 smoke로 전체 완료를 대체하지 않는다.
+추가 예산/시간 확인 후 재개하며 자동 목표 계속 메시지는 새 지출 승인이 아니다.
+범위는 G6 full10K→G7/전문 ablation→독립 비합성 transfer 그대로이고 완료로 표시하지 않는다.
+감사 근거 `analysis_exports/g6_closed_results_20261004/blocking_audit.json`.
+
+## 2026-10-04 17:46 UTC — 비용 없는 재개 호환성 검사 완료
+
+기존 `--baseline-mmmu`/`--baseline-external`/`--reuse-smoke-controller`를 검토했다.
+저장 F0 두60개의 실제 evaluation gate와 별도 evaluator source hash 검사 PASS,
+f3/상위/게시 checkout의 학습·추론·파서·프롬프트·protocol 관련15개 파일 byte 일치 PASS다.
+재사용/불완전 checkpoint 거부/예산/금융 한도 관련 기존4 CPU tests도 PASS(0.041초)다.
+이는 원격 재개 성공/속도 측정이나 본학습 완료가 아니다.
+
+현재 실제 원격 branch와 clean MMDL_test checkout HEAD는 `38b3d230176a018062b74ddfb228937243e7ebda`다.
+현재 audit.py와 f3의 producer hash는 다르다. 독립 검토에서 변경 함수는
+contamination_candidates/approve로 확인됐고 소비·재사용 경로의 조건은 동일하다.
+기존 승인 자료는 불변으로 소비한다. 현 코드의 재승인/완성 경로에 과거 receipt를 넣어
+producer hash를 고쳐 승인된 것처럼 만들면 안 된다. 교수님 MMDL/V8은 불변이다.
+
+재사용 시 forecast가83,786.558초에서83,478.931초로 줄어드는 것은 baseline stage의
+원래 wall time 대신 저장 evaluator summary.seconds를 사용하기 때문이다. 가속 실측이 아니다.
+이 예상에는 새 설치/복원/다운로드·G7/독립 transfer 시간이 들어 있지 않다.
+추가 예산/시간 승인 전 새 GPU/외부 업로드를 시작하지 않으며 계정 Pod 목록0개를 재확인했다.
+입력/학습 조건·full10K·네 조건·기본2배 여유를 유지한다.
+근거 `analysis_exports/g6_closed_results_20261004/resume_readiness.json`.
+
+## 2026-10-04 17:37 UTC — GPU 실제 사용·4종 smoke 완료·예산 gate 중단·회수/삭제 완료
+
+소유 A40 `qg7krba8ebl10s`는 GPU 오류로 대기한 것이 아니다. 고정 f3 코드의 F0
+MMMU60 평가32/60·외부 혼합60 평가11/60과 FL/FM/FV/FML 각각360입력·23업데이트,
+별도 프로세스 checkpoint 재로딩이 모두 exit0으로 닫혔다.17:17UTC GPU94%·19,759MiB 등
+실제 GPU 사용을 관측했다. 최초 지연은 설치/검사/CPU 입력 준비의 직렬 실행이었다.
+새4,096출력/60문항 진단 결과는 과거 V8 32K558/900의 개선 성적으로 비교하지 않는다.
+
+17:21:52UTC controller의 기본2배 학습 여유를 유지한 예산 gate는 필요83,786.558초
+(23시간16분)와 남은48,418.661초(13시간27분)를 비교해
+`SMOKE_COMPLETE_PILOT_BUDGET_STOP`, `pilot_started=false`로 종료했다.
+잔액 소진/GPU 장애가 아니며 full10K 네 조건의 학습·평가는 시작하지 않았다.
+안전 여유/데이터량/학습 영역/생성 조건을 자동 축소하거나 새 Pod를 대여하지 않는다.
+G6 full10K/G7/독립 전문분야 transfer는 미완료이며 추가 유료 실행은 새 예산/시간 확인이 필요하다.
+
+닫힌 inner46파일1,151,423,673bytes·outer19파일113,109bytes·setup4파일7,183bytes·
+launch3파일148,115bytes를 로컬 회수해 원격 SHA256/크기·동결 코드/11개 입력 연결·
+모든360 ID/토큰/업데이트 노출·4종 checkpoint 실제 tensor·fresh reload 및 예산 산술을 검증했다.
+최종 CPU 검증은 native f3 cwd와 실제 import 경로를 확인했다. 초기 inline 검증의 cwd 우선
+import 문제를 바로잡아 네 조건 모두 다시 검사했다. 기존 입력/원문/metadata는 불변이다.
+기존에 검증한10K/두 cohort/smoke 입력·이미지와 원본 코드도 함께 로컬에 보존한다.
+base 가중치·venv/HF cache·원본 benchmark Parquet를 회수했다고 주장하지 않는다.
+최종 원장 `analysis_exports/g6_closed_results_20261004/local_receipt.json`,
+검증 `final_closed_validation.json`, 원격 파일목록 `remote_closed_manifest.json` 참조.
+
+로컬 검증 후17:37:48UTC 해당 Pod 삭제204→조회404→계정 Pod 목록0을 확인했다.
+작업용30GB container/160GB workspace는 폐기했으며 별도 Network Volume은 생성하지 않았다.
+보존 결과는 로컬에 남고 해당 Pod의 추가 과금은 중단됐다. 전체 실험 완료는 아니다.
+교수님 MMDL·V8 558/900·실행 f3 및 MMDL_test 게시본은 변경하지 않았다.
+
 ## 2026-10-04 15:52 UTC — full10K 준비 종료·실제 GPU F0 평가 진입
 
 f3 고정 commit의 첫10K processor 검증은 통과했으나 near-image 검토 후보25개를

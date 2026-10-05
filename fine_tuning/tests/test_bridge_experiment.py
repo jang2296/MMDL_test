@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 from fine_tuning import audit, evaluate, run_bridge_experiment as experiment, run_control
 from fine_tuning.modules import ARMS, BASE_ID, BASE_REVISION
 from fine_tuning.tests import test_controller as fixtures
+from fine_tuning.tests.test_bridge_smoke import historical_processor_fixture
 
 ROOT = Path(experiment.__file__).parent
 APPROVAL = ROOT/"runs/recovered_graph_pool32_child_approval_v2/proof"
@@ -44,11 +45,14 @@ def evaluation_fixture(root):
 
 
 class BridgeExperimentTests(unittest.TestCase):
-    def test_actual_four_approvals_are_paired_and_condition_names_cannot_escape(self):
+    def test_historical_four_approval_fixtures_are_paired_and_cannot_escape(self):
         reference = None
         for condition in experiment.CONDITIONS:
-            rows, _manifest, _records, contract, frozen = experiment.bridge.inputs(
-                APPROVAL, POOL, ROOT/"bridge_training_protocol_v1.json", condition)
+            with self.assertRaisesRegex(ValueError, "approval/source/processor identity mismatch"):
+                experiment.bridge.inputs(APPROVAL, POOL, ROOT/"bridge_training_protocol_v1.json", condition)
+            with historical_processor_fixture():
+                rows, _manifest, _records, contract, frozen = experiment.bridge.inputs(
+                    APPROVAL, POOL, ROOT/"bridge_training_protocol_v1.json", condition)
             actual = [(r["root_id"],r["family_id"],r["view"]) for r in rows]
             if reference is not None:
                 self.assertEqual(reference, actual)

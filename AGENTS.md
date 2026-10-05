@@ -1,5 +1,35 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-05 재승인 — 본학습 후 MMMU 평가
+
+02:07UTC 최신: 재승인은 기존4종/full10K/paired60를 유지한 유료 적합성 검증을 포함한다.
+답변 대기만으로 전체 작업을 BLOCKED 처리하지 않는다. 소유3090 Pod22u0uqi171v0cn를
+01:55:08.301UTC 생성했다. 실제RTX3090/24576MiB/driver580.65.06·PID1 ID·mount·
+clean MMDL_test38b3d230176a018062b74ddfb228937243e7ebda를 확인했다.
+GPU0.22USD/h, 저장비 포함 보수적 운영상한0.30USD/h·회수예약1USD를 적용하고
+최초 과금시각을 고정한다. 금융종료는10/06 02:39:08.301UTC다.
+비공개 승인 입력과 과거 닫힌 결과의 SSH 전송이 모두 exit0으로 완료됐다.
+설치 후182 CPU tests 중 과거 bridge fixture의 producer hash를 현재 source와 비교하는
+2개가 실패해 모델 다운로드/본학습 전에 중단됐다. runtime 검사를 약화하거나 과거 receipt를
+수정하지 않고 테스트의 역사적 증거와 현재 승인 검사를 구분해 수정·정상 게시·재검증한다.
+실제3090에서 학습/평가 성공은 아직 없고 full10K/G7/독립 transfer는 미완료다.
+900/32K 최종 평가 범위는 확인 중이며 자동 변경하지 않는다.10분마다 Pod를 점검하고
+닫힌 결과·실패 기록까지 로컬 회수/검증 후 정확한 소유Pod를 삭제한다.
+근거 analysis_exports/g6_cloud_deployment_20261005.json 및 원격setup.log.
+
+01:45UTC CPU 재검증에서 최종10K 전처리 증거 전수 연결 및 실제 복원 입력 소비가 PASS다.
+원본9951 receipt를 pilot_raw에서 찾아 이전 부재 한계를 해소했다. 실제 maxsequence1643,
+maxpatchcells4096이며24GB GPU 적합성/신규 속도를 검증한 것은 아니다.
+10000행/9773고유 이미지 hash·입력 계약·smoke root 중첩0·무축소를 확인했다.
+증거는 analysis_exports/g6_closed_results_20261004/processor_shape_recheck_20261005.json이다.
+사용자가 본학습·MMMU 평가를 재승인했고 현재 잔액8.42USD를 보고했다.
+이 승인은 아래 추가 지출 승인 대기의 역사 기록보다 우선하나 무제한 지출은 아니다.
+01:36UTC 당시 계정 Pod0개·새 Pod 미생성이었다. 기존10K 입력·F0/4종 smoke는 불변으로 보존한다.
+본학습 영역과 MMMU 범위(기존60/validation900·출력 조건)는 사용자 확인 중이며
+임의로4종을1종으로 선택하거나 학습량/BF16/평가 조건/예산 여유를 축소하지 않는다.
+현 잔액으로 전체 완료가 가능하다고 보장하지 않으며 실시간 가격·실행시간·회수 여유를
+확인한 뒤 승인 범위에서만 대여한다. 상세 상태는 docs/PROJECT_STATUS.md 최신 절을 따른다.
+
 ## 최신 실험 저장소 정책 — 2026-10-04
 
 이 절은 아래 비공개 overlay/GitHub 게시 금지의 역사적 기록보다 우선한다.
@@ -22,6 +52,16 @@ Ruff·bounded mypy2·Bash 검사를 통과했다. 당시 새 bootstrap GPU 실�
 
 ### 2026-10-04 재개 — 새 저장소 G6 진입점
 
+- 최신17:37UTC: F0 두60개 평가와 FL/FM/FV/FML 각360개·23update·fresh reload를 실제
+  A40 GPU에서 완료했다. GPU94~100% 관측이 있으며 CUDA/GPU 미사용 장애가 아니다.
+  17:21:52UTC 기본2배 학습 여유의 예산 gate가 필요83,786.558초/남은48,418.661초로
+  `SMOKE_COMPLETE_PILOT_BUDGET_STOP`, `pilot_started=false`를 기록했다.
+  full10K/G7/독립 transfer는 미완료다. 안전 여유/조건을 임의 축소하거나 새 유료 실행을 시작하지 않는다.
+  닫힌 결과/4종 실제 tensor·노출/동결 source/import·fresh reload·예산 산술을 로컬 검증한 뒤
+  Pod `qg7krba8ebl10s`를17:37:48UTC 삭제204→조회404→계정 목록0으로 확인했다.
+  container30GB/workspace160GB는 폐기됐고 Network Volume은 없었다. 회수 결과는
+  `analysis_exports/g6_closed_results_20261004/`, 입력은 `g6_prepared_inputs_20261004/`에 보존한다.
+  추가 유료 실행은 새 예산/시간 확인이 필요하다. 교수님 MMDL/V8 및 게시된 실행 코드는 불변이다.
 - 15:52UTC 실제 GPU 진입: f3 고정 SHA의 F0 MMMU60 평가 PID3135가 실행 중이다.
   15:52:30UTC4/60개 응답·GPU83%·10,039MiB를 확인했다. 추론이며 학습 완료는 아니다.
   첫10K 전처리 후 near-image 후보25개를 제외했고 정상 전처리·오염검사를 통과한 TRACE25개로
