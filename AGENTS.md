@@ -2,6 +2,20 @@
 
 ## 2026-10-05 재승인 — 본학습 후 MMMU 평가
 
+03:18UTC 최신: 새3090 F0 MMMU60은36/60·2581.072초·length12,
+외부혼합60은11/60·607.039초·length2로 모두완료했다.두원문/summary/실제source를
+analysis_exports/g6_runtime_20261005/closed_stages/로회수하여SHA/coverage/source/
+입력관측/CPU 재채점 PASS를 확인했다.기존900/32K/V8 558/900와 직접 비교하지 않는다.
+현재첫FL 360 smoke 학습PID2476이실행중이며GPU51%·19202MiB를확인했다.
+이는본학습전네영역계측이며full10K 완료가아니다.다음계정점검03:28:16UTC,
+최초과금/2배gate/기한/회수예약/검증후정확한Pod삭제는불변이다.
+후속Circuit48 실제CPUprocessor는PASS이나4root의development0/승인없음으로개발cohort는
+BLOCKED다.봉인root를borrow하지않고출력도만들지않았다.기존builder/evaluator의
+Circuit typed경로·currentproof/child계약·완전학습checkpoint결합·입력폴더쓰기금지를
+구현했고새6 CPUtests/최종188전체tests(304.467초)/Ruff/mypy3/게시안전3검사/독립Sol재검토 PASS다.
+Graph24도새builder로별도고정한뒤실제440파일소비PASS이며과거cohort/proof는보존했다.
+이준비는fullG7/독립비합성전이완료가아니다.현재GPU447c0fb·교수님MMDL/V8는불변이다.
+
 02:48UTC 최신: 소유3090 Pod22u0uqi171v0cn는 RUNNING이며 F0 MMMU 기준 평가33/60,
 GPU73%·10096MiB 및 controller/evaluator 생존을 확인했다. 다음 계정 점검은02:58:46UTC다.
 독립적으로 로컬 CPU에서 현재 producer5fb37650…의 bridge 입력384행을 실제 전처리하고,

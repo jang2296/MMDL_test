@@ -506,14 +506,15 @@ def completed_histogram(rows, field):
 
 def verify_transfer_checkpoint(cohort_manifest, checkpoint):
     """A source-transfer cohort must exclude the evaluated checkpoint's training."""
-    if cohort_manifest.get("evaluation_domain") == "BOUNDED_SYNTHETIC_GRAPH_BRIDGE_DEVELOPMENT" and checkpoint is not None:
+    if cohort_manifest.get("evaluation_domain") in {"BOUNDED_SYNTHETIC_GRAPH_BRIDGE_DEVELOPMENT",
+            "BOUNDED_SYNTHETIC_DC_CIRCUIT_BRIDGE_DEVELOPMENT"} and checkpoint is not None:
         metadata = json.loads((Path(checkpoint)/"metadata.json").read_text())
         pairs = {(entry["manifest_sha256"], entry["records_sha256"]): entry["records"] for entry in cohort_manifest["training_evidence"]}
         count = pairs.get((metadata.get("manifest_sha256"), metadata.get("records_sha256")))
         if (metadata.get("epoch_exposure_complete") is not True or metadata.get("base_id") != BASE_ID
                 or metadata.get("base_revision") != BASE_REVISION
                 or count is None or metadata.get("planned_records") != count or metadata.get("exposure", {}).get("records") != count):
-            raise ValueError("Graph checkpoint is not bound to the frozen train-only exclusions")
+            raise ValueError("Bridge checkpoint is not bound to the frozen train-only exclusions")
     if cohort_manifest.get("evaluation_domain") != "PUBLISHED_CHARTQA_HUMAN_SOURCE_TRANSFER" or checkpoint is None:
         return
     expected = {entry["checkpoint_metadata_sha256"] for entry in cohort_manifest["training_evidence"]}
@@ -607,6 +608,13 @@ def evaluate(model_path, cohort, output, protocol_path, checkpoint=None, budget_
                 source_transfer_evaluation_GPU_completed=full,
                 professional_transfer_improvement_verified=False,
                 full_professional_G7_completed=False)
+        if cohort_manifest.get("evaluation_domain") == "BOUNDED_SYNTHETIC_DC_CIRCUIT_BRIDGE_DEVELOPMENT":
+            summary.update(parser="circuit-bare-letter-typed-exact-rational-v2",
+                metric_policy=cohort_manifest["metric_policy"],
+                evaluation_domain=cohort_manifest["evaluation_domain"],
+                circuit_contract_version=cohort_manifest["circuit_contract_version"],
+                full_professional_G7_completed=False,
+                professional_transfer_improvement_verified=False)
     dump(out / "summary.json", summary)
     return summary
 

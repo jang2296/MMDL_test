@@ -1,5 +1,44 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 03:18 UTC — 새3090 F0 기준선120개 회수·첫 학습 계측 진입
+
+소유Pod22u0uqi171v0cn는 RUNNING이다. 새F0 MMMU60은36정답/60(60.00%),
+length12/stop48, evaluator2581.072초로 완료했다(03:06:37UTC 단계exit0).
+외부60도11/60·length2/stop58·607.039초로 완료했다(03:16:48UTC 단계exit0).
+외부60은 QA/구조/grounded/TRACE를 섞은 지표이며 MMMU 정확도가 아니다.
+두120개 원문·summary와 실제 실행evaluate.py를 로컬로 회수하여 원격SHA,
+60×2 ID/순서·고정cohort/protocol/원source·실제seed/token/이미지관측 및 CPU 점수 재현을 검증했다.
+비공개 경로 analysis_exports/g6_runtime_20261005/closed_stages/의 각local_receipt.json을 따른다.
+이4096토큰 진단 기준선은 기존V8 900/32768의558/900을 대체하지 않는다.
+
+03:16:48UTC 첫FL smoke 학습PID2476이 시작됐다.03:18:20UTC GPU51%·19202MiB,
+controller1813/outer1812 생존을 확인했고03:19경 소비150/360·실제update9개를 관측했다.
+이는 네학습영역의360개 학습/재로딩 시간·메모리 계측이며 full10K 본학습 완료가 아니다.
+과금시작·금융기한/회수예약1USD·기본2배 full10K4종 gate는 불변이다.
+다음 계정점검은03:28:16UTC이며 완료 결과를 검증 후 정확한Pod 삭제 원칙을 유지한다.
+
+후속 회로48행은 실제 pinned processor CPU 전처리를 통과했다(maxsequence3192/assistant230).
+그러나 실제4root 후보는 train3/sealed1/development0여서 새개발 cohort 소비 검사가
+미승인학습/봉인root 대체 없이 BLOCKED로 종료했고 출력 폴더를 만들지 않았다.
+원본 후보/hash/48개 processor 증거는 보존한다.
+analysis_exports/g7_circuit_processor_20261005/{summary,cohort_readiness}.json이 근거다.
+
+기존 bridge_evaluation/evaluate에 bounded Circuit v2 경로만 추가했다.
+동일 개발root×A0–A3×3views, gold-blind whitelist, 독립solver/render 재현,
+current producer/child protocol/typed proof·train approval·root/family 분리,
+checkpoint의완전학습manifest/records/exposure 결합과 정직한 metric metadata를 검사한다.
+output이 입력pool/approval 내부면 거부한다. 독립Sol의두 guard지적은 수정했고 재검토 PASS다.
+새6 CPU 계약tests(49.538초)·최종source 전체188tests(304.467초)·Ruff·mypy3·게시안전3검사 PASS다.
+테스트용 구성receipt는 실제processor/권리/오염승인이나 GPU 학습 증거가 아니다.
+새builder로 별도Graph24 cohort를 다시 고정하고 실제 training_bundle440파일 소비도 PASS다.
+기존 approval/cohort는 덮어쓰지 않았다. consumer_after_circuit_integration.json에 근거를 남겼다.
+
+새코드는 본학습/G7/비합성 전이 완료가 아니며 현재Pod의447c0fb 실행을 hotpatch하지 않는다.
+교수님MMDL·기존V8·모델/BF16/데이터/본학습량/출력 조건은 불변이다.
+초기 새테스트의두실패는 immutable audit.dump로fixture를 덮어쓰려던 테스트오류였다.
+변조검사만명시적fixture쓰기로나누어수정했으며 runtime writer/기존receipt는변경하지않았다.
+최종검사에서 source/guard를약화하거나테스트를생략하지않았다.
+
 ## 2026-10-05 02:48 UTC — GPU 평가 지속·현재 source 후속 입력 CPU 승인 완료
 
 10분 계정 점검에서 소유3090 Pod22u0uqi171v0cn는 RUNNING이었다.

@@ -677,3 +677,20 @@ inserted into the existing approved10K mixture or Graph/CS-only controller.
 HF payloads, model weights, GPU execution and publication are not needed for
 this preparation. Full10K training and real-source evaluation still require an
 approved, financially bounded RunPod execution.
+
+The existing `bridge_evaluation` CPU builder also supports the v2 Circuit
+contract. It requires complete train-only A0–A3 approvals and current pinned
+processor proofs, replays the deterministic solver/render pool, selects only
+family-disjoint development roots, and freezes all12 condition/view inputs per
+root before emitting separate typed gold. The scorer accepts bare A–D QA and
+strict exact-rational structure/state JSON; there is no V8 fallback or gold-based
+candidate rescue. A trained checkpoint must match the frozen approved training
+manifest, records and complete exposure before model loading.
+
+The current four-root candidate has train3/sealed1/**development0**, so it
+cannot produce this cohort or borrow a sealed root. Its48 actual local CPU
+processor checks passed on2026-10-05, but source/render/contamination approval
+and a larger predeclared split pool are still required. Constructed CPU test
+receipts are not actual approvals. Neither the builder nor the tests execute
+GPU training or complete full professional G7/non-synthetic transfer. New code
+does not hotpatch a running frozen G6 checkout.
