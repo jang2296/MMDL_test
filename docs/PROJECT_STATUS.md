@@ -1,5 +1,40 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 04:34 UTC — FL 본학습 진행·회로100root 후속 입력 실제 준비
+
+소유3090 Pod22u0uqi171v0cn는RUNNING/0.22USDh다.04:34:23UTC FL 본학습4284/10000,
+닫힌update267/소비4272·GPU100%/20800MiB·allocated peak12822514176bytes를확인했다.
+outer1812/inner1813/train3832와600초HEALTH_POLL이생존하며본학습완료/FT점수는아직없다.
+다음계정점검04:44:20UTC다.최초과금·금융기한·회수예약·4arm/full10K/2배gate는불변이다.
+
+기존circuit_bridge만재사용하여 별도비공개100root(97family) 풀을고정했다.
+train77root/75family, development10root/10family, sealed13root/12family다.봉인root는
+학습/development선택/모델평가에쓰지않고전체CPU전처리·준비검증에만포함했다.
+두독립exact solver·canonical/render 재현은100root 모두PASS다.독립Sol이실제6개PNG의
+값/연결/극성/스위치/재배치를검토했고메인도2개를열람했다.이는AI표본검토이지사람의
+독립승인/전체픽셀의미인증은아니다.한가지ideal DC topology이고일반전자공학을대표하지않는다.
+실제Pillowfont의출처/권리/hash를기록했으며OPEN/CLOSED표기와값/단위의shortcut가능성도남겼다.
+
+현재audit와pinned Qwen processor로1200행을실제CPU전처리했다(각A0–A3 300행,
+maxsequence3194/assistant231/child sequence4096/episode3145728).기저가중치/GPU는로드하지않았다.
+일반audit.approve 경로로각231행/77root/75family를새승인했고quarantine0이다.
+원본pool의training_allowed=false와과거receipt는변경하지않았다.제외index는검증된
+100파일/16740행의기존fingerprint를경로투영한것이며원본Parquet를새로감사했다고하지않는다.
+같은10development root×4조건×3view=120행을gold-blind로별도고정했다.
+근거 analysis_exports/g7_circuit_pool100_20261005/{actual_processor_summary,preparation_receipt}.json.
+
+기존Graph controller에Circuit routing/실제행수·root수·typed score/새이름만추가했다.
+freshF0 네조건·고정모듈·source freeze/승인·family분리·금융gate는유지한다.
+독립검토에서Circuit gold가generic qa로바뀌면V8채점으로잘못연결될수있는경로를발견했고,
+공유circuit_metric_gate를학습시작전과독립결과검증에모두적용했다.최종191회귀검사
+(798.773초)/Ruff/mypy3/게시안전3검사/게시checkout표적2검사는모두PASS다.
+초기새테스트의실패는immutable artifact writer로fixture를덮어쓰려던오류였으며fixture쓰기만고쳤다.
+운영writer/기존증거/검사는약화하지않았다.소스편집과겹친소비검사는최종source인증으로쓰지않는다.
+후속source-frozen 소비검사는입력/hash/freeze까지통과했으나검증명령의UTC함수오용으로
+receipt쓰기가실패했다.그실패도보존하고표준datetime을쓴최종receipt검사를진행중이다.
+GPU메모리적합성/모듈선택/회로학습/fullG7/비합성전이는미검증이며G6 외부결과를기다린다.
+현재GPU447c0fb checkout과교수님MMDL/V8 558/900·저장원문은불변이다.
+
 ## 2026-10-05 03:53 UTC — 네영역 계측·로컬 tensor 검증 완료, original10K 본학습 진입
 
 소유3090 Pod22u0uqi171v0cn의 FL/FM/FV/FML 360행 학습은모두실제360소비/23updates/

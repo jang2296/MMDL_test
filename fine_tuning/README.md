@@ -2,6 +2,12 @@
 
 ## Current deployment policy — 2026-10-04
 
+Latest observation, 2026-10-05 04:34 UTC: original full10K FL training had
+consumed4,284 records (267 closed updates covering4,272 records), with actual
+RTX3090 use100%/20,800MiB. Training is live, not a completed arm or FT score.
+The fixed447c0fb checkout, original four arms, financial deadline and recovery
+reserve remain unchanged; new Circuit code is for a later fixed checkout only.
+
 Latest milestone, 2026-10-05 03:53 UTC: all four RTX3090 calibration arms
 completed 360 records, 23 real updates, checkpoint export and fresh-process reload.
 Their files, all 1,152 trainable tensors and input/update journals were recovered
@@ -644,7 +650,7 @@ These checks do not certify the unavailable historical MMMU baseline's source
 equivalence or a complete actual MMMU-cohort gate; use a separately identified
 fresh F0 evaluation if the required original-source proof is unavailable.
 
-## Quarantined professional Circuit bridge
+## Bounded independent DC-circuit bridge
 
 `circuit_bridge.py` and `circuit_clean_spec_v1.json` add independent ideal DC
 circuit semantics required by plan §11.1–11.2: nodes, resistors, component
@@ -679,7 +685,7 @@ world/glyph randomization but repairs choice construction with varied sorted
 answer ranks and alternative circuit reductions. The regression checks this
 known shortcut, not every possible shortcut or selection bias.
 
-Every artifact remains `training_allowed=false`, `public_upload_allowed=false`
+Every artifact in the original four-root pool remains `training_allowed=false`, `public_upload_allowed=false`
 and unapproved. Solver and program geometry/reproduction checks plus limited AI
 native-image spot checks do **not** certify independent render review, source
 rights, contamination screening or actual pinned processor inputs. Values and
@@ -707,3 +713,40 @@ and a larger predeclared split pool are still required. Constructed CPU test
 receipts are not actual approvals. Neither the builder nor the tests execute
 GPU training or complete full professional G7/non-synthetic transfer. New code
 does not hotpatch a running frozen G6 checkout.
+
+### Separate100-root preparation, 2026-10-05
+
+A new private pool (seed73041, start-index1000000) has100 roots/97 canonical
+families: train77/75 families, development10/10 families, sealed13/12 families.
+Deterministic generation and both exact solvers replayed all100 roots. A Sol
+helper independently inspected six actual rendered images; this is an AI spot
+review, not human or exhaustive semantic certification. The font rights and
+actual file hash are recorded. OPEN/CLOSED text and component values/units may
+provide shortcuts; mapping-only causality is not claimed.
+
+The actual pinned CPU processor checked all1,200 original rows (300 per A0–A3):
+maximum sequence3194, assistant231, child sequence budget4096 and episode pixels
+3145728. Normal provenance/processor/contamination approval produced231 train
+rows per condition, using the same77 roots/75 families, with zero quarantined
+rows. Original pool permissions and old receipts were not rewritten. Exclusion
+fingerprints reuse the verified historical index with a checked path projection,
+not a new read of the original Parquets. A separate gold-blind120-row development
+cohort uses the same10 development roots across all four conditions/three views.
+The pool, approvals, images and detailed receipts remain outside GitHub.
+
+The existing `run_bridge_experiment` supports this domain through `--bridge-cohort`
+(`--graph-cohort` remains an alias). It verifies all train-only approvals, current
+processor proofs, source/family separation and the typed Circuit gold contract
+before GPU work. The same typed contract is enforced during result verification;
+generic QA/V8 routing cannot silently substitute for strict Circuit metrics.
+Fresh F0 per condition, fixed module, original budget/source-freeze safeguards
+and actual exposure reporting remain required. A historical Graph A3 checkpoint
+cannot supply a Circuit condition, and the Graph-only smoke entrypoint rejects it.
+The final191 CPU tests passed, along with Ruff, three-source-file mypy and the
+publication-safety checks. These include authored routing and adversarial
+typed-gold fixtures; they are not GPU training or independent model performance.
+
+The full10K G6 external results must precede evidence-based module selection.
+CPU preparation is not GPU memory certification, Circuit training, full
+professional G7 or independent non-synthetic transfer. No quantization, hidden
+resolution reduction, live G6 hotpatch or professor-facing baseline change occurs.

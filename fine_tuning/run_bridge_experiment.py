@@ -1,4 +1,4 @@
-"""Fixed-module bounded Graph/CS A0-A3 training + paired probes, not full G7."""
+"""Fixed-module bounded Graph/CS or DC-circuit A0-A3 probes, not full G7."""
 from __future__ import annotations
 
 import argparse
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from collections import Counter
 
-from . import audit, bridge_evaluation, evaluate, run_bridge_smoke as bridge, run_experiment as runner
+from . import audit, bridge_evaluation, circuit_bridge, evaluate, run_bridge_smoke as bridge, run_experiment as runner
 from .modules import ARMS, BASE_ID, BASE_REVISION
 from .recover_evaluation import process_gone
 from .report import compare_inputs, external_groups, paired_counts
@@ -21,14 +21,32 @@ from .run_control import checkpoint_layout, require_idle_gpu, verify_arm_trainin
 CONDITIONS = ("A0", "A1", "A2", "A3")
 
 
+def circuit_metric_gate(cohort, manifest):
+    """A Circuit label cannot route rebound gold through the permissive V8 QA path."""
+    if manifest.get("evaluation_domain") != bridge_evaluation.CIRCUIT_DOMAIN:
+        return
+    gold, ledger = (audit.read_rows(cohort/name) for name in ("gold.jsonl", "pairing.jsonl"))
+    if (manifest.get("circuit_contract_version") != circuit_bridge.VERSION
+            or manifest.get("pairing_sha256") != audit.sha(cohort/"pairing.jsonl")
+            or len(gold) != manifest["count"] or len(ledger) != manifest["count"]
+            or len({r["id"] for r in ledger}) != len(ledger)
+            or [r["id"] for r in gold] != [r["id"] for r in ledger]
+            or any(entry.get("view") not in {"qa", "structure", "grounded"}
+                   or reference.get("metric_kind") != "circuit_"+entry["view"]
+                   or reference.get("circuit_contract_version") != circuit_bridge.VERSION
+                   for reference, entry in zip(gold, ledger, strict=True))):
+        raise ValueError("Circuit gold metric/version/pairing contract mismatch")
+
+
 def result_gate(output, cohort, protocol, checkpoint=None, evaluator_source=None, parent_evaluator_source=None):
     """Validate identity, observed inputs and independently replay stored CPU scores."""
     summary = runner.evaluation_gate(output, cohort, protocol, baseline=checkpoint is None)
     manifest = runner.cohort_gate(cohort)
+    circuit_metric_gate(cohort, manifest)
     rows = audit.read_rows(output/"predictions.jsonl")
     inputs = audit.read_rows(cohort/"inputs.jsonl")
     gold = {row["id"]: row for row in audit.read_rows(cohort/"gold.jsonl")}
-    external = manifest.get("evaluation_domain") == bridge_evaluation.DOMAIN
+    external = manifest.get("evaluation_domain") in {bridge_evaluation.DOMAIN, bridge_evaluation.CIRCUIT_DOMAIN}
     source = evaluator_source or Path(evaluate.__file__)
     if (summary.get("evaluator_source_sha256") != audit.sha(source)
             or summary.get("benchmark_derived") is not (not external)
@@ -77,9 +95,9 @@ def result_gate(output, cohort, protocol, checkpoint=None, evaluator_source=None
     correct = sum(row["correct"] is True for row in rows)
     if summary.get("correct") != correct or summary.get("accuracy") != correct/len(rows):
         raise ValueError("Saved evaluation arithmetic mismatch")
-    if external and (summary.get("evaluation_domain") != bridge_evaluation.DOMAIN
+    if external and (summary.get("evaluation_domain") != manifest["evaluation_domain"]
                     or summary.get("metric_policy") != manifest["metric_policy"]):
-        raise ValueError("Graph development metric policy mismatch")
+        raise ValueError("Bridge development metric policy mismatch")
     return summary, rows
 
 
@@ -106,8 +124,15 @@ def training_bundle(args):
     if any([(r["root_id"], r["view"]) for r in rows] != reference_order
            or contract != datasets["A0"][3] for rows, _, _, contract in datasets.values()):
         raise ValueError("A0-A3 must share the exact root/view order and training input contract")
-    graph = runner.cohort_gate(args.graph_cohort, 24)
-    if (graph.get("evaluation_domain") != bridge_evaluation.DOMAIN
+    graph = runner.cohort_gate(args.graph_cohort)
+    circuit_metric_gate(args.graph_cohort, graph)
+    circuit = graph.get("evaluation_domain") == bridge_evaluation.CIRCUIT_DOMAIN
+    root_count = graph.get("root_count")
+    if (type(root_count) is not int or root_count <= 0
+            or graph.get("count") != 12*root_count or not circuit and graph.get("count") != 24
+            or graph.get("evaluation_domain") not in {bridge_evaluation.DOMAIN, bridge_evaluation.CIRCUIT_DOMAIN}
+            or any((rows[0]["source_id"] == circuit_bridge.SOURCE_ID) is not circuit
+                   for rows, _, _, _ in datasets.values())
             or graph.get("builder_source_sha256") != audit.sha(Path(bridge_evaluation.__file__))
             or graph.get("pool_manifest_sha256") != audit.sha(args.image_root/"manifest.json")
             or graph.get("pairing_sha256") != audit.sha(args.graph_cohort/"pairing.jsonl")
@@ -117,7 +142,7 @@ def training_bundle(args):
     audit.check_splits([r for rows, _, _, _ in datasets.values() for r in rows]
                        + audit.read_rows(args.graph_cohort/"pairing.jsonl"))
     for name, cohort in (("graph", args.graph_cohort), ("mmmu", args.mmmu_cohort)):
-        manifest = runner.cohort_gate(cohort, 24 if name == "graph" else 60)
+        manifest = runner.cohort_gate(cohort, graph["count"] if name == "graph" else 60)
         evaluate.verify_cohort_images(cohort, manifest)
         records = audit.read_rows(cohort/"inputs.jsonl")
         if (name == "graph" and manifest.get("benchmark_derived") is not False
@@ -205,7 +230,13 @@ def run(args, controller):
     if type(merge_size) is not int or merge_size <= 0:
         raise ValueError("Invalid pinned model vision merge size")
     frozen[str(model_config.resolve())] = audit.sha(model_config)
-    cohorts = {"graph": args.graph_cohort, "mmmu": args.mmmu_cohort}
+    bridge_manifest = json.loads((args.graph_cohort/"manifest.json").read_text())
+    domain = bridge_manifest.get("evaluation_domain")
+    if domain not in {bridge_evaluation.DOMAIN, bridge_evaluation.CIRCUIT_DOMAIN}:
+        raise ValueError("Unknown bridge evaluation domain")
+    circuit = domain == bridge_evaluation.CIRCUIT_DOMAIN
+    external_name = "circuit" if circuit else "graph"
+    cohorts = {external_name: args.graph_cohort, "mmmu": args.mmmu_cohort}
     baselines = {}
     if bool(args.baseline_mmmu) != bool(args.baseline_evaluator_source):
         raise ValueError("MMMU baseline reuse requires its actual original evaluator source")
@@ -219,14 +250,20 @@ def run(args, controller):
                 frozen[str(path.resolve())] = audit.sha(path)
     training, metadata = {}, {}
     if args.reuse_a3_controller:
+        if circuit:
+            raise ValueError("A historical Graph checkpoint cannot supply a Circuit condition")
         training["A3"], metadata["A3"], files = reuse_a3(args.reuse_a3_controller, datasets, args, reference, cfg, merge_size)
         frozen.update(files)
-    declaration = {"kind": "BOUNDED_GRAPH_FIXED_MODULE_A0_A3_ADDITIONAL_EXPERIMENT", "arm": args.arm,
+    prefix = "CIRCUIT" if circuit else "GRAPH"
+    rows = datasets["A0"][0]
+    declaration = {"kind": f"BOUNDED_{prefix}_FIXED_MODULE_A0_A3_ADDITIONAL_EXPERIMENT", "arm": args.arm,
         "module_selection": "explicit fixed recipe; not chosen from MMMU or a proven 10K winner",
-        "each_condition_starts_from": "F0", "records_per_condition": 84, "roots_per_condition": 28,
-        "updates_per_condition": 6, "seed": 3407, "training_input_contract": contract,
+        "each_condition_starts_from": "F0", "records_per_condition": len(rows),
+        "roots_per_condition": len({r["root_id"] for r in rows}),
+        "updates_per_condition": math.ceil(len(rows)/16), "seed": 3407, "training_input_contract": contract,
         "same_root_view_order": True, "equal_token_or_image_exposure_claimed": False,
-        "common_graph_evaluation_records": 24, "independent_graph_roots": 2,
+        "bridge_evaluation_domain": domain, "common_bridge_evaluation_records": bridge_manifest["count"],
+        "independent_bridge_roots": bridge_manifest["root_count"],
         "MMMU_validation_records": 60, "reuse_conditions": list(training),
         "training_cap_seconds": args.training_cap_seconds, "evaluation_cap_seconds": args.evaluation_cap_seconds,
         "reload_cap_seconds": 300, "full_professional_G7_completed": False, "public_upload_allowed": False,
@@ -266,7 +303,7 @@ def run(args, controller):
 
     if "mmmu" not in baselines:
         baselines["mmmu"] = evaluate_stage("F0_mmmu", args.mmmu_cohort)
-    baselines["graph"] = evaluate_stage("F0_graph", args.graph_cohort)
+    baselines[external_name] = evaluate_stage(f"F0_{external_name}", args.graph_cohort)
     results, exposure_order = {}, None
     for condition in CONDITIONS:
         rows, manifest, records, _contract = datasets[condition]
@@ -308,8 +345,8 @@ def run(args, controller):
             before, after = (audit.read_rows(p/"predictions.jsonl") for p in (baselines[name], output))
             compare_inputs(before, after)
             results[condition][name] = {"output": str(output.resolve()), "paired": paired_counts(before, after),
-                "groups": external_groups(before, after) if name == "graph" else {},
-                "graph_membership_groups": graph_groups(cohort, before, after) if name == "graph" else {}, "actual_inputs_equal": True}
+                "groups": external_groups(before, after) if name == external_name else {},
+                f"{external_name}_membership_groups": graph_groups(cohort, before, after) if name == external_name else {}, "actual_inputs_equal": True}
         audit.dump(controller.output/f"{condition}_completed.json", {"condition": condition, "arm": args.arm,
             "checkpoint_metadata_sha256": audit.sha(training[condition]/"checkpoint/metadata.json"),
             "training_reused": condition == "A3" and bool(args.reuse_a3_controller),
@@ -321,22 +358,24 @@ def run(args, controller):
             values = [audit.read_rows(Path(results[c][name]["output"])/"predictions.jsonl") for c in (before, after)]
             compare_inputs(*values)
             contrasts[f"{after}-{before}"][name] = {"paired": paired_counts(*values),
-                "groups": external_groups(*values) if name == "graph" else {},
-                "graph_membership_groups": graph_groups(cohorts[name], *values) if name == "graph" else {}}
+                "groups": external_groups(*values) if name == external_name else {},
+                f"{external_name}_membership_groups": graph_groups(cohorts[name], *values) if name == external_name else {}}
     if any(audit.sha(Path(p)) != digest for p,digest in frozen.items()):
         raise ValueError("Final frozen input/checkpoint/evaluation evidence changed")
     for condition, output in training.items():
         checkpoint_layout(output/"checkpoint", metadata[condition])
-    return {"status": "BOUNDED_GRAPH_FIXED_MODULE_A0_A3_EVALUATED", "arm": args.arm,
+    return {"status": f"BOUNDED_{prefix}_FIXED_MODULE_A0_A3_EVALUATED", "arm": args.arm,
         "training_exposures": {c: m["exposure"] for c,m in metadata.items()}, "results": results, "contrasts": contrasts,
-        "MMMU_full_accuracy_claimed": False, "graph_development_only": True, "root_family_uncertainty_not_estimated": True,
+        "MMMU_full_accuracy_claimed": False, f"{external_name}_development_only": True,
+        "bridge_evaluation_domain": domain, "root_family_uncertainty_not_estimated": True,
         "full_common10K_G6_completed": False, "full_professional_G7_completed": False,
         "professional_non_synthetic_transfer_completed": False, "public_upload_allowed": False, "verified_files": frozen}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("approval", "image-root", "input-protocol", "protocol", "graph-cohort", "mmmu-cohort",
+    parser.add_argument("--bridge-cohort", "--graph-cohort", dest="graph_cohort", type=Path, required=True)
+    for name in ("approval", "image-root", "input-protocol", "protocol", "mmmu-cohort",
                  "previous-controller", "reference-checkpoint", "model-path", "output"):
         parser.add_argument("--"+name, type=Path, required=True)
     for name in ("baseline-mmmu", "baseline-evaluator-source", "baseline-parent-evaluator-source"):

@@ -117,7 +117,7 @@ def closed_controller(parent: Path, evaluation_only: bool = False) -> tuple[dict
     status, journal = json.loads(status_path.read_text()), read_rows(journal_path)
     terminal = {"BLOCKED", "BUDGET_STOP", "SMOKE_COMPLETE_PILOT_BUDGET_STOP", "FOUR_ARM_PILOT_EVALUATED",
                 "ADDITIONAL_FL_NVW0_VS10_PILOT_COMPLETED", "BOUNDED_GRAPH_A3_GPU_SMOKE_COMPLETED",
-                "BOUNDED_GRAPH_FIXED_MODULE_A0_A3_EVALUATED"}
+                "BOUNDED_GRAPH_FIXED_MODULE_A0_A3_EVALUATED", "BOUNDED_CIRCUIT_FIXED_MODULE_A0_A3_EVALUATED"}
     if evaluation_only:
         terminal.add("FL_1600_PAIRED_EVALUATIONS_COMPLETED")
     if (status.get("status") not in terminal or not journal or journal[-1].get("stage") != "controller"

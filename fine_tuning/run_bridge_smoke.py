@@ -10,7 +10,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import audit, run_experiment as runner
+from . import audit, circuit_bridge, run_experiment as runner
 from .graph_bridge import SOURCE_ID, VERSION
 from .modules import BASE_REVISION
 from .recover_evaluation import process_gone
@@ -24,14 +24,26 @@ def inputs(approval: Path, image_root: Path, child: Path, condition: str = "A3")
     records, manifest_path = approval/f"{condition}_approved/records.jsonl", approval/f"{condition}_approved/manifest.json"
     rows, manifest = approved_records(records, manifest_path, image_root)
     contract = audit.training_input_contract(child)
-    validate_training_input_contract(manifest, *(contract[k] for k in
-        ("min_pixels", "max_pixels", "episode_pixels", "sequence_budget")), child)
+    validate_training_input_contract(manifest, contract["min_pixels"], contract["max_pixels"],
+                                    contract["episode_pixels"], contract["sequence_budget"], child)
     original = image_root/f"{condition}.jsonl"
+    pool = json.loads((image_root/"manifest.json").read_text())
+    circuit = pool.get("version") == circuit_bridge.VERSION
+    if circuit:
+        circuit_bridge.verify(image_root)
+    elif pool.get("version") != VERSION:
+        raise ValueError("Unknown bridge source pool")
+    candidates = {r["id"]: r for r in audit.read_rows(original)}
+    train_candidates = {sid: r for sid, r in candidates.items() if r["split"] == "train"}
+    root_count = len({r["root_id"] for r in train_candidates.values()}) if circuit else 28
+    record_count = 3*root_count if circuit else 84
+    source_id = circuit_bridge.SOURCE_ID if circuit else SOURCE_ID
     processor_path = approval/f"{condition}_processor.json"
     processor = json.loads(processor_path.read_text())
-    if (len(rows) != 84 or len({r["root_id"] for r in rows}) != 28
-            or Counter(r["view"] for r in rows) != {"qa": 28, "structure": 28, "grounded": 28}
-            or any(r.get("condition") != condition or r.get("source_id") != SOURCE_ID for r in rows)
+    if (root_count <= 0 or len(rows) != record_count or len({r["root_id"] for r in rows}) != root_count
+            or {r["id"] for r in rows} != set(train_candidates)
+            or Counter(r["view"] for r in rows) != {"qa": root_count, "structure": root_count, "grounded": root_count}
+            or any(r.get("condition") != condition or r.get("source_id") != source_id for r in rows)
             or processor.get("producer_sha256") != audit.sha(Path(audit.__file__))
             or processor.get("records_sha256") != audit.sha(original)
             or processor.get("status") != "PASS" or processor.get("kind") != "ACTUAL_PROCESSOR_PREFLIGHT"
@@ -39,7 +51,6 @@ def inputs(approval: Path, image_root: Path, child: Path, condition: str = "A3")
             or processor.get("training_input_contract") != contract
             or manifest["model_input_audit"].get("receipt_sha256") != audit.sha(processor_path)):
         raise ValueError(f"Fresh actual {condition} approval/source/processor identity mismatch")
-    candidates = {r["id"]: r for r in audit.read_rows(original)}
     for row in rows:
         expected = dict(audit.model_input_record(candidates[row["id"]]), training_allowed=True,
                         processor_receipt_sha256=audit.sha(processor_path))
@@ -74,6 +85,8 @@ def run(args, controller):
         raise ValueError("The exact previous controller is still live; no overlapping GPU work")
     _, _, previous_files = runner.closed_controller(args.previous_controller)
     rows, manifest, records, contract, frozen = inputs(args.approval, args.image_root, args.input_protocol)
+    if rows[0].get("source_id") == circuit_bridge.SOURCE_ID:
+        raise ValueError("The historical Graph-only smoke is not a Circuit GPU protocol; use the four-condition controller")
     reference_path = args.reference_checkpoint/"metadata.json"
     reference = json.loads(reference_path.read_text())
     if (reference.get("arm") != "FL" or reference.get("base_revision") != BASE_REVISION

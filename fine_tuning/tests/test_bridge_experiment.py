@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from fine_tuning import audit, evaluate, run_bridge_experiment as experiment, run_control
+from fine_tuning import audit, bridge_evaluation, circuit_bridge, evaluate, run_bridge_experiment as experiment, run_control
 from fine_tuning.modules import ARMS, BASE_ID, BASE_REVISION
 from fine_tuning.tests import test_controller as fixtures
 from fine_tuning.tests.test_bridge_smoke import historical_processor_fixture
@@ -45,6 +45,55 @@ def evaluation_fixture(root):
 
 
 class BridgeExperimentTests(unittest.TestCase):
+    def test_circuit_result_gate_replays_typed_score_and_rejects_domain_mislabel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output,cohort,protocol,row,summary=evaluation_fixture(Path(directory))
+            record=audit.read_rows(cohort/"inputs.jsonl")[0]
+            record.update(question_type="open",options=[])
+            gold={"id":record["id"],"metric_kind":"circuit_qa","target":"A",
+                  "circuit_contract_version":circuit_bridge.VERSION}
+            audit.write_rows(cohort/"pairing.jsonl",[{"id":record["id"],"view":"qa"}])
+            (cohort/"inputs.jsonl").write_text(json.dumps(record)+"\n")
+            (cohort/"gold.jsonl").write_text(json.dumps(gold)+"\n")
+            manifest=json.loads((cohort/"manifest.json").read_text())
+            manifest.update(inputs_sha256=audit.sha(cohort/"inputs.jsonl"),gold_sha256=audit.sha(cohort/"gold.jsonl"),
+                evaluation_domain=bridge_evaluation.CIRCUIT_DOMAIN,metric_policy="authored typed circuit fixture",
+                circuit_contract_version=circuit_bridge.VERSION,pairing_sha256=audit.sha(cohort/"pairing.jsonl"))
+            (cohort/"manifest.json").write_text(json.dumps(manifest))
+            row.update(raw_response="A",**evaluate.score_external("A",gold,"stop"))
+            (output/"predictions.jsonl").write_text(json.dumps(row)+"\n")
+            summary.update(cohort_sha256=audit.sha(cohort/"manifest.json"),
+                predictions_sha256=audit.sha(output/"predictions.jsonl"),benchmark_derived=False,
+                evaluation_domain=manifest["evaluation_domain"],metric_policy=manifest["metric_policy"])
+            (output/"summary.json").write_text(json.dumps(summary))
+            self.assertEqual(1,experiment.result_gate(output,cohort,protocol)[0]["correct"])
+            for field,value in (("metric_kind","qa"),("circuit_contract_version","old")):
+                changed=dict(gold,**{field:value})
+                (cohort/"gold.jsonl").write_text(json.dumps(changed)+"\n")
+                manifest["gold_sha256"]=audit.sha(cohort/"gold.jsonl")
+                (cohort/"manifest.json").write_text(json.dumps(manifest))
+                summary["cohort_sha256"]=audit.sha(cohort/"manifest.json")
+                (output/"summary.json").write_text(json.dumps(summary))
+                with self.assertRaisesRegex(ValueError,"Circuit gold"):
+                    experiment.result_gate(output,cohort,protocol)
+            (cohort/"gold.jsonl").write_text(json.dumps(gold)+"\n")
+            manifest["gold_sha256"]=audit.sha(cohort/"gold.jsonl")
+            (cohort/"manifest.json").write_text(json.dumps(manifest))
+            summary["cohort_sha256"]=audit.sha(cohort/"manifest.json")
+            row["raw_response"]="B"
+            (output/"predictions.jsonl").write_text(json.dumps(row)+"\n")
+            summary["predictions_sha256"]=audit.sha(output/"predictions.jsonl")
+            (output/"summary.json").write_text(json.dumps(summary))
+            with self.assertRaisesRegex(ValueError,"Saved score"):
+                experiment.result_gate(output,cohort,protocol)
+            row["raw_response"]="A"
+            (output/"predictions.jsonl").write_text(json.dumps(row)+"\n")
+            summary.update(predictions_sha256=audit.sha(output/"predictions.jsonl"),
+                evaluation_domain=bridge_evaluation.DOMAIN)
+            (output/"summary.json").write_text(json.dumps(summary))
+            with self.assertRaisesRegex(ValueError,"metric policy"):
+                experiment.result_gate(output,cohort,protocol)
+
     def test_historical_four_approval_fixtures_are_paired_and_cannot_escape(self):
         reference = None
         for condition in experiment.CONDITIONS:
@@ -171,7 +220,10 @@ class BridgeExperimentTests(unittest.TestCase):
             controller = Mock(output=root/"output")
             controller.remaining.return_value=120
             contract={"sequence_budget":4096,"min_pixels":262144,"max_pixels":1048576,"episode_pixels":3145728}
-            datasets={c:([{}]*84,root/"manifest",root/"records",contract) for c in experiment.CONDITIONS}
+            audit.dump(root/"graph/manifest.json", {"count":24,"root_count":2,
+                "evaluation_domain":bridge_evaluation.DOMAIN})
+            datasets={c:([{"root_id":f"root{i//3}"} for i in range(84)],root/"manifest",root/"records",contract)
+                      for c in experiment.CONDITIONS}
             with patch.object(experiment,"process_gone",return_value=True), \
                     patch.object(experiment.runner,"closed_controller",return_value=({},[],{})), \
                     patch.object(experiment,"training_bundle",return_value=(datasets,{})), \
@@ -182,7 +234,7 @@ class BridgeExperimentTests(unittest.TestCase):
             controller.stage.assert_not_called()
             idle.assert_not_called()
 
-    def test_authored_full_workflow_runs_every_condition_from_f0_on_common_inputs(self):
+    def test_authored_full_workflow_runs_every_condition_from_f0_on_common_inputs(self, circuit=False):
         """Mocked subprocesses exercise routing only, not training or GPU scores."""
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
@@ -205,7 +257,8 @@ class BridgeExperimentTests(unittest.TestCase):
             for name,count in (("graph",24),("mmmu",60)):
                 rows=[{"id":f"{name}-{i}","subject":"authored"} for i in range(count)]
                 audit.write_rows(root/name/"inputs.jsonl",rows)
-                audit.dump(root/name/"manifest.json",{"count":count})
+                audit.dump(root/name/"manifest.json",{"count":count,"root_count":2,
+                    "evaluation_domain":bridge_evaluation.CIRCUIT_DOMAIN if circuit else bridge_evaluation.DOMAIN})
             commands=[]
             def stage(name,command,maximum_seconds):
                 commands.append(command)
@@ -240,7 +293,7 @@ class BridgeExperimentTests(unittest.TestCase):
                     patch.object(experiment.bridge,"verify_processor_exposure"), patch.object(experiment,"result_gate"), \
                     patch.object(experiment,"graph_groups",return_value={"authored":"routing only"}):
                 result=experiment.run(args,controller)
-            self.assertEqual("BOUNDED_GRAPH_FIXED_MODULE_A0_A3_EVALUATED",result["status"])
+            self.assertEqual(f"BOUNDED_{'CIRCUIT' if circuit else 'GRAPH'}_FIXED_MODULE_A0_A3_EVALUATED",result["status"])
             self.assertEqual(18,len(commands))
             self.assertEqual(set(experiment.CONDITIONS),set(result["results"]))
             self.assertEqual({"A1-A0","A2-A0","A3-A2","A3-A1"},set(result["contrasts"]))
@@ -251,6 +304,19 @@ class BridgeExperimentTests(unittest.TestCase):
                 if "fine_tuning.evaluate" in command:
                     self.assertIn(command[command.index("--cohort")+1],{str(args.graph_cohort),str(args.mmmu_cohort)})
             self.assertFalse(result["full_professional_G7_completed"])
+            external = "circuit" if circuit else "graph"
+            self.assertTrue(all(set(r)=={external,"mmmu"} for r in result["results"].values()))
+            declaration=json.loads((controller.output/"input_freeze.json").read_text())
+            self.assertEqual((84,28,6,24,2),tuple(declaration[k] for k in (
+                "records_per_condition","roots_per_condition","updates_per_condition",
+                "common_bridge_evaluation_records","independent_bridge_roots")))
+            audit.dump(controller.output/"status.json",{"status":result["status"]})
+            audit.dump(controller.output/"source_freeze.json",{"fixture":"not GPU"})
+            audit.write_rows(controller.output/"journal.jsonl",[{"stage":"controller","status":result["status"]}])
+            self.assertEqual(result["status"],experiment.runner.closed_controller(controller.output)[0]["status"])
+
+    def test_authored_circuit_workflow_uses_circuit_names_and_closed_status(self):
+        self.test_authored_full_workflow_runs_every_condition_from_f0_on_common_inputs(circuit=True)
 
 
 if __name__ == "__main__":

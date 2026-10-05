@@ -2,10 +2,12 @@
 import copy
 import json
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from fine_tuning import audit, bridge_evaluation as cohort, circuit_bridge
+from fine_tuning import audit, bridge_evaluation as cohort, circuit_bridge, run_bridge_smoke
 from fine_tuning.evaluate import score_external, verify_cohort_images, verify_transfer_checkpoint
 from fine_tuning.modules import BASE_ID, BASE_REVISION
 
@@ -165,6 +167,24 @@ class CircuitEvaluationTests(unittest.TestCase):
                 (checkpoint/"metadata.json").write_text(json.dumps(altered))
                 with self.assertRaisesRegex(ValueError, "frozen train-only"):
                     verify_transfer_checkpoint(manifest, checkpoint)
+
+    def test_shared_consumer_binds_all_circuit_train_rows_and_original_graph_smoke_rejects(self):
+        child=Path(circuit_bridge.__file__).with_name("bridge_training_protocol_v1.json")
+        for arm in circuit_bridge.ARMS:
+            rows, _manifest, _records, contract, frozen=run_bridge_smoke.inputs(self.approvals,self.pool,child,arm)
+            expected=[r for r in audit.read_rows(self.pool/(arm+".jsonl")) if r["split"]=="train"]
+            self.assertEqual({r["id"] for r in expected},{r["id"] for r in rows})
+            self.assertEqual(self.contract,contract)
+            self.assertEqual({"train"},{r["split"] for r in rows})
+            self.assertTrue(all(audit.sha(Path(name))==digest for name,digest in frozen.items()))
+        args=SimpleNamespace(previous_pid=1,previous_birth="1",previous_controller=self.root,
+            approval=self.approvals,image_root=self.pool,input_protocol=child)
+        controller=Mock()
+        with patch.object(run_bridge_smoke,"process_gone",return_value=True), \
+                patch.object(run_bridge_smoke.runner,"closed_controller",return_value=({},[],{})):
+            with self.assertRaisesRegex(ValueError,"Graph-only smoke"):
+                run_bridge_smoke.run(args,controller)
+        controller.stage.assert_not_called()
 
 
 if __name__ == "__main__":
