@@ -2,6 +2,19 @@
 
 ## 2026-10-05 재승인 — 본학습 후 MMMU 평가
 
+02:48UTC 최신: 소유3090 Pod22u0uqi171v0cn는 RUNNING이며 F0 MMMU 기준 평가33/60,
+GPU73%·10096MiB 및 controller/evaluator 생존을 확인했다. 다음 계정 점검은02:58:46UTC다.
+독립적으로 로컬 CPU에서 현재 producer5fb37650…의 bridge 입력384행을 실제 전처리하고,
+A0–A3 각84개/같은28 train roots와 별도development24를 새 승인했다. 실제 소비 코드의
+440개 파일/hash·입력/역할·학습/검증 분리 검사와 transfer13 CPU tests를 통과했다.
+회수 제외 index는 snapshot symlink와 원래 blob 경로의 차이로 첫 승인에서 거부됐으며,
+100파일/16740행의 SHA·행수 일대일 대응을 독립Sol이 검토한 별도 비공개 경로 투영으로 해소했다.
+원본 index/18개 과거 proof·모든 fingerprint 배열은 불변이고 원본Parquet를 새로 읽었다고 하지 않는다.
+증거 analysis_exports/g7_cpu_refresh_20261005/{summary,consumer_receipt}.json.
+이 준비는 bounded synthetic Graph/CS용이며 full professional G7/비합성 전이 성공이 아니다.
+현재GPU 실행447c0fb·교수님MMDL·V8 558/900·본학습 조건/예산은 변경하지 않았다.
+G6 full10K 네조건→근거 있는 고정모듈 G7→독립 전이의 원래 목표와 미완료 상태를 유지한다.
+
 02:24UTC 최신: test-only 수정447c0fb6056d2e18618dd22f21ef80197cb57103를
 MMDL_test에 정상 게시하고 새 clean clone에서 전체182tests(103.130초)·pip check·
 CUDA/BF16·모델13파일hash를 통과했다. 로컬182tests(399.326초)/Ruff/mypy2/게시3검사/

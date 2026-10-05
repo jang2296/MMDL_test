@@ -1,5 +1,35 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 02:48 UTC — GPU 평가 지속·현재 source 후속 입력 CPU 승인 완료
+
+10분 계정 점검에서 소유3090 Pod22u0uqi171v0cn는 RUNNING이었다.
+02:48:46UTC evaluator1878/inner1813/outer1812 생존, F0 MMMU33/60·GPU73%·10096MiB를 확인했다.
+600초 HEALTH_POLL도 진행 중이며 다음 계정 점검은02:58:46UTC다. 본학습/최종900 평가는 아직 아니다.
+
+별도 로컬 CPU에서 현재 audit.py5fb37650…와 pinned Qwen processor로384개 bridge 후보를
+실제로 전처리했다. A0–A3 각84개(같은28 train roots)만 새 승인했고 development24는 분리했다.
+현재 run_bridge_experiment.training_bundle 소비 검사가440개 파일/hash·실제 이미지/역할·
+cohort/승인 결합 및 분리를 통과했다. 독립 비합성 전이 도구의13 CPU tests도 PASS다.
+CUDA는 숨겨서 실행했고 모델 가중치 로드·학습·추론은 하지 않았다.
+
+처음 승인 시 기존 제외 index의 coverage snapshot 경로를 로컬에서 resolve하면 원래 서버의
+blob 경로와 달라져 fail-closed 검사가 거부했다. 원본SHA f062a53a…를 고정하고100개 파일의
+SHA/행수/저장소 namespace를 일대일 대조한 뒤, 별도 비공개 index의 coverage 경로만
+기존 검증 blob 경로로 투영했다. source_files/행수/모든 fingerprint/권한/한계는 불변이다.
+원래 coverage와 전체 대응표를 provenance에 보존했고 잘못된SHA/행수 반례2개를 거부했다.
+독립Sol 검토 PASS이며 원본 index/18개 과거 proof는 byte 불변이다. 원본Parquet를 재검증하거나
+benchmark fingerprints를 다시 만들었다고 주장하지 않는다. 현재 runtime guard는 변경하지 않았다.
+
+비공개 산출물은 analysis_exports/g7_cpu_refresh_20261005/에만 보관한다.
+summary.json·consumer_receipt.json·새 proof/개발 cohort·부모SHA 결합 index를 포함한다.
+이 결과는 bounded synthetic Graph/CS 입력 준비이며 full professional G7/독립 비합성 전이의
+실험 완료가 아니다. 현재의84행 GPU 제어기를 큰 전문분야 실험 완료로 표시하지 않는다.
+후속 비합성 ChartQA_Human 전이 준비에는 실제 완료된 checkpoint-bound 학습 증거가 필요하다.
+
+현재 Pod의447c0fb 고정 코드·G6 입력/4종/full10K/기본2배 예산 여유·과금 시작/금융 한도는 불변이다.
+기존 V8 558/900와 교수님MMDL도 불변이다. 새 입력/대형 결과는 GitHub로 게시하지 않는다.
+진행 근거 analysis_exports/g6_cloud_deployment_20261005.json; 전체 목표는 계속 미완료다.
+
 ## 2026-10-05 02:24 UTC — 새 clean GitHub 버전 검증·3090 GPU 기준 평가 진입
 
 역사적 processor fixture를 현재 승인이라고 주장하던 두 테스트만 수정했다.
