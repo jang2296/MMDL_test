@@ -2,6 +2,19 @@
 
 ## Current deployment policy — 2026-10-04
 
+Latest milestone, 2026-10-05 03:53 UTC: all four RTX3090 calibration arms
+completed 360 records, 23 real updates, checkpoint export and fresh-process reload.
+Their files, all 1,152 trainable tensors and input/update journals were recovered
+and CPU-verified locally, with the closed journal prefix bound to its remote SHA.
+The unchanged 2x financial gate passed (79,942.903 seconds forecast versus
+82,780.886 seconds available). Original full10K FL training began from fresh F0
+at 03:37:27 UTC; at 03:50:05 it had consumed 940 records with 58 closed updates,
+using 98% GPU. Main training for the other arms and FT evaluations are pending.
+The live checkout remains `447c0fb6056d2e18618dd22f21ef80197cb57103`; later
+published code is not applied to it. This G6 forecast covers paired60 diagnosis,
+not G7, independent transfer or a final900/32768 run. Those remain unfinished;
+the professor-facing 558/900 V8 baseline is unchanged.
+
 The user authorized workspace experimental code, configuration, documentation and small
 own-generated CPU fixtures in `jang2296/MMDL_test`. Professor-facing `MMDL/` and
 `jang2296/MMDL` remain separate and unchanged. The private-overlay instructions below

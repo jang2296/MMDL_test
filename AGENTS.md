@@ -2,6 +2,20 @@
 
 ## 2026-10-05 재승인 — 본학습 후 MMMU 평가
 
+03:53UTC checkpoint: 새3090의네360행 계측은모두360소비/23updates/epoch완료와
+fresh-process reload exit0을충족했다(FL316.761s/FM249.491s/FV310.112s/FML321.722s).
+03:37:27UTC 기본2배예산gate는79942.903s 필요<82780.886s 잔여로통과했고,
+original10K FL 본학습PID3832가freshF0에서시작됐다.03:50:05UTC940/10000·update58,
+GPU98%/12590MiB와600초HEALTH_POLL을확인했다.다른본학습arm/후속평가는아직미완료다.
+네계측의체크포인트/27파일/8로그를로컬회수했고 실제입력·360행순서/token/grid·23updates·
+모든1152개tensor의key/shape/dtype/finite/hash와원격journal prefix·reload명령/기저모델/
+단계순서를CPU검증했다.원래processor증거를재사용했으며새전처리/로컬모델로드는없다.
+근거 analysis_exports/g6_runtime_20261005/closed_stages/four_arm_local_receipt_v2.json.
+현재447c0fb실행은불변이며새코드/회수도구를hotpatch하지않는다.교수님MMDL/V8도불변이다.
+금융기한/회수예약1USD/전체4arm10K/2배여유는유지하며다음계정점검04:00:02UTC다.
+예산gate는G6와paired60용이며후속G7/비합성전이/최종900을포함한완료보장이아니다.
+900/32768은아직시작하지않았고기존60/4096진단을전체MMMU성적으로표시하지않는다.
+
 03:18UTC 최신: 새3090 F0 MMMU60은36/60·2581.072초·length12,
 외부혼합60은11/60·607.039초·length2로 모두완료했다.두원문/summary/실제source를
 analysis_exports/g6_runtime_20261005/closed_stages/로회수하여SHA/coverage/source/

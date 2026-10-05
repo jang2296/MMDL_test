@@ -1,5 +1,38 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 03:53 UTC — 네영역 계측·로컬 tensor 검증 완료, original10K 본학습 진입
+
+소유3090 Pod22u0uqi171v0cn의 FL/FM/FV/FML 360행 학습은모두실제360소비/23updates/
+EPOCH_COMPLETE와fresh-process reload exit0으로닫혔다.학습metadata 시간은각316.761,
+249.491,310.112,321.722초다.동일한순서·348194입력token/68274target/270000visual/
+360image 노출을확인했다.이는memory/update/save/reload 계측이며본학습성적이아니다.
+
+03:37:27.415UTC 기존2배forecast gate는필요79942.903초(22.206시간),
+잔여82780.886초(22.995시간)로통과했다.본학습량을축소하거나margin을바꾸지않았다.
+03:37:27.461UTC original10000행 FL 본학습PID3832가freshF0에서시작됐고,
+03:50:05UTC940소비/update58(닫힌update소비928),GPU98%/12590MiB를확인했다.
+allocated peak12384083456bytes/reserved peak24584912896bytes이며OOM은관측하지않았다.
+현재outer1812/inner1813와600초HEALTH_POLL도생존한다.다른arm본학습/FT평가는미완료다.
+이예측은G6 네종본학습+60문항MMMU/외부평가뿐이며 G7/전이/최종900시간을포함하지않는다.
+
+닫힌네계측의27파일과8로그를기저모델/캐시없이로컬로회수했다.
+shared verify_arm_training을재사용하고원격file SHA·processor receipt 연결·per-ID입력/target/
+visual grid합계·순서/노출/실제업데이트 및 모든1152개trainable tensor의key/shape/dtype/
+numel/finite/stateSHA를CPU에서검증했다.전체원격journal이아직append중이므로11404bytes의
+닫힌stage prefix만독립적으로원격SHA와대조했다.원문경로를변경하거나terminal상태를만들지않았다.
+reload명령의module/pinned base/checkpoint 및train종료→reload시작순서도확인했다.
+처음독립Sol 검토의두evidence gap은보완했고실제최종검증PASS다.
+four_arm_local_receipt_v2.json과smoke_journal_prefix_remote_receipt.json이근거다.
+원래processor producer bba0ed1b…의증거를재사용했으며새전처리/전체frozen-weight인증은아니다.
+
+비공개회수도구 analysis_exports/tools/verify_g6_closed_smokes.py는Git 제외이며
+모델·학습code·채점·protocol·live447c0fb checkout을변경하지않는다.교수님MMDL/V8 558/900도불변이다.
+게시된실험source68216dea…와liveexecution447c0fb를구분한다.원예산8.42/총요율상한0.30/h/
+회수예약1USD/최초과금01:55:08.301UTC/종료10/06 02:37:08.301UTC는유지한다.
+03:50:02UTC API는RUNNING/0.22USDh이며다음계정점검04:00:02UTC다.
+마감시프로세스종료만으로과금이멎지않으므로회수·검증후정확한Pod삭제를별도로수행한다.
+최종900/32768평가는아직시작하지않았고60/4096진단은기존전체baseline과직접비교하지않는다.
+
 ## 2026-10-05 03:18 UTC — 새3090 F0 기준선120개 회수·첫 학습 계측 진입
 
 소유Pod22u0uqi171v0cn는 RUNNING이다. 새F0 MMMU60은36정답/60(60.00%),
