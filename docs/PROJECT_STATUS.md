@@ -1,5 +1,25 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-05 05:08 UTC — 실제 회로 소비 원장 결합 완료·본학습 계속
+
+05:06:19UTC 계정조회에서소유3090는RUNNING/0.22USDh였고,05:06:22UTC SSH에서FL6733/10000,
+닫힌update420/소비6720·GPU99%/20800MiB와부모/학습생존을확인했다.다음조회05:16:19UTC다.
+실행447c0fb·원래네10K조건·2배gate·최초과금/기한/회수예약은불변이고FT점수는아직없다.
+
+실제후속training_bundle 소비검사는369.382초에1089파일/네231행/dev120/MMMU60을PASS했다.
+원장 controller_consumer_v5_input_bound.json은정확한호출경로·21metadata SHA·1089파일원장/
+digest·47source before/after freeze·v4 SHA까지결합한다.독립Sol은digest/metadata/47source를
+확인했고이미지전체재검사/GPU/모델로드는하지않았다.실패v1–v3와원장부족v4는그대로보존한다.
+근거 analysis_exports/g7_circuit_pool100_20261005/; 메모리fit/회로학습/fullG7/전이완료는아니다.
+
+full10K 외부결과를보기전에후속모듈선택규칙을비공개로사전고정했다.
+primary는qa12와trace_qa24의유형별정확도동일가중치(순위2×qa정답+trace정답),보조는기존
+structure/grounded 성공flag다.후자의state/rule 정확도는별도보고하며엄격구조성공으로혼동하지않는다.
+모든네full10K/재로드/동일입력/CPU 재채점/로컬회수검증전선택하지않는다.MMMU·봉인·실제전이는
+선택입력이아니다.F0 rank15/48 이하이면개선승자가없으며bounded probe와효과입증을구분한다.
+50K 자동확장/유료추가실행은없다.근거 analysis_exports/g6_runtime_20261005/module_selection_preregistration.json.
+현재source/후속준비만MMDL_test에반영하고live checkout·교수님MMDL/V8는변경하지않는다.
+
 ## 2026-10-05 04:34 UTC — FL 본학습 진행·회로100root 후속 입력 실제 준비
 
 소유3090 Pod22u0uqi171v0cn는RUNNING/0.22USDh다.04:34:23UTC FL 본학습4284/10000,

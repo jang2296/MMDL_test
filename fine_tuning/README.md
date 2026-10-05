@@ -2,9 +2,9 @@
 
 ## Current deployment policy — 2026-10-04
 
-Latest observation, 2026-10-05 04:34 UTC: original full10K FL training had
-consumed4,284 records (267 closed updates covering4,272 records), with actual
-RTX3090 use100%/20,800MiB. Training is live, not a completed arm or FT score.
+Latest observation, 2026-10-05 05:06 UTC: original full10K FL training had
+consumed6,733 records (420 closed updates covering6,720 records), with actual
+RTX3090 use99%/20,800MiB. Training is live, not a completed arm or FT score.
 The fixed447c0fb checkout, original four arms, financial deadline and recovery
 reserve remain unchanged; new Circuit code is for a later fixed checkout only.
 
@@ -733,6 +733,11 @@ fingerprints reuse the verified historical index with a checked path projection,
 not a new read of the original Parquets. A separate gold-blind120-row development
 cohort uses the same10 development roots across all four conditions/three views.
 The pool, approvals, images and detailed receipts remain outside GitHub.
+The actual current-source CPU consumer also passed:1,089 frozen input files,
+four231-row training sets, development120 and MMMU60. Its separate immutable
+receipt binds exact paths, metadata/file hashes, source freeze and the prior
+receipt. A Sol review checked the digest and metadata/source binding; this was
+not another image-payload replay, model load or GPU fit test.
 
 The existing `run_bridge_experiment` supports this domain through `--bridge-cohort`
 (`--graph-cohort` remains an alias). It verifies all train-only approvals, current
@@ -747,6 +752,13 @@ publication-safety checks. These include authored routing and adversarial
 typed-gold fixtures; they are not GPU training or independent model performance.
 
 The full10K G6 external results must precede evidence-based module selection.
+Before those results, a private follow-up rule was fixed: equal-weight QA-type
+accuracy, existing task-success flags as a secondary rank, then actual trainable
+capacity and fixed arm order. Grounded answer success and state/rule metrics
+remain distinct. Selection requires all four full10K arms and recovered paired
+proofs, excludes MMMU/sealed/transfer outcomes, and cannot manufacture a positive
+signal from tie-breaks. With no positive QA signal it is only a bounded probe;
+there is no automatic50K expansion or claim of internal-module causality.
 CPU preparation is not GPU memory certification, Circuit training, full
 professional G7 or independent non-synthetic transfer. No quantization, hidden
 resolution reduction, live G6 hotpatch or professor-facing baseline change occurs.
