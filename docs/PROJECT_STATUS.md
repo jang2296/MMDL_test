@@ -1,5 +1,25 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-12 01:23 KST — CPU 자료 승인·게시·회수 준비
+
+원래 c551/소유A40 진단은16:20UTC F0 full110/240·GPU91%로 계속된다. 아직336 전체
+완료가 아니며 새 모델 학습/전체900 점수는 없다. 새5093dc86536c68cc352cb34a0f2dd53db99c6519는
+MMDL_test feature branch·원격HEAD/clean·별도Pod GitHub clone을 확인했다. 교수님MMDL
+HEAD197838c11557911a14a46d87b7f52fda0cac5b3c와 V8/558점은 불변이다.
+223 CPU tests532.436초·27 IR/게시검사81.207초·Ruff/mypy5/Bash PASS다.
+
+TabMWP filtered trial35e547a564…의 실제A/B2000×2 processor/mask/EOS·pixel parity·
+전체 제외 검사에 quarantine0이고 CPU DATA_APPROVED다. 감독 token A22061/B127665로
+일치하지 않으며 행/seed/순서/125update만 맞춘다. source-trust만 승인했고 사람 인증은 아니다.
+외부132(48QA/24facts/60retention) cohort58d5cc9460…와 별도 로컬gold를 동결했다.
+Pod에는 gold 없이2103파일105685580bytes만 보내고 SHA를 전부 대조했다.
+
+근거 `analysis_exports/input_recovery_20261011/{tabmwp_cpu_preparation_main_v1,`
+`tabmwp_code_publication_v1,tabmwp_private_transfer_v1,monitor_20261011T1620Z}.json`.
+독립 입력 검토는 진행 중이다. 새 환경 setup/학습 authority는 실제336 종료 후에만
+실행한다. 기존 checkout/venv hot patch와 자동50K/900은 금지한다. 원래 GPU cutoff
+21:12:32UTC는 실제 추가 잔액이 확인되기 전까지 유지하며 다음 계정 점검은16:30UTC다.
+
 ## 2026-10-12 01:00 KST — smoke60 로컬 검증·full 계속
 
 01:03KST 추가: filtered native1600/200dev/200sealed·2000PNG 정상 취득 및 새1600

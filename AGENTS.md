@@ -1,5 +1,34 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-12 01:23 KST — 새 A/B 입력 CPU검증·Git 게시·전송 완료
+
+이 절이 아래 준비 중 기록보다 우선한다. 소유 A40 `z2sa5xt3b93er9`의 원래c551 진단은
+16:20UTC F0 full110/240·GPU91%/40543MiB로 실행 중이다. 전체336 완료는 아직 아니다.
+새 코드5093dc86536c68cc352cb34a0f2dd53db99c6519는 MMDL_test feature branch에
+정상 게시·원격HEAD/clean 일치를 확인하고 별도Pod GitHub clone으로 받았다.
+223 학습 CPU tests(532.436초)·27 진단/게시 tests(81.207초)·Ruff/mypy5/Bash PASS다.
+실행 중 c551 checkout/venv를 바꾸지 않으며 새 setup/학습은 진단 종료 후에만 시작한다.
+
+새 native1600+동일TRACE360/NVW40 trial은35e547a564693edd4547745937a363037c3f77da8da2ff7811f26acf824c0f7e다.
+실제 processor A/B 각각2000개·모든 이미지/마스크/EOS/입력 parity·전체 fingerprint 제외를
+통과했고 quarantine0이다. CPU approval SHA13830bc23872a6021a46574de55fe72d62abaad9e564e04d19ea07389c95b008.
+native1600 사전scan 후보0이며 과거3후보 family/기존준비/dev/sealed는 보존했다.
+실제 감독 token은 A22061/B127665로 같지 않다. 행/업데이트125/순서만 맞춘 비교다.
+native source 신뢰 승인이지 사람·전체 픽셀/풀이 인증은 아니다. 상위모델풀이를 사용하지 않는다.
+
+외부132개(별도native QA48/facts24/기존retention60)를 동일F0/A/B로 고정했다.
+cohort hash58d5cc946063146b179c06b7261f5c85f072bb56813c5d8d89bb90100c76570a.
+정답은 로컬 `tabmwp_external_gold_v1/`에만 두고 Pod에는 전송하지 않았다.
+private 입력2103파일/105685580bytes의 전후 로컬/원격SHA를 검증했으며 transfer receipt
+SHAfbe3d1726a88fa14695a4b7018ae7edec0cdac61512ba62d26a497c909d00874다.
+CPU 승인·전송은 GPU 학습 승인 파일/실제 학습 완료가 아니다. 독립 입력 검토는 진행 중이다.
+새 GPU authority는 실제336 종료·입력/코드/Pod 결합 후에만 만든다. 금융 cutoff는 확인된
+5.20USD 기준21:12:32UTC를 유지하며 실제 충전 잔액을 비차단 질문으로 확인 중이다.
+교수님MMDL/원래V8/558점은 불변이며 새900/50K를 자동 실행하지 않는다.
+현재 evidence는 `analysis_exports/input_recovery_20261011/`의
+`tabmwp_cpu_preparation_main_v1.json`, `tabmwp_code_publication_v1.json`,
+`tabmwp_private_transfer_v1.json`, `monitor_20261011T1620Z.json`이다.
+
 ## 2026-10-12 01:00 KST — 60호출 smoke 완료·사전 제외 구현 검증
 
 01:03KST 추가: 새 private prepared_benchmark_filtered_v2 및 이미지2000개26,280,638bytes를
