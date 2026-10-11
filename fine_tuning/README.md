@@ -1,5 +1,50 @@
 # Selective fine-tuning experiment — MMDL_test
 
+## Current 8K input-recovery and teacher-free A/B trial
+
+`experiments.input_recovery.runpod` runs the frozen 48-item I/T/IT/IR/TR diagnosis
+and the preselected 12-item I/T checkpoint comparison: 336 calls in total, including
+the initial 60-call smoke. Inference uses the pinned Qwen BF16 model, 8,192 output
+tokens and four continuous requests. This is not a new 900-item MMMU score.
+Rules are incomplete hints, not certified knowledge oracles; recovery does not
+uniquely identify a Vision, Merger or Decoder fault.
+
+The separate TabMWP trial compares native answer-only A with ordered native table
+facts plus the same answer B. No upstream solutions or teacher-model outputs are
+used. Each planned variant starts from fresh F0 and trains all four Merger modules
+on 1,600 native examples plus the same 400 historical retention examples, for
+125 updates. A/B share images, IDs and order, but not assistant-token exposure.
+Near-benchmark candidates must be excluded before a new selection is frozen;
+an existing incomplete approval is never rescued or relabeled as approved.
+
+```bash
+python -m fine_tuning.tabmwp --help
+python -m fine_tuning.tabmwp_images --help
+python -m fine_tuning.tabmwp_trial prepare --help
+python -m fine_tuning.tabmwp_trial approve-cpu --help
+python -m fine_tuning.tabmwp_evaluate prepare --help
+python -m fine_tuning.tabmwp_runpod --help
+python -m fine_tuning.tabmwp_evaluate score --help
+```
+
+Preparation and CPU approval are not GPU execution authority. The controller
+requires the actual closed 336-call diagnosis, complete source/rights/benchmark
+and processor checks, the exact new execution commit and owned Pod, and a bound
+private authorization file. Every inference gold file stays off the Pod. A fresh
+F0 and both candidates use the same frozen external 132 calls (48 QA, 24 table
+transcriptions and 60 retention tasks), with 8K/four continuous requests. Selection
+uses QA transitions, exact/cell structure recovery and equal-weight QA/TRACE
+retention; it does not use MMMU outcomes or mere JSON validity. It never starts
+50K training or a final 900-item evaluation automatically.
+
+Data, checkpoints, gold, private receipts and full responses are not published.
+TabMWP data is CC-BY-NC-SA-4.0, not the repository code's MIT license; this trial
+is private noncommercial research with attribution. Source-native labels and
+sample AI inspection are not independent human pixel-semantic certification.
+Use a new clean exact-SHA MMDL_test clone and the normally verified setup for a
+new stage. Do not hot-patch a running clone, extend its original financial deadline,
+or modify the professor-facing MMDL checkout and historical V8 result.
+
 ## Current deployment policy — 2026-10-04
 
 Final original10K state, 2026-10-05 14:57 UTC (supersedes the running snapshots

@@ -1,5 +1,110 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-12 01:00 KST — 60호출 smoke 완료·사전 제외 구현 검증
+
+01:03KST 추가: 새 private prepared_benchmark_filtered_v2 및 이미지2000개26,280,638bytes를
+실제 생성·검증했다. 준비 hash1bedde703282d0332c74187f7845ce095f425d9017446cb5c47f0502913e3ad0,
+이미지 receipt ff2df1438fa9beb35c9f07fcbfc938cd06ef082e52287136800a5ce1a0f68e74.
+원래 dev/sealed·모든 원본 byte를 보존했다. 같은 전체 fingerprint index에 대한 새1600 scan은
+후보0이며 SHA4e2adfd591d06521255d09086f00bc09b9f33b467c002d827dd8e0a4f8075f85다.
+이는 새 processor/학습 승인이나 benchmark 전체 픽셀 재검사의 완료가 아니다.
+연결58 검사와 별도14 검사/Ruff/mypy5 PASS 후 새 게시본을 준비한다.
+
+소유 A40/c551의 F0 smoke는15:54:47UTC 60/60·1761.693초·exit0으로 닫혔다.
+같은 manifest/seed/원문60개를 재사용하여 F0 full240으로 계속한다. smoke60 원격/로컬
+SHA와 요청·record hash를 검증했으며 `F0_smoke60_closed_v1/local_receipt.json` SHA는
+0ad69d98d83e6df8edf0a09a72e7c775af6654bb71bd3ef57f511150d638112d다.
+별도 CPU 채점은 아직 전체336 INCOMPLETE이며 새900점수/삭제 gate가 아니다.
+
+학습 전 후보3개 table family 제외는 `tabmwp --exclusion-receipt`로 구현·검증했다.
+옛 scan/source/index와 생산자 hash를 보존하고 새 native1600만 동일 seed로 동결한다.
+dev/sealed 및 기존 준비 hash e61547fc…는 불변이다. 연결58 CPU검사67.422초·Ruff PASS,
+독립 구현 범위31검사11.402초·bounded mypy4 PASS다. 새 실제 준비/CPU4000승인/
+새 게시 commit/A-B학습/외부396 응답은 아직 미완료다. 실행 중 c551을 hot patch하지 않는다.
+포괄 실행 승인은 기록하되 새 실제 잔액이 확인되지 않은 약속 충전으로 금융기한을 늘리지 않는다.
+교수님MMDL/V8·558/900은 불변이며 최종 회수·검증 뒤 정확한 소유Pod를 삭제한다.
+
+## 2026-10-12 00:50 KST — 진단 중간 회수·학습 후보 중복 검사
+
+소유 A40/c551 실행은15:45:41UTC F0 smoke45/60·GPU94%/40269MiB로 진행 중이었다.
+닫힌 응답48개를 별도 `F0_prefix_20261011T1548Z/`에 회수하고 원격/로컬 모든
+manifest/backend/응답 SHA를 대조했다. local_prefix_receipt SHA
+`1c4bc2561456374d5430df9e57be601c1f10f9f484be87fbf74ca42872ec7cb2`는
+중간 응답 인증이지 full336/새MMMU점수/삭제 gate가 아니다. V8 CPU prefix score는
+INCOMPLETE·48실호출이며 미완료 조건의 정확도는null로 유지한다.
+
+TabMWP 순서 결합 v2는2000행/71,312,932 이미지bytes·native1600/TRACE360/NVW40으로
+검증됐고 trainer 실제 소비 SHA는49ae68d9cb38e350006a9b48666908d2eedd42340fd332d014eeb003d8ceae12다.
+Source-trust/비상업 연구권리만 CPU감사 대상으로 승인했으며 사람/전체 픽셀 인증이 아니다.
+기존100파일/16740행 index로 native1600을 검사한 결과 3개(14424/1148/29175)가
+NEAR_IMAGE_REVIEW_REQUIRED이고 exact/near text 및 exact image 후보는0이었다.
+scan SHA293e7d8c1b53398ab81893da7379f89d47cd11d6a6ac7d0d91632a31ace6d672.
+실제 PNG 대조에 접근 가능한32/100 Parquet·2630행만 새로 읽었으므로 전수 이미지
+의미감사라고 하지 않는다. 찾은1148의 나사 가격표와 Pro Physics161의 전기장 도식은
+서로 다르지만 미확인 match가 남아 세 후보를 임의로 통과시키지 않는다.
+
+기존 준비본/scan/권리review는 보존한다. 학습 전 새 selection revision에서 세 후보의
+table family를 보수적으로 제외하고 같은 seed 정렬로 native1600을 다시 동결하도록
+구현 중이다. 이는 학습 결과에 따른 표본 교체가 아니며 진단48/12/기존V8는 불변이다.
+승인기의 quarantine/2000행 gate를 약화하거나 기존 후보를 승인완료로 바꾸지 않는다.
+새 실제 processor4000/전체 제외/동일A-B 승인·freshF0 학습/외부396은 아직 미완료다.
+새 controller 합성3·전체 신규28 CPU검사(9.508초)/Ruff/mypy3 PASS이며 진단의
+원래Pod/commit/output을 실행 승인에 결합했다. 새 코드는 아직 게시/Pod 적용하지 않았다.
+
+## 2026-10-12 00:30 KST — 새8K 진단 실제 GPU 실행 시작
+
+소유 A40 `z2sa5xt3b93er9`의 exact `c5513aef6c6994f15a37301c5b2a0f8e8bde74aa`
+setup은1944.236초/exit0으로 완료했다. 실제192+24 CPU검사·CUDA/BF16 및 지정 모델
+13파일 hash를 통과했고 닫힌 setup4파일을 로컬 회수/검증했다.
+`analysis_exports/input_recovery_20261011/setup_closed_v1/local_setup_verification.json`은
+설치 검증이지 진단 완료/새점수/최종 회수/Pod 삭제 인증이 아니다.
+
+15:25:26UTC controller1178/child1182의 F0 smoke60을 시작했고15:30UTC 첫2응답의
+stop 종료와 A40 GPU95%/40269MiB를 관측했다. vLLM0.11.0·BF16·동시4개·8192출력,
+원래 이미지/seed/P0/V8 및 GPU cutoff21:12:32UTC를 유지한다. 아직 full336 미완료다.
+watchdog의600초 poll과10분 계정 확인을 유지하며 새학습/900을 완료로 쓰지 않는다.
+네 checkpoint의 HF BF16 export는 원래 FP32-master 비병합 실행과 bit동일하다고 하지 않는다.
+
+teacher-free A/B controller는 기존 train/reload/export/continuous evaluator를 재사용한다.
+TabMWP native1600+동일400 retention·freshF0·FM·125update를 고정하고, 외부132개/모델의
+QA48·tablefacts24·retention60을 비교한다. 확대 gate의 retention primary는 QA12/TRACE24의
+동일가중 평균(36문항)이며 나머지24개 지표와 구분한다. 새 공개 commit 전에는 Pod에
+적용하지 않는다. 현재 CPU자료 승인/실제 A/B학습/외부 응답은 미완료다.
+문항 순서 hash를 실제 train.order_hash로 연결한 새 준비본을 만들고 과거 후보는 보존한다.
+사람/전체 픽셀 의미 인증 없이 upstream SOURCE_GOLD 신뢰 범위를 명시한다.
+
+## 2026-10-12 KST — 8K 입력 회복 Pod 환경 준비 중
+
+MMDL_test에 `c5513aef6c6994f15a37301c5b2a0f8e8bde74aa`를 정상 게시하고,
+소유 A40 Pod `z2sa5xt3b93er9`에서 같은 SHA의 clean GitHub SSH clone을 확인했다.
+개인키는 전송하지 않고 120초 임시 agent forwarding으로 비공개 저장소를 받았다.
+실측 A40 46068MiB/CPU RAM 약50GB/Python3.12.3이다. actual0.59USD/h,
+운영 ceiling0.65USD/h·기보고5.20USD·회수예약1USD를 사용하며 최초과금
+2026-10-11T14:46:51.039Z와 금융종료21:14:32.577Z를 고정한다.
+GPU cutoff21:12:32Z·설치1시간 watchdog 및10분 확인을 유지한다.
+현재는 exact lock 설치 단계이며 GPU 진단/새학습/새점수 완료가 아니다.
+
+비공개54파일 및 FL4/FM2/FV4/FML5파일의 로컬/원격 SHA256·목록 일치를 확인했다.
+정답표·코드 overlay·개인키는 전송하지 않았고 교수님 MMDL은 불변이다.
+증거 `analysis_exports/input_recovery_20261011/private_transfer_verified_v1.json`.
+규칙의 gold-blind AI 감사48개는 PARTIAL33/UNRELATED15이며 충분한 규칙 커버리지를
+인증한 사례는 없다. IR/TR은 비완전한 힌트 개입으로 해석하고 TR 오답을
+규칙 적용/지식 부족의 인증으로 쓰지 않는다. 이미지 진실/사람 검토는 미확인이다.
+원본 규칙과 입력은 변경하지 않았으며 I/T/IT 회복과 구분해 보고한다.
+
+teacher-free TabMWP 원래 주석 기반 A/B1600train/200dev/200sealed를 CPU 구현·
+7검사 및 독립2000쌍 재현했다. 모든38,431행의 exact table family를 대조하여
+cross-split60family/813행을 제외했다. source solution/teacher 출력은 사용하지 않는다.
+이미지·오염·실제 processor·학습 프로토콜 gate 전에는 PREPARED_PENDING_GATES이며
+데이터가 준비됐다고 GPU 학습 성공/성능 개선으로 표시하지 않는다.
+
+선정 PNG2000개(26,298,935bytes)는 고정 Git tree/blob·SHA256·decode·크기·pixel hash와
+1600/200/200 역할을 전수 대조했다. 신규11 CPU tests/Ruff/mypy2 및 독립 이미지 검토
+PASS다. 취득 receipt SHA `be49f6891d8376e7d72832ae91a3ac147f08022757613123936caeca3c29f8bb`.
+이는 원래 주석의 픽셀 의미/정답·권리·학습 승인 인증이 아니며 원래 false 플래그를 보존한다.
+후속 A/B는 같은1600native+같은400외부 retention을 제안하되 새 CPU processor/오염 gate와
+새 GitHub commit을 거친다. 현재 실행 중인 c5513ae 코드는 hotpatch하지 않는다.
+
 ## 최신 승인 — 입력 회복 진단·teacher-free 학습 비교 (2026-10-11)
 
 사용자는 첨부 계획의 구현·MMDL_test 게시·RunPod 실행을 승인했다. 교수님용
