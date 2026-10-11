@@ -1,5 +1,87 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-12 04:25 KST — 고정 진단·native A/B 실험 종료, 전체 회수·과금 자원 삭제
+
+아래 pending 스냅샷보다 우선한다. c551 진단336와5093 A/B 학습·외부396을 실제 완료했다.
+새 setup223+24 CPU tests/lock/pip check/실제CUDA·BF16/공식13파일 hash를 통과했다.
+모든 stage/outer는 exit0이고 원문732개·학습 입력·가중치·로그를 로컬 검증했다.
+교수님MMDL/V8 558/900은 변경하지 않았다. 새900 평가나 전체 모델 개선의 완료가 아니다.
+
+### 1. 입력 정보 회복 진단 — 새8K, 선정48문항
+
+| 조건 | 제공 정보 | 정답 / 48 |
+|---|---|---|
+| I | 이미지 | 22 |
+| T | 시각 전사 | 24 |
+| IT | 이미지 + 같은 전사 | 26 |
+| IR | 이미지 + 일반 규칙 | 20 |
+| TR | 전사 + 같은 규칙 | 22 |
+
+I→T 회복7/악화5, I→IT 회복8/악화4다. 동일12 I/T 정답은
+F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 한 seed·작은 선정 표본이며
+가족 단위 신뢰구간에0이 포함된다. 내부 모듈 책임이나 MMMU900 정확도로 일반화하지 않는다.
+전사48개는 메타데이터상 COMPLETE/VISUALLY_INSPECTED, human_verified=false다.
+IR/TR 규칙 감사 PARTIAL33/UNRELATED15·충분성 인증0은 전사 분류가 아니다.
+따라서 TR 실패로 규칙 적용 능력 부족을 확정하지 않는다. 선언된 전사 완전성도 사람 인증은 아니다.
+
+### 2. teacher-free native 감독 비교 — freshF0, 고정FM
+
+A는 최종답, B는 원본 표의 순서 있는 facts+같은 답을 감독했다. native1600과
+동일TRACE360/NVW40을 합쳐 각각2000행·125update/학습률·순서·seed를 맞췄다.
+감독token22061/127665·token-normalized retention loss의 상대 가중치는 같지 않다.
+MMMU 파생 학습/상위모델 생성 풀이를 쓰지 않았다. 각 학습/fresh reload/export 완료 및
+24개 FP32 Merger tensor/109105152 parameter의 key/shape/finite/hash 검증도 PASS다.
+
+외부132(QA48/facts24/retention60)를 F0/A/B 각각 같은8K/vLLM0.11.0/동시4·입력·seed로 평가했다.
+
+| 고정 채점 지표 | F0 | A: 답 | B: 표facts + 답 |
+|---|---|---|---|
+| QA 정답 / 48 | 35 | 30 | 28 |
+| 표전체 exact / 24 | 19 | 11 | 17 |
+| 표 행 exact / 24 | 19 | 16 | 23 |
+| 표 셀 일치 / 310 | 268 | 253 | 299 |
+| retention QA / 12 | 4 | 4 | 5 |
+| retention TRACE / 24 | 8 | 11 | 11 |
+| retention structure / 12 | 0 | 0 | 0 |
+| retention grounded / 12 | 3 | 2 | 0 |
+
+세조건 모두 facts JSON/schema24 유효이므로 B의 행/셀 증가는 단순 JSON 유효성 증가가 아니다.
+B는 행4회복/0악화·셀+31이지만 제목/헤더 손실로 표전체는 감소했다. QA는 A+7/−12,
+B+7/−14이며 B에는 facts만 반복/출력한 length3과 자연 종료 답 미완성이 있다.
+표24는 QA 일부와 동일한 표이므로 추가 독립 QA24로 세지 않으며310셀도310문항이 아니다.
+
+정답을 배제한 AI 원문 감사 후 별도 host 비교 민감도는 F0/A/B39/41/30 of48이다.
+표현 누락을 포함한 탐색 지표이며 고정35/30/28·사전 확대gate를 바꾸지 않는다.
+B 감사39 CLEAR/1 AMBIGUOUS/8 NO_FINAL; 사람 의미 인증/새 제출 성적이 아니다.
+관측은 “B의 행·셀 보존 개선과 최종답 악화가 함께 발생”이며 단일 모듈 실패의 증명은 아니다.
+
+### 3. 결정·회수·삭제·다음 단계
+
+사전 QA 회복·표전체/셀 개선·retention 유지의 gate는 A/B 모두false다. 50K/새 모듈 sweep/
+최종8K900을 자동 시작하지 않는다. 다음 프로토콜은 답 형식/채점을 추론 전에 함께 동결하고,
+facts-only와 QA-after-facts 과제를 분리하며 감독token/retention 가중치·독립 family/seed 반복을
+통제해야 한다. 규칙/중간 상태 C는 검증된 native/program 감독을 확보한 후의 별도 조건이다.
+현재는 다음 설계 제안이지 실행/효과 검증이 아니다. 과거원문·gate를 소급 변경하지 않는다.
+
+834 닫힌 payload·2103 private 입력/이미지·원문336+396·두 전체 학습 checkpoint·환경/로그를
+결합 검증했고 독립delta PASS/blocker0다. final_local_closure SHA935ed744…와
+tabmwp_final_delta_independent SHA0ba1a3c6…에 연결했다.19:24:54UTC 소유Pod z2sa5xt3b93er9
+삭제204→19:25:01UTC get404/listpods0/networkvolumes0이다. 원격container30GB/workspace120GB는
+복구 불가이나 로컬 결과는 보존했다. 과금 구간 약4시간38분·GPU 단가0.59USDh 추정2.73USD,
+운영상한0.65USDh 기준3.01USD이며 API snapshot2.1842USD는 최종 청구서/잔액이 아니다.
+
+결과/검증은 `analysis_exports/input_recovery_20261011/`의
+`full336_scores_v1/`, `F0_A_B_external396_scores_v1/`,
+`F0_A_B_QA144_semantic_audit_sensitivity_v1.json`, `external396_fact_field_controls_v1.json`,
+`final_scientific_decision_v3.json`, `final_local_closure_v1.json`,
+`owned_pod_cleanup_final_v1.json`(86f0f5a9…), `final_cost_report_v1.json`(b23bb7f6…)이다.
+해석 v1/v2의 잘못된 규칙/전사 축약은 보존하고 v3가 대체한다. frozen 점수·원문·입력은 불변이다.
+가중치는 `/home/jang2/mmdl-artifacts/recovered/tabmwp-A-2000-20261012-z2s/`와
+`/home/jang2/mmdl-artifacts/recovered/tabmwp-B-2000-20261012-z2s/`에 보관했다.
+원격실행 SHA5093dc86536c68cc352cb34a0f2dd53db99c6519는 문서 게시와 별개로 불변이다.
+MMDL_test에는 코드와 종료 기록만 게시하며 비공개 원문/이미지/전사/가중치를 올리지 않는다.
+교수님 MMDL clean HEAD197838c11557911a14a46d87b7f52fda0cac5b3c는 그대로다.
+
 ## 2026-10-12 03:18 KST — 새 외부 F0 132 완료·A 실제 학습 진입
 
 최종96/10단계/full336 독립검토까지 PASS다. 새5093 정상 setup은223 학습+24 진단 CPU

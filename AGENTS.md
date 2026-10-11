@@ -1,5 +1,51 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-12 04:25 KST — 고정8K 진단336·A/B2000·외부396 회수·Pod 삭제 완료
+
+이 절이 아래 진행 중 스냅샷보다 우선한다. c551 고정48문항 F0 I/T/IT/IR/TR240 및
+기존 FL/FM/FV/FML 동일12 I/T96을 실제 완료했다. F0 정답22/24/26/20/22 of48,
+동일12 I/T는 F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 작은 선정 표본·한 seed이며
+MMMU900 성적이나 유일한 모듈 책임을 확정하지 않는다. 전사48개는 메타데이터상
+COMPLETE/VISUALLY_INSPECTED지만 human_verified=false48이다. 규칙 적합성의
+PARTIAL33/UNRELATED15·충분성 인증0을 전사의 분류로 혼동하지 않는다.
+
+실행5093dc86536c68cc352cb34a0f2dd53db99c6519의 새 정상 setup223+24 CPU tests/
+lock/pip check/CUDA·BF16/지정13파일 검증 후, freshF0·고정FM의 A(답)와 B(원본 표facts+답)를
+각2000행(native1600+동일retention400)/125update로 학습·fresh-process reload·export했다.
+네 Merger의 전체24 FP32 tensor/109105152 parameter를 각 로컬 checkpoint에 보존했다.
+동일 행·순서·학습률·update지만 감독token A22061/B127665와 retention loss 가중치는
+같지 않다. 상위모델 풀이·benchmark 파생 학습·자동 양자화/해상도 축소는 사용하지 않았다.
+
+같은8K/vLLM0.11.0/동시4·입력/seed로 F0/A/B 외부132씩396 원문을 완료·고정 CPU채점했다.
+QA48 정답35/30/28, 전체표24 exact19/11/17, 행 exact19/16/23,
+셀310 중268/253/299다. 세조건 모두 facts JSON/schema24 유효다. B는 행·셀 추출 개선을
+보였지만 QA·표전체의 사전 확대gate는 A/B 모두false다. 따라서50K/새 모듈 sweep/최종900은
+자동 진행하지 않는다. B의 title/header 손실·facts-only 반복과 최종답 미완성을 분리한다.
+
+정답을 보지 않은 별도 AI 원문 추출 감사144개를 고정한 후 host에서만 비교한 민감도는
+F0/A/B39/41/30 of48이다. 기존 고정35/30/28·확대gate를 변경하지 않는다. AI 감사는
+사람 의미 인증이나 새 제출 점수가 아니다. B39 CLEAR/1 AMBIGUOUS/8 NO_FINAL이며
+세 length 응답은 답 없는 facts 반복/출력이다. 이후 새 실험에서는 답 형식·채점 규칙을
+먼저 동결하고 사실 추출과 답 완성을 분리해야 한다. 현 결과로 전체 모델 개선을 주장하지 않는다.
+
+주 검증과 독립 delta PASS 후834 닫힌 payload·2103 private 입력·원문732개·두 전체 학습
+checkpoint·설정/환경/로그를 로컬 결합했다. 최종closure SHA935ed744…,
+독립 delta SHA0ba1a3c6…이다. 소유A40 Pod z2sa5xt3b93er9를19:24:54UTC 삭제204,
+19:25:01UTC get404·계정 Pod0·Network Volume0으로 확인했다. container30GB/workspace120GB는
+폐기·원격 복구 불가이고 로컬 결과/가중치는 보존됐다. cleanup receipt SHA86f0f5a9…이다.
+전체 과금 구간 약4시간38분, GPU 실가격0.59USDh 기준 추정2.73USD·운영상한 기준3.01USD다.
+API snapshot2.1842USD는 최종 청구서/잔액이 아니다. 최초5.20USD·reserve1·원기한을 유지했다.
+
+증거 정본은 `analysis_exports/input_recovery_20261011/`의 `full336_scores_v1/`,
+`F0_A_B_external396_scores_v1/`, `F0_A_B_QA144_semantic_audit_sensitivity_v1.json`,
+`external396_fact_field_controls_v1.json`, `final_scientific_decision_v3.json`,
+`final_local_closure_v1.json`, `owned_pod_cleanup_final_v1.json`, `final_cost_report_v1.json`이다.
+해석 v1/v2의 규칙/전사 축약 오류는 보존하고 v3에서 정정했다. 원문·수치·입력·gate는 불변이다.
+학습 가중치는 `/home/jang2/mmdl-artifacts/recovered/tabmwp-{A,B}-2000-20261012-z2s/`다.
+교수님MMDL HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8/558/900은 clean/불변이다.
+결과·이미지·전사·가중치는 게시하지 않고 MMDL_test에 코드/이번 종료 기록만 반영한다.
+이 완료는 범위가 고정된 진단·A/B 실험의 종료이며50K/독립 전문전이/최종900 완료가 아니다.
+
 ## 2026-10-12 03:18 KST — 진단336 독립검증·외부 F0 완료, A 실제 학습
 
 아래 진행 중 스냅샷보다 우선한다. 최종96/10단계/full336 결합 독립검토도 PASS다.
