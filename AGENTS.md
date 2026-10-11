@@ -1,5 +1,26 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-12 03:18 KST — 진단336 독립검증·외부 F0 완료, A 실제 학습
+
+아래 진행 중 스냅샷보다 우선한다. 최종96/10단계/full336 결합 독립검토도 PASS다.
+새5093 정상 setup은223+24 CPU tests/lock/pip check/실제CUDA·BF16/지정13파일 검증을
+exit0으로 완료했다. 동일Pod·닫힌336·현재입력·새setup을 결합한 별도 authority 후
+17:59:58UTC A/B controller6275를 시작했다. 실행 checkout5093은 문서 게시와 별개로 고정한다.
+
+외부F0 132개(별도QA48/facts24/retention60)를 완료·138 payload 전후SHA/요청/원문 decode/
+native8K·동시4/input-ID·CPU-reference tensor 결합과 로컬 채점/독립검토 PASS로 회수했다.
+QA35/48, 표전체19/24, 셀268/310, retention QA4/12·TRACE8/24·structure0/12·grounded3/12다.
+이는 외부 기준값이지 MMMU900 성적이 아니다. engine pixel tensor/사람 의미 인증은 하지 않았다.
+A는18:11:34UTC freshF0의 고정FM 학습에 진입했고18:16:33UTC 실제432/2000행·27/125update를
+관측했다. 아직 A/B 학습·새396·학습 개선·확장/최종900 완료가 아니다. B는 아직 미시작이다.
+
+첫5.20USD/회수예약1USD/상한0.65USDh·원과금시각은 유지한다. GPU cutoff21:12:32UTC,
+금융 deadline21:14:32.577UTC이며 실제 충전 답변 없는 약속을 잔액으로 더하지 않는다.
+교수님MMDL/원래V8·558/900은 불변이다. 근거는 `analysis_exports/input_recovery_20261011/`의
+`checkpoint96_independent_v1.json`, `tabmwp_setup_closed_v1/`, `tabmwp_ab_launch_v1.json`,
+`F0_external132_closed_v1/`, `F0_external132_independent_v1.json`(60f03f32…),
+`F0_external132_scores_v1/`, `tabmwp_A_training_actual_start_v1.json`이다.
+
 ## 2026-10-12 02:51 KST — 진단336 종료·로컬 채점, 다음 환경 검사 중
 
 이 절이 아래 진행 중 스냅샷보다 우선한다. 소유A40/c551 진단의10단계가 모두 exit0으로

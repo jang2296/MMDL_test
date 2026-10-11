@@ -1,5 +1,25 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-12 03:18 KST — 새 외부 F0 132 완료·A 실제 학습 진입
+
+최종96/10단계/full336 독립검토까지 PASS다. 새5093 정상 setup은223 학습+24 진단 CPU
+tests·exact lock/pip check·실제CUDA/BF16·지정13 모델 파일 검증으로 exit0 종료했다.
+같은소유Pod/닫힌336/현재입력/새setup 결합 authority 후17:59:58UTC controller6275를
+시작했으며 실행GitHub checkout5093은 이후 문서 commit과 별개로 고정한다.
+외부F0 132개가 exit0 종료했고138 payload 전후SHA/요청/원문token decode·native8K/동시4/
+입력ID·CPU-reference tensor 결합과 독립 CPU 재채점이 PASS다. QA35/48·표전체19/24·
+셀268/310, retention QA4/12·TRACE8/24·structure0/12·grounded3/12이며 MMMU 점수가 아니다.
+18:11:34UTC A가 freshF0/고정FM 학습에 진입했고18:16:33UTC432/2000행·27/125update를
+실측했다. B/새396/학습개선/확장/최종900은 아직 미완료다. engine pixel·사람 의미 인증을
+새로 했다고 주장하지 않는다. native 답/표 감독만 사용하며 teacher 풀이를 사용하지 않는다.
+원금5.20USD·reserve1USD·상한0.65USDh/원과금시각 유지, GPU cutoff21:12:32UTC와
+금융 deadline21:14:32.577UTC는 불변이다. 미확인 약속 충전은 예산에 더하지 않는다.
+교수님MMDL·원래V8/558점은 불변이고 두조건 QA/facts/retention gate 후에만 확대를 판단한다.
+근거 `analysis_exports/input_recovery_20261011/`의 `checkpoint96_independent_v1.json`,
+`tabmwp_setup_closed_v1/`, `tabmwp_ab_launch_v1.json`, `F0_external132_closed_v1/`,
+`F0_external132_independent_v1.json`(60f03f32…), `F0_external132_scores_v1/`,
+`tabmwp_A_training_actual_start_v1.json`이다. 이전 pending receipt는 당시 상태로 보존한다.
+
 ## 2026-10-12 02:51 KST — 고정8K 진단336 완료·새 setup 진행
 
 소유A40/c551의10단계가 전부 exit0으로 닫혔다. 336 원응답과 실행기록378 payload 파일을
