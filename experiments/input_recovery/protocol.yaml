@@ -1,0 +1,42 @@
+status: FROZEN
+protocol_id: input-recovery-v1
+model:
+  id: Qwen/Qwen3-VL-4B-Instruct
+  revision: ebb281ec70b05090aa6165b016eac8ec08e71b17
+  dtype: bfloat16
+dataset:
+  id: MMMU/MMMU
+  revision: 98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68
+  split: validation
+prompt_policy: P0
+parser: team-final-answer-v8
+generation:
+  do_sample: true
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  repetition_penalty: 1.0
+  presence_penalty: 1.5
+  seed: 3407
+  seed_policy: per_sample_sha256_v1
+  max_new_tokens: 8192
+  num_beams: 1
+image:
+  min_pixels: 1003520
+  max_pixels: 4014080
+  resize_owner: official_processor
+  preprocessing: qwen_vl_utils_0_0_14
+execution:
+  backend: vllm
+  batch_size: 4
+  scheduling: continuous
+  max_model_len: 40960
+diagnosis:
+  conditions: [I, T, IT, IR, TR]
+  f0_questions: 48
+  checkpoint_subset: 12
+  checkpoint_conditions: [I, T]
+  initial_smoke_questions: 12
+  oracle_review_policy: ALLOW_AI_REVIEWED_DIAGNOSTIC
+  training_allowed: false
+  attribution: functional_information_recovery_not_unique_module_causation

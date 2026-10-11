@@ -5,6 +5,7 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 task_root=/workspace/nvw-runtime
 code_commit=
 reuse_venv=
+environment=experiments
 execute=false
 original_arguments=("$@")
 owned_pod_id= gpu_cutoff_utc= billing_start_utc= balance_usd= reserve_usd= hourly_usd=
@@ -13,6 +14,7 @@ while (($#)); do
     --commit) code_commit=${2:?Missing commit}; shift 2 ;;
     --runtime-root) task_root=${2:?Missing runtime root}; shift 2 ;;
     --reuse-venv) reuse_venv=${2:?Missing existing venv}; shift 2 ;;
+    --environment) environment=${2:?Missing environment}; shift 2 ;;
     --owned-pod-id) owned_pod_id=${2:?Missing Pod ID}; shift 2 ;;
     --gpu-cutoff-utc) gpu_cutoff_utc=${2:?Missing cutoff}; shift 2 ;;
     --billing-start-utc) billing_start_utc=${2:?Missing billing start}; shift 2 ;;
@@ -20,10 +22,11 @@ while (($#)); do
     --reserve-usd) reserve_usd=${2:?Missing reserve}; shift 2 ;;
     --hourly-usd) hourly_usd=${2:?Missing rate}; shift 2 ;;
     --execute) execute=true; shift ;;
-    --help) printf '%s\n' 'Usage: bash fine_tuning/runpod_setup.sh --commit <40-char SHA> [--runtime-root /workspace/nvw-runtime] [--reuse-venv /workspace/existing-runtime/venv] [--owned-pod-id ID --gpu-cutoff-utc UTC --billing-start-utc UTC --balance-usd USD --reserve-usd USD --hourly-usd USD --execute]'; exit 0 ;;
+    --help) printf '%s\n' 'Usage: bash fine_tuning/runpod_setup.sh --commit <40-char SHA> [--environment experiments|vllm] [--runtime-root /workspace/nvw-runtime] [--reuse-venv /workspace/existing-runtime/venv] [--owned-pod-id ID --gpu-cutoff-utc UTC --billing-start-utc UTC --balance-usd USD --reserve-usd USD --hourly-usd USD --execute]'; exit 0 ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
+[[ $environment == experiments || $environment == vllm ]] || { printf '%s\n' 'Environment must be experiments or vllm'; exit 2; }
 [[ $code_commit =~ ^[0-9a-f]{40}$ ]] || { printf '%s\n' 'Exact commit required' >&2; exit 2; }
 [[ $(git -C "$repo_root" rev-parse HEAD) == "$code_commit" ]] || { printf '%s\n' 'Commit mismatch' >&2; exit 2; }
 [[ -z $(git -C "$repo_root" status --porcelain) ]] || { printf '%s\n' 'Clean checkout required' >&2; exit 2; }
@@ -68,7 +71,7 @@ else
   python3.12 -m venv "$task_root/venv"
   python=$task_root/venv/bin/python
 fi
-"$python" -m pip install -r "$repo_root/env/requirements-experiments.lock"
+"$python" -m pip install -r "$repo_root/env/requirements-$environment.lock"
 "$python" -m pip check
 "$python" -m pip freeze --all > "$task_root/setup/pip-freeze.txt"
 export PYTHONPATH="$repo_root/src:$repo_root"
@@ -78,6 +81,9 @@ export MMDL_STORAGE_RESERVE_GIB=25
 export PYTHONUNBUFFERED=1
 cd "$repo_root"
 "$python" -m unittest discover -s fine_tuning/tests -v
+if [[ $environment == vllm ]]; then
+  "$python" -m unittest discover -s experiments/input_recovery/tests -v
+fi
 "$python" -m mmdl.runtime.environment --output "$task_root/setup/doctor.json" --storage-path /workspace --required-gib 30
 "$python" - "$task_root" "$code_commit" <<'PY'
 import json, pathlib, sys

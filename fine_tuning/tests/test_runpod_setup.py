@@ -115,6 +115,19 @@ class RunpodSetupTests(unittest.TestCase):
             self.assertFalse((root/'calls.txt').exists())
             self.assertFalse((workspace/'new-runtime/setup').exists())
 
+    def test_vllm_lock_and_new_tests_are_selected_explicitly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script, workspace, venv, environment, args = self.fixture(root)
+            result = subprocess.run(['bash', str(script), *args, '--reuse-venv', str(venv),
+                                     '--environment', 'vllm'], env=environment,
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(0, result.returncode, result.stderr)
+            calls = (root/'calls.txt').read_text().splitlines()
+            self.assertEqual(calls[0], f'-m pip install -r {root}/repo/env/requirements-vllm.lock')
+            self.assertIn('-m unittest discover -s experiments/input_recovery/tests -v', calls)
+            self.assertFalse((workspace/'new-runtime/venv').exists())
+
     def test_default_dry_run_and_watchdog_still_precede_installation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

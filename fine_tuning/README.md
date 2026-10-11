@@ -2,6 +2,34 @@
 
 ## Current deployment policy — 2026-10-04
 
+Final original10K state, 2026-10-05 14:57 UTC (supersedes the running snapshots
+below): all four arms completed10,000 records/625 updates, fresh-process reload,
+MMMU60 and external60. All checkpoints/raw results were recovered and CPU-verified;
+the integrated local gate binds the original controller, source freeze, outer
+watchdog, closed-process probes and all four per-arm receipts. Owned Pod
+`22u0uqi171v0cn` was deleted with204, then get404/empty Pod and network-volume lists
+were verified. No new GPU work started. Full checkpoints stay outside GitHub.
+
+Same-protocol4K MMMU60 scores are F036/FL22/FM27/FV21/FML23. Every trained arm
+regressed against its paired F0. Preregistered external-development primary ranks
+FM25/48 > FML21/48 > FL18/48 = FV18/48 (F015/48); MMMU is excluded from selection
+and retention risk is reported separately. Whole-structure exact is0/12 and actual
+rule-present exact is0/2 in every arm. Absent/null rule matches are not rule mastery.
+This is not independent professional transfer, G7,50K training or final900 completion;
+the historical V8 558/900/32768 baseline remains unchanged.
+
+Private evidence: `analysis_exports/g6_runtime_20261005/final_closed_controller/`
+(`report.json`, `local_receipt.json`), `pod_cleanup_receipt.json` in its parent,
+and `claudedocs/g6_full10k_final_analysis_20261005.md`. These files are not included
+in the test repository. The final presentation update passed native, byte-preservation
+and independent visual checks at 2026-10-05 16:16 UTC. It updates seven of42 slides,
+preserving the original18, the user's saved slide38 edit, all other35 slide/notes
+parts and10 embedded P1 captures. Evidence is private:
+`analysis_exports/ppt_updates_20261005/verification_closed10k.json` and
+`final_closed10k/{native_verification,visual_review}.json`. The earlier unsaved-edit
+blocker was resolved by reviewing the user's saved source before replacement.
+Local documentation updates do not publish a new execution commit or start G7.
+
 Latest observation, 2026-10-05 05:06 UTC: original full10K FL training had
 consumed6,733 records (420 closed updates covering6,720 records), with actual
 RTX3090 use99%/20,800MiB. Training is live, not a completed arm or FT score.

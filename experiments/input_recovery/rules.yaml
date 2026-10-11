@@ -1,0 +1,174 @@
+# Team-authored, non-exhaustive subject-wide reminders, fixed before new inference.
+# Approval is AI diagnostic review, not independent human certification.
+Music:
+  subject: Music
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://viva.pressbooks.pub/openmusictheory/chapter/the-keyboard-and-grand-staff/
+    - https://openmusictheory.github.io/intervals.html
+  text: >-
+    Read the clef before mapping staff positions to pitch. The treble clef marks G on
+    its second line; the bass clef marks F on its fourth line. Each adjacent line or
+    space changes one diatonic step. Apply the key signature and explicit accidentals.
+    Determine an interval's number by counting letter names inclusively, and determine
+    its quality separately from chromatic distance. Rhythm, ties and bar order are
+    separate from pitch. These reminders do not supply the notes in the current image.
+Electronics:
+  subject: Electronics
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/university-physics-volume-2/pages/10-3-kirchhoffs-rules
+  text: >-
+    Distinguish actual junctions from unconnected crossing wires and preserve component
+    polarities. At a node, total entering current equals total leaving current. Around
+    a closed loop, the algebraic sum of voltage changes is zero. For an ideal resistor,
+    V=IR. Series components share current; parallel branches share terminal voltage.
+    Retain sign conventions consistently and do not infer a connection solely from proximity.
+Materials:
+  subject: Materials
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/college-physics-2e/pages/5-3-elasticity-stress-and-strain
+  text: >-
+    Identify axes, units and whether a diagram is qualitative before interpreting it.
+    Engineering stress is force divided by initial cross-sectional area; engineering
+    strain is change in length divided by initial length. In the linear elastic range,
+    stress equals Young's modulus times strain. This relation must not be extrapolated
+    past that range. Visible microstructure and mechanical properties are not identical
+    observations, and a general reminder does not identify a material from an image.
+Architecture_and_Engineering:
+  subject: Architecture_and_Engineering
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/college-physics/pages/9-introduction-to-statics-and-torque
+  text: >-
+    Preserve the drawing's view, orientation, dimensions and scale. In static equilibrium,
+    the vector sum of forces and the sum of torques about an origin are zero. Torque is
+    force times its perpendicular lever arm. Resolve components using a consistent
+    coordinate system. A perspective length need not equal a dimensioned physical length.
+Mechanical_Engineering:
+  subject: Mechanical_Engineering
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/college-physics/pages/9-introduction-to-statics-and-torque
+    - https://openstax.org/books/college-physics-2e/pages/5-3-elasticity-stress-and-strain
+  text: >-
+    Separate loads, supports and bodies before applying equilibrium. Sum force components
+    and moments consistently; the moment arm is perpendicular to the force's line of action.
+    Stress and strain use force/area and relative deformation, respectively. Keep units
+    consistent, and distinguish a requested limiting value from a separately specified
+    safety factor. Do not invent an unspecified load, support or connection.
+Geography:
+  subject: Geography
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://www.cpc.ncep.noaa.gov/products/predictions/short_range/tools/ppgc.html
+  text: >-
+    Read the map legend, scale, orientation and coordinate system before interpreting
+    position. Latitude and longitude are different coordinates; map projections can
+    distort lengths, areas and shapes. Do not equate a pixel distance with a physical
+    distance without the stated scale. Distinguish plotted measurements from categorical
+    symbols and keep direction and units unchanged across intermediate steps.
+Agriculture:
+  subject: Agriculture
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/biology-2e/pages/20-2-determining-evolutionary-relationships
+  text: >-
+    Separate observed morphology or plotted measurements from an inferred species,
+    disease or causal mechanism. Use the stated comparison group, units and conditions.
+    A shared visible characteristic alone does not establish common ancestry or causality.
+    Absence of a clearly visible feature is not proof of its biological absence. This
+    general reminder is not a species-specific identification key.
+Biology:
+  subject: Biology
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/biology-2e/pages/20-1-organizing-life-on-earth
+    - https://openstax.org/books/biology-2e/pages/20-2-determining-evolutionary-relationships
+  text: >-
+    Distinguish an observed feature from its biological interpretation. In a phylogenetic
+    tree, shared ancestry follows branching connections, not left-to-right tip position.
+    Branch lengths represent time or change only if the diagram specifies that meaning.
+    Morphological and molecular evidence can support different comparisons; use the
+    evidence actually supplied rather than inventing an unshown characteristic.
+Chemistry:
+  subject: Chemistry
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/chemistry-2e/pages/2-3-atomic-structure-and-symbolism
+  text: >-
+    Preserve element symbols, subscripts, superscripts and charge signs. Atomic number
+    counts protons; mass number counts protons plus neutrons. Ionic charge changes the
+    electron count, not the proton count. Distinguish stoichiometric coefficients from
+    subscripts. Check conservation of atoms and charge when interpreting a reaction.
+Diagnostics_and_Laboratory_Medicine:
+  subject: Diagnostics_and_Laboratory_Medicine
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/biology-2e/pages/20-2-determining-evolutionary-relationships
+  text: >-
+    Keep image observations, laboratory measurements and a diagnostic interpretation
+    separate. Interpret a result using its stated reference range, units, stain or
+    modality and relevant context. Do not infer an unobserved feature. A visible
+    similarity alone does not establish a unique diagnosis. This generic evidence
+    reminder is not a complete medical rulebook or a diagnostic image reference.
+Accounting:
+  subject: Accounting
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/principles-financial-accounting/pages/3-1-describe-principles-assumptions-and-concepts-of-accounting-and-their-relationship-to-financial-statements
+    - https://openstax.org/books/principles-managerial-accounting/pages/8-summary
+  text: >-
+    Preserve row and column labels, reporting period, units and cash versus accrual basis.
+    Under accrual accounting, revenue recognition and expense matching need not coincide
+    with cash movement. Inventory receipt alone does not imply a cash inflow. Assets
+    equal liabilities plus equity. For a cost variance, actual cost above its comparable
+    standard is unfavorable and below it is favorable; do not mix cost and revenue signs.
+Computer_Science:
+  subject: Computer_Science
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/resources/lecture-9-breadth-first-search/
+  text: >-
+    Preserve graph node identities, edge direction and weights. An unweighted breadth-first
+    search visits vertices in nondecreasing distance from its start using a queue.
+    An adjacency matrix row and column must use the declared vertex order. Simulate
+    each data-structure or state-machine operation using the updated state; do not silently
+    replace directed edges with undirected ones or discard repeated operations.
+Energy_and_Power:
+  subject: Energy_and_Power
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/university-physics-volume-2/pages/10-3-kirchhoffs-rules
+  text: >-
+    Preserve the system boundary, flow directions and units. Power is energy transferred
+    per unit time; input and output power are not interchangeable with energy. For
+    electrical circuits use consistent current/voltage signs, node-current conservation
+    and zero net voltage change around a closed loop. Apply conservation before combining
+    components; do not invent a missing connection or conversion efficiency.
+Math:
+  subject: Math
+  version: generic-20261011-v1
+  approved: true
+  sources:
+    - https://openstax.org/books/calculus-volume-1/pages/5-introduction
+  text: >-
+    Preserve variables, domains, axes and units. A derivative describes local rate of
+    change; a definite integral describes signed accumulation over stated bounds.
+    Check the domain before cancellation, division or squaring. Distinguish a diagram's
+    qualitative appearance from a stated equality, and carry the intermediate state
+    consistently rather than treating an intermediate result as the requested final value.

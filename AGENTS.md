@@ -1,6 +1,108 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 최신 승인 — 입력 회복 진단·teacher-free 학습 비교 (2026-10-11)
+
+사용자는 첨부 계획의 구현·MMDL_test 게시·RunPod 실행을 승인했다. 교수님용
+`MMDL/` 및 `jang2296/MMDL`은 절대 수정하지 않는다. 새 코드는 상위 원본에서
+검사한 뒤 `MMDL_test` feature branch에 정상 게시하고, Pod는 exact SHA의 clean
+clone으로 실행한다. 원문 이미지·전사·정답·checkpoint·전체 응답은 비공개다.
+
+`experiments/input_recovery/`는 별도 8K 진단 protocol이다. A/B/C/D 각12개,
+과거 정답6/오답6의48개를 고정하고 I/T/IT/IR/TR 및 네 기존 checkpoint의
+별도12개 I/T를 실행한다(최대336호출). 12개 smoke는 full에서 재사용한다.
+기존 모델/revision/BF16/이미지/P0/sampling/문항 seed/V8은 유지한다.
+동시4개 continuous refill을 기본으로 하고 해상도·정밀도·문맥을 자동 축소하지 않는다.
+기존 V8 558/900·원문·4K G6 결과는 불변이며 새 진단 평균은 전체 MMMU 점수가 아니다.
+
+고정 입력은 `analysis_exports/input_recovery_20261011/prepared_gold_bound_v2/`다.
+48개 선택과 별도12개·이미지51개 및 sample/oracle/gold hash를 결합했다.
+정답표는 Pod에 전송하지 않고 로컬 채점에서만 사용한다. 전사는 AI 검토이지
+사람 인증이 아니며 일반 과목 규칙은 비완전한 보조 정보다. 회복을 내부 모듈의
+유일한 책임으로 해석하지 않는다. 기존 keep/loss 표본의 지원 범위도 기록한다.
+
+후속 학습은 상위 모델 teacher/distillation 없이 원래 출처 주석 또는 프로그램
+검증 supervision으로 answer-only와 시각 사실/관계+answer를 비교한다.
+MMMU/Pro 및 모든 파생물은 training_allowed=false다. 학습범위·학습률·행 순서·
+update와 외부 retention을 고정하고 외부 dev gate 후 확장·새 F0/FT 8K900을 검토한다.
+초기 코드·CPU 검사와 실제 GPU/학습 완료를 구분하며 최신 상태는 PROJECT_STATUS에 둔다.
+현재 보고 잔액은 약5.20USD다. 추가 충전 예정은 실제 가용 잔액으로 간주하지 않고
+최초 과금시각·회수 예약1USD·실제 가격의 금융 watchdog을 유지한다. 자동 충전 설정은
+바꾸지 않는다. 10분 점검·로컬 회수/검증 후 정확한 소유Pod 삭제 원칙도 유지한다.
+
+## 최신 종료 기록 — original10K 네 조건 회수·삭제 완료 (2026-10-06 KST)
+
+이 기록은 아래 진행 중 스냅샷보다 우선한다. 10/5 14:14:21UTC 네 조건 모두
+10000행/625update·train/reload/MMMU/external16단계EXITED0·입력gate8PASS로 종료했다.
+FML까지 모든 checkpoint tensor와 원문 CPU검증·전체 closure gate PASS 후
+소유Pod22u0uqi171v0cn를14:57:07UTC delete204→14:57:20UTC get404/listpods0/
+networkvolumes0으로 삭제했다. 원격container/Podvolume는 폐기했고 전 결과·네 전체checkpoint는
+`/home/jang2/mmdl-artifacts/recovered/g6-full-*`의 실제 arm root에 보존했다.
+Windows 비가중치 증거는 `analysis_exports/g6_runtime_20261005/`다. 최종 local receipt
+SHA2ec35018f169710eb17ae7a4d093109d1a06ae31aa41cdc395698263b969d51c,
+`final_closed_controller/local_receipt.json` 및 `pod_cleanup_receipt.json`으로 회수→삭제를 연결한다.
+과거 개별receipt의 pending 표시는 생성 당시 상태이며 소급 수정하지 않는다.
+
+동일4K/P0/V8 MMMU60은 F036/FL22/FM27/FV21/FML23; 네 학습 조건 모두 하락이다.
+외부 사전지표는 FM25/48>FML21/48>FL18/48=FV18/48, F015/48이다.
+MMMU 유지위험은 선택과 분리, 전체structure exact0/12·실제rule-present0/2 모두 유지다.
+정본 분석 `claudedocs/g6_full10k_final_analysis_20261005.md`. 독립전문전이/봉인holdout/
+G7/50K/최종900/8K새평가와 전체모델개선은 미완료이며 자동 유료 실행하지 않는다.
+교수님MMDL/V8/원문/실행447c0fb는 불변이며 새 Git 게시도 하지 않았다.
+
+PPT 최종7장 반영도10/5 16:16UTC 검증 PASS로 완료했다. 이전 Saved=0 차단은 사용자
+저장 후 해소됐으며 저장본08702d…와38번 자막 위치 변경을 먼저 대조·보존했다.
+현재42장 SHAbedf8028ac43fc6604b43f95ec33942fd52a06bbdc0ad919d5a3cbd4e58ff008,
+수정19/27/31/33/34/41/42 외35장 slide/notes XML·원래1–18장78part·P1캡처10hash는 보존됐다.
+수정7장 실제native렌더/overflow0·주 에이전트와독립Sol 시각검토 PASS다. 증거는
+`analysis_exports/ppt_updates_20261005/verification_closed10k.json` 및
+`final_closed10k/{native_verification,visual_review}.json`, 사용자 대조는
+`user_saved_source_review.json`이다. 백업·실패 시도·과거 receipt는 보존했다.
+실험·회수·삭제·이번 PPT 완료를 후속 G7/독립전이/전체모델개선 완료로 혼동하지 않는다.
+
 ## 2026-10-05 재승인 — 본학습 후 MMMU 평가
+
+09:29UTC PPT42의31/33/42만 갱신·native렌더3장/overflow0/원래18 및그외slide byte/
+내장캡처10 SHA/HTML불변/native42검사 PASS다. PPT현재SHA
+57ff8e303c18dba1716f9034ec3a032625c542a6f616d9356c2b071d51161f96;
+검증 analysis_exports/ppt_updates_20261005/verification_final.json. FM27/60 로컬검증을 반영했다.
+독립Sol CPU 재현에서 grounded12 중 실제rules target2개·F0/FL/FM 모두0/2다.
+과거rule-exact10→6/10은 absent/null 일치를 포함하므로 규칙학습 성공률로 부르지 않는다.
+grounded 회복 FL2/FM2는 숫자문자열→숫자형만 바꿔도 회수되므로 구조학습성과와 구분한다.
+MMMU answer-only JSON 세조건0, 단독LETTER.보기2→FL51/FM25다. 원문/채점/점수불변;
+근거13SHA와36grounded재현은 analysis_exports/g6_runtime_20261005/partial_FL_FM_metric_audit.json.
+09:25:11UTC FV GPU100%/18264MiB·최근09:17:07poll PID6111생존. 다음조회09:35UTC.
+FV/FML 미완료로 Pod유지하며 네arm완료→모든회수·검증→소유Pod삭제→분석을 계속한다.
+비용마감·원래GPU447c0fb·교수님MMDL/V8불변이며 G7/50K/새900 자동실행없음.
+
+09:14UTC FM로컬회수·검증 완료: original10K/625updates·4Merger24tensor/109105152 FP32파라미터,
+학습6197.683초·fresh-process reload exit0·원격SHA/journal/실제Pod/실행GitHEAD/모든tensor
+key/shape/dtype/finite/hash·동일입력/노출/원문CPU채점이 PASS다. processor증거는 검증된동일FL
+records/order/metadata/consumed SHA를 재사용했고 새이미지처리/로컬가중치추론은 하지않았다.
+MMMU60 동일4K F036→FM27(45%,+2/−11), 외부qa4→7/12·trace7→11/24·whole exact0→0/12·
+grounded0→5/12이다. grounded state exact0→0/12, rule10→10/12로 질문성공과구분한다.
+structure F1은0.19548/관측6·미관측6이며F0 0.20152/관측12와누락없이동급비교하지않는다.
+네arm전체/모듈선택/대규모학습/최종900완료가 아니다. 체크포인트는Linux외부root
+/home/jang2/mmdl-artifacts/recovered/g6-full-FM-20261005-22u/에, Windows회수원문/receipt는
+analysis_exports/g6_runtime_20261005/closed_full10k_FM/에 보관한다. 도구는동명20261005의
+recover_g6_closed_arm 파일이며Sol guard검토/Ruff/3파일mypy/잘못된arm거부검사 PASS다.
+FV/FML미완료라Pod유지·기한/예산reset없음. 모든회수후삭제정책과교수님MMDL/V8불변이다.
+
+09:03UTC 최신: 사용자요청 PPT19–42를 추가했고 기존1–18 slide/notes/media byte를 보존했다.
+P1 실제HTML 전체/오답 첫화면 및 CS16/Accounting9/Manage20/Music3의 원본이미지·응답말미
+10개 캡처를 내장했다. 캡처는 표시 발췌이며 원문/모델입력/파서/558점은 불변이다.
+초기 긴페이지 Chrome캡처의 흰화면은 사용하지 않고 bounded 원문DOM발췌로 재촬영해
+Sol 독립시각확인과 부모 native렌더8장·overflow0·임베드SHA10/원래18byte검사를 PASS했다.
+관련연구3개/Qwen·CLEVR·LoRA 1차출처, 실제 HW·예산/gate/마일스톤·평가기준 연결을 기록했다.
+파일 qwen3_mmmu_problem_improvement.pptx SHA91314b3d5ac3e007e054cb4e6ee663eb1f8baf2ffd571b1b6c2b54b2ebc8e679;
+검증 analysis_exports/ppt_updates_20261005/verification_final.json. 내부 발표자료이며 GitHub 미게시다.
+모듈 선택은 외부dev만 사용/MMMU 유지 위험 별도보고로33장을 정정했고 실제사전등록경로는
+analysis_exports/g6_runtime_20261005/module_selection_preregistration.json이다.
+09:00:06UTC Pod22u0uqi171v0cn RUNNING·3090 GPU95%/15402MiB, FV2456/10000 진행을 확인했다.
+FL10K/625 및 두60개 평가 로컬검증 완료: MMMU F036→FL22, 외부 지표는 별도집계다.
+FMtrain/reload/MMMU/external exit0·08:27:07UTC gate통과지만 로컬회수 검증은 아직 미완료다.
+FV학습/FML대기·본4arm은 변경없이 유지하며 10분 점검과 기존비용기한을 유지한다.
+최신 사용자지시: 모두종료 후 모든결과 로컬회수·CPUreplay/SHA검증→정확한소유Pod삭제→분석.
+G7/50K/8K새paired/최종900은 자동시작하지 않는다. 교수님MMDL/V8·현재GPU447c0fb는 불변이다.
 
 05:08UTC checkpoint: 소유3090 RUNNING/0.22USDh,05:06:22UTC FL6733/10000·닫힌update420/소비6720,
 GPU99%/20800MiB·allocated peak12822514176bytes 및부모/학습/600초poll 생존을확인했다.

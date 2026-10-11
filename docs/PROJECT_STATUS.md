@@ -1,5 +1,340 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-11 — 새 입력 회복 실험 구현·CPU 검증 중
+
+첨부 계획의48문항5조건 및 기존4개 checkpoint의12문항 I/T, 최대336호출을
+`experiments/input_recovery/`에 구현했다. 원래 vLLM continuous scheduler와
+checkpoint 복원·Controller·금융 watchdog·V8를 재사용한다. 신규8K protocol의
+동시4개만 허용하며 기존 baseline 실행 조건/파서/558점은 변경하지 않았다.
+정답표는 inference Pod에 보내지 않고 로컬 CPU 채점에서만 읽는다.
+
+고정 입력 `analysis_exports/input_recovery_20261011/prepared_gold_bound_v2/`는
+48개(A/B/C/D 각12, 과거정답6/오답6), checkpoint subset12 및 실제이미지51개를
+검증했다. selection hash는
+`562729cae39c13ff35a3fb08fef000cf56986b85bc5ee37bb78afcd20335550b`다.
+첫 prepared bundle을 덮어쓰지 않았고 새 bundle의 selected gold까지 hash로 결합했다.
+전사 AI검토/일반 규칙의 비완전성·G6 keep/loss의 제한된 커버리지를 공개 코드에도 명시한다.
+
+선택/정답 변경, 모델 경로, 재개 원장 변조, 미완료/N/A 분모, checkpoint 전체복원,
+동시 refill 및 deadline 검사를 독립 Sol이 검토했다. focused29 CPU tests PASS이며
+전체 fine_tuning192개(378.371초), 신규실험24개(61.345초), 기존평가180개
+(96.307초) PASS 및 Ruff/Bash/실험10파일 mypy PASS를 확인했다. 최초 타입 검사의
+subset annotation/동적 PEFT merge 식을 보완했고 실제5개 복원 검사를 다시 통과했다.
+MMDL_test 동기화·diff 검토 후 게시한다.
+실제4B export·새GPU 추론·학습/새900은 아직 미실행이다. 합성 테스트를 실제 완료로
+표시하지 않는다. 교수님 MMDL/원격은 불변이고 아직 새Pod를 생성하지 않았다.
+
+RTX3090 품절/A40 48GB secure Low·GPU0.35USDh를 실시간 확인했다. 배포 직전 재조회한다.
+잔액5.20USD·회수예약1USD와 저장비 포함 보수적 ceiling을 실제 과금 시작에 결합한다.
+추가 충전 예정으로 한도를 자동 연장하지 않는다. 사용자 일괄 승인 범위 안에서
+외부 원래 주석/프로그램 검증 기반 teacher-free A/B SFT를 이어가되 결과 gate를 유지한다.
+MMDL_test exact commit 게시→Pod clean clone→설치/검사→60 smoke 포함336→회수/CPU채점,
+이후 관측에 근거한 학습 비교와 외부 retention gate가 남아 있다.
+
+## 2026-10-05 16:16 UTC — 최종 네 조건 분석·PPT 반영 및 보존 검증 완료
+
+아래 15:05UTC의 PPT 미저장 변경 차단은 사용자 저장 후 해소됐다. 저장본 SHA08702d…를
+먼저 대조하여 사용자38번 자막 위치 변경을 확인·보존한 뒤, 별도 작업본에서
+19/27/31/33/34/41/42만 갱신했다. 최종 PPT는42장, SHA
+`bedf8028ac43fc6604b43f95ec33942fd52a06bbdc0ad919d5a3cbd4e58ff008`이다.
+원래1–18장 slide/notes/media78개 part, 나머지35장 slide/notes XML, 사용자38번 수정과
+내장P1캡처10개 hash 보존을 검증했다. 수정7장 native1600×900 렌더·overflow0 및
+주 에이전트/독립Sol 실제 시각 검토도 PASS다. 원본·사용자 저장본 백업과 실패 시도는
+`analysis_exports/ppt_updates_20261005/`에 보존하며 과거 receipt를 덮어쓰지 않았다.
+최종 증거는 `verification_closed10k.json`과 `final_closed10k/`의
+`native_verification.json`, `visual_review.json`; 사용자 저장본 대조는
+`user_saved_source_review.json`이다.
+
+PPT에는 동일4K MMMU60의 F036/FL22/FM27/FV21/FML23, 외부 사전지표에 따른 FM 후보,
+모든 조건의 실제rule-present0/2·전체structure exact0/12, 관측 한계·근거·HW·일정을
+반영했다. 결과 분석 정본은 `claudedocs/g6_full10k_final_analysis_20261005.md`다.
+결과 회수·CPU검증·소유Pod 삭제·이번 PPT 반영은 완료했지만 모델 개선 성공,
+G7/독립 전문전이/50K/새8K·900 평가 완료가 아니다. Pod 삭제 증거는 기존
+`analysis_exports/g6_runtime_20261005/pod_cleanup_receipt.json`에 그대로 있다.
+이번에는 새GPU/Pod/유료API/외부 업로드/GitHub 게시를 시작하지 않았다.
+
+## 2026-10-05 15:05 UTC — 네 full10K 회수·검증·Pod 삭제 완료, PPT 사용자 미저장 변경 보호
+
+원래 네 조건 FL/FM/FV/FML은 각10000행/625update 및16개 train/reload/MMMU/external
+단계 종료0,8개 paired input gate PASS로 완료했다. FML native SCP/528tensor CPU검증까지
+완료한 뒤 전체controller/status/journal/source/outerlog/report와 기존 arm receipt를
+결합한 최종 local gate를 통과했다. 증거:
+`analysis_exports/g6_runtime_20261005/final_closed_controller/local_receipt.json`, SHA
+`2ec35018f169710eb17ae7a4d093109d1a06ae31aa41cdc395698263b969d51c`.
+FL의 과거 training receipt에는 pod_id 필드가 없어서 이미 byte 결합된 aggregate 및
+세 remote receipt의 정확한 Pod/commit/run identity를 사용했다. 원본 receipt는 불변이다.
+소유Pod22u0uqi171v0cn는14:57:07UTC 삭제204,14:57:20UTC 재조회404/Pod목록0/
+NetworkVolume목록0으로 정리했다. 별도 NetworkVolume은 미생성이다. 필요한 결과와
+네 전체checkpoint는 Linux recovered root에 보존했고 Windows에는 비가중치 원장/receipt를 둔다.
+원격30GBcontainer/160GBPodvolume는 폐기돼 복구할 수 없지만 검증된 로컬 결과는 보존됐다.
+정확한 삭제 증거는 `analysis_exports/g6_runtime_20261005/pod_cleanup_receipt.json`이다.
+
+동일4K MMMU60 F036/FL22/FM27/FV21/FML23, 각gain/loss5/19·2/11·0/15·6/19다.
+외부 개발 주지표 사전 규칙은 FM25/48>FML21/48>FL18/48=FV18/48(F015/48)이며
+FL/FV 동률은 보조4/24>0/24로 구분한다. MMMU는 선택에 쓰지 않았고 유지위험은 별도보고한다.
+전체structure exact0/12 및 실제rule-present0/2는 모든 조건에서 같아 전문규칙 학습 성공이 아니다.
+최종 분석은 `claudedocs/g6_full10k_final_analysis_20261005.md`에 저장했고 독립 raw 감사와
+26개 실재 근거를 연결했다. 비용은 실제13h01m59s×0.22/h≈2.87USD, 운영ceiling0.30/h≈3.91USD
+추정이며 실제청구/현재잔액 조회가 아니다. 새 G7/50K/8K/full900/Pod/유료API/GitHub 게시는 없다.
+
+PPT19/27/31/33/34/41/42의 최종 내용은 내부JSON에 준비했다. 독립 검토된 updater는
+별도작업본 수정·native렌더·미변경ZIP part검사 후 atomic교체하고 사용자Saved/hash를 보호한다.
+실제 실행은 COM의 Saved=0(42장, 파일SHA57ff8e…불변)을 확인해 첫guard에서 중단했다.
+`final_closed10k` output도 만들지 않았으며 사용자의 열린 PPT/저장 파일을 수정하지 않았다.
+원래1–18장/10개P1캡처/기존900 baseline은 불변이다. 최신 PPT 최종 반영·native렌더/독립시각
+검증은 사용자 미저장 변경을 저장·대조한 뒤 남은 작업이며 완료라고 표시하지 않는다.
+
+## 2026-10-05 14:24 UTC — 네 full10K 학습·평가 종료, 최종 회수 중
+
+원래447c0fb controller는14:14:21.140979UTC에 FOUR_ARM_PILOT_EVALUATED로 종료했다.
+네 조건 모두10,000개/625 update이며 FML MMMU60·external60 EXITED0과 두 input gate PASS를
+원래 journal에서 확인했다. outer watchdog도 원래 금융기한 안에서 EXITED0이다.
+14:23UTC API의 소유Pod22u0uqi171v0cn는 RUNNING/cost0.22USDh지만 GPU util/memory util0이다.
+14:24UTC 실제 SSH의18개 알려진 PID 검사·GPU compute query에서 모두 없음/명령RC0을 확인했다.
+원래 status/journal/source freeze/outer 전체로그와 별도새output의 CPU보고서6개를 회수해
+remote hash/size113개 binding 및 회수파일 byte 검사를 통과했다. 증거는
+`analysis_exports/g6_runtime_20261005/final_closed_controller/`이다.
+보고서 첫 호출의 PYTHONPATH 누락(ModuleNotFoundError)은 실행 환경변수를 명시한 두 번째 CPU호출로
+해결했다. GPU재실행·원래실행/원문/checkpoint 수정은 없으며 보고서는 종료/재채점 검증의 대체가 아니다.
+FML 원문/checkpoint native SCP77824는 아직 진행 중이며 로컬 tensor/raw CPU검증 및 전체 통합gate는
+아직 완료하지 않았다. 다운로드를 재시작하거나 부분 파일을 덮어쓰지 않는다.
+그 검증 후 정확한 소유Pod삭제·API부재/저장소정리 확인→최종분석/PPT 반영을 진행한다.
+새Pod/50K/900/G7/GitHub게시는 없다. 이전FL/FM/FV 검증자료와V8 baseline은 불변이다.
+
+## 2026-10-05 13:43 UTC — 마지막 FML 학습·fresh reload 정상 종료
+
+원래 journal에서 FML train EXITED0을13:43:34.465016UTC(8,005.5110초),
+별도PID8025 reload EXITED0을13:43:40.891976UTC(6.3833초)에 확인했다.
+이는 실제 단계 종료 증거이며 전체FML/네조건 완료나 로컬payload 검증 완료는 아니다.
+같은447c0fb controller는13:43:40.959141UTC FML MMMU60 PID8156을 시작했다.
+13:49:13UTC 소유Pod22u0uqi171v0cn API RUNNING/cost0.22USDh,
+13:49:20UTC SSH에서1812/1813/8156 생존·GPU43%/10344MiB·4/60저장응답을 확인했다.
+observer1312는13:53:30UTC까지 살아 있고 MMMU 종료 이벤트는 아직 없다.
+다음 API/SSH 점검13:59:13UTC. 이후 외부60·전체controller/outer watchdog 종료,
+모든 원문/체크포인트 회수·통합 로컬검증·정확한소유Pod삭제·최종분석/PPT가 남아 있다.
+독립 읽기전용 gate 점검으로 기존report.py의447c0fb byte동일성(SHA64667fa5…)과
+별도새output에서의 재사용 가능성을 확인했다. 단, report의 완료표시는 controller/outer
+종료 또는 raw CPU재채점 증명을 대신하지 않는다. 아직 최종report를 생성하지 않았다.
+원래네10K/4K평가/최초금융기한·예약·공개본/PPT/기존회수본은 불변이며 새유료작업은 없다.
+
+## 2026-10-05 13:39 UTC — FML 9,664/10,000·정상 실행 관찰
+
+13:39:03UTC 실제 API에서 소유Pod22u0uqi171v0cn RUNNING을 확인했다.
+13:39:11UTC SSH에서 기존1812/1813/7418 생존·GPU100%/23290MiB,
+FML 닫힌604/625 update·9,664/10,000소비·M/L 양쪽 실제gradient/update를 확인했다.
+observer1312는13:40:01UTC에도 살아 있으며 학습 종료 이벤트는 아직 없다.
+이는 verified wait이며 관찰 timeout을 이유로 실행을 재시작하거나 중단하지 않았다.
+다음 API·SSH 점검13:49:03UTC. 남은학습→freshreload→MMMU60/외부60,
+전체controller status/journal·outer watchdog 종료증거 회수→네조건 통합로컬검증→
+정확한소유Pod삭제→최종분석/PPT 반영은 아직 남아 있다.
+최종PPT 변경위치19/27/31/33/34/41/42를 독립 읽기전용으로 확인했으나,
+최종 FML/전체회수/삭제 근거가 없어 원본42장과10개P1캡처는 변경하지 않았다.
+최초 금융기한/예약·447c0fb·네10K·동일4K평가·기존FL/FM/FV 회수본은 불변이다.
+새GPU/50K/900·실행중 패치·GitHub 게시를 시작하지 않았다.
+
+## 2026-10-05 13:06 UTC — FML 7,232/10,000·실행 유지 체크포인트
+
+13:06:22UTC 실제 소유Pod22u0uqi171v0cn는 RUNNING/cost0.22USDh였다.
+13:06:25UTC SSH에서 기존1812/1813/7418 생존·GPU100%/23290MiB와
+FML 닫힌452/625 update·7,232/10,000소비·M/L 두group 실제gradient/update를 확인했다.
+observer1312는13:09:45UTC까지 살아 있으며 학습 종료 이벤트는 아직 없다.
+이는 기존 실행의 verified wait이며 관찰 timeout으로 재시작/중단하지 않았다.
+다음 API·SSH 점검13:16:22UTC. FML의 남은학습→freshreload→MMMU60/외부60,
+전체controller status/journal·outerlog 회수→네조건 통합로컬검증→정확한소유Pod삭제→
+최종분석/PPT 반영은 계속 남아 있다. 기존FL/FM/FV 검증회수본과 최초금융기한/예약,
+447c0fb·네10K·동일4K평가를 유지한다. 새GPU/50K/900은 시작하지 않았다.
+
+## 2026-10-05 12:35 UTC — FML 4,896/10,000·기존 실행 관찰 유지
+
+12:35:16UTC 실제 소유Pod22u0uqi171v0cn API RUNNING/cost0.22USDh,
+12:35:20UTC SSH에서 기존1812/1813/7418 생존·GPU99%/23290MiB,
+FML 닫힌306/625 update·4,896/10,000소비와 M/L 두group gradient/update를 확인했다.
+12:30:09UTC controller HEALTH_POLL도 같은PID 생존을 확인했다. observer1312를 재사용한
+10분 관찰 주기는12:37:50UTC 종료 이벤트 없이 끝났으며 학습 자체는 중지하지 않았다.
+다음 계정·SSH 확인12:45:16UTC. 이는 verified wait이며 차단/실험완료가 아니다.
+FML 재로드·MMMU60·외부60 및 전체controller/outer 종료 증거 회수·통합검증은 아직 남아 있다.
+완료 후 전체 결과 검증→정확한 소유Pod삭제→최종 분석/PPT 반영을 계속한다.
+최초 금융기한/예약·447c0fb·네10K·동일4K평가와 기존FL/FM/FV 회수본은 불변이다.
+새GPU/50K/900이나 실행 중 코드 수정은 하지 않았다.
+
+## 2026-10-05 12:04 UTC — 마지막 FML 학습 생존 확인·회수 대기 체크포인트
+
+12:04:01UTC 실제 RunPod API에서 소유Pod22u0uqi171v0cn RUNNING/cost0.22USDh,
+12:04:05UTC SSH에서 기존1812/1813/7418 생존·GPU99%/20424MiB를 확인했다.
+FML 닫힌 update158/625·consumed2528/10000이며 M/L 양쪽 실제 gradient/update가 기록됐다.
+observer1312는 살아 있고 종료 이벤트는 아직 없다. 관찰 timeout은 작업 종료나 재시작 사유가 아니다.
+다음 계정·SSH 점검12:14:01UTC. FL/FM/FV는 회수·CPU검증 완료지만 FML 학습/재로드/두 평가,
+전체 status/journal 및 outer watchdog 종료 증거 회수·통합 로컬검증이 남아 있다.
+그 검증 후에만 정확한 소유Pod삭제→최종 네 조건 분석/PPT 갱신을 진행한다.
+원래447c0fb·네10K·4K평가·최초 금융기한/예약은 불변이며 새Pod/50K/900을 시작하지 않았다.
+
+## 2026-10-05 11:36 UTC — FV full10K 로컬 검증 완료·마지막 FML 실제 학습
+
+FV train/reload/MMMU/external EXITED0 및 두 input gate PASS 이후20개닫힌 파일과
+33,487byte journal prefix를 회수했다. 정확한PodID/447c0fb/root·파일hash·10K/625/노출·
+96 Vision LoRA FP32tensor/2,359,296 params·freshreload·동일평가입력·실제frozen scorer의
+원문CPU재채점·후검사 PASS다. 기존 검증한FL processor/token 노출을 재사용했으며
+base모델로드/이미지재처리는 없었다. frozen base 불변은 sampled checks이지 전체 인증은 아니다.
+
+동일4K F036/60→FV21/60(35%,회복0/악화15). 외부QA4→6/12,TRACE7→6/24,
+structure0/12·grounded0/12다. 독립Sol의산술/coverage/input/metadata 감사도 일치했다.
+실제rule target2개는 F0/FV모두0/2이며 기존10/12·9/11은null/null일치라 mastery로 말하지 않는다.
+FV structureF1 0.255590은11관측/1누락으로F0 0.201519의12관측과coverage를함께보고한다.
+감사: `analysis_exports/g6_runtime_20261005/closed_full10k_FV/independent_metric_audit.md`.
+
+전체 회수/체크포인트: `/home/jang2/mmdl-artifacts/recovered/g6-full-FV-20261005-22u/`.
+Windows원문/집계/receipt/검증기byte복사: `analysis_exports/g6_runtime_20261005/closed_full10k_FV/`.
+receiptSHA66b2dcb2aaea1073c19d39bb55d29ced16ea8de019828c3190cc82991d4eb449;
+원문dir byte동일/검증기hash/Git제외 확인. 기존FV/FL/FM 응답/채점/공개본/PPT는 불변이다.
+
+원래 controller는11:30:08.954813UTC FML train PID7418을 시작했다.
+11:36:10UTC 실제1812/1813/7418 생존·GPU99%/22656MiB,
+닫힌27update/432소비·최신position444와M/L두group실제gradient/update를 확인했다.
+아직 FML학습/재로드/두평가 및 전체controller 종료가 남아 있어 Pod를삭제하지 않는다.
+11:31:52UTC 실제API RUNNING/cost0.22USDh; 다음11:41:52UTC·observer1312 유지.
+최초budget/deadline/reserve/원래네10K/4K평가 불변. 모든결과/종료증거 검증후
+정확한소유Pod삭제→전체분석/최종PPT 반영을 계속한다. 새GPU/50K/900 자동시작 없음.
+
+## 2026-10-05 11:25 UTC — FV MMMU60 완료·외부 평가 진행
+
+원래 journal의 FV MMMU EXITED0(11:23:34.058210UTC,2571.5737초)와
+mmmu_input_gate PASS(cb7ea84890a28ab755103f4dd76f89ddeb71ccdf34dec49a15b2335ca8240e5b)를 확인했다.
+원격 summary는60/60·21정답(35.00%)·length15/stop45·system budget stop0이다.
+이는 원격 완료 집계이며 아직 원문 CPU 재채점/로컬 회수 검증을 완료한 FV 결과는 아니다.
+기존900/32K baseline과 직접 비교하지 않는다. FV 외부60은11:23:34UTC 새PID7208로 시작했고
+11:24:58UTC 실제1812/1813/7208 생존·GPU70%/9244MiB·10/60을 확인했다. FML은 아직 대기다.
+
+외부 input gate PASS까지 닫히면 기존회수기로 FV 체크포인트/원문/로그/hash를 회수·검증한다.
+수신대상 `/home/jang2/mmdl-artifacts/recovered/g6-full-FV-20261005-22u`는 아직 없고,
+Linux783GiB/Windows217GiB 가용을 확인했다. Observer1312·다음API11:31:07UTC 유지.
+원래 실행·기한·예약·공개본/PPT/평가조건은 불변이며, 모든결과 로컬검증 전에 Pod삭제하지 않는다.
+
+## 2026-10-05 11:11 UTC — 복합 병목 관련 문헌 조사·기존 FV 평가 유지
+
+sc-research로 논문/저자 자료를 확인하고 내부
+`claudedocs/research_visual_structure_reasoning_training_20261005.md`에 기록했다.
+MMFineReason의 Qwen3-VL-4B-Instruct SFT·MMMU-val67.4→69.3은 저자 보고값이며,
+우리 revision/P0/V8/3090 재현 결과가 아니다. G-LLaVA/Geo170K, LLaVA-CoT,
+DocVAL 및 간결한 grounded CoT 연구의 데이터·검증·평가 차이와 후속 후보를 구분했다.
+LLaVA-CoT 최신 전체평균의 retracing 표기 충돌은 SFT-only 효과로 인용하지 않았다.
+보고서는 Git 제외 확인·로컬 근거 파일 존재·diff whitespace 검사 PASS다.
+새 데이터 취득/학습/API 호출/GitHub/PPT 변경은 하지 않았다.
+
+11:10:51UTC 실제 API는 소유Pod22u0uqi171v0cn RUNNING/cost0.22USDh,
+11:10:55UTC SSH는 기존1812/1813/6859 생존·GPU68%/10430MiB와 FV MMMU43/60을 확인했다.
+FV 외부60/FML은 아직 완료되지 않았다. 다음 계정/SSH 점검11:20:51UTC,
+journal observer session1312 유지. 원래447c0fb/네10K/4K평가/기한/예약은 불변이다.
+모든 닫힌 결과 회수·검증→정확한 소유Pod삭제→최종 분석/PPT 반영을 계속한다.
+
+## 2026-10-05 10:41 UTC — FV 학습·새 프로세스 재로드 완료, MMMU60 평가 진행
+
+원래 controller journal에서 FV train EXITED0(10:40:38.529582UTC,
+8011.4483초), reload EXITED0(10:40:42.414295UTC, 새PID6728)를 확인했다.
+FV 소비 원장의 마지막 position9999는10,000개 모두 소비했음을 보여 준다.
+10:40:42.485427UTC FV MMMU60 평가가 실제PID6859로 시작했다. 외부60과
+FML은 아직 완료되지 않았으므로 FV 점수·네 arm 전체 결과는 확정하지 않는다.
+10:41:08UTC RunPod API는 소유Pod22u0uqi171v0cn RUNNING/cost0.22USDh,
+10:41:14UTC SSH는 기존 부모1812/1813 생존·GPU68%/9262MiB를 확인했다.
+다음 계정 점검은10:51:08UTC이며 journal observer session1312를 재사용한다.
+
+PPT42장/실제P1캡처10개의 최종 검증 receipt와 원래18장 보존은 기존09:29UTC
+기록 그대로다. 이번에는 슬라이드를 반복 수정하지 않았다. 남은 실험 종료 후
+회수·CPU 재채점·전체 종료 증거 검증→정확한 소유Pod삭제→최종 분석/PPT 반영을
+계속한다. 원래447c0fb 코드·4K 평가·네10K조건·과금 시작/기한/예약은 불변이며
+G7/50K/새900/새Pod를 자동 시작하지 않는다.
+
+## 2026-10-05 09:35 UTC — 원래 네 arm 실행 유지·최종 회수 범위 확인
+
+09:38:56UTC `ps`에서 실제1812/1813/6111 생존을 다시 확인했다. 읽기 전용SSH의
+`tail -F journal.jsonl`을 unified exec session1312로 유지한다. 최근09:37:07UTC
+HEALTH_POLL은 학습PID6111 생존·GPU100%다. 후속 턴은 이 session을 기다려 종료이벤트를 받는다.
+observer가 끊겨도 GPU 작업 종료로 단정하거나 학습을 재시작하지 않는다. 직접PID/원장을 재확인한다.
+
+09:34:43UTC RunPod 실제 API: Pod22u0uqi171v0cn 상태RUNNING, cost0.22USD/h,
+container disk30GB, /workspace persistent160GB이며 network mount는 반환되지 않았다.
+09:34:48UTC SSH: GPU100%/18264MiB, FV 마지막 기록position5093; 09:32:54UTC 원래 부모
+1812/1813과 학습PID6111은 모두 생존했고 FV closed consumed4945였다. 공동FML은 아직 미시작이다.
+다음API/SSH 점검09:44:43UTC. FL/FM 부분 검증만 완료됐으며 네 arm 전체 완료는 아니다.
+
+읽기 전용으로 controller 루트 파일 목록과 run_experiment 종료 로직을 확인했다. 실행 중
+status.json이 없는 것은 예상된 상태이며, controller 종료 시 작성되는 파일이다. 결과 유실이나
+실행 중단의 증거가 아니다. 최종에는 닫힌 status.json·전체journal.jsonl 및
+/workspace/g6-control/g6_3090.log까지 회수해 마지막controller 이벤트·네10K/625·종료상태를 확인한다.
+각 arm receipt는 external_input_gate까지만 보존하므로 전체 종료 증거를 대신하지 않는다.
+환경/고정source는 기존 검증SHA를 재사용한다. 로컬build_report를 통과시키려고 원래summary의
+/workspace 절대checkpoint 경로를 바꾸지 않는다. 기존paired_counts/external_groups와 명시적인
+remote→local 결합을 사용한다. 독립Sol이 이 gate를 읽기 전용으로 검토했다.
+/home에784GiB·Windows볼륨에217GiB가 남아 회수 공간이 충분하다. 새Pod/추가GPU작업/
+deadline 재설정/실행 중447c0fb 수정은 없으며, 최종 전체 로컬검증 전 Pod를 삭제하지 않는다.
+
+## 2026-10-05 09:29 UTC — PPT 근거 보강 검증·외부 규칙 지표의 분모 정정
+
+PPT42장 중31/33/42만 갱신했다. 원래1–18 slide/notes/media byte와 나머지 슬라이드는
+보존했고 P1 실제캡처10개의 내장SHA/원본HTML 불변, native 렌더3장 시각검토,
+overflow0, native42/notes/citation 검사와 byte 검사 PASS다. 현재 PPT SHA는
+`57ff8e303c18dba1716f9034ec3a032625c542a6f616d9356c2b071d51161f96`이다.
+FM 로컬검증·27/60을 상태에 반영했고 완료되지 않은 FV/FML은 진행/대기로 남겼다.
+검증: `analysis_exports/ppt_updates_20261005/verification_final.json`;
+이전42장 전체백업: `analysis_exports/ppt_updates_20261005/review_corrections/original_42_slides.pptx`.
+
+독립Sol은 frozen evaluator로 grounded36개(F0/FL/FM)를 CPU 재현했다. 실제 rules target은
+12개 중2개이고 F0/FL/FM 모두 rule-present exact0/2다. 과거 rule-exact10/12→6/12(FL),
+10/12(FM)는 규칙이 없는 target과 prediction의 null/null 일치를 포함한다. 이를 규칙 학습
+성공률로 말하지 않으며 원래 frozen 점수/원문/채점기는 바꾸지 않는다. grounded 최종답의
+회복 중 FL2/FM2개는 동일 수치의 문자열→숫자형만 바꿔도 회수되는 사례다. 최종답 지표의
+상승과 관계/상태/규칙 학습 성공을 구분한다. MMMU answer-only JSON은 세 조건 모두0개;
+단독 LETTER.보기 응답은 F0 2→FL51/FM25개로, FL의 짧은 label/보기 형식 적응이 관측됐다.
+근거13파일 SHA 불변과 원장 재현을 확인했으며 GPU/네트워크/새추론은 사용하지 않았다.
+증거: `analysis_exports/g6_runtime_20261005/partial_FL_FM_metric_audit.json`.
+
+09:25:11UTC SSH에서 RTX3090 GPU100%/18264MiB·FV 학습을 확인했다. 최근 controller
+HEALTH_POLL09:17:07UTC는 PID6111 생존·GPU100%다. 다음 계정·SSH 점검은09:35UTC다.
+원래447c0fb 실행·네10K조건·deadline/reserve 불변. FV/FML 회수·검증 전 Pod삭제는 하지 않는다.
+모든 결과 회수·검증→정확한소유Pod삭제→전체분석을 계속한다. G7/50K/최종900 자동실행 없음.
+
+## 2026-10-05 09:14 UTC — FM full10K 회수·원문 재채점 검증 완료
+
+원격닫힌15개FM파일+3개freeze와25,240byte journal prefix를회수했다. `/proc/1`의실제PodID,
+실제Git447c0fb/실제root, 파일크기/SHA, 종료0·정확한train/reload/eval인자·다른4PID/단계순서,
+10K/625·동일records/order/input/target/visual 노출,24개Merger FP32tensor의shape/finite/hash,
+freshreload 및 두60개의실제입력·seed/token·고정채점기를사용한CPU원문재채점이PASS다.
+독립Sol이회수guard를검토했고Ruff/3파일boundedmypy/잘못된arm거부검사도PASS다.
+누락된snapshot audit.py를현재고정SHA에직접결합하고, 현재G7 evaluator 대신실제447c0fb frozen
+evaluate.py를재사용하도록회수도구만수정했다. 실제GPU실행/응답/파서는변경하지않았다.
+
+MMMU60 동일4K F0 36/60→FM27/60(45.00%), +2/−11이다. 외부development유형별로
+QA4→7/12, TRACE-QA7→11/24, whole-structure exact0→0/12, grounded0→5/12다.
+grounded state-exact0→0/12, rule-exact10→10/12이므로최종답성공을상태/규칙향상으로말하지않는다.
+StructureF1은0.19548(6관측/6미관측); F0 0.20152(12관측/0미관측)와누락률을함께보고한다.
+외부혼합지표23/60은MMMU점수가아니며공식62%/32K900과직접비교하지않는다.
+아직FV/FML이진행/대기중이므로모듈선택이나대규모본학습확장을시작하지않는다.
+
+원본체크포인트/전체회수: `/home/jang2/mmdl-artifacts/recovered/g6-full-FM-20261005-22u/`.
+Windows원문/집계/receipt: `analysis_exports/g6_runtime_20261005/closed_full10k_FM/`.
+회수도구: `analysis_exports/tools/recover_g6_closed_arm_20261005.py`; 비공개이며MMDL/GitHub미게시다.
+최종모든결과회수·검증후소유Pod삭제를유지한다. 현재발표PPT는회수전17:49KST상태스냅샷이며,
+남은arm종료후새결과표를반영한다. 기존1–18/고정baseline/P1원문은그대로보존한다.
+
+## 2026-10-05 09:03 UTC — PPT 근거 화면 보강 완료·원래 네 arm 유지
+
+`qwen3_mmmu_problem_improvement.pptx`는42장이다. 원래1–18장 slide/notes/media byte는
+모두보존했다.19–34에는 실제baseline/조건별진단/Knowledge Oracle/학습/한계를,35–42에는
+P1실제전체/오답 화면 및 CS16·Accounting9·Manage20·Music3의입력이미지/응답말미10캡처,
+Qwen/CLEVR/LoRA 1차출처·HW실측·비용기한·마일스톤과평가요소연결을추가했다.
+원장/HTML/모델입력/파서/558점은불변이며캡처만내부발표자료에사용한다.GitHub미게시다.
+긴페이지스크롤의빈캡처는사용하지않고원문DOM발췌로재촬영했고Sol독립PNG확인/부모native8장/
+overflow0/42장·원래18 signature/원래slide·notes·media byte/임베드10 SHA검사를PASS했다.
+검증: `analysis_exports/ppt_updates_20261005/verification_final.json`, PPT SHA
+`91314b3d5ac3e007e054cb4e6ee663eb1f8baf2ffd571b1b6c2b54b2ebc8e679`.
+33장후속선택은외부dev만사용하고MMMU유지위험별도보고로정정했으며실제사전등록경로를수정했다.
+
+09:00:06UTC 소유3090 Pod22u0uqi171v0cn는RUNNING·FV2456/10000·GPU95%/15402MiB다.
+FL10K/625와MMMU/외부60개원문은이미로컬검증했고MMMU는동일4K F036→FL22/60이다.
+FMtrain/reload/MMMU/external EXITED0·08:27:07UTC inputgate통과했으며현재로컬회수검증을진행한다.
+FV학습/FML대기중이므로Pod를아직삭제하지않는다.기존deadline/reserve/4arm/protocol447c0fb불변이다.
+최신사용자지시에따라모두종료후모든결과다운로드·원격SHA/실제tensor/CPU재채점검증→정확한
+소유Pod삭제→분석한다.G7/50K/8K전환/최종900을자동시작하지않는다.10분상태점검을유지한다.
+
 ## 2026-10-05 05:08 UTC — 실제 회로 소비 원장 결합 완료·본학습 계속
 
 05:06:19UTC 계정조회에서소유3090는RUNNING/0.22USDh였고,05:06:22UTC SSH에서FL6733/10000,

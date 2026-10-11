@@ -66,7 +66,12 @@ class VLLMBackend:
                  base_path: str | None = None):
         if hw["placement"] != "gpu_only":
             raise ValueError("vLLM accelerated protocol requires the GPU-only hardware profile")
-        if cfg["execution"]["backend"] != "vllm" or cfg["execution"]["batch_size"] not in (1, 2):
+        diagnostic = (cfg.get("protocol_id") == "input-recovery-v1"
+                      and cfg["generation"].get("max_new_tokens") == 8192)
+        allowed_slots = (2, 4, 8) if diagnostic else (1, 2)
+        if (cfg["execution"]["backend"] != "vllm"
+                or type(cfg["execution"]["batch_size"]) is not int
+                or cfg["execution"]["batch_size"] not in allowed_slots):
             raise ValueError("vLLM requires a validated protocol with one or two active requests")
         if kind == "adapter":
             raise ValueError("vLLM accelerated protocol does not load an unmerged adapter")
@@ -273,7 +278,7 @@ class VLLMBackend:
         ]
 
     def generate_stream(self, requests: Iterable[dict[str, Any]]) -> Iterator[dict[str, Any]]:
-        """Continuously refill up to two vLLM slots, yielding only completed requests."""
+        """Continuously refill the validated slot count, yielding only completions."""
         iterator = iter(requests)
         active: dict[str, dict[str, Any]] = {}
         seen: set[str] = set()
@@ -304,6 +309,9 @@ class VLLMBackend:
         try:
             fill_slots()
             while active:
+                deadline_check = getattr(self, "_check_deadline", None)
+                if deadline_check is not None:
+                    deadline_check()
                 active_count = len(active)
                 step_start = time.monotonic()
                 outputs = engine.step()
