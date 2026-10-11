@@ -1,5 +1,30 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-12 02:51 KST — 고정8K 진단336 완료·새 setup 진행
+
+소유A40/c551의10단계가 전부 exit0으로 닫혔다. 336 원응답과 실행기록378 payload 파일을
+로컬 회수·SHA/요청/record/V8 CPU채점·동일12 전이 산술까지 검증했다. 전체 점수 원장은
+`analysis_exports/input_recovery_20261011/full336_scores_v1/`다. F0 48개 I22/T24/IT26/
+IR20/TR22이며 동일12 I/T는 F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 작은 균형 표본/
+한 seed/부분 AI전사·규칙이며900 성적이나 내부 모듈 책임을 확정하지 않는다.
+최종96 독립검토는 진행 중이다. CPU-reference와 실제 engine pixel tensor, BF16 export와
+과거FP32 master 추론을 구분한다. read-only SSH 지연 한 연결은 안전하게 종료·재접속하고
+회수했으며 GPU/원격 결과는 변경하지 않았다.
+
+기존 controller 및 GPU child 종료 확인 후17:44:31UTC clean5093의 정상 setup PID5595를
+시작했다. lock/223+24 CPU검사/doctor/공식 pinned model 취득을 거치며 아직 새 학습은 없다.
+teacher-free native1600+retention400 A/B와 외부132×3은 CPU 승인/독립검토 완료 상태다.
+답만 vs 표facts+답을 freshF0·고정FM·125update로 비교하되 target token과 retention 상대
+gradient 가중치의 차이를 한계로 기록한다. QA회복·실제facts exact/cell recall·retention 유지
+조건을 통과하기 전 확장/최종900을 자동 실행하지 않는다. 다음 authority는 최종336/새
+model-ready/동일input을 확인한 뒤 발급한다. 아직 GPU 학습/396 외부평가 완료가 아니다.
+
+원래21:12:32UTC cutoff와 최초5.20USD를 유지한다.17:48UTC 계정 RUNNING/$0.59h,
+새 CPU 검사 중 GPU0%/0MiB를 확인했고 다음 계정 조회는17:58:43UTC다. 교수님MMDL과
+원래V8/558점은 불변이다. 근거 `full336_main_verification_v1.json` SHA81490d27…,
+`diagnosis_controller_closed_v1/local_receipt.json` SHAec992c6f… 및
+`tabmwp_setup_launch_v1.json` SHA67e74abb…를 내부 증거 루트에 보존한다.
+
 ## 2026-10-12 01:23 KST — CPU 자료 승인·게시·회수 준비
 
 원래 c551/소유A40 진단은16:20UTC F0 full110/240·GPU91%로 계속된다. 아직336 전체

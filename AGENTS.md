@@ -1,5 +1,32 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-12 02:51 KST — 진단336 종료·로컬 채점, 다음 환경 검사 중
+
+이 절이 아래 진행 중 스냅샷보다 우선한다. 소유A40/c551 진단의10단계가 모두 exit0으로
+종료했고336원문·실행기록을 로컬 회수했다. 378 payload 파일 SHA·전체 요청/record·
+원문 V8 CPU채점/분모/동일12 전이 산술을 검증했다. F0 48문항 I22/T24/IT26/IR20/TR22다.
+동일12의 I/T 정답은 F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 이 값은 진단 표본이며
+MMMU900 정확도·유일 모듈 책임·학습 개선 확정이 아니다. F0/FL/FM/FV 독립검토는 통과,
+FML 및 최종96 독립검토는 아직 진행 중이다. CPU-reference 입력 검증을 engine pixel
+tensor 인증으로 쓰지 않으며 FP32-fused BF16 export는 과거 master 추론과 bit 동일하지 않다.
+
+기존 controller/GPU child 종료를 실제 확인한 뒤17:44:31UTC 새 clean5093 GitHub clone의
+정상 setup을 PID5595로 시작했다. 기존 venv만 명시적으로 재사용하며 exact lock/전체 CPU
+검사/doctor/pinned model 취득을 생략하지 않는다. 아직 model-ready/새 학습/외부396 완료는
+아니다. 마지막 회수의 읽기전용 SSH 한 연결 지연은 소유 연결만 종료·재접속해 해소했다.
+원격 원문과 GPU는 건드리지 않았고 실패 기록/옛 receipt를 보존했다.
+
+TabMWP 실제 CPU 데이터·controller 독립검토는 PASS이며 teacher 풀이 없이 native1600+
+동일retention400/조건·freshF0/고정FM/125update A(답)와 B(표facts+답)를 준비했다.
+감독 token A22061/B127665와 token-normalized loss의 retention 상대가중치는 같지 않다.
+QA/facts/retention gate를 모두 검증하기 전 자동50K/900이나 모듈 승자 선정은 하지 않는다.
+새 실행 authority는 실제336/독립검토/새 model-ready/동일입력 결합 후에만 만든다.
+금융기한21:12:32UTC·확인된 최초5.20USD는 그대로이며 약속 충전을 실제 잔액으로 세지 않는다.
+교수님MMDL HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8/558점은 불변이다.
+근거 `analysis_exports/input_recovery_20261011/`의 `full336_scores_v1/`,
+`full336_main_verification_v1.json`(81490d27…), `diagnosis_controller_closed_v1/`,
+`tabmwp_setup_launch_v1.json` 및 `phase_decision_after_full336_v1.json`이다.
+
 ## 2026-10-12 01:23 KST — 새 A/B 입력 CPU검증·Git 게시·전송 완료
 
 이 절이 아래 준비 중 기록보다 우선한다. 소유 A40 `z2sa5xt3b93er9`의 원래c551 진단은
