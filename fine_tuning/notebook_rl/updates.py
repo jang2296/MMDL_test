@@ -112,6 +112,13 @@ class _PreparedAction:
     keep: bool = False
 
 
+def _stage_time(device: torch.device) -> float:
+    # GPU launches are asynchronous; wall-time evidence must include finished work.
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    return time.monotonic()
+
+
 def optimizer_step(bundle: PolicyBundle, optimizer: Any, scheduler: Any,
                    trees: list[ProblemTree], images: dict[str, list], preparation: Any,
                    protocol: dict, algorithm: str, *, step: int, seed: int,
@@ -183,7 +190,7 @@ def optimizer_step(bundle: PolicyBundle, optimizer: Any, scheduler: Any,
     device = next(bundle.model.parameters()).device
     bundle.model.train()
     timings, abs_diff, delta_values = {}, [], {}
-    began = time.monotonic()
+    began = _stage_time(device)
     with torch.no_grad():
         for action in actions:
             bundle.route.apply(action.vision_on)
@@ -197,21 +204,21 @@ def optimizer_step(bundle: PolicyBundle, optimizer: Any, scheduler: Any,
             delta_values[action.sample.sample_id] = float(delta.item())
             abs_diff.extend((old-sampler).abs()[mask].cpu().tolist())
             del inputs, old, sampler
-    timings["old"] = time.monotonic()-began
+    timings["old"] = _stage_time(device)-began
     masked = sum(not a.keep for a in actions)/len(actions)
     base.update(masked_fraction=masked, mean_abs_lp_diff=statistics.mean(abs_diff),
                 mean_log_ratio_by_sample=delta_values)
     if all(not a.keep for a in actions):
         return base | {"status": "NO_MATCHED_ACTIONS", "seconds": timings}
-    began = time.monotonic()
+    began = _stage_time(device)
     for action in actions:
         if action.keep:
             bundle.route.apply(action.vision_on)
             inputs = preparation.model_inputs(action.request, action.sample.completion_token_ids, device)
             action.reference = reference_logprobs(bundle, inputs, len(action.sample.completion_token_ids)).cpu()
             del inputs
-    timings["ref"] = time.monotonic()-began
-    began = time.monotonic()
+    timings["ref"] = _stage_time(device)-began
+    began = _stage_time(device)
     total_loss, kl_sum, token_count, max_old_diff = 0.0, 0.0, 0, 0.0
     try:
         for action in actions:
@@ -251,7 +258,7 @@ def optimizer_step(bundle: PolicyBundle, optimizer: Any, scheduler: Any,
         scheduler.step()
     finally:
         optimizer.zero_grad(set_to_none=True)
-    timings["train"] = time.monotonic()-began
+    timings["train"] = _stage_time(device)-began
     return base | {"status": "UPDATED_UNSYNCHRONIZED", "step_after": step+1,
         "engine_sync_required": True, "loss": total_loss, "kl_mean": kl_sum/token_count,
         "grad_norm": grad_norm, "max_current_old_difference": max_old_diff, "seconds": timings}

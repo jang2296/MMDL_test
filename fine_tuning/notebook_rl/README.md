@@ -213,6 +213,25 @@ Additional components reuse the production policy/update paths:
   failed comparisons and the original checkpoint. The tiny-Qwen subprocess test
   passes with SFT/CE entry points forbidden; it is not a pretrained-4B CUDA result.
   Each probe covers 1–32 completion positions, not the entire prompt vocabulary.
+- `gate_throughput.measure_step` chooses the longest initial input at maximum image
+  count from a frozen gate cohort before observing rewards. It requires an actual
+  third-attempt action, collects a complete batch, reuses the single G4 RL update,
+  then pushes weights and runs synchronization probes. No successful answer is
+  forced to retry just to pass a gate. Missing coverage or an MIS-masked stress
+  action remains INCOMPLETE. Actual native KV/concurrency/context/cache settings,
+  original images and processed tensors are checked, including retries and both
+  sampler/trainer preparation immediately before update. CUDA-finished stage
+  times and sampled device memory are recorded separately from allocator peaks.
+  This measures the selected cohort's observed workload, not a theoretical full-cap
+  worst case; CPU fixtures produce no GPU memory certificate.
+- `gate_guards.measure_guards` wraps that same G4/G11 update in a fresh owned
+  process. The isolated worker rechecks data eligibility before and after, while
+  actual batch IDs/images and initial prompts are bound to the exclusion allowlist.
+  CE/SFT entry points and teacher/API calls are blocked, including caught attempts;
+  parameter changes and one actual optimizer step must be observed. It does not
+  generate human-review declarations or loosen partial-index rejection. Guards
+  remain installed after exit. This component observes the RL update, not sampler
+  synchronization, and does not authorize spending or subsequent training.
 
 The caller must bind these components to the complete gate sequence, private
 write-once journals and the actually measured runtime. Their existence does not
