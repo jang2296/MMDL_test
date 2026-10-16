@@ -185,6 +185,13 @@ Additional components reuse the production policy/update paths:
   checks and real tiny-HF CPU generations do not certify native vLLM behavior.
   Failures inside the engine's return validation retain an error journal, not a
   claim that the unavailable malformed backend payload was preserved.
+- `gate_tokens.measure_tokens` issues two unscored turns for each fixed
+  single-/two-image probe. It checks native-returned prompt IDs, literal prior
+  actions, the conversation-end insertion rule, unchanged image tensors and the
+  production completion-only action selector. Prior replies and feedback remain
+  outside the next action mask; a generated token is not dropped just because its
+  ID equals the pad token. The actual EOS branch is recorded. Tiny-HF CPU tests
+  and authored opposite-branch tests do not certify native 4B execution.
 
 The caller must bind these components to the complete gate sequence, private
 write-once journals and the actually measured runtime. Their existence does not
