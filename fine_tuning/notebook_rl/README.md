@@ -127,14 +127,22 @@ counts alone cannot pass. Once allocated, the owned rollout engine is shut down
 on normal completion and on preparation, synchronization or training failure.
 This is not Pod deletion or a complete G0–G13 certificate.
 
-`gate_session` connects the shared G4/G11/G13 update and the G12 fresh-process
-roundtrip. The CPU parent owns two sequential Python children and retains their
-actual process handles. Capture performs update0→1 once for the shared gates,
+`gate_session` connects the existing G0–G13 measurements without granting training
+approval. Its CPU parent owns five sequential children (capture, replay, CPU export,
+default-cache control, fresh-engine control) and retains actual process handles.
+Capture checks inventory, independent F0 reference and gradients before allocating
+the rollout engine. It then checks input parity, 32 short logprob trajectories,
+token transport and the pre-update cache state. It performs update0→1 once for the shared gates,
 saves a diagnostic step1 checkpoint, then collects new version1 actions with fresh
-images. G12 saves step1 with the next batch/RNG before executing update1→2. The
+images after measuring weight parity, cache state, another 32 short trajectories and
+the post-sync independent F0 reference. G12 saves step1 with the next batch/RNG before executing update1→2. The
 second child reloads that saved step1 and replays the identical update1→2. Policy
 and reference logits, next loss and optimizer state must match in the existing
-native comparator. The mutated live step2 model is not exported as step1.
+native comparator. A CPU-only child exports the saved first-update checkpoint to
+BF16; the remaining two children compare a deliberately enabled default-cache
+control with an untouched fresh engine from that export. The mutated live step2
+model is never exported as step1. A Merger update rounded away in BF16 fails the
+cache measurement; the runner does not increase learning rates to force a pass.
 
 ```bash
 python -m fine_tuning.notebook_rl.gate_session --job /absolute/private/gate-job.json --check
@@ -142,22 +150,25 @@ python -m fine_tuning.notebook_rl.gate_session --job /absolute/private/gate-job.
 python -m fine_tuning.notebook_rl.gate_session --job /absolute/private/gate-job.json --execute
 ```
 
-The job is `notebook-rl-gate-session-job-v1`: the candidate measurement job fields
+The job is `notebook-rl-gate-session-job-v2`: the candidate measurement job fields
 plus `arm`, path/SHA `sync_probes` and `probe_scope` (`probes`: ordered id/image_count/
 input_sha256 records). Runtime purpose must be `BOUNDED_RL_GATE_MEASUREMENT_ONLY`,
 not frozen-weight-only authority. Both probes must be exact eligible actors, one
-with one image and one with two. Algorithm is fixed to `ALG-NB3`; there is no cap,
+with one image and one with two, each with 2–32 literal completion tokens. Algorithm is fixed to `ALG-NB3`; there is no cap,
 subset or additional-step override. Existing D1–D8/human/exclusion requirements,
 clean checkout/lock/owned watchdog and two-weight-copy+10GiB KV floor are retained.
 The frozen-weight data validator supplies eligibility only, not update authority.
 
-This command measures only G4/G11/G12/G13, not G0–G13, Phase A, or pretrained-model
+This command combines observed components with the existing scalar validation rules;
+it does not create GPU approval receipts, complete Phase A or certify pretrained-model
 improvement. G13 observes only shared0→1; G12 capture/replay use the production RL
 update outside that patch context. Gate checkpoints are not full training-resume
 cursors. Missing actual two-image/T3 coverage, update/synchronization failures or
 timeouts remain failures with private records. CPU mock/tiny-model tests cannot
 be promoted to native CUDA success. Engine/process cleanup does not delete a Pod;
 results and checkpoints must still be recovered before owned-Pod deletion.
+The post-sync F0 check temporarily needs three model copies plus the fixed KV cache
+and training state; the two-copy preflight floor is not proof that this peak fits.
 
 The separate G10 numerical component loads no model or training data:
 

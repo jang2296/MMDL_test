@@ -1,8 +1,8 @@
-"""Bounded G4/G11/G13 update and G12 fresh-process replay, not training approval.
+"""Bounded native gate sequence and fresh-process controls, not training approval.
 
 Two sequential owned children execute 0->1 (shared gates), then 1->2 (capture),
-and replay 1->2 from saved step1. The parent never initializes CUDA. This does
-not implement/certify the remaining GPU gates, Phase A, or model improvement.
+and replay 1->2 from saved step1. Separate export/cache children consume saved
+step1, never live step2. The parent never initializes CUDA or grants approval.
 """
 from __future__ import annotations
 
@@ -21,10 +21,10 @@ from .dataset import SPLITS, _bytes, _sha, _write
 from .schema import ActorItem, from_json, load_protocol, to_json
 from .vault import _read, _safe_root
 
-FORMAT = "notebook-rl-gate-session-job-v1"
+FORMAT = "notebook-rl-gate-session-job-v2"
 PURPOSE = "BOUNDED_RL_GATE_MEASUREMENT_ONLY"
 KEYS = measure.KEYS | {"arm", "sync_probes", "probe_scope"}
-COMPLETE = "G4_G11_G12_G13_MEASURED_NOT_FULL_APPROVAL"
+COMPLETE = "GPU_COMPONENTS_MEASURED_NOT_TRAINING_APPROVAL"
 
 
 def _require(value, message):
@@ -74,7 +74,7 @@ def _probe_actors(job, validated):
         actor = from_json(ActorItem, _bytes(row["actor"]).decode())
         _require(eligible.get(actor.problem_id) == row["actor"], "probe actor is outside eligible pool")
         tokens = row["completion_ids"]
-        _require(type(tokens) is list and 1 <= len(tokens) <= 32
+        _require(type(tokens) is list and 2 <= len(tokens) <= 32
                  and all(type(t) is int and t >= 0 for t in tokens), "bounded literal probe tokens required")
         identities.append({"id": row["id"], "image_count": len(actor.image_paths), "input_sha256": _sha(_bytes(row))})
         result[row["id"]] = actor
@@ -127,7 +127,7 @@ def _capture(job, protocol, validated, runtime, output, binding, record):
     import numpy as np
     import torch
 
-    from . import batches, checkpoint, gate_inputs
+    from . import batches, checkpoint, gate_inputs, gate_sequence
     from .dataset import load_images
     from .engines import InputPreparation, VLLMRolloutEngine
     from .guards import prepare_vllm_schema_dependency
@@ -153,11 +153,15 @@ def _capture(job, protocol, validated, runtime, output, binding, record):
     def loader(actor):
         return load_images(actor, root/"images")
     with ExitStack() as stack:
+        preparation = InputPreparation(bundle.processor, bundle.model.config, protocol["image"], protocol["context_limit"])
+        probes = launch.load_probes(job["sync_probes"], job["probe_scope"], root/"images", prompts, stack)
+        measured = gate_sequence.before_engine(bundle, preparation, probes, model, protocol,
+            record=record, should_stop=should_stop)
         engine = VLLMRolloutEngine(model, protocol["image"], cfg["kv_cache_memory_bytes"],
                                   cfg["max_num_seqs"], protocol["context_limit"])
         stack.callback(engine.llm.llm_engine.engine_core.shutdown)
-        preparation = InputPreparation(bundle.processor, bundle.model.config, protocol["image"], protocol["context_limit"])
-        probes = launch.load_probes(job["sync_probes"], job["probe_scope"], root/"images", prompts, stack)
+        measured.update(gate_sequence.before_update(bundle, engine, probes, protocol, runtime,
+            seed=job["seed"], record=record, should_stop=should_stop))
         verifier = stack.enter_context(VerifierService(root/"train", forbidden_roots=[Path(p) for p in job["forbidden_roots"]]))
         _require(verifier.metadata["vault_manifest_sha256"] == launch.read_json(root/"manifest.yaml")["split_manifests"]["train"],
                  "actual verifier differs from eligible train split")
@@ -171,6 +175,9 @@ def _capture(job, protocol, validated, runtime, output, binding, record):
              "scope": "SHARED_GATE_ONLY_NOT_TRAINING_RESUME"}, checkpoint.capture_rng(),
             output/"shared_checkpoint", protocol=protocol, binding=binding)
         _require(not should_stop(), "deadline after shared update")
+        measured.update(gate_sequence.after_update(bundle, engine, preparation, probes, model, protocol,
+            seed=job["seed"], record=record, should_stop=should_stop))
+        _write(output/"components.json", _bytes(measured)+b"\n")
         # G11 has closed its images. Sample a genuinely new version1 batch with
         # freshly loaded originals; never reuse version0 actions after the push.
         order = batches.family_order(list(actors.values()), job["seed"])
@@ -197,29 +204,35 @@ def _capture(job, protocol, validated, runtime, output, binding, record):
     return {"status": "CAPTURE_COMPLETED", "input_packet": packet, "capture": str(output/"capture"),
             "shared_sha256": _sha(_read(output/"shared.json")), "saved_step": 1,
             "shared_checkpoint": str(output/"shared_checkpoint"),
+            "components": {"path": str(output/"components.json"),
+                           "file_sha256": _sha(_read(output/"components.json"))},
             "optimizer_steps_executed": 2, "live_final_step": 2, "binding": binding}
 
 
 def worker(task_descriptor: dict, protocol: dict) -> dict:
     task = launch.read_descriptor(task_descriptor)
-    _require(set(task) == {"stage", "job", "validated_sha256", "capture_handoff"}
-             and task["stage"] in ("capture", "replay"), "exact private stage task required")
+    _require(set(task) == {"stage", "job", "validated_sha256", "capture_handoff", "snapshot_handoff", "control_handoff"}
+             and task["stage"] in ("capture", "replay", "export", "control", "fresh"), "exact private stage task required")
     job = task["job"]
     checked = preflight(job, protocol)
     _require(_eligible(checked) and _validation_hash(checked) == task["validated_sha256"],
              "data/code changed before child execution")
     binding = launch.checkpoint_binding(checked, protocol, job["commit"])
     previous = None
-    if task["stage"] == "replay":
+    if task["stage"] != "capture":
         previous = launch.read_descriptor(task["capture_handoff"])
         _require(previous.get("status") == "CAPTURE_COMPLETED" and previous.get("binding") == binding
                  and previous.get("saved_step") == 1 and previous.get("live_final_step") == 2,
                  "closed bound step1 capture required")
     else:
         _require(task["capture_handoff"] is None, "fresh capture cannot accept prior state")
+    _require((task["snapshot_handoff"] is not None) == (task["stage"] in ("control", "fresh"))
+             and (task["control_handoff"] is not None) == (task["stage"] == "fresh"),
+             "stage-specific snapshot/control handoffs required")
     # The model-free parent never calls this CUDA-initializing check. The new
     # job format deliberately retains training's two-copy + fixed KV floor.
-    runtime = launch.runtime_check(job | {"expected_gpu_scope": job["runtime_scope"]}, protocol)
+    runtime = (None if task["stage"] == "export" else
+               launch.runtime_check(job | {"expected_gpu_scope": job["runtime_scope"]}, protocol))
     output = Path(job["output"])
     _safe_root(output.parent, create=True)
     output.mkdir(mode=0o700, exist_ok=False)
@@ -228,12 +241,13 @@ def worker(task_descriptor: dict, protocol: dict) -> dict:
               "training_allowed": False, "pod_billing_stopped": False}
     try:
         if task["stage"] == "capture":
+            assert runtime is not None
             with (output/"journal.jsonl").open("xb") as stream:
                 def record(row):
                     stream.write(_bytes(row)+b"\n")
                     stream.flush()
                 result.update(_capture(job, protocol, checked, runtime, output, binding, record))
-        else:
+        elif task["stage"] == "replay":
             from .gate_inputs import replay_from_inputs
             from .guards import install_guards, prepare_vllm_schema_dependency
 
@@ -244,11 +258,58 @@ def worker(task_descriptor: dict, protocol: dict) -> dict:
                     +[launch.descriptor(job[k]) for k in measure.DESCRIPTORS],
                 allow_vault=False, allow_benchmark=False)
             assert previous is not None
+            assert runtime is not None
             replayed = replay_from_inputs(Path(job["model_path"]), Path(previous["capture"]), output/"replay",
                 previous["input_packet"], image_root=root/"images", protocol=protocol, binding=binding,
                 device=f"cuda:{runtime['device']['index']}")
             _require(replayed["native_execution"] is True and replayed["step"] == 1, "native step1 reload required")
             result.update(status="REPLAY_COMPLETED", replay=str(output/"replay"), optimizer_steps_executed=1)
+        elif task["stage"] == "export":
+            from .gate_snapshot import export_step1
+            assert previous is not None
+            snapshot = export_step1(previous, Path(job["model_path"]), output/"snapshot", job["arm"], binding)
+            result.update(status="EXPORT_COMPLETED", snapshot=snapshot)
+        else:
+            from . import gate_cache, gate_snapshot
+            from .guards import install_guards, prepare_vllm_schema_dependency
+            from .prompts import load_prompts
+
+            assert previous is not None
+            snapshot = launch.read_descriptor(task["snapshot_handoff"])
+            _require(snapshot.get("status") == "EXPORT_COMPLETED" and snapshot.get("binding") == binding,
+                     "closed bound step1 export required")
+            descriptor = snapshot["snapshot"]
+            ckpt = Path(previous["shared_checkpoint"])
+            gate_snapshot.validate_snapshot(descriptor, binding, ckpt)
+            components = launch.read_descriptor(previous["components"])
+            prepare_vllm_schema_dependency()
+            root = Path(job["build_root"])
+            install_guards(forbidden_roots=[Path(p) for p in job["forbidden_roots"]],
+                vault_files=[root/s/n for s in SPLITS for n in ("verifier_private.jsonl", "lineage.jsonl")]
+                    +[launch.descriptor(job[k]) for k in measure.DESCRIPTORS],
+                allow_vault=False, allow_benchmark=False)
+            with ExitStack() as stack, (output/"journal.jsonl").open("xb") as stream:
+                def record(row):
+                    stream.write(_bytes(row)+b"\n")
+                    stream.flush()
+                probes = launch.load_probes(job["sync_probes"], job["probe_scope"], root/"images",
+                    load_prompts(launch.HERE/"prompts_v1.yaml"), stack)
+                cfg = protocol["engine"]["vllm"]
+                common = dict(kv_cache_memory_bytes=cfg["kv_cache_memory_bytes"],
+                    max_num_seqs=cfg["max_num_seqs"], max_model_len=protocol["context_limit"],
+                    probes=probes, record=record)
+                if task["stage"] == "control":
+                    observed = gate_cache.measure_default_control(Path(job["model_path"]), protocol["image"],
+                        post_weights=gate_snapshot.iter_tensors(descriptor, binding, ckpt),
+                        previous=components["G6_AFTER"], **common)
+                else:
+                    control = launch.read_descriptor(task["control_handoff"])
+                    _require(control.get("status") == "CONTROL_COMPLETED" and control.get("binding") == binding,
+                             "closed bound default control required")
+                    observed = gate_cache.measure_fresh(launch.descriptor(descriptor).parent, protocol["image"],
+                        control=control["measurement"], **common)
+                gate_snapshot.validate_snapshot(descriptor, binding, ckpt)
+                result.update(status=task["stage"].upper()+"_COMPLETED", measurement=observed)
     except BaseException as exc:
         result.update(status="INCOMPLETE", error_type=type(exc).__name__)
         raise
@@ -291,7 +352,8 @@ def execute(job: dict, protocol: dict, validated: dict) -> dict:
     result = {"status": "INCOMPLETE", "gpu_gates_certified": False, "training_allowed": False,
               "phase_a_completed": False, "model_improvement_verified": False, "pod_billing_stopped": False}
     try:
-        common = {"validated_sha256": _validation_hash(validated), "capture_handoff": None}
+        common = {"validated_sha256": _validation_hash(validated), "capture_handoff": None,
+                  "snapshot_handoff": None, "control_handoff": None}
         capture_job = job | {"output": str(output/"capture-stage")}
         capture_process = _run_child(common | {"stage": "capture", "job": capture_job},
             output/"capture-task.json", utc(job["deadline_utc"]).timestamp())
@@ -305,7 +367,34 @@ def execute(job: dict, protocol: dict, validated: dict) -> dict:
         compared = compare_checkpoint(Path(captured["capture"]), output/"replay-stage/replay",
                                       capture_process, replay_process, output/"comparison")
         _require(compared["native_execution"] is True and compared["passed"] is True, "native roundtrip required")
+
+        def cache_child(stage, **handoffs):
+            process = _run_child(common | {"stage": stage, "job": job | {"output": str(output/(stage+"-stage"))},
+                "capture_handoff": handoff, **handoffs}, output/(stage+"-task.json"),
+                utc(job["deadline_utc"]).timestamp())
+            path = output/(stage+"-stage/result.json")
+            descriptor = {"path": str(path), "file_sha256": _sha(_read(path))}
+            value = launch.read_descriptor(descriptor)
+            _require(value.get("status") == stage.upper()+"_COMPLETED", stage+" did not finish")
+            return process, descriptor, value
+
+        _, snapshot_handoff, _ = cache_child("export")
+        control_process, control_handoff, control = cache_child("control", snapshot_handoff=snapshot_handoff)
+        fresh_process, fresh_handoff, fresh = cache_child("fresh", snapshot_handoff=snapshot_handoff,
+                                                        control_handoff=control_handoff)
+        from . import gate_cache, gate_sequence
+        components = launch.read_descriptor(captured["components"])
+        shared = launch.read_descriptor({"path": str(output/"capture-stage/shared.json"),
+                                         "file_sha256": captured["shared_sha256"]})
+        cache = gate_cache.compare_cache(components["G6_BEFORE"], components["G6_AFTER"],
+            control["measurement"], fresh["measurement"], threshold=protocol["engine"]["probe_max_mean_abs_logprob_diff"],
+            current_process=capture_process, control_process=control_process, fresh_process=fresh_process)
+        measured = gate_sequence.combine(components, shared, cache, compared, protocol,
+                                         {"arm": job["arm"], "device": job["runtime_scope"]["device"]})
+        _write(output/"measurements.json", _bytes(measured)+b"\n")
         result.update(status=COMPLETE, G12=compared, capture_handoff=handoff,
+                      snapshot_handoff=snapshot_handoff, control_handoff=control_handoff, fresh_handoff=fresh_handoff,
+                      measurements_sha256=_sha(_read(output/"measurements.json")),
                       shared_sha256=captured["shared_sha256"], saved_checkpoint_step=1,
                       capture_optimizer_steps=2, replay_optimizer_steps=1)
     except BaseException as exc:

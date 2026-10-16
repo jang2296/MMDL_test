@@ -46,7 +46,7 @@ class GateSessionTests(unittest.TestCase):
 
     def task(self, stage="capture", previous=None):
         value = {"stage": stage, "job": self.job, "validated_sha256": session._validation_hash(self.checked),
-                 "capture_handoff": previous}
+                 "capture_handoff": previous, "snapshot_handoff": None, "control_handoff": None}
         path = self.root/"task.json"
         path.write_bytes(_bytes(value))
         return {"path": str(path), "file_sha256": _sha(path.read_bytes())}
@@ -76,6 +76,90 @@ class GateSessionTests(unittest.TestCase):
         Path(self.job["sync_probes"]["path"]).write_bytes(b"{}")
         with self.assertRaisesRegex(ValueError, "descriptor"):
             session._probe_actors(self.job, self.checked)
+
+    def test_single_token_probe_rejected_before_gpu(self):
+        path = Path(self.job["sync_probes"]["path"])
+        rows = launch.read_json(path)
+        rows["probes"][1]["completion_ids"] = [2]
+        path.write_bytes(_bytes(rows))
+        self.job["sync_probes"]["file_sha256"] = _sha(path.read_bytes())
+        self.job["probe_scope"]["probes"][1]["input_sha256"] = _sha(_bytes(rows["probes"][1]))
+        with self.assertRaisesRegex(ValueError, "bounded literal"):
+            session._probe_actors(self.job, self.checked)
+
+    def test_export_worker_does_not_initialize_cuda_and_uses_closed_capture(self):
+        from fine_tuning.notebook_rl import gate_snapshot
+        binding = launch.checkpoint_binding(self.checked, self.cfg, self.job["commit"])
+        previous = {"status": "CAPTURE_COMPLETED", "binding": binding, "saved_step": 1,
+                    "live_final_step": 2, "shared_checkpoint": str(self.root/"saved1")}
+        path = self.root/"closed-capture.json"
+        path.write_bytes(_bytes(previous))
+        task = self.task("export", {"path": str(path), "file_sha256": _sha(path.read_bytes())})
+        with patch.object(session, "preflight", return_value=self.checked), \
+                patch.object(launch, "runtime_check", side_effect=AssertionError("CUDA must remain uninitialized")), \
+                patch.object(gate_snapshot, "export_step1", return_value={"fixture": True}) as export:
+            result = session.worker(task, self.cfg)
+        self.assertEqual(export.call_args.args[0], previous)
+        self.assertEqual(export.call_args.args[-1], binding)
+        self.assertEqual(result["status"], "EXPORT_COMPLETED")
+        self.assertFalse(result["training_allowed"])
+
+    def test_cache_workers_use_saved_export_and_keep_guards(self):
+        from fine_tuning.notebook_rl import gate_cache, gate_snapshot, guards
+        from fine_tuning.notebook_rl.dataset import SPLITS
+
+        binding = launch.checkpoint_binding(self.checked, self.cfg, self.job["commit"])
+        def descriptor(name, value):
+            path = self.root/name
+            path.write_bytes(_bytes(value))
+            return {"path": str(path), "file_sha256": _sha(path.read_bytes())}
+        export_dir = self.root/"snapshot"
+        export_dir.mkdir()
+        snapshot = descriptor("snapshot/export_manifest.json", {"authored": "snapshot"})
+        components = descriptor("components.json", {"G6_AFTER": {"authored": "after1"}})
+        capture = descriptor("capture.json", {"status": "CAPTURE_COMPLETED", "binding": binding,
+            "saved_step": 1, "live_final_step": 2, "shared_checkpoint": str(self.root/"saved1"),
+            "components": components})
+        exported = descriptor("export.json", {"status": "EXPORT_COMPLETED", "binding": binding, "snapshot": snapshot})
+        control = descriptor("control.json", {"status": "CONTROL_COMPLETED", "binding": binding,
+            "measurement": {"authored": "control"}})
+        for stage in ("control", "fresh"):
+            with self.subTest(stage=stage), ExitStack() as stack:
+                task = descriptor(stage+"-task.json", {"stage": stage,
+                    "job": self.job | {"output": str(self.root/(stage+"-output"))},
+                    "validated_sha256": session._validation_hash(self.checked), "capture_handoff": capture,
+                    "snapshot_handoff": exported, "control_handoff": control if stage == "fresh" else None})
+                calls = []
+                def guarded(**kwargs):
+                    calls.append("guard")
+                    self.assertTrue({Path(self.job["build_root"])/s/n for s in SPLITS
+                        for n in ("verifier_private.jsonl", "lineage.jsonl")} <= set(kwargs["vault_files"]))
+                def measured(path, image, **kwargs):
+                    self.assertEqual(calls, ["guard"])
+                    calls.append(stage)
+                    self.assertEqual(path, Path(self.job["model_path"]) if stage == "control" else export_dir)
+                    if stage == "control":
+                        self.assertEqual(kwargs["previous"], {"authored": "after1"})
+                        self.assertEqual(list(kwargs["post_weights"]), [("fixture", "BF16")])
+                    else:
+                        self.assertEqual(kwargs["control"], {"authored": "control"})
+                        self.assertNotIn("post_weights", kwargs)
+                    return {"authored": stage}
+                for owner, name, value in ((session, "preflight", Mock(return_value=self.checked)),
+                        (launch, "runtime_check", Mock(return_value={"device": {"index": 0}})),
+                        (launch, "load_probes", Mock(return_value=[])),
+                        (guards, "prepare_vllm_schema_dependency", Mock(return_value={})),
+                        (guards, "install_guards", Mock(side_effect=guarded)),
+                        (gate_snapshot, "iter_tensors", Mock(return_value=iter([("fixture", "BF16")])))):
+                    stack.enter_context(patch.object(owner, name, value))
+                verified = stack.enter_context(patch.object(gate_snapshot, "validate_snapshot", return_value={}))
+                stack.enter_context(patch.object(gate_cache,
+                    "measure_default_control" if stage == "control" else "measure_fresh", side_effect=measured))
+                result = session.worker(task, self.cfg)
+                self.assertEqual(verified.call_count, 2)
+                self.assertEqual(verified.call_args.args, (snapshot, binding, self.root/"saved1"))
+                self.assertEqual(result["status"], stage.upper()+"_COMPLETED")
+                self.assertFalse(result["gpu_gates_certified"])
 
     def test_actual_missing_data_blocks_check_and_execute_before_gpu_or_child(self):
         path = self.root/"job.json"
@@ -121,26 +205,40 @@ class GateSessionTests(unittest.TestCase):
             child.assert_not_called()
 
     def test_parent_retains_same_handles_saved_step1_and_no_approval(self):
-        handles = [object(), object()]
+        handles = [object() for _ in range(5)]
         calls = []
         def child(task, path, deadline):
             calls.append(task)
             target = Path(task["job"]["output"])
             target.mkdir()
             if task["stage"] == "capture":
+                for name, data in (("shared", {"G11": {}, "G13": {}}),
+                                   ("components", {"G6_BEFORE": {}, "G6_AFTER": {}})):
+                    (target/(name+".json")).write_bytes(_bytes(data))
                 value = {"status": "CAPTURE_COMPLETED", "capture": str(target/"capture"),
-                    "shared_sha256": "b"*64, "saved_step": 1, "live_final_step": 2}
-                (target/"result.json").write_bytes(_bytes(value))
+                    "shared_sha256": _sha((target/"shared.json").read_bytes()), "saved_step": 1, "live_final_step": 2,
+                    "components": {"path": str(target/"components.json"),
+                                   "file_sha256": _sha((target/"components.json").read_bytes())}}
+            else:
+                value = {"status": task["stage"].upper()+"_COMPLETED", "measurement": {}}
+            (target/"result.json").write_bytes(_bytes(value))
             return handles[len(calls)-1]
         # Explicit orchestration fixture, not native model/GPU evidence.
         with patch.object(session, "preflight", return_value=self.checked), \
                 patch.object(session, "_run_child", side_effect=child), \
                 patch("fine_tuning.notebook_rl.gate_checkpoint.compare_checkpoint",
-                    return_value={"native_execution": True, "passed": True}) as compare:
+                    return_value={"native_execution": True, "passed": True}) as compare, \
+                patch("fine_tuning.notebook_rl.gate_cache.compare_cache", return_value={}) as cache, \
+                patch("fine_tuning.notebook_rl.gate_sequence.combine", return_value={"fixture": True}):
             result = session.execute(self.job, self.cfg, self.checked)
-        self.assertEqual([t["stage"] for t in calls], ["capture", "replay"])
+        self.assertEqual([t["stage"] for t in calls], ["capture", "replay", "export", "control", "fresh"])
         self.assertIs(compare.call_args.args[2], handles[0])
         self.assertIs(compare.call_args.args[3], handles[1])
+        for key, i in (("current_process", 0), ("control_process", 3), ("fresh_process", 4)):
+            self.assertIs(cache.call_args.kwargs[key], handles[i])
+        self.assertEqual(calls[3]["snapshot_handoff"], calls[4]["snapshot_handoff"])
+        self.assertEqual(calls[2]["capture_handoff"], calls[4]["capture_handoff"])
+        self.assertIsNotNone(calls[4]["control_handoff"])
         self.assertEqual(result["saved_checkpoint_step"], 1)
         self.assertEqual(result["capture_optimizer_steps"], 2)
         self.assertEqual(result["replay_optimizer_steps"], 1)
@@ -180,7 +278,7 @@ class GateSessionTests(unittest.TestCase):
 
     def test_capture_wiring_uses_new_version1_batch_and_preserves_first_update_on_failure(self):
         # Dependency fixtures exercise ordering/cleanup, not GPU/model identity.
-        from fine_tuning.notebook_rl import batches, checkpoint, gate_inputs
+        from fine_tuning.notebook_rl import batches, checkpoint, gate_inputs, gate_sequence
         from fine_tuning.notebook_rl import engines, policy, verifier_service
 
         root = Path(self.job["build_root"])
@@ -238,6 +336,9 @@ class GateSessionTests(unittest.TestCase):
                         (session, "_shared_step", shared), (batches, "collect_batch", collect),
                         (gate_inputs, "save_inputs", packet), (gate_inputs, "capture_from_inputs", capture)):
                     stack.enter_context(patch.object(owner, attr, value))
+                for method in ("before_engine", "before_update", "after_update"):
+                    stack.enter_context(patch.object(gate_sequence, method,
+                        side_effect=lambda *a, _name=method, **k: events.append(_name) or {}))
                 stack.enter_context(patch("fine_tuning.notebook_rl.guards.prepare_vllm_schema_dependency", return_value={}))
                 args = (self.job, self.cfg, self.checked, {"device": {"index": 0}, "deadline_timestamp": time.time()+60},
                         output, {"fixture": "binding"}, lambda row: None)
@@ -245,11 +346,13 @@ class GateSessionTests(unittest.TestCase):
                     result = session._capture(*args)
                     self.assertEqual(result["saved_step"], 1)
                     self.assertEqual(result["live_final_step"], 2)
-                    self.assertEqual(events, ["shared0-1", "save-shared1", "collect-version1", "freeze-version1", "capture1-2"])
+                    self.assertEqual(events, ["before_engine", "before_update", "shared0-1", "save-shared1",
+                        "after_update", "collect-version1", "freeze-version1", "capture1-2"])
                 else:
                     with self.assertRaisesRegex(ValueError, "batch incomplete"):
                         session._capture(*args)
-                    self.assertEqual(events, ["shared0-1", "save-shared1", "collect-version1"])
+                    self.assertEqual(events, ["before_engine", "before_update", "shared0-1", "save-shared1",
+                        "after_update", "collect-version1"])
                     self.assertTrue((output/"shared_checkpoint/metadata.json").exists())
                 engine.llm.llm_engine.engine_core.shutdown.assert_called_once()
                 with self.assertRaises(ValueError):
