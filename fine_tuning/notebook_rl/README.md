@@ -213,6 +213,18 @@ Additional components reuse the production policy/update paths:
   failed comparisons and the original checkpoint. The tiny-Qwen subprocess test
   passes with SFT/CE entry points forbidden; it is not a pretrained-4B CUDA result.
   Each probe covers 1–32 completion positions, not the entire prompt vocabulary.
+- `gate_inputs` connects G12 capture/replay to one private write-once input packet.
+  It preserves actual version-1 trees, rewards, sampled-action token IDs, seeds,
+  ordered source-image hashes and decoded pixel fingerprints. Message-based sync
+  probes are prepared once and saved as literal prompt IDs, without changing the
+  caller's request. Both capture and replay consume this same packet; a capture
+  receipt binds it to the completed result. Replay reconstructs images before
+  loading checkpoint RNG and sets the new preparer's policy version to the saved
+  step. Changed bytes, pixels, order, action versions or capture bindings fail.
+  The tiny-Qwen two-process test uses this handoff and compares all logits, next
+  RL loss and updated state. These are authored CPU actions, not real pretrained
+  4B responses. The packet is neither data approval nor a `trainer.run_loop`
+  resume cursor; the complete owned-process gate runner is still required.
 - `gate_throughput.measure_step` chooses the longest initial input at maximum image
   count from a frozen gate cohort before observing rewards. It requires an actual
   third-attempt action, collects a complete batch, reuses the single G4 RL update,

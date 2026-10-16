@@ -9,7 +9,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -19,9 +21,10 @@ from safetensors.torch import load_file, save_file
 
 from fine_tuning.modules import BASE_REVISION
 from fine_tuning.notebook_rl import gate_checkpoint as gate
+from fine_tuning.notebook_rl import gate_inputs as handoff
 from fine_tuning.notebook_rl.checkpoint import make_optimizer
 from fine_tuning.notebook_rl.engines import RolloutRequest
-from fine_tuning.notebook_rl.schema import ProblemTree, from_json, to_json
+from fine_tuning.notebook_rl.schema import ActorItem, ProblemTree, from_json, to_json
 from fine_tuning.notebook_rl.trainer import SyncProbe
 from fine_tuning.notebook_rl.updates import optimizer_step
 from fine_tuning.tests.test_notebook_rl_checkpoint import fixture, fresh_tiny
@@ -31,6 +34,9 @@ from fine_tuning.tests.test_notebook_rl_updates import Preparation, tree
 
 class ImagePreparation(Preparation):
     """Authored CPU pixels, real multimodal forwards; never native evidence."""
+    def prepare(self, request):
+        return SimpleNamespace(token_ids=request.prompt_token_ids)
+
     def model_inputs(self, request, completion, device):
         result = super().model_inputs(request, completion, device)
         if len(request.images) == 2:
@@ -58,7 +64,8 @@ def worker(root, stage):
     args = json.loads((root / "arguments.json").read_text())
     protocol, model_path = config(), root / BASE_REVISION
     images = {"p": [Image.new("RGB", (8, 8), (31, 63, 127))]}
-    with patch("torch.nn.functional.cross_entropy", side_effect=AssertionError("CE forbidden")), \
+    with ExitStack() as stack, \
+            patch("torch.nn.functional.cross_entropy", side_effect=AssertionError("CE forbidden")), \
             patch("fine_tuning.train.AssistantCollator", side_effect=AssertionError("SFT forbidden")):
         if stage == "capture":
             b = fresh_tiny(model_path, "MOD-RV", protocol)
@@ -70,16 +77,29 @@ def worker(root, stage):
                            "ALG-T1", step=0, seed=3407)
             row = tree(b, version=1)
             (root / "tree.json").write_text(to_json(row))
+            digest = gate.checkpoint.file_hash(root / "images/one.png")
+            actors = {pid: ActorItem(pid, "AUTHORED_CPU", "fixture", "plain", "Authored question", (), "int",
+                ("one.png",) * count, (digest,) * count) for pid, count in (("p", 1), ("q", 2))}
+            descriptor = handoff.save_inputs(root / "replay_inputs.json", trees=[row], images=images,
+                actors=actors, probes=probes(), probe_actors={"one": actors["p"], "two": actors["q"]},
+                preparation=prepare(b, 1), image_root=root / "images", protocol=protocol, binding=args["binding"],
+                step=1, algorithm="ALG-T1", seed=3407, cursor=args["cursor"])
+            (root / "input_descriptor.json").write_text(json.dumps(descriptor))
+            persisted = handoff.load_inputs(descriptor, image_root=root / "images", protocol=protocol,
+                                           binding=args["binding"], stack=stack)
             b.route.apply(False)  # Reload must preserve OFF despite the next step's ON route.
-            gate._capture_checkpoint(b, opt, scheduler, [row], images, prepare(b, 1), probes(),
+            gate._capture_checkpoint(b, opt, scheduler, persisted.trees, persisted.images, prepare(b, 1), persisted.probes,
                 protocol, "ALG-T1", step=1, seed=3407, cursor=args["cursor"], binding=args["binding"],
                 model_path=model_path, output=root / "capture", _test_manifest=root / "tiny_base_manifest.json")
         else:
             binding = dict(args["binding"])
             if stage == "wrong-binding":
                 binding["data_sha256"] = "0" * 64
+            descriptor = json.loads((root / "input_descriptor.json").read_text())
+            persisted = handoff.load_inputs(descriptor, image_root=root / "images", protocol=protocol,
+                                           binding=args["binding"], stack=stack)
             gate._replay_checkpoint(model_path, root / "capture", root / stage,
-                [from_json(ProblemTree, (root / "tree.json").read_text())], images, probes(), prepare,
+                persisted.trees, persisted.images, persisted.probes, prepare,
                 protocol=protocol, binding=binding, device="cpu", _test_manifest=root / "tiny_base_manifest.json",
                 _test_policy_factory=fresh_tiny)
 
@@ -94,6 +114,8 @@ class CheckpointGateTests(unittest.TestCase):
         cls.addClassCleanup(cls.tmp.cleanup)
         cls.root = Path(cls.tmp.name)
         _, _, _, cls.binding = fixture(cls.root)
+        (cls.root / "images").mkdir()
+        Image.new("RGB", (8, 8), (31, 63, 127)).save(cls.root / "images/one.png")
         cls.cursor = {"epoch": 0, "position": 2, "discarded_problem_ids": ["no-signal"],
                       "history": [{"step": 1}], "sync_pending": False, "order_sha256": "d" * 64}
         (cls.root / "arguments.json").write_text(json.dumps({"binding": cls.binding, "cursor": cls.cursor}))
