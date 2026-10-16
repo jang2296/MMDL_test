@@ -192,6 +192,27 @@ Additional components reuse the production policy/update paths:
   outside the next action mask; a generated token is not dropped just because its
   ID equals the pad token. The actual EOS branch is recorded. Tiny-HF CPU tests
   and authored opposite-branch tests do not certify native 4B execution.
+- `gate_cache` compares the post-update normal engine with a fresh engine loaded
+  from the same merged tensors. A separate disposable engine deliberately retains
+  vLLM's default caches across a weight load: actual prefix-hit counts and encoder
+  cache hits/absence of visual recomputation are recorded independently. Fixed-action
+  prompt logprobs bypass prefix caching in vLLM 0.11, so a separate one-token
+  generated-action probe exercises prefix reuse. Fresh-engine agreement uses the
+  maximum token logprob difference, not a mean that can hide individual errors.
+  A default-cache mismatch is measured, not manufactured or required to occur.
+  The coordinator must retain three actual owned process handles and sequence their
+  exits. Disposable engines check predecessor exit before allocation and reject a
+  CUDA-owning coordinator; constructor failures still require the outer process
+  watchdog. Complete pre/post tensor readback binds the comparison, while snapshot
+  provenance and the real G4 optimizer-update evidence remain separate requirements.
+- `gate_checkpoint` saves the actual policy/optimizer/scheduler/RNG/cursor, captures
+  policy and reference full-vocabulary logits at two bounded completion probes,
+  then performs the next production RL update. A separate process reloads the saved
+  state and repeats that same update. The model-free coordinator compares raw
+  logits, next loss, all parameter/optimizer states, inputs and cursor, retaining
+  failed comparisons and the original checkpoint. The tiny-Qwen subprocess test
+  passes with SFT/CE entry points forbidden; it is not a pretrained-4B CUDA result.
+  Each probe covers 1–32 completion positions, not the entire prompt vocabulary.
 
 The caller must bind these components to the complete gate sequence, private
 write-once journals and the actually measured runtime. Their existence does not
