@@ -71,7 +71,7 @@ def _runtime(bundle, optimizer, scheduler) -> dict:
 
 def _sources() -> dict:
     names = ["modules.py", "train.py", *["notebook_rl/" + n + ".py" for n in
-        ("gate_checkpoint", "gate_inputs", "gate_reference", "checkpoint", "policy", "updates", "losses",
+        ("gate_checkpoint", "gate_inputs", "gate_session", "gate_reference", "checkpoint", "policy", "updates", "losses",
          "engines", "answers", "schema", "trainer", "dataset", "launch", "vault")]]
     return {name: checkpoint.file_hash(ROOT / "fine_tuning" / name) for name in names}
 
