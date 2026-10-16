@@ -1,0 +1,61 @@
+registry_id: notebook-rl-sources-v1
+status: CPU_IMPLEMENTED_NOT_APPROVED
+allowed_label_provenance: [PROGRAM, HUMAN]
+forbidden_model_touched: true
+forbidden_benchmark_derived: true
+approval_required:
+  - pinned_source_and_rights
+  - solver_render_consistency
+  - human_render_and_leak_review
+  - all_split_benchmark_exclusion
+  - family_split_disjointness
+  - actor_verifier_isolation
+benchmark_exclusion_only:
+  - id: MMMU/MMMU
+    revision: 98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68
+    splits: [dev, validation, test]
+    training_allowed: false
+  - id: MMMU/MMMU_Pro
+    revision: 563f3e84bb3b90893083a1f039cfa13077f2302b
+    configs: [standard10, standard4, vision]
+    training_allowed: false
+sources:
+  gen-chart-v1: {kind: program, module: chart, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-music-v1: {kind: program, module: music, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-chem-v1: {kind: program, module: chem, label_provenance: PROGRAM, status: CPU_FIXTURE_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-statics-v1: {kind: program, module: statics, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-circuit-v1: {kind: program, module: circuit, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-graph-v1: {kind: program, module: graph, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  tabmwp:
+    kind: external
+    url: https://github.com/lupantech/PromptPG
+    source_revision: 5a1a52214521590b075f545b76a4f5ce666345e3
+    allowed_upstream_split: train
+    license: CC-BY-NC-SA-4.0
+    label_provenance: HUMAN
+    forbidden_fields: [solution]
+    adapter_state: CPU_TESTED
+    status: PENDING_RL_SOURCE_AND_EXCLUSION_REVIEW
+    training_allowed: false
+  geometry3k:
+    kind: external
+    url: https://github.com/lupantech/InterGPS
+    source_revision: 99e6b5293c7bb4a5eaf2a370e6b213c79ab33ebb
+    allowed_upstream_split: train
+    label_provenance: HUMAN
+    adapter_state: CPU_TESTED
+    status: PENDING_SOURCE_RIGHTS_AND_EXCLUSION_REVIEW
+    training_allowed: false
+  pgps9k:
+    kind: external
+    url: https://huggingface.co/datasets/PeijieWang/PGPS9K
+    source_revision: 7dfd9dad4e455344b751b87340cd0ecf8798f4db
+    code_url: https://github.com/mingliangzhang2018/PGPS
+    code_revision: f18368b289c10f45a4ed8b27e857251f31300fd6
+    terms_url: https://nlpr.ia.ac.cn/databases/CASIA-PGPS9K/index.html
+    license: academic-agreement-required
+    allowed_upstream_split: train
+    label_provenance: HUMAN
+    adapter_state: CPU_TESTED
+    status: PENDING_SOURCE_RIGHTS_AND_EXCLUSION_REVIEW
+    training_allowed: false

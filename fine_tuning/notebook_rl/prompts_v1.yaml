@@ -1,0 +1,132 @@
+turn1_plain: '{P0_BODY}
+
+  End your response with exactly one line: Final answer: <answer>
+
+  '
+turn1_obs: '{P0_BODY}
+
+
+  Answer in this format:
+
+  Observed facts:
+
+  {OBSERVATION_INSTRUCTION}
+
+  Solution:
+
+  <your reasoning>
+
+  Final answer: <answer>
+
+  '
+retry_incorrect: 'Verifier result for your previous answer "{PREV_ANSWER}": INCORRECT.
+
+  The correct answer is not provided.
+
+  Look at the image again. Do not reuse your earlier observations or steps without checking them.
+
+  Write your response in this format:
+
+  Error check:
+
+  - <what in your previous solution may be wrong, and what you will re-check>
+
+  {OBS_SECTION}Solution:
+
+  <your new reasoning>
+
+  Final answer: <answer>
+
+  '
+retry_invalid: 'Your previous response was not graded because {REASON}.
+
+  Its correctness is unknown.
+
+  Write your response in this format:
+
+  Error check:
+
+  - <what went wrong with the previous response>
+
+  {OBS_SECTION}Solution:
+
+  <your reasoning>
+
+  Final answer: <answer>
+
+  '
+diagnose: 'Your attempt {K} above was verified CORRECT. Attempts 1 to {K_MINUS_1} were INCORRECT or invalid.
+
+  Write a short error note about attempt 1.
+
+  Choose exactly one cause:
+
+  VISUAL_MISREAD - a value, label or symbol read from the image was wrong
+
+  VISUAL_RELATION - a connection, position or correspondence in the image was wrong
+
+  NON_VISUAL - the image was read correctly but a rule, formula, logic or calculation step was wrong
+
+  FINALIZATION - no single final answer was given or the response was cut off
+
+  Format:
+
+  Cause: <one label>
+
+  Wrong item: <the first wrong item, e.g. bar[Mar], or none>
+
+  Lesson: <one sentence>
+
+  '
+oracle_facts: 'Verified image facts (from the image generator):
+
+  {FACT_LINES}
+
+
+  {P0_BODY}
+
+  End your response with exactly one line: Final answer: <answer>
+
+  '
+self_perception_probe: 'You cannot see the image. Below are notes that were written while looking at it.
+
+  Notes:
+
+  {OBSERVED_TEXT}
+
+
+  Using only these notes, answer the question.
+
+  {P0_BODY}
+
+  End your response with exactly one line: Final answer: <answer>
+
+  '
+observation_instruction:
+  chart_bar: 'List every bar as one line: bar[<series>][<label>] = <value>
+
+    '
+  chart_line: 'List every marked point as one line: point[<series>][<x>] = <y>
+
+    '
+  table: 'List each table cell you use as one line: cell[<row label>][<column label>] = <value>
+
+    '
+  circuit: 'List each component as one line: comp[<name>] = <value with unit or switch state>, each connection as wire[<name>] = <node>-<node>, and each source polarity as dir[<name>] = <positive node>-><negative node>.
+
+    '
+  graph: 'List directed edges as edge[<u>,<v>] = <weight or 1>; DFA transitions as trans[<state>,<symbol>] = <state>, start = <state>, accepting = <comma-separated states>; tree links as child[<parent>,<L or R>] = <child>, root = <node>.
+
+    '
+  music: 'List each note in order as note[<measure>.<index>] = <pitch with octave, e.g. C#4>; also clef = <treble or bass>, key_sig = <signed number of sharps; flats negative>, time_sig = <numerator/denominator>.
+
+    '
+  molecule: 'List counts as lines: atoms[<element>] = <count>; rings = <count>
+
+    '
+  geometry: 'List each labeled length or angle as one line: len[<segment>] = <value>  or  angle[<name>] = <degrees>
+
+    '
+  statics: 'List the span as span = <length>; each load as load[<index>] = <magnitude>@<position>; each support as support[<label>] = <type>@<position>. Include units and distributed load start/end positions.
+
+    '

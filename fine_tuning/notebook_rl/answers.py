@@ -1,0 +1,253 @@
+"""Strict RL answer contract; never searches reasoning for the reference answer."""
+from __future__ import annotations
+
+import re
+import unicodedata
+from collections import Counter
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
+from typing import Literal
+
+from .schema import VerifierItem
+
+VERSION = "strict-final-v1"
+_FINAL = re.compile(r"^[ \t]*final answer[ \t]*:[ \t]*(.*?)[ \t]*$", re.I | re.M)
+_INT = r"[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)"
+_NUM = r"[+-]?(?:(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
+_RATIONAL = rf"(?:{_INT}\s*/\s*{_INT}|{_NUM})"
+_RETRACT = re.compile(r"\b(?:actually|instead|correction|retract(?:ed)?|wrong|not correct)\b|\bthe answer is\b", re.I)
+
+
+@dataclass(frozen=True)
+class Extraction:
+    status: Literal["OK", "INVALID_NO_FINAL", "INVALID_MULTIPLE", "TRUNCATED"]
+    answer: str | None
+
+
+def _clean(value: str) -> str:
+    value = value.strip()
+    # Whole-value wrappers only; never delete symbols inside the submitted answer.
+    removed_period = value.endswith(".")
+    if removed_period:
+        value = value[:-1].rstrip()
+    for _ in range(4):
+        before = value
+        if value.startswith("**") and value.endswith("**") and len(value) > 4:
+            value = value[2:-2].strip()
+        elif value.startswith("$") and value.endswith("$") and len(value) > 2:
+            value = value[1:-1].strip()
+        elif re.fullmatch(r"\\boxed\{[^{}]*\}", value):
+            value = value[7:-1].strip()
+        if value == before:
+            break
+    if not removed_period and value.endswith("."):
+        value = value[:-1].rstrip()
+    return value
+
+
+def normalize_text(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split()).removesuffix(".")
+
+
+def extract_final(text: str, finish_reason: str) -> Extraction:
+    if not isinstance(text, str) or finish_reason not in ("stop", "length"):
+        raise ValueError("answer: text and stop/length finish reason required")
+    if finish_reason == "length":
+        return Extraction("TRUNCATED", None)
+    text = text.rstrip()
+    matches = list(_FINAL.finditer(text))
+    if not matches:
+        return Extraction("INVALID_NO_FINAL", None)
+    if len(matches) != 1:
+        return Extraction("INVALID_MULTIPLE", None)
+    tail = text[matches[0].end():]
+    # The 200-character rule must not accept a short explicit retraction.
+    if sum(not ch.isspace() for ch in tail) > 200 or _RETRACT.search(tail):
+        return Extraction("INVALID_MULTIPLE", None)
+    answer = _clean(matches[0].group(1))
+    if not answer:
+        return Extraction("INVALID_NO_FINAL", None)
+    if re.search(r"\bor\b", answer, re.I):
+        return Extraction("INVALID_MULTIPLE", None)
+    return Extraction("OK", answer)
+
+
+def number(value: str) -> Fraction | None:
+    """Parse one exact decimal/rational; reject malformed commas and non-finite values."""
+    value = value.strip()
+    if len(value) > 2048 or not re.fullmatch(_RATIONAL, value):
+        return None
+    value = value.replace(",", "")
+    try:
+        if "/" in value:
+            left, right = value.split("/")
+            return Fraction(int(left.strip()), int(right.strip()))
+        decimal = Decimal(value)
+        exponent = decimal.as_tuple().exponent
+        if not decimal.is_finite() or not isinstance(exponent, int) or abs(exponent) > 1000:
+            return None
+        return Fraction(decimal)
+    except (ValueError, ZeroDivisionError, InvalidOperation):
+        return None
+
+
+def mcq_choice(answer: str, choices: tuple[str, ...]) -> tuple[str | None, bool]:
+    """Return label and content-conflict flag without access to the reference label."""
+    match = re.fullmatch(r"(?:\(([A-J])\)|([A-J]))(?:[.:)]\s+(.+)|\.)?", answer.strip())
+    if match is None:
+        return None, False
+    label = match[1] or match[2]
+    index = ord(label) - ord("A")
+    if index >= len(choices):
+        return None, False
+    conflict = match[3] is not None and normalize_text(match[3]) != normalize_text(choices[index])
+    return label, conflict
+
+
+def is_ambiguous(answer: str, item: VerifierItem) -> bool:
+    """Type-aware delimiters: commas in 1,234 and slash in 3/4 are not alternatives."""
+    if re.search(r"\bor\b", answer, re.I):
+        return True
+    if item.answer_type == "list":
+        return False
+    if item.answer_type == "mcq":
+        label, conflict = mcq_choice(answer, item.choices)
+        if label is not None:
+            return conflict
+    if "/" not in answer and "," not in answer:
+        return False
+    if number(answer) is not None:
+        return False
+    if item.answer_type == "unit_number":
+        match = re.fullmatch(rf"({_RATIONAL})\s*([^0-9\s].*)?", answer.strip())
+        if match and number(match[1]) is not None:
+            return False
+    return True
+
+
+def _numeric_equal(a: Fraction, g: Fraction, accept: dict) -> bool | None:
+    policies = [k for k in ("round_to", "abs_tol", "rel_tol") if k in accept]
+    if not policies:
+        return a == g
+    if len(policies) != 1:
+        return None
+    key = policies[0]
+    value = accept[key]
+    if key == "round_to":
+        if type(value) is not int or not -1000 <= value <= 1000:
+            return None
+        scale = Fraction(10) ** value
+        return round(a * scale) == round(g * scale)  # exact ties-to-even
+    if type(value) not in (str, int):
+        return None
+    tolerance = number(str(value))
+    if tolerance is None or tolerance < 0:
+        return None
+    limit = tolerance if key == "abs_tol" else tolerance * abs(g)
+    return abs(a - g) <= limit
+
+
+def _compare_typed(answer: str, gold: str, kind: str, accept: dict) -> bool | None:
+    if kind in ("int", "decimal", "fraction"):
+        a, g = number(answer), number(gold)
+        if a is None or g is None:
+            return None
+        if kind == "int":
+            if not re.fullmatch(_INT, gold):
+                return None
+            return bool(re.fullmatch(_INT, answer)) and a == g
+        if kind == "fraction":
+            flag = accept.get("accept_decimal", False)
+            if type(flag) is not bool:
+                return None
+            if not flag and ("." in answer or "e" in answer.casefold()):
+                return False
+            return a == g
+        return _numeric_equal(a, g, accept)
+    if kind == "unit_number":
+        aliases = accept.get("unit_aliases")
+        require = accept.get("require_unit", True)
+        if (not isinstance(aliases, list) or not aliases
+                or any(type(v) is not str or not v.strip() for v in aliases)
+                or type(require) is not bool):
+            return None
+        values = []
+        for text in (answer, gold):
+            match = re.fullmatch(rf"({_RATIONAL})\s*([^0-9\s].*)?", text)
+            if match is None or (n := number(match[1])) is None:
+                return None
+            unit = " ".join(unicodedata.normalize("NFKC", match[2] or "").split())
+            values.append((n, unit))
+        units = {" ".join(unicodedata.normalize("NFKC", x).split()) for x in aliases}
+        (a, au), (g, gu) = values
+        if gu and gu not in units:
+            return None
+        if (require and not au) or (au and au not in units):
+            return False
+        return _numeric_equal(a, g, accept)
+    if kind == "short_text":
+        aliases = accept.get("aliases", [])
+        case_sensitive = accept.get("case_sensitive", False)
+        if (not isinstance(aliases, list) or any(type(v) is not str for v in aliases)
+                or type(case_sensitive) is not bool):
+            return None
+        if case_sensitive:
+            def exact_text(value: str) -> str:
+                return " ".join(unicodedata.normalize("NFKC", value).split()).removesuffix(".")
+            return exact_text(answer) in {exact_text(x) for x in [gold, *aliases]}
+        return normalize_text(answer) in {normalize_text(x) for x in [gold, *aliases]}
+    if kind == "list":
+        ordered = accept.get("ordered", True)
+        element_type = accept.get("element_type", "short_text")
+        element_accept = accept.get("element_accept", {})
+        if (type(ordered) is not bool or element_type not in ("int", "decimal", "fraction", "short_text")
+                or type(element_accept) is not dict):
+            return None
+        def elements(s: str) -> list[str]:
+            s = s.strip()
+            if s.startswith("[") and s.endswith("]"):
+                s = s[1:-1]
+            if re.search(r",\s*,", s) or s.strip().startswith(",") or s.strip().endswith(","):
+                return []
+            return [v for v in re.split(r"[,\s]+", s.strip()) if v]
+        aa, gg = elements(answer), elements(gold)
+        if not gg or not aa:
+            return None
+        if len(aa) != len(gg):
+            return False
+        if ordered:
+            tests = [_compare_typed(a, g, element_type, element_accept) for a, g in zip(aa, gg, strict=True)]
+            return None if None in tests else all(tests)
+        # No fuzzy/tolerance matching for unordered lists: it can be non-transitive.
+        if set(element_accept) - {"accept_decimal"}:
+            return None
+        if element_type == "short_text":
+            return Counter(map(normalize_text, aa)) == Counter(map(normalize_text, gg))
+        nums_a, nums_g = [number(x) for x in aa], [number(x) for x in gg]
+        if None in nums_a or None in nums_g:
+            return None
+        if element_type == "int" and any(not re.fullmatch(_INT, x) for x in aa + gg):
+            return None
+        if element_type == "fraction":
+            valid = [_compare_typed(x, x, element_type, element_accept) for x in aa + gg]
+            if None in valid:
+                return None
+            if not all(valid):
+                return False
+        return Counter(nums_a) == Counter(nums_g)
+    return None
+
+
+def compare(answer: str, item: VerifierItem) -> bool | None:
+    if not isinstance(answer, str) or not isinstance(item, VerifierItem):
+        raise ValueError("answer: string and VerifierItem required")
+    if is_ambiguous(answer, item):
+        return None
+    if item.answer_type == "mcq":
+        label, conflict = mcq_choice(answer, item.choices)
+        gold, gold_conflict = mcq_choice(item.gold, item.choices)
+        if label is None or gold is None or conflict or gold_conflict:
+            return None
+        return label == gold
+    return _compare_typed(answer.strip(), item.gold.strip(), item.answer_type, item.accept)
