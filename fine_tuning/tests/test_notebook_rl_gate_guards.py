@@ -27,9 +27,11 @@ from fine_tuning.tests import test_notebook_rl_approval as approval_fixture
 from fine_tuning.tests.test_notebook_rl_policy import bundle, config
 from fine_tuning.tests.test_notebook_rl_updates import Preparation, tree
 
+_WORKER_MODULE = "fine_tuning.tests.test_notebook_rl_gate_guards"
+
 
 def authored_validator(root, **request):
-    process = subprocess.run([sys.executable, "-m", __spec__.name, "--data-worker", str(root)],
+    process = subprocess.run([sys.executable, "-m", _WORKER_MODULE, "--data-worker", str(root)],
         input=json.dumps(request), capture_output=True, text=True, timeout=60)
     if process.returncode:
         raise RuntimeError("authored data worker failed: " + process.stderr[-2000:])
@@ -151,12 +153,23 @@ class GuardGateTests(unittest.TestCase):
         cls.request_path.write_text(json.dumps(cls.request))
 
     def run_actor(self, case, request_path=None):
-        process = subprocess.run([sys.executable, "-m", __name__, "--actor-worker", str(self.root),
+        process = subprocess.run([sys.executable, "-m", _WORKER_MODULE, "--actor-worker", str(self.root),
             str(request_path or self.request_path), case], capture_output=True, text=True, timeout=90)
         self.assertEqual(process.returncode, 0, process.stderr[-4000:])
         self.assertNotIn('"gold"', process.stdout)
         self.assertNotIn('"oracle_fact_lines"', process.stdout)
         return json.loads(process.stdout)
+
+    def test_discovery_module_identity_does_not_change_worker_commands(self):
+        process = SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        with patch.dict(authored_validator.__globals__,
+                        {"__name__": "test_notebook_rl_gate_guards", "__spec__": None}), \
+                patch.object(subprocess, "run", return_value=process) as run:
+            authored_validator(self.root, **self.request)
+            self.run_actor("positive")
+        self.assertEqual(run.call_count, 2)
+        for call, flag in zip(run.call_args_list, ("--data-worker", "--actor-worker"), strict=True):
+            self.assertEqual(call.args[0][:4], [sys.executable, "-m", _WORKER_MODULE, flag])
 
     def test_actual_reward_update_with_all_guards_and_shared_g4(self):
         value = self.run_actor("positive")
