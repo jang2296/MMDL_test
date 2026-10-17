@@ -1,5 +1,20 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-17 15:24 KST — 로컬 수정 검증·게시 완료, GPU 중지·연장 승인 대기
+
+메모리 시작 비율0.7 최소 수정은 로컬771 tests(1skip,325.963초), 입력24 tests(23.344초),
+집중19/Ruff/mypy1 및 독립검토를 통과했다. MMDL_test4185db75ec502b50990a6c09734dfe96b0772153
+정상 push/원격HEAD·clean 확인. v4 실제 입력 preflight는16개/차단0/130.005927초 PASS다.
+수정 후 실제 GPU 실행은 아직 없으며 RL update0/reload 미완료/150 보류다.
+기존 native G9/G10 통과 및 vLLM 시작 실패7파일979514bytes를 로컬 SHA 검증했다.
+유휴 GPU 과금을 줄이기 위해 소유Pod e10034q5chqqcr를06:22:31UTC 중지, EXITED를 재확인했다.
+120GB /workspace는 유지되나 저장비는 계속 발생한다. 컨테이너 임시 code/입력 복사본은
+중지 시 폐기되므로 재개할 때 GitHub clean clone·private 입력 재전송·실제환경 재검증이 필요하다.
+사용자의 잔액 질문은 시간 연장 승인이 아니다. 기존15:40·총2.30 한도는 유지한다.
+MCP REST v2 밖의 공식 GraphQL로 실제 clientBalance/currentSpendPerHr를 조회할 수 있다.
+기존 API key는 메모리에서만 사용하며 출력/전송/저장/결제설정 변경하지 않는다.
+실제 잔액·상태·중지/학습 미완료 증거는 private runtime/에 보관한다. 교수님MMDL/V8 불변이다.
+
 ## 2026-10-17 15:17 KST — 기울기 문제 통과 후 vLLM 시작 조건에서 중단
 
 76cfc4e의 strict deterministic native G9/G10은 실제 통과했다. 다음 vLLM 생성기가

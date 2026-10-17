@@ -1,5 +1,21 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-17 15:24 KST — 수정4185db7 게시·유휴 GPU 중지·잔액 직접 조회 확보
+
+vLLM 시작 비율0.7 수정은 로컬771 CPU검사(1skip)/325.963초·입력24/23.344초·
+집중19/Ruff/mypy1·독립검토를 통과했고 MMDL_test4185db75ec502b50990a6c09734dfe96b0772153에
+정상 게시·원격HEAD/clean을 확인했다. 새 v4 입력의 실제 preflight도16개/차단0으로 통과했다.
+이 수정의 새 GPU 성공/실제 RL update/reload/150은 미검증이다. 이전 actual G9/G10은 통과,
+모든 실패실행의 원격/로컬 원문 SHA는 검증됐다. 교수님MMDL/V8는 불변이다.
+사용자는 잔액 조회 가능 여부를 물었으며 시간 연장 승인은 아니다. 기존15:40 한도를 유지한다.
+공식 GraphQL myself의 clientBalance/currentSpendPerHr를 기존 인증으로 읽기 전용 조회할 수
+있음을 확인했다. MCP REST v2에 balance가 없다는 사실을 전체 조회 불가로 확대하지 않는다.
+키는 출력·전송·파일 저장하지 않으며 실제 잔액은 private runtime/live_account_balance*에 둔다.
+유휴 비용 절감을 위해 소유Pod e10034q5chqqcr를06:22:31UTC 중지했고 EXITED를 재확인했다.
+GPU는 중지됐지만120GB 작업 볼륨과 저장 과금은 남는다. 재개는 새 시간 승인/실제 잔액/
+접속·GPU identity/clean clone/기존 환경·모델/컨테이너 입력 재전송 검증 후에만 한다.
+컨테이너 임시 복사본은 중지 시 폐기되므로 로컬 원본과 GitHub를 사용한다. goal 완료가 아니다.
+
 ## 2026-10-17 15:17 KST — 실제 G9/G10 통과·vLLM 공존 시작 설정 오류
 
 새76cfc4e는 로컬771검사(1skip)/24입력검사와 원격32변경부/lock/pip/CUDA BF16/
