@@ -6,6 +6,7 @@ Signed coefficients act only on the supplied generated suffix; no gold or CE.
 """
 from __future__ import annotations
 
+import json
 import math
 
 import torch
@@ -51,18 +52,25 @@ def _capture(bundle, names: dict[int, str], retain: set[str]) -> tuple[dict, dic
     return summary, gradients
 
 
-def _match(expected: dict, actual: dict) -> dict:
+def _match(expected: dict, actual: dict, *, comparison: str = "GRADIENT") -> dict:
     _require(set(expected) == set(actual) and bool(expected), "incomplete gradient comparison")
     rows = []
     for name in sorted(expected):
         reference, observed = expected[name], actual[name]
-        _require(observed.shape == reference.shape and observed.dtype == reference.dtype
-                 and bool(torch.allclose(observed, reference, rtol=1e-6, atol=0)),
-                 "gradient mismatch: " + name)
+        descriptors = {"comparison": comparison, "name": name,
+            "expected_shape": list(reference.shape), "actual_shape": list(observed.shape),
+            "expected_dtype": str(reference.dtype), "actual_dtype": str(observed.dtype)}
+        _require(observed.shape == reference.shape and observed.dtype == reference.dtype,
+                 "gradient mismatch: " + json.dumps(descriptors, sort_keys=True))
         difference = (observed.double() - reference.double()).abs()
         relative = difference / torch.where(reference != 0, reference.double().abs(), 1.)
         rows.append({"name": name, "max_abs_error": float(difference.max()),
-                     "max_relative_error": float(relative.max())})
+                     "max_relative_error": float(relative.max()),
+                     "zero_reference_nonzero_actual": int(((reference == 0) & (observed != 0)).sum()),
+                     "expected_norm": float(torch.linalg.vector_norm(reference.double())),
+                     "actual_norm": float(torch.linalg.vector_norm(observed.double()))})
+        _require(bool(torch.allclose(observed, reference, rtol=1e-6, atol=0)),
+                 "gradient mismatch: " + json.dumps(descriptors | rows[-1], sort_keys=True))
     return {"match": True, "rtol": 1e-6, "atol": 0., "parameters": rows,
             "max_abs_error": max(row["max_abs_error"] for row in rows),
             "max_relative_error": max(row["max_relative_error"] for row in rows)}
@@ -151,6 +159,17 @@ def _measure_routes(bundle, sample_inputs: dict, completion_len: int, *, native_
             nonvision(off)
             clear()
 
+            # Separate same-path backward repeatability from route-control equivalence.
+            bundle.route.apply(False)
+            restore_rng_and_rope()
+            off_repeat_loss = backward()
+            off_repeat, off_repeat_gradients = _capture(bundle, names, {"L", "M"})
+            _require(off_repeat["V"]["all_none"], "repeat route OFF Vision gradient must be None")
+            nonvision(off_repeat)
+            off_repeat_comparison = _match(off_gradients, off_repeat_gradients, comparison="OFF_REPEAT")
+            del off_repeat_gradients
+            clear()
+
             # Keep the route flag ON but freeze V parameters directly. The raw
             # scorer bypasses routing, so a broken route wrapper is not the control.
             bundle.route.vision_on = has_vision
@@ -161,7 +180,7 @@ def _measure_routes(bundle, sample_inputs: dict, completion_len: int, *, native_
             frozen, frozen_gradients = _capture(bundle, names, {"L", "M"})
             _require(frozen["V"]["all_none"], "hard-frozen Vision gradient must be None")
             nonvision(frozen)
-            frozen_comparison = _match(off_gradients, frozen_gradients)
+            frozen_comparison = _match(off_gradients, frozen_gradients, comparison="OFF_HARD_FROZEN")
             del off_gradients, frozen_gradients
             clear()
 
@@ -185,6 +204,7 @@ def _measure_routes(bundle, sample_inputs: dict, completion_len: int, *, native_
             report = {"vision_off_grad_none": off["V"]["all_none"],
                 "nonvision_grad_finite_nonzero": all(off[g]["all_present"] and off[g]["norm"] > 0 for g in ("L", "M")),
                 "hard_freeze_gradient_match": frozen_comparison["match"],
+                "off_repeat_gradient_match": off_repeat_comparison["match"],
                 "vision_on_grad_nonzero": on["V"]["norm"] > 0 if on is not None else None,
                 "mixed_on_only": mixed_comparison["match"] if mixed_comparison is not None else None,
                 "vision_applicability": "MEASURED" if has_vision else "NOT_APPLICABLE_MOD_FML",
@@ -198,8 +218,10 @@ def _measure_routes(bundle, sample_inputs: dict, completion_len: int, *, native_
                 "objective": "fixed alternating signed generated-action logprobs / suffix length",
                 "hard_freeze_control": "direct V requires_grad=False; policy._logprobs bypasses route wrapper",
                 "completion_len": completion_len, "input_fingerprints": fingerprints,
-                "off": off, "hard_frozen": frozen, "on": on, "mixed": mixed,
-                "objective_values": {"off": off_loss, "hard_frozen": frozen_loss, "on": on_loss, "mixed": mixed_loss},
+                "off": off, "off_repeat": off_repeat, "hard_frozen": frozen, "on": on, "mixed": mixed,
+                "objective_values": {"off": off_loss, "off_repeat": off_repeat_loss,
+                                     "hard_frozen": frozen_loss, "on": on_loss, "mixed": mixed_loss},
+                "off_repeat_comparison": off_repeat_comparison,
                 "hard_freeze_comparison": frozen_comparison, "mixed_comparison": mixed_comparison,
                 "limitations": ["Signed synthetic action objective, not a training update or learned routing result",
                     "One caller-supplied image/action suffix; no data eligibility or complete GPU gate approval",

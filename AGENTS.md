@@ -1,5 +1,162 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-17 14:53 KST — native G9 중단·로컬 전체/원격 변경부 검증 승인
+
+75c46dc의 실제 A40 native 실행은 G1 BF16/FP32 master 및 G3 초기 logprob 차이0을
+관측했으나 G9 OFF/직접동결 기울기 비교에서 실패해05:41UTC exit2로 종료했다.
+optimizer update0이며 학습 checkpoint/reload/150평가는 미완료다. CUDA backward
+비결정성이 원인 후보이나 이전 원문에 오차 크기가 없어 확정하지 않는다. 허용오차
+rtol1e-6/atol0은 유지하고 strict deterministic 설정/동일 OFF 재계산/오차 원장을 추가했다.
+수정32 CPU tests/Ruff/mypy3와 독립 검토 PASS이며 실제 GPU 재검증은 아직이다.
+사용자는 로컬 전체 CPU검사+원격 변경부/기존 환경·13모델파일 재검증을 승인했다.
+새 GitHub SHA clean clone을 유지하고 이전 원격765+24 PASS 증거를 소급 변경하지 않는다.
+원래 총2.30USD·GPU15:40/job15:38KST·reserve0.50·소유Pod는 불변이다.
+근거 private runtime/failed-native-g9-v1/ 및 새 v3 입력 승인/전체검사 원장이다.
+
+## 2026-10-17 14:28 KST — setup exit0·새 native RL controller 제출
+
+정상75c46dc setup은962.941995초/exit0,765+24 CPU검사·실제 A40 CUDA/BF16·지정
+13모델파일 hash를 통과했다. 닫힌 setup4파일의 원격/로컬 SHA를 검증해 보존했다.
+05:28:12UTC 소유Pod e10034q5chqqcr의 watchdog2919/coordinator2920으로 실제
+native gate job을 제출했다. job SHA c9c73cef…는 실제모델/device/새 clean SHA와 결합됐다.
+현재 preflight이며 실제 학습 update/reload 성공이 아니다. 최신 승인 compute06:40UTC/
+job06:38UTC/reserve0.50USD·원래 최초과금/총2.30USD를 유지한다. 교수님MMDL/V8는 불변이다.
+근거 private runtime/setup-75c46dc-local-verification-v1.json 및 native-launch-v1.json이다.
+
+## 2026-10-17 — 동일2.30USD·15:40 KST 연장 명시 승인
+
+사용자가 `동일 2.30 USD 안에서 15:40까지 연장`을 승인했다. 새 native watchdog의
+GPU cutoff06:40UTC·내부job06:38UTC·회수예약0.50USD로 조정한다. 최초과금04:01:36.102UTC,
+총2.30USD/운영상한0.65USDh/소유Pod e10034q5chqqcr 및 최대2unique update는 유지한다.
+이미 실행 중인 setup1934/기존 watchdog·코드는 바꾸지 않고 정상 종료 뒤 새 native 실행에만
+결합한다. 새 Pod/추가 실험 승인이 아니며 실제 RL/reload/150은 아직 미실행이다.
+이 절이 이전 cutoff/reserve보다 우선한다. 교수님MMDL/V8는 불변이다.
+근거 private runtime/user-budget-extension-v1.json과 사용자의 실제 답변이다.
+
+## 2026-10-17 14:10 KST — test-only FP32 경계 수정·새 clean setup 실행
+
+두 번째 setup은765 CPU tests 중1실패/1424.810초로05:02:07UTC 종료했다. guard10은
+통과했고 작은 Qwen CPU chunk1의 GEMV/GEMM projection 차이1 FP32 ULP를 독립 재현했다.
+reference/full exact 검사는 유지하고 chunk1만 rtol0/atol5e-7로 검사한다. data-only 시험
+worker의 Torch/PEFT import도 분리했다. policy6/guard10/Ruff PASS·기존 mypy33진단 동일/
+추가0이며 production64파일과 G3/G7·데이터·보상 기준은 불변이다. test-only 두 파일을
+MMDL_test75c46dc44cfd076fc0b20344d09fc7fa1cea195d에 정상 게시하고 Pod에서 직접
+clean clone했다. 이전 checkout/실패 로그를 보존한 뒤05:10:18UTC setup1934로 재시작했다.
+정상 lock/pip/전체CPU/CUDA BF16/모델13파일 검증은 생략하지 않는다. 실제4B RL/reload/
+150은 아직 미실행이다. 원래 소유Pod e10034q5chqqcr·2.30USD/reserve1USD·최초과금과
+compute06:01:36.102UTC/job05:59:36.102UTC를 재설정하지 않는다. 교수님MMDL/V8는 불변이다.
+별도 evaluation150-v1 입력 고정은 CPU 준비일 뿐 점수/실험 완료가 아니다. T2/T3의 실제
+생성 오답노트·보상/advantage·학습 기여를 확인하지 않고 자기수정 RL 성공을 주장하지 않는다.
+근거 private runtime/policy-reference-failure-v1.json·setup-failed-5d99dd8.log와 새 정상 setup이다.
+
+## 2026-10-17 13:38 KST — CPU timeout 원인 재현·새 clean setup 재개
+
+원격 단일 guard 시험은91.134초에 outer actor90초 TimeoutExpired로 실패했다.
+세 차례 독립 data validation과 import의 합을 고려하지 않은 시험 상한이 원인이며,
+이를 guard 통과나 GPU 장애로 해석하지 않는다. test-only outer300/inner60 유지 수정의
+전체10검사148.606초/Ruff/범위mypy가 PASS다. 실패 setup205와 소유child를 종료하고
+닫힌 로그의 원격/로컬 SHA9a38c616… 일치를 확인했다. 기존 checkout은 삭제하지 않고
+Pod의 `multimodel-code-2b754a8`에 이동했다. MMDL_test 정상 게시/직접 clean clone
+`5d99dd8247ac06e31062f33f51fb66104167bf12`의 새 setup1147를04:37:16UTC 시작했다.
+정확한 lock/pip check/전체764 CPU검사/CUDA BF16/모델13파일 hash를 생략하지 않고
+기존 canonical venv만 명시적으로 재사용한다. 현재 실제4B RL/reload/150은 미실행이다.
+
+같은 Pod의 실제 전체 data preflight177.291초로 확인한 기본120초 부족은 별도 production
+dispatcher 수정c03aa92로 해결했다(제한 smoke만300, 일반/명시값/금융 watchdog 불변).
+원래 components10source/600intervention은 바꾸지 않고 새64code scope/D1–D8 v2를
+실제115.062초 CPU 검증했다. 새13파일89,275bytes도 Pod 전송 후 모두SHA 확인했다.
+train16/heldout24 분리·단일/복수이미지 probe·64codehash·고정 budget은 독립 검토 PASS다.
+원래40문항/60PNG·전체 제외 검사/모든 경고/AI 판정은 보존하며 사람 인증으로 쓰지 않는다.
+
+최초과금04:01:36.102UTC·2.30USD·reserve1USD·0.65USDh·compute06:01:36.102UTC/
+job05:59:36.102UTC는 재설정하지 않는다. 실제 native 업데이트/새 프로세스 reload를
+우선하며 150평가는 동일8K F0/FT 비용을 보고 판단한다. 교수님MMDL/V8는 불변이다.
+근거 private `notebook-rl-smoke-20261017/runtime/remote-guard-timeout-{diagnostic,fix-local-verification}-v1.json`,
+`setup-failed-2b754a8.log`, `remote-scope-transfer-verification-v2.json` 및
+`candidates-v1/smoke-data-reviewed-v2/`다. private job 준비를 실제 GPU 성공으로 보고하지 않는다.
+
+## 2026-10-17 13:15 KST — 소유 A40 생성·GitHub clean clone·전송 검증, 설치 중
+
+승인된 A40 대체/총2.30USD/회수예약1USD로 소유Pod `e10034q5chqqcr`를 생성했다.
+최초과금04:01:36.102UTC, 실제GPU0.59USD/h·운영상한0.65USD/h, compute cutoff06:01:36.102UTC/
+job deadline05:59:36.102UTC를 고정한다. 별도 Network Volume0이며 Pod volume120GB이다.
+직접SSH로 A40/49140MiB·driver580.178.04·Python3.12.3·cgroup RAM49,999,998,976bytes 및
+실제/workspace mount를 확인했다. Pod는 GitHub에서2b754a849e0abbb004ce984c40d49350918a2b83을
+`/mnt/c/projects/multimodel`에 clean clone했다. 개인키/모델/venv/코드 overlay는 전송하지 않았다.
+비공개385payload/2,064,900,296bytes(transport387파일)는 전송 후 모든SHA·크기·nlink1·경로와
+Git clean을 Pod에서 검증했다. source clone과 data proof의16개 source byte도 일치한다.
+현재 정상 setup watchdog205/pip240가 살아 있으며 NFS에 의존성을 쓰고 있다. 13:14KST 조회에서
+설치 중이며 실제4B RL/reload/150이나 성능 개선은 아직 없다. setup의 추가1시간 상한과
+최초 금융기한은 유지하며 다음 계정조회는04:20:49UTC까지다. 교수님MMDL/V8는 불변이다.
+근거 비공개 `notebook-rl-smoke-20261017/runtime/`의 `owned-pod-launch-v1.json`,
+`owned-setup-observation-v1.json`, `remote-private-transfer-verification-v1.json`,
+`pod-monitor-20261017T041049Z.json`이다. 설치 미완료를 완료/실험 성공으로 쓰지 않는다.
+
+## 2026-10-17 12:59 KST — 전체 제외 검사·직접 검토·제한 smoke 데이터 검증
+
+아래 진행 중 기록보다 우선한다. 실제 native100파일/16,740행 인덱스에 대해12검사 단계가
+모두 COMPLETE이며 full receipt SHAafcc0579…/evidence SHAba8beec2…다. 경고1953행/
+고유1303개는 별도 직접 AI 검토에서 모두 DISTINCT였고 duplicate/unresolved0이다.
+이는 human_verified=false이며 미검출 전체 쌍의 무오염 보장이 아니다. 기존 원장/입력은 보존한다.
+`build-reviewed-v1`은 원본76개 입력 byte를 유지한 별도 metadata 결합본이며, D1–D8와 실제
+격리 preflight106.934초/0blocker로16train의 제한 smoke 적격성을 확인했다. 나머지24개는
+학습 actor/probe에 넣지 않는다. 결과는 CPU_DATA_VALIDATED_NOT_GPU_SUCCESS이며
+일반 학습/Phase A/사람 인증/성능 개선 승인이 아니다. 로컬 ActorItem 저장 오류는 기록하고
+기존 증거를 보존한 채 출력 직렬화만 정정하여 실제 검증을 다시 수행했다.
+MMDL_test 최신 게시2b754a849e0abbb004ce984c40d49350918a2b83은 subprocess 시험의
+package 경로 수정이며 production guard는 불변이다. 전체764 CPU tests/318.928초가
+통과했다(환경별 제외1). test harness 추가 mypy의 기존31진단은 미해결로 구분한다.
+교수님MMDL clean HEAD197838c…/V8은 불변, 새 Pod/유료 실행/실제4B RL·GPU reload·150은
+아직 미실행이다. 근거 정본은 비공개 notebook-rl-smoke-20261017의
+`candidates-v1/smoke-data-reviewed-v1/` 및 `runtime/independent-final-review-v1.json`이다.
+
+## 2026-10-17 12:25 KST — 직접 유사도 검토·blacklist 코드 게시
+
+MMDL_test feature branch에 `f774e9397c118bb9511b8bf9253b2da3ac365041`을 정상 게시했다.
+28개 명시 파일의 상위/게시 byte·실행권한, 원격/로컬 HEAD 및 clean 상태를 확인했다.
+검토된 DISTINCT만 해제하고 실제 중복·미해결 family의 ID를 actor/probe에서 제외하는
+제한 smoke 경로다. 원래 경고와 일반 학습의 승인 조건은 보존한다. 연결58 CPU 검사,
+게시본42 집중 검사 및 독립 delta 검토는 실제4B CUDA 학습의 성공 증거가 아니다.
+초기1858 경고(고유1208)의 직접 AI 대조는 모두 DISTINCT였으나 human_verified=false이며,
+새 OCR/SSCD/SigLIP 후보는 검토 범위 밖이다. 전체 검사를 완료하거나 학습 승인했다고 쓰지 않는다.
+SigLIP의 구두점 전용11필드가 토큰0개인 실제 입력 경계는 native tokenizer와 대조하여
+EOS/padding 처리로 수정했고, 현재 source SHA578c3fda…로 세 검출기를 새로 실행 중이다.
+과거 캐시 identity를 새 결과로 바꾸지 않는다. 새 Pod/유료 실행은 없고 조회 Pod0이다.
+교수님 MMDL clean HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8은 불변이다.
+증거는 비공개 `notebook-rl-smoke-20261017/runtime/code_copy_reviewed_overlap_v1.json`과
+`candidates-v1/overlap_review_v2/main_verification_v1.json`이다. 실제 GPU RL/reload/150평가는 미완료다.
+
+## 2026-10-17 12:06 KST — 재개 승인: 유사 경고 직접 대조·동일 문제 blacklist 후 RL
+
+사용자가 목표를 active로 재개했고 **유사 경고는 실제 문제·이미지로 대조하여 동일 문제인지
+확인하고, 동일 문제만 blacklist에 넣어 해당 ID를 건너뛰며 진행**하도록 변경했다. 이 절이
+아래 중복 후보면 즉시 중단 지시보다 우선한다. 검출 원장과 임계값은 보존하며 별도 SHA 결합
+검토 원장에서 DISTINCT/DUPLICATE/UNRESOLVED를 기록한다. 미검토·불확실 항목은 계속 차단한다.
+AI 직접 대조는 human_verified=false이며 학습 정답 생성이 아니다. benchmark 원문/이미지/
+검토 자료는 비공개 검사용이며 학습 payload로 넘기지 않는다. 실제 중복은 같은 family도 제외한다.
+기존 USD2.30 범위·A40 대체·제한 program/AI 검토 smoke를 적용하며 CPU 증거와 실제 GPU RL/
+checkpoint reload/성능 개선을 구별한다. 교수님 MMDL은 수정하지 않고 실행 코드는 검증 후
+MMDL_test feature branch에 게시한 exact SHA를 Pod가 clone한다. 비용 여유가 없으면150평가는
+후속으로 남기되 실제 학습 pipeline 검증을 우선한다. 현재 새 GPU 실행은 아직 시작하지 않았다.
+
+## 2026-10-17 11:53 KST — 오답노트 RL: 중복 후보 검출 시 중단 지시 적용
+
+최신 사용자 지시는 **검출기를 유지하고 중복 후보면 중단**이다. 실제 native100파일/
+16,740행/12,168고유 이미지 인덱스를 구축했고 기존 검출기로40후보문항을 대조한 결과
+텍스트1,165·perceptual693개의 후보 기록이40문항 전체에 걸쳐 발생했다. 후보는 실제
+복제 확정이 아니지만 이 지시에 따라 학습을 중단한다. 임계값 완화·후보 구제·자동
+표본 교체·새 유료 Pod를 하지 않는다. 실제4B RL/GPU reload/MMMU150은 미실행이다.
+원장 상태는 BLOCKED_NOT_CHECKED/quarantine40/allowlist0이며 전체 OCR/embedding/
+calibration 완료가 아니다. 닫힌 캐시·실패/중단 증거·원래40개 입력은 보존한다.
+증거 `/home/jang2/mmdl-artifacts/notebook-rl-smoke-20261017/`의
+`exclusion-v2/index.json` SHA82b1084d… 및
+`candidates-v1/stop_on_candidates_native100_v1.json` SHAd20b8373…다.
+제한 AI/program smoke용 로컬 코드/검증은 준비됐으나 게시하지 않았다. MMDL_test
+HEAD89271c277bbe45177e62396377a0084b1dde49b5·교수님MMDL
+HEAD197838c11557911a14a46d87b7f52fda0cac5b3c 및 V8 558/900은 불변이다.
+새 cloud 지출0·Pod0이며 현재 실행은 종료했다. 상세 및 전체 SHA는
+`docs/PROJECT_STATUS.md` 최신 절을 따른다. 사용자 조건 변경 없이 자동 재개하지 않는다.
+
 ## 2026-10-12 04:25 KST — 고정8K 진단336·A/B2000·외부396 회수·Pod 삭제 완료
 
 이 절이 아래 진행 중 스냅샷보다 우선한다. c551 고정48문항 F0 I/T/IT/IR/TR240 및

@@ -170,6 +170,9 @@ def runtime_check(job: dict, protocol: dict) -> dict:
         if path.suffix == ".safetensors":
             weight_bytes += item["bytes"]
     import torch
+    from .policy import enable_deterministic_execution
+
+    determinism = enable_deterministic_execution()
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
         raise ValueError("launch: actual CUDA BF16 required; no precision/offload fallback")
     index = scope["device"]["index"]
@@ -196,7 +199,7 @@ def runtime_check(job: dict, protocol: dict) -> dict:
     return {"device": actual, "watchdog_pid": watcher_id, "deadline_timestamp": deadline,
             "free_memory_bytes": free, "minimum_weights_and_kv_bytes": minimum,
             "memory_fit_certified": False, "weight_copies": weight_copies,
-            "model_file_count": len(manifest["files"])}
+            "model_file_count": len(manifest["files"]), "determinism": determinism}
 
 
 def load_probes(value: dict, scope: dict, image_root: Path, prompts: dict, stack: ExitStack):

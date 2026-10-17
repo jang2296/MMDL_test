@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -17,6 +18,25 @@ from torch.utils.checkpoint import checkpoint
 from fine_tuning.modules import BASE_ID, BASE_REVISION, inspect_modules, parameter_group, tensor_sha256
 
 ARMS = frozenset(("MOD-FML", "MOD-FVML", "MOD-RV", "MOD-RR", "MOD-RS"))
+
+
+def enable_deterministic_execution() -> dict:
+    """Require strict CUDA reproducibility, never relax gradient comparisons.
+
+    See https://docs.pytorch.org/docs/2.8/notes/randomness.html.
+    This must precede the first CUDA/cuBLAS operation in every native worker.
+    """
+    workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    if workspace is None:
+        if torch.cuda.is_initialized():
+            raise ValueError("policy: configure deterministic cuBLAS before CUDA initialization")
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+    elif workspace != ":4096:8":
+        raise ValueError("policy: deterministic execution requires CUBLAS_WORKSPACE_CONFIG=:4096:8")
+    torch.use_deterministic_algorithms(True, warn_only=False)
+    return {"algorithms_enabled": torch.are_deterministic_algorithms_enabled(),
+            "warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
+            "cublas_workspace_config": os.environ["CUBLAS_WORKSPACE_CONFIG"]}
 
 
 class VisionRoute:

@@ -52,11 +52,13 @@ class GradientRouteTests(unittest.TestCase):
         batch = inputs()
         report = g._measure_routes(b, batch, 3, chunk=1)
         for key in ("vision_off_grad_none", "nonvision_grad_finite_nonzero", "hard_freeze_gradient_match",
+                    "off_repeat_gradient_match",
                     "vision_on_grad_nonzero", "mixed_on_only", "hf_base_unchanged", "installed_parameters_unchanged",
                     "temporary_gradients_cleared", "caller_state_restored"):
             self.assertTrue(report[key], key)
         self.assertEqual(report["vision_applicability"], "MEASURED")
         self.assertEqual(report["hard_freeze_comparison"]["max_abs_error"], 0)
+        self.assertEqual(report["off_repeat_comparison"]["max_abs_error"], 0)
         self.assertEqual(report["mixed_comparison"]["max_abs_error"], 0)
         self.assertEqual(report["device"], "cpu")
         self.assertFalse(report["cuda_policy_execution"])
@@ -163,6 +165,65 @@ class GradientRouteTests(unittest.TestCase):
         with patch.object(policy, "completion_logprobs", side_effect=altered), \
                 self.assertRaisesRegex(ValueError, "gradient mismatch"):
             g._measure_routes(b, inputs(), 3)
+        self.assert_restored(b, before)
+
+    def test_gradient_mismatch_reports_errors_and_norms_before_raising(self):
+        with self.assertRaisesRegex(ValueError, "gradient mismatch") as failure:
+            g._match({"parameter": torch.tensor([1.])}, {"parameter": torch.tensor([2.])},
+                     comparison="OFF_REPEAT")
+        diagnostic = json.loads(str(failure.exception).split("gradient mismatch: ", 1)[1])
+        self.assertEqual(diagnostic["comparison"], "OFF_REPEAT")
+        self.assertEqual(diagnostic["max_abs_error"], 1.)
+        self.assertEqual(diagnostic["max_relative_error"], 1.)
+        self.assertEqual(diagnostic["expected_norm"], 1.)
+        self.assertEqual(diagnostic["actual_norm"], 2.)
+        with self.assertRaisesRegex(ValueError, '"zero_reference_nonzero_actual": 1'):
+            g._match({"parameter": torch.tensor([0.])}, {"parameter": torch.tensor([1.e-8])})
+
+    def test_same_off_path_gradient_drift_is_detected_and_restores_state(self):
+        b = bundle("MOD-FML")
+        before = self.snapshot(b)
+        original, calls = policy.completion_logprobs, []
+
+        def drifting(*args, **kwargs):
+            result = original(*args, **kwargs)
+            calls.append(b.route.vision_on)
+            if len(calls) == 2:
+                parameter = b.params["M"][0]
+                result = result + parameter.sum() - parameter.detach().sum()
+            return result
+
+        with patch.object(policy, "completion_logprobs", side_effect=drifting), \
+                self.assertRaisesRegex(ValueError, '"comparison": "OFF_REPEAT"'):
+            g._measure_routes(b, inputs(), 3)
+        self.assertEqual(calls, [False, False])
+        self.assert_restored(b, before)
+
+    def test_off_repeat_and_independent_control_restore_rng_and_rope(self):
+        b = bundle("MOD-FML")
+        body = b.model.get_base_model().model
+        body.rope_deltas = torch.tensor([[7]])
+        before = self.snapshot(b)
+        original, observed = policy._logprobs, []
+
+        def consuming(*args, **kwargs):
+            observed.append((random.getstate(), np.random.get_state()[1].copy(),
+                             torch.get_rng_state().clone(), body.rope_deltas.clone()))
+            random.random()
+            np.random.random()
+            torch.rand(2)
+            return original(*args, **kwargs)
+
+        with patch.object(policy, "_logprobs", side_effect=consuming):
+            result = g._measure_routes(b, inputs(), 3)
+        self.assertEqual(len(observed), 3)
+        for row in observed:
+            self.assertEqual(row[0], observed[0][0])
+            self.assertTrue(np.array_equal(row[1], observed[0][1]))
+            self.assertTrue(torch.equal(row[2], observed[0][2]))
+            self.assertTrue(torch.equal(row[3], torch.tensor([[7]])))
+        self.assertTrue(result["off_repeat_gradient_match"])
+        self.assertEqual(result["objective_values"]["off"], result["objective_values"]["off_repeat"])
         self.assert_restored(b, before)
 
     def test_mixed_accumulation_catches_vision_gradient_leak(self):
