@@ -16,16 +16,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import torch
-from PIL import Image
+from fine_tuning.notebook_rl import approval, contamination, guards
 
-from fine_tuning.notebook_rl import approval, contamination, gate_guards as gate, guards, updates
-from fine_tuning.notebook_rl.checkpoint import make_optimizer
-from fine_tuning.notebook_rl.dataset import load_images
-from fine_tuning.notebook_rl.gate_update import _measure_update
-from fine_tuning.tests import test_notebook_rl_approval as approval_fixture
-from fine_tuning.tests.test_notebook_rl_policy import bundle, config
-from fine_tuning.tests.test_notebook_rl_updates import Preparation, tree
+_DATA_ONLY = __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--data-worker"
+if not _DATA_ONLY:
+    # The three isolated data checks need no model, optimizer, or Torch imports.
+    import torch
+    from PIL import Image
+
+    from fine_tuning.notebook_rl import gate_guards as gate, updates
+    from fine_tuning.notebook_rl.checkpoint import make_optimizer
+    from fine_tuning.notebook_rl.dataset import load_images
+    from fine_tuning.notebook_rl.gate_update import _measure_update
+    from fine_tuning.tests import test_notebook_rl_approval as approval_fixture
+    from fine_tuning.tests.test_notebook_rl_policy import bundle, config
+    from fine_tuning.tests.test_notebook_rl_updates import Preparation, tree
 
 _WORKER_MODULE = "fine_tuning.tests.test_notebook_rl_gate_guards"
 
@@ -39,6 +44,7 @@ def authored_validator(root, **request):
 
 
 def data_worker(root):
+    assert "torch" not in sys.modules, "the data-only worker unexpectedly loaded a model dependency"
     request = json.loads(sys.stdin.read())
     index_path = Path(request["index"]["path"])
     index = contamination._prepare(json.loads(index_path.read_text()), "authored-test-only")

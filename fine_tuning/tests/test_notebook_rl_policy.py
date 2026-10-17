@@ -44,8 +44,11 @@ class PolicyTests(unittest.TestCase):
         b = configure_policy(base, None, "MOD-RV", config(), enforce_counts=False)
         self.assertTrue(torch.equal(reference_logprobs(b, batch, 3), expected))
         actual = completion_logprobs(b, batch, 3, chunk=1)
-        self.assertTrue(torch.equal(actual, expected))
-        self.assertTrue(torch.equal(actual, completion_logprobs(b, batch, 3, chunk=3)))
+        full = completion_logprobs(b, batch, 3, chunk=3)
+        self.assertTrue(torch.equal(full, expected))
+        # CPU projection kernels at chunk1 can differ by one FP32 ULP from GEMM.
+        torch.testing.assert_close(actual, expected, rtol=0, atol=5e-7)
+        torch.testing.assert_close(actual, full, rtol=0, atol=5e-7)
         self.assertEqual(actual.shape, (1, 3))
 
     def test_route_blocks_vision_but_not_merger_or_llm_gradients(self):
