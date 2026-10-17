@@ -153,8 +153,9 @@ class GuardGateTests(unittest.TestCase):
         cls.request_path.write_text(json.dumps(cls.request))
 
     def run_actor(self, case, request_path=None):
+        # Three bounded data validations plus cold imports can exceed 90s on Pod storage.
         process = subprocess.run([sys.executable, "-m", _WORKER_MODULE, "--actor-worker", str(self.root),
-            str(request_path or self.request_path), case], capture_output=True, text=True, timeout=90)
+            str(request_path or self.request_path), case], capture_output=True, text=True, timeout=300)
         self.assertEqual(process.returncode, 0, process.stderr[-4000:])
         self.assertNotIn('"gold"', process.stdout)
         self.assertNotIn('"oracle_fact_lines"', process.stdout)
@@ -170,6 +171,7 @@ class GuardGateTests(unittest.TestCase):
         self.assertEqual(run.call_count, 2)
         for call, flag in zip(run.call_args_list, ("--data-worker", "--actor-worker"), strict=True):
             self.assertEqual(call.args[0][:4], [sys.executable, "-m", _WORKER_MODULE, flag])
+        self.assertEqual([call.kwargs["timeout"] for call in run.call_args_list], [60, 300])
 
     def test_actual_reward_update_with_all_guards_and_shared_g4(self):
         value = self.run_actor("positive")
