@@ -21,6 +21,7 @@ AUTHORED_JSON = {
     "mixture_policy_v1.json", "protocol.json", "source_inventory_20261004.json",
     "source_registry_bridge_v2.json", "source_registry_v1.json",
 }
+AUTHORED_JSON_PATHS = {"fine_tuning/notebook_rl/benchmark_inventory_v1.json"}
 EXPERIMENT_JSON = {
     "experiments/bottleneck_diagnostic/knowledge_cases.json",
     "experiments/bottleneck_diagnostic/knowledge_answer_key.json",
@@ -52,6 +53,7 @@ def selected_files(root: Path) -> dict[str, Path]:
                 continue
             authored_data = (path.suffix == ".json" and
                 (folder in {"manifests", "configs"} or relative.as_posix() in EXPERIMENT_JSON
+                 or relative.as_posix() in AUTHORED_JSON_PATHS
                  or folder in {"fine_tuning", HISTORICAL} and path.name in AUTHORED_JSON))
             plain_text = path.suffix == ".txt" and folder in {"env", "prompts"}
             if path.is_file() and (path.suffix in SUFFIXES or authored_data or plain_text

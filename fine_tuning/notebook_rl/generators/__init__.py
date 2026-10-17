@@ -3,7 +3,7 @@ from importlib import import_module
 from types import ModuleType
 
 REGISTRY: dict[str, ModuleType] = {}
-_NAMES = {"chart", "music", "chem", "statics", "circuit", "graph",
+_NAMES = {"chart", "music", "chem", "statics", "circuit", "graph", "graph_pair",
           "materials", "thermo", "pk_lab", "bio", "maps"}
 
 

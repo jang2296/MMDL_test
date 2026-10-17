@@ -85,7 +85,7 @@ def _probe_actors(job, validated):
 
 def preflight(job: dict, protocol: dict) -> dict:
     validate_job(job, protocol)
-    result = approval.validate_for_measurement(Path(job["build_root"]),
+    result = approval.validate_for_gate_data(Path(job["build_root"]),
         **{k: job[k] for k in (*measure.DESCRIPTORS, "expected_measurement_scope")})
     if result["status"] == "VALIDATED_FOR_MEASUREMENT":
         _probe_actors(job, result)

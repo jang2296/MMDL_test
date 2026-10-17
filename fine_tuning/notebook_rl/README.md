@@ -48,6 +48,24 @@ candidate blocks the pool; it is not silently omitted. Success has a distinct
 data eligibility, not G0–G13, actual F0 weights, spending authority or completed
 measurements. It cannot be passed to the training launcher as approval.
 
+The separately authorized `AI_PROGRAM_REVIEWED_SMOKE_ONLY` path accepts only a
+bounded program-labelled pool (at most 64 total / 24 train items), with every
+original input independently AI reviewed and program verified
+(`human_verified=false`). It authorizes only the existing two-update gate sequence,
+not Phase A or a training campaign. Ordinary measurement/training retain their
+human-review requirements. Full pinned MMMU/MMMU-Pro exclusion, actual
+OCR/SSCD/SigLIP caches and calibration, exact-SHA checkout, owned financial watchdog
+and native GPU gates remain required. The separately authorized direct overlap
+review preserves every original warning and binds each verdict to the complete
+scan, exact input/index identities and reviewed evidence files. `DISTINCT` may
+release a similarity warning; `DUPLICATE` and `UNRESOLVED` exclude the item and its
+shared structure/image family. Exact benchmark image copies and source/split
+violations remain excluded. The limited smoke returns only eligible train IDs to
+the actor and refuses an empty eligible set. Ordinary measurement/training retain
+their stricter whole-pool selection checks. Authorized hardware/budget does not establish runtime fitness or
+improvement. Generated `graph_pair` plain-mode questions still request observations;
+they are not a pure answer-only control.
+
 ```bash
 python -m fine_tuning.notebook_rl.cli check-measurement-data \
   --job /absolute/private/measurement-data-job.json \

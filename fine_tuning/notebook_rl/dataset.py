@@ -48,7 +48,9 @@ def generate_pool(generator: str, n: int, seed: int, split: Split,
         raise ValueError("dataset: source-bound generator module required")
     module_source = Path(module.__file__).read_bytes()
     common_source = Path(__file__).with_name("generators").joinpath("common.py").read_bytes()
-    code_revision = _sha(module_source + b"\0" + common_source)
+    dependencies = b"".join(b"\0" + Path(dependency.__file__).read_bytes()
+                            for dependency in getattr(module, "SOURCE_DEPENDENCIES", ()))
+    code_revision = _sha(module_source + b"\0" + common_source + dependencies)
     result, structures = [], set()
     for i in range(n*20):
         mode = "obs" if int.from_bytes(hashlib.sha256(f"{generator}|{seed}|{split}|{i}".encode()).digest()[:8],

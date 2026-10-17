@@ -10,6 +10,7 @@ current source registry/protocol/report is implicitly approved by this module.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import subprocess
@@ -25,6 +26,8 @@ _HERE = Path(__file__).resolve().parent
 _PROJECT = _HERE.parents[1]
 _SPLITS = ("train", "dev", "sealed", "style_sealed")
 _MAX_BYTES = 16 * 1024 * 1024
+SMOKE_PURPOSE = "AI_PROGRAM_REVIEWED_SMOKE_ONLY"
+SMOKE_REVIEW_POLICY = "AI_PROGRAM_NOT_HUMAN_v1"
 
 
 class _Blocked(Exception):
@@ -175,11 +178,27 @@ def _proofs(report: dict, prefix: str, count: int, binding: dict, scope: dict,
     return result
 
 
-def _measurement_scope(scope: dict, binding: dict, protocol: dict, files: dict) -> None:
+def _measurement_scope(scope: dict, binding: dict, protocol: dict, files: dict,
+                       *, limited_smoke: bool = False) -> None:
     """Data-only scope, fixed BEFORE Phase A; never a GPU/training certificate."""
-    _require(type(scope) is dict and set(scope) == {"purpose", "protocol_sha256", "code_sha256",
-             "input_files_sha256", "producer"} and scope["purpose"] == "FROZEN_WEIGHT_MEASUREMENT_ONLY",
+    keys = {"purpose", "protocol_sha256", "code_sha256", "input_files_sha256", "producer"}
+    if limited_smoke:
+        keys.add("authorization")
+    _require(type(scope) is dict and set(scope) == keys
+             and scope["purpose"] == (SMOKE_PURPOSE if limited_smoke else "FROZEN_WEIGHT_MEASUREMENT_ONLY"),
              "MEASUREMENT_SCOPE_REQUIRED")
+    if limited_smoke:
+        authorization = scope["authorization"]
+        _require(type(authorization) is dict and set(authorization) == {
+            "approval_reference", "approved_at_utc", "review_policy", "max_pool_items",
+            "max_train_items", "max_optimizer_updates", "training_campaign_allowed"}
+            and isinstance(authorization["approval_reference"], str) and bool(authorization["approval_reference"].strip())
+            and authorization["review_policy"] == SMOKE_REVIEW_POLICY
+            and type(authorization["max_pool_items"]) is int and 1 <= authorization["max_pool_items"] <= 64
+            and type(authorization["max_train_items"]) is int and 1 <= authorization["max_train_items"] <= 24
+            and type(authorization["max_optimizer_updates"]) is int and authorization["max_optimizer_updates"] == 2
+            and authorization["training_campaign_allowed"] is False, "SMOKE_AUTHORIZATION_REQUIRED")
+        _time(authorization["approved_at_utc"])
     _require(scope["protocol_sha256"] == protocol["sha256"] and scope["code_sha256"] == code_hashes()
              and scope["input_files_sha256"] == binding["input_files_sha256"], "MEASUREMENT_CURRENT_SCOPE_MISMATCH")
     producer = scope["producer"]
@@ -202,16 +221,37 @@ def _human(proof: dict, registry: dict) -> None:
     _time(provenance["reviewed_at_utc"])
 
 
+def _ai_program_review(proof: dict, registry: dict) -> None:
+    """Declared AI review, never a human-review certificate or label producer."""
+    provenance = proof.get("provenance")
+    if type(provenance) is not dict:
+        raise _Blocked("AI_PROGRAM_REVIEW_PROVENANCE")
+    _require(set(provenance) == {
+        "reviewer_id", "kind", "method", "reviewed_at_utc", "human_verified", "labels_modified"}
+        and provenance["kind"] == "AI_REVIEWED_PROGRAM_VERIFIED"
+        and provenance["method"] == "DIRECT_ORIGINAL_INPUT_AND_PROGRAM_REVIEW"
+        and provenance["human_verified"] is False and provenance["labels_modified"] is False,
+        "AI_PROGRAM_REVIEW_PROVENANCE")
+    reviewers = registry.get("limited_smoke_reviewers", {})
+    reviewer = reviewers.get(provenance["reviewer_id"]) if type(reviewers) is dict else None
+    _require(type(reviewer) is dict and reviewer.get("kind") == "AI"
+             and reviewer.get("approved_for") == SMOKE_REVIEW_POLICY
+             and reviewer.get("human_verified") is False, "AI_SMOKE_REVIEWER_NOT_REGISTERED")
+    _time(provenance["reviewed_at_utc"])
+
+
 def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
-                registry: dict, receipt_sha: str, review_seed: int) -> None:
+                registry: dict, receipt_sha: str, review_seed: int, *, limited_smoke: bool = False) -> None:
     program = sorted(pid for pid, item in items.items() if item["lineage"].label_provenance == "PROGRAM")
+    if limited_smoke:
+        _require(len(program) == len(items), "SMOKE_PROGRAM_LABELS_ONLY")
     for gate, mismatch in (("D1", "repeat_mismatches"), ("D2", "solver_mismatches")):
         m = proofs[gate]["measurements"]
         _require(m.get("checked_ids_sha256") == _hash(program) and type(m.get("items_checked")) is int
                  and m["items_checked"] == len(program) and type(m.get(mismatch)) is int and m[mismatch] == 0,
                  f"{gate}_COVERAGE_OR_MISMATCH")
     _require(proofs["D2"]["measurements"].get("independent_solvers") is True, "D2_INDEPENDENT_SOLVERS")
-    _human(proofs["D3"], registry)
+    (_ai_program_review if limited_smoke else _human)(proofs["D3"], registry)
     samples = proofs["D3"]["measurements"].get("samples")
     _require(type(proofs["D3"]["measurements"].get("sampling_seed")) is int
              and proofs["D3"]["measurements"]["sampling_seed"] == review_seed, "D3_REVIEW_SEED_BINDING")
@@ -225,11 +265,11 @@ def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
                  and type(sample.get("mismatches")) is int and sample["mismatches"] == 0, "D3_INPUT_BINDING_OR_MISMATCH")
         counts[item["actor"].source] += 1
     _require(set(counts) == {item["actor"].source for item in items.values()}
-             and all(n >= 50 for n in counts.values()), "D3_FIFTY_PER_SOURCE_REQUIRED")
+             and (limited_smoke or all(n >= 50 for n in counts.values())), "D3_FIFTY_PER_SOURCE_REQUIRED")
     groups: dict[str, list[str]] = defaultdict(list)
     for pid, item in items.items():
         groups[item["actor"].source].append(pid)
-    expected_sample = {pid for pids in groups.values()
+    expected_sample = set(items) if limited_smoke else {pid for pids in groups.values()
                        for pid in sorted(pids, key=lambda pid: _sha(f"{review_seed}:{pid}".encode()))[:50]}
     _require({sample["problem_id"] for sample in samples} == expected_sample, "D3_PREREGISTERED_RANDOM_SAMPLE")
     templates = {item["lineage"].source + ":" + item["lineage"].template_id for item in items.values()
@@ -245,7 +285,7 @@ def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
     _require(set(m) == {"structure_cross_split", "image_cross_split"}
              and all(type(value) is int and value == 0 for value in m.values()), "D5_SPLIT_LEAK")
     _require(proofs["D6"]["measurements"] == {"exclusion_receipt_sha256": receipt_sha}, "D6_RECEIPT_BINDING")
-    _human(proofs["D7"], registry)
+    (_ai_program_review if limited_smoke else _human)(proofs["D7"], registry)
     actor_files = {path: digest for path, digest in input_files.items() if Path(path).name == "actor_inputs.jsonl"}
     warnings = {split: manifest["leak_review"] for split, manifest in manifests.items()}
     m = proofs["D7"]["measurements"]
@@ -355,10 +395,12 @@ def _validate(payload: dict) -> dict:
         from . import contamination as c
         from .schema import load_protocol
         from .vault import read_actors, read_lineage, read_verifier
+        from PIL import Image
         root = _safe_root(Path(payload["build_root"]))
         stage = payload.get("stage", "training")
-        _require(stage in ("training", "measurement"), "UNKNOWN_VALIDATION_STAGE")
-        measuring = stage == "measurement"
+        _require(stage in ("training", "measurement", "limited_smoke"), "UNKNOWN_VALIDATION_STAGE")
+        limited_smoke = stage == "limited_smoke"
+        measuring = stage != "training"
         manifest = _read_json(root / "manifest.yaml", files)
         build_sha = files[str(root / "manifest.yaml")]
         protocol = load_protocol(_HERE / "protocol_v1.yaml")
@@ -409,18 +451,23 @@ def _validate(payload: dict) -> dict:
                 _require(pid not in items and lineage.split == split and actor.answer_format == verifiers[pid].answer_type
                          and actor.choices == verifiers[pid].choices and not c._source_checks(actor, lineage, registry), "SOURCE_OR_RECORD_IDENTITY")
                 items[pid] = {"actor": actor, "lineage": lineage, "verifier": verifiers[pid], "split": split,
-                              "structure_hash": lineage.structure_hash, "image_sha256": list(actor.image_sha256)}
+                              "structure_hash": lineage.structure_hash, "image_sha256": list(actor.image_sha256),
+                              "pixel_sha256": []}
                 for rel, sha in zip(actor.image_paths, actor.image_sha256, strict=True):
                     path = root / "images" / rel
                     _safe_root(path.parent)
-                    _require(_sha(_read(path)) == sha, "IMAGE_CHANGED")
+                    raw = _read(path)
+                    _require(_sha(raw) == sha, "IMAGE_CHANGED")
+                    with Image.open(io.BytesIO(raw)) as image:
+                        items[pid]["pixel_sha256"].append(c.audit.image_fingerprint(image)["pixels_sha256"])
                     expected_files[str(path)], images[rel] = sha, sha
         _require(manifest.get("image_sha256") == images and manifest.get("sources") == sorted({i["actor"].source for i in items.values()})
                  and receipt.get("input_files") == expected_files and receipt.get("input_files_sha256") == _hash(expected_files)
                  and receipt.get("input_count") == len(items)
                  and receipt.get("split_counts") == dict(Counter(i["split"] for i in items.values())), "ORIGINAL_INPUT_BINDING")
         files.update(expected_files)
-        required_scanner = {str(Path(c.__file__)), str(Path(c.audit.__file__)), str(_HERE / "vault.py"), str(_HERE / "schema.py"), str(_HERE / "protocol_v1.yaml")}
+        required_scanner = {str(Path(c.__file__)), str(c._INVENTORY), str(Path(c.audit.__file__)),
+                            str(_HERE / "vault.py"), str(_HERE / "schema.py"), str(_HERE / "protocol_v1.yaml")}
         _require(set(receipt.get("code_sha256", {})) == required_scanner, "SCANNER_CODE_COVERAGE")
         for path, digest in receipt["code_sha256"].items():
             _require(_sha(_read(Path(path))) == digest, "SCANNER_CODE_CHANGED")
@@ -432,9 +479,17 @@ def _validate(payload: dict) -> dict:
                     _require(value not in owners or owners[value] == item["split"], "INPUT_SPLIT_LEAK")
                     owners[value] = item["split"]
         train = {pid: i["actor"] for pid, i in items.items() if i["split"] == "train"}
+        if limited_smoke:
+            authorization = payload["expected_measurement_scope"]["authorization"]
+            _require(len(items) <= authorization["max_pool_items"] <= 64
+                     and len(train) <= authorization["max_train_items"] <= 24, "SMOKE_POOL_LIMIT")
         selected = sorted(train) if measuring else _selection(
             selection, phase, files[str(phase_path.absolute())], build_sha, train, structures, protocol)
-        quarantine = c.family_quarantine(items, receipt.get("candidates", []))
+        from .adjudication import validate as reviewed_candidates
+        quarantine = c.family_quarantine(items, reviewed_candidates(receipt, items, files=files))
+        if limited_smoke:
+            selected = [pid for pid in selected if pid in quarantine["allowlist"]]
+            _require(bool(selected), "NO_ELIGIBLE_TRAIN_ITEMS")
         _require(receipt.get("quarantined_ids") == quarantine["quarantined_ids"]
                  and receipt.get("allowlist") == quarantine["allowlist"]
                  and set(selected) <= set(receipt["allowlist"]), "SELECTED_ID_NOT_EXCLUSION_ALLOWLISTED")
@@ -478,11 +533,15 @@ def _validate(payload: dict) -> dict:
         # device, or GPU outcome. Legacy final-stage reports remain supported.
         if measuring or data_report.get("scope", {}).get("purpose") == "FROZEN_WEIGHT_MEASUREMENT_ONLY":
             data_scope = payload["expected_measurement_scope"] if measuring else data_report["scope"]
-            _measurement_scope(data_scope, common_binding, protocol, files)
+            _measurement_scope(data_scope, common_binding, protocol, files, limited_smoke=limited_smoke)
             data = _proofs(data_report, "D", 9, common_binding, data_scope, data_scope["producer"], files)
         else:
             data = _proofs(data_report, "D", 9, binding, scope, scope["producers"]["data"], files)
-        _data_gates(data, items, manifests, expected_files, registry, receipt_sha, protocol["seeds"][0])
+        _data_gates(data, items, manifests, expected_files, registry, receipt_sha, protocol["seeds"][0],
+                    limited_smoke=limited_smoke)
+        if limited_smoke:
+            binding["limited_smoke_authorization_sha256"] = _hash(data_scope["authorization"])
+            result["limitations"].append("AI/program-reviewed bounded smoke only; human_verified=false; not Phase A or campaign approval")
         if not measuring:
             gpu_report, gpu_sha = _artifact(payload["gpu_report"], files)
             gpu = _proofs(gpu_report, "G", 14, binding, scope, scope["producers"]["gpu"], files)
@@ -515,7 +574,7 @@ def _public_validate(payload: dict, timeout: float) -> dict:
     if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 300:
         return blocked | {"blockers": ["INVALID_TIMEOUT"]}
     try:
-        measuring = payload.get("stage", "training") == "measurement"
+        measuring = payload.get("stage", "training") in ("measurement", "limited_smoke")
         complete = "VALIDATED_FOR_MEASUREMENT" if measuring else "VALIDATED_FOR_TRAINING"
         raw = _json(payload)
         _require(len(raw) <= _MAX_BYTES, "REQUEST_TOO_LARGE_USE_ARTIFACT_DESCRIPTORS")
@@ -573,6 +632,28 @@ def validate_for_measurement(build_root: Path, *, index: dict, source_registry: 
     return _public_validate({"stage": "measurement", "build_root": str(Path(build_root).absolute()),
         "index": index, "source_registry": source_registry, "evidence": evidence, "data_report": data_report,
         "expected_measurement_scope": expected_measurement_scope}, timeout)
+
+
+def validate_for_limited_smoke(build_root: Path, *, index: dict, source_registry: dict, evidence: dict,
+                               data_report: dict | None, expected_measurement_scope: dict | None,
+                               timeout: float = 120) -> dict:
+    """Explicit opt-in: <=64 program-only records, every record AI reviewed.
+
+    All full-index/OCR/embedding/calibration/exclusion checks remain mandatory.
+    No Phase A, training-campaign, financial or human-review approval is issued.
+    The bounded gate runner alone may consume this eligibility for its two
+    optimizer transitions; ordinary measurement/training APIs remain strict.
+    """
+    return _public_validate({"stage": "limited_smoke", "build_root": str(Path(build_root).absolute()),
+        "index": index, "source_registry": source_registry, "evidence": evidence, "data_report": data_report,
+        "expected_measurement_scope": expected_measurement_scope}, timeout)
+
+
+def validate_for_gate_data(build_root: Path, **request) -> dict:
+    """Only gate_session/G13 dispatch here; full measurement never opts in."""
+    scope = request.get("expected_measurement_scope")
+    limited = type(scope) is dict and scope.get("purpose") == SMOKE_PURPOSE
+    return (validate_for_limited_smoke if limited else validate_for_measurement)(build_root, **request)
 
 
 if __name__ == "__main__":

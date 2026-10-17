@@ -499,6 +499,109 @@ print(json.dumps(result))
         (self.root/"images/0.png").write_bytes(b"changed")
         self.assert_blocked(self.measurement_validate(payload), "IMAGE_CHANGED")
 
+    def limited_fixture(self):
+        """Authored review provenance only, not real AI or full-index evidence."""
+        self.registry["limited_smoke_reviewers"] = {"fixture-ai": {
+            "kind": "AI", "approved_for": a.SMOKE_REVIEW_POLICY, "human_verified": False}}
+        self.receipt["source_registry_sha256"] = a._hash(self.registry)
+        self.receipt["receipt_sha256"] = a._hash({k: v for k, v in self.receipt.items() if k != "receipt_sha256"})
+        receipt_sha = write(self.root/"contamination/receipt_v2.json", self.receipt)
+        self.manifest["exclusion_receipt_sha256"] = receipt_sha
+        self.binding.update(build_manifest_sha256=write(self.root/"manifest.yaml", self.manifest),
+                            exclusion_receipt_sha256=receipt_sha, source_registry_sha256=a._hash(self.registry))
+        payload = self.measurement_fixture()
+        payload["stage"] = "limited_smoke"
+        scope = payload["expected_measurement_scope"]
+        scope.update(purpose=a.SMOKE_PURPOSE, authorization={
+            "approval_reference": "AUTHORED_UNIT_TEST_NOT_USER_APPROVAL",
+            "approved_at_utc": "2026-10-17T00:00:00Z", "review_policy": a.SMOKE_REVIEW_POLICY,
+            "max_pool_items": 64, "max_train_items": 24, "max_optimizer_updates": 2,
+            "training_campaign_allowed": False})
+        payload["data_report"]["scope"] = copy.deepcopy(scope)
+        for gate, entry in payload["data_report"]["gates"].items():
+            path = Path(entry["artifact"]["path"])
+            proof = json.loads(path.read_bytes())
+            proof["scope_sha256"] = a._hash(scope)
+            if gate in ("D3", "D7"):
+                proof["provenance"] = {"reviewer_id": "fixture-ai", "kind": "AI_REVIEWED_PROGRAM_VERIFIED",
+                    "method": "DIRECT_ORIGINAL_INPUT_AND_PROGRAM_REVIEW", "reviewed_at_utc": "2026-10-17T00:00:00Z",
+                    "human_verified": False, "labels_modified": False}
+            if gate == "D3":
+                proof["measurements"]["samples"] = [{"problem_id": pid, "image_sha256": item["image_sha256"],
+                    "printed_text_slots_consistent": True, "mismatches": 0} for pid, item in self.items.items()]
+            if gate == "D6":
+                proof["measurements"] = {"exclusion_receipt_sha256": receipt_sha}
+            entry["artifact"]["file_sha256"] = write(path, proof)
+        return payload
+
+    def test_limited_smoke_is_explicit_bounded_not_human_or_campaign_approval(self):
+        payload = self.limited_fixture()
+        result = self.measurement_validate(payload)
+        self.assertEqual(result["status"], "VALIDATED_FOR_MEASUREMENT", result["blockers"])
+        self.assertFalse(result["training_allowed"])
+        self.assertFalse(result["approval_created"])
+        self.assertEqual(result["input_binding"]["limited_smoke_authorization_sha256"],
+                         a._hash(payload["expected_measurement_scope"]["authorization"]))
+        self.assertTrue(any("human_verified=false" in v for v in result["limitations"]))
+        # The same evidence cannot enter the ordinary frozen-weight/full-data route.
+        self.assert_blocked(self.measurement_validate(payload | {"stage": "measurement"}), "MEASUREMENT_SCOPE_REQUIRED")
+
+    def test_limited_smoke_keeps_full_index_and_all_record_review_requirements(self):
+        payload = self.limited_fixture()
+        self.index["full_coverage"] = False
+        self.assert_blocked(self.measurement_validate(payload), "FULL_INDEX_BINDING")
+        self.index["full_coverage"] = True
+        entry = payload["data_report"]["gates"]["D3"]["artifact"]
+        path = Path(entry["path"])
+        proof = json.loads(path.read_bytes())
+        proof["measurements"]["samples"].pop()
+        entry["file_sha256"] = write(path, proof)
+        self.assert_blocked(self.measurement_validate(payload), "D3_PREREGISTERED_RANDOM_SAMPLE")
+
+    def test_limited_smoke_rejects_pool_expansion_and_mislabeled_review(self):
+        payload = self.limited_fixture()
+        invalid = copy.deepcopy(payload)
+        invalid["expected_measurement_scope"]["authorization"]["max_pool_items"] = 51
+        self.assert_blocked(self.measurement_validate(invalid), "SMOKE_POOL_LIMIT")
+        invalid = copy.deepcopy(payload)
+        invalid["expected_measurement_scope"]["authorization"]["max_optimizer_updates"] = 3
+        self.assert_blocked(self.measurement_validate(invalid), "SMOKE_AUTHORIZATION_REQUIRED")
+        entry = payload["data_report"]["gates"]["D7"]["artifact"]
+        proof = json.loads(Path(entry["path"]).read_bytes())
+        proof["provenance"]["human_verified"] = True
+        entry["file_sha256"] = write(Path(entry["path"]), proof)
+        self.assert_blocked(self.measurement_validate(payload), "AI_PROGRAM_REVIEW_PROVENANCE")
+
+    def test_gate_dispatch_does_not_change_default_measurement_route(self):
+        with patch.object(a, "validate_for_measurement", return_value={"route": "strict"}) as strict, \
+                patch.object(a, "validate_for_limited_smoke", return_value={"route": "limited"}) as limited:
+            self.assertEqual(a.validate_for_gate_data(self.root, expected_measurement_scope={}), {"route": "strict"})
+            self.assertEqual(a.validate_for_gate_data(self.root, expected_measurement_scope={"purpose": a.SMOKE_PURPOSE}),
+                             {"route": "limited"})
+            self.assertEqual((strict.call_count, limited.call_count), (1, 1))
+
+    def test_limited_smoke_skips_quarantined_ids_before_returning_actors(self):
+        removed = sorted(pid for pid, item in self.items.items() if item["split"] == "train")[0]
+        self.receipt["candidates"] = [{"problem_id": removed, "stage": "text_ngrams",
+                                        "reason": "AUTHORED_UNRESOLVED_OVERLAP", "action": "QUARANTINE"}]
+        quarantine = c.family_quarantine(self.items, self.receipt["candidates"])
+        self.receipt.update(quarantined_ids=quarantine["quarantined_ids"], allowlist=quarantine["allowlist"],
+                            quarantined_families=quarantine["families"])
+        result = self.measurement_validate(self.limited_fixture())
+        self.assertEqual(result["status"], "VALIDATED_FOR_MEASUREMENT", result["blockers"])
+        self.assertNotIn(removed, result["selected_ids"])
+        self.assertNotIn(removed, {item["problem_id"] for item in result["actors"]})
+        self.assertEqual(len(result["selected_ids"]), 12)
+
+    def test_limited_smoke_does_not_start_when_all_train_ids_are_blacklisted(self):
+        self.receipt["candidates"] = [{"problem_id": pid, "stage": "image_exact",
+                                       "reason": "AUTHORED_DUPLICATE_IMAGE", "action": "QUARANTINE"}
+                                      for pid, item in self.items.items() if item["split"] == "train"]
+        quarantine = c.family_quarantine(self.items, self.receipt["candidates"])
+        self.receipt.update(quarantined_ids=quarantine["quarantined_ids"], allowlist=quarantine["allowlist"],
+                            quarantined_families=quarantine["families"])
+        self.assert_blocked(self.measurement_validate(self.limited_fixture()), "NO_ELIGIBLE_TRAIN_ITEMS")
+
 
 if __name__ == "__main__":
     unittest.main()

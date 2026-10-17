@@ -21,16 +21,27 @@ class TestRepoSyncTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{"files": {}}' if name.endswith("manifest.json") else "")
             excluded = ["experiments/demo/predictions.jsonl", "fine_tuning/benchmark_records.json",
-                        "fine_tuning/model.safetensors", ".env", "docs/P1/raw.md"]
+                        "fine_tuning/model.safetensors", ".env", "docs/P1/raw.md",
+                        "fine_tuning/notebook_rl/private.json",
+                        "fine_tuning/private/benchmark_inventory_v1.json",
+                        "fine_tuning/notebook_rl/private/benchmark_inventory_v1.json"]
             for name in excluded:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("not for publication")
             source = root / "fine_tuning/example.py"
             source.write_text("print('source')")
+            inventory_name = "fine_tuning/notebook_rl/benchmark_inventory_v1.json"
+            inventory = root / inventory_name
+            inventory.write_text('{"purpose":"exclusion_metadata_only","files":[]}')
             selected = selected_files(root)
             self.assertIn("fine_tuning/example.py", selected)
+            self.assertIn(inventory_name, selected)
             self.assertFalse(set(excluded) & selected.keys())
+            inventory.write_text('{"question":"private benchmark payload"}')
+            with self.assertRaisesRegex(ValueError, "Benchmark payload"):
+                selected_files(root)
+            inventory.write_text('{"purpose":"exclusion_metadata_only","files":[]}')
             source.write_text("hf_" + "a" * 32)
             with self.assertRaisesRegex(ValueError, "credential"):
                 selected_files(root)

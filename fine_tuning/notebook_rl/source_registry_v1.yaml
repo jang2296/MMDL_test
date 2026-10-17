@@ -26,6 +26,7 @@ sources:
   gen-statics-v1: {kind: program, module: statics, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
   gen-circuit-v1: {kind: program, module: circuit, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
   gen-graph-v1: {kind: program, module: graph, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
+  gen-graph-pair-v1: {kind: program, module: graph_pair, label_provenance: PROGRAM, status: CPU_TESTED_NOT_APPROVED, training_allowed: false}
   tabmwp:
     kind: external
     url: https://github.com/lupantech/PromptPG

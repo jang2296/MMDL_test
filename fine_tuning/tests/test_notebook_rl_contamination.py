@@ -63,6 +63,18 @@ def prepared(data):
     return {"data": data, "partial_name": "authored-fixture-only"}
 
 
+def native_inventory_metadata():
+    """Real public file metadata only; no native record/image coverage is claimed."""
+    inventory = json.loads(c._INVENTORY.read_bytes())
+    files = [dict(entry, path=entry["native_path"]) for entry in inventory["files"]]
+    return {"purpose": "exclusion_fingerprints_only", "training_allowed": False,
+            "status": "COMPLETE", "coverage_verified": True,
+            "coverage": {"files": files, "record_count": inventory["record_count"]},
+            "record_count": inventory["record_count"], "image_count": 19041,
+            "source_files": {entry["path"]: entry["sha256"] for entry in files},
+            "per_file_record_counts": {entry["path"]: entry["records"] for entry in files}}
+
+
 class ContaminationTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -276,25 +288,77 @@ class ContaminationTests(unittest.TestCase):
 
     def test_complete_inventory_metadata_alone_cannot_approve_index(self):
         data = copy.deepcopy(self.data)
-        files = []
-        for split, count in (("dev", 5), ("validation", 30), ("test", 350)):
-            for subject in range(30):
-                files.append({"path": f"native/{split}/{subject}.parquet", "sha256": sha(f"{split}-{subject}".encode()),
-                              "dataset_id": "MMMU/MMMU", "revision": c._REVISIONS["MMMU/MMMU"],
-                              "configuration": str(subject), "split": split, "records": count})
-        for config, shards in (("standard10", 3), ("standard4", 3), ("vision", 4)):
-            for shard in range(shards):
-                count = 1730 // shards + (shard < 1730 % shards)
-                files.append({"path": f"pro/{config}/{shard}.parquet", "sha256": sha(f"{config}-{shard}".encode()),
-                              "dataset_id": "MMMU/MMMU_Pro", "revision": c._REVISIONS["MMMU/MMMU_Pro"],
-                              "configuration": config, "split": "test", "records": count})
-        data.update(coverage={"files": files, "record_count": 16740}, record_count=16740, image_count=19041,
-                    source_files={f["path"]: f["sha256"] for f in files},
-                    per_file_record_counts={f["path"]: f["records"] for f in files})
+        data.update(native_inventory_metadata())
         self.assertTrue(c._coverage(data)[0])
         with self.assertRaisesRegex(ValueError, "incomplete v2"):
             c._prepare(data, None)
         # Inventories do not substitute for native per-record and per-image fingerprints.
+
+    def test_native_inventory_accepts_real_shards_and_portable_local_paths(self):
+        data = native_inventory_metadata()
+        files = data["coverage"]["files"]
+        self.assertEqual(sum(e["dataset_id"] == "MMMU/MMMU" for e in files), 92)
+        test = [e for e in files if e["dataset_id"] == "MMMU/MMMU" and e["split"] == "test"]
+        self.assertEqual((len(test), sum(e["records"] for e in test)), (32, 10500))
+        self.assertGreater(len({e["records"] for e in test}), 1)
+        self.assertTrue(c._coverage(data)[0])
+        for layout in ("snapshot", "blob", "explicit"):
+            changed = copy.deepcopy(data)
+            for entry in changed["coverage"]["files"]:
+                if layout == "snapshot":
+                    entry["path"] = f"/private/snapshots/{entry['revision']}/{entry['native_path']}"
+                elif layout == "blob":
+                    entry["path"] = f"/private/blobs/{entry['sha256']}"
+                else:
+                    entry["path"] = f"/private/local/{entry['sha256']}.parquet"
+                if layout != "explicit":
+                    entry.pop("native_path")
+                if entry["configuration"] == "standard (10 options)":
+                    entry["configuration"] = "standard10"
+            changed["source_files"] = {e["path"]: e["sha256"] for e in changed["coverage"]["files"]}
+            changed["per_file_record_counts"] = {e["path"]: e["records"] for e in changed["coverage"]["files"]}
+            with self.subTest(layout=layout):
+                self.assertTrue(c._coverage(changed)[0])
+
+    def test_native_inventory_rejects_self_consistent_substitutions(self):
+        def changed_rows(files):
+            files[0]["records"] += 1
+            files[1]["records"] -= 1
+        mutations = {
+            "missing": lambda files: files.pop(),
+            "duplicate": lambda files: files.append(copy.deepcopy(files[0])),
+            "digest": lambda files: files[0].update(sha256="0" * 64),
+            "native_path": lambda files: files[0].update(native_path="Accounting/dev-00001-of-00002.parquet"),
+            "configuration": lambda files: files[0].update(configuration="Agriculture"),
+            "counts": changed_rows,
+            "bytes": lambda files: files[0].update(bytes=files[0]["bytes"] + 1),
+            "revision": lambda files: files[0].update(revision="a" * 40),
+        }
+        for name, mutate in mutations.items():
+            data = native_inventory_metadata()
+            files = data["coverage"]["files"]
+            mutate(files)
+            data["record_count"] = data["coverage"]["record_count"] = sum(e["records"] for e in files)
+            data["source_files"] = {e["path"]: e["sha256"] for e in files}
+            data["per_file_record_counts"] = {e["path"]: e["records"] for e in files}
+            with self.subTest(mutation=name):
+                try:
+                    full, _ = c._coverage(data)
+                except ValueError:
+                    continue
+                self.assertFalse(full)
+        data = native_inventory_metadata()
+        entry = data["coverage"]["files"][0]
+        entry.pop("native_path")
+        old = entry["path"]
+        entry["path"] = "Accounting/renamed-shard.parquet"
+        data["source_files"][entry["path"]] = data["source_files"].pop(old)
+        data["per_file_record_counts"][entry["path"]] = data["per_file_record_counts"].pop(old)
+        self.assertFalse(c._coverage(data)[0])
+
+    def test_native_inventory_tampering_fails_closed(self):
+        with patch.object(c, "_INVENTORY_SHA256", "0" * 64), self.assertRaisesRegex(ValueError, "inventory changed"):
+            c._coverage(native_inventory_metadata())
 
     def test_decision_vocabulary_with_mocked_full_index_is_not_training_approval(self):
         self.vaults()

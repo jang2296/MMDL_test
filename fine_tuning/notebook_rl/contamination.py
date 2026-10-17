@@ -37,6 +37,8 @@ from .schema import load_protocol
 VERSION = "notebook-rl-exclusion-v2"
 FINGERPRINT_VERSION = "rgb32-dct8-dhash9x8-lanczos-v1"
 _HERE = Path(__file__).resolve().parent
+_INVENTORY = _HERE / "benchmark_inventory_v1.json"
+_INVENTORY_SHA256 = "743e03e10836e035c3cdb245d2bbc255e8c19f5fd70e00735d872435e583ab21"
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{16}\Z")
 _REVISIONS = {"MMMU/MMMU": "98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68",
@@ -187,10 +189,39 @@ def _coverage(data: dict) -> tuple[bool, list[str]]:
     complete = (dict(counts) == _COUNTS and len(paths) == 100 and len(digests) == 100
                 and all(len(subjects[s]) == 30 for s in ("dev", "validation", "test"))
                 and subjects["dev"] == subjects["validation"] == subjects["test"]
-                and sum(e["dataset_id"] == "MMMU/MMMU" for e in coverage["files"]) == 90
-                and all(e["records"] == {"dev": 5, "validation": 30, "test": 350}[e["split"]]
-                        for e in coverage["files"] if e["dataset_id"] == "MMMU/MMMU"))
+                and _pinned_coverage(coverage["files"]))
     return complete, [] if complete else ["Incomplete native MMMU/Pro file/record coverage"]
+
+
+def _pinned_coverage(files: list[dict]) -> bool:
+    """Bind native shards, including unequal/sharded test subjects, to pinned bytes."""
+    raw = vault._read(_INVENTORY)
+    if hashlib.sha256(raw).hexdigest() != _INVENTORY_SHA256:
+        raise ValueError("exclusion: pinned native inventory changed")
+    inventory = json.loads(raw, object_pairs_hook=vault._unique)
+    expected = {entry["sha256"]: entry for entry in inventory["files"]}
+    aliases = {"standard10": "standard (10 options)", "standard4": "standard (4 options)"}
+    if len(files) != len(expected) or {entry["sha256"] for entry in files} != set(expected):
+        return False
+    for entry in files:
+        reference = expected[entry["sha256"]]
+        config = entry["configuration"]
+        if entry["dataset_id"] == "MMMU/MMMU_Pro":
+            config = aliases.get(config, config)
+        if (config != reference["configuration"]
+                or any(entry[key] != reference[key] for key in ("dataset_id", "revision", "split", "records"))
+                or ("bytes" in entry and (type(entry["bytes"]) is not int or entry["bytes"] != reference["bytes"]))):
+            return False
+        native = reference["native_path"]
+        if "native_path" in entry:
+            if entry["native_path"] != native:
+                return False
+        else:
+            # Historical receipts use either snapshot paths or SHA-named cache blobs.
+            path = Path(entry["path"])
+            if path.name != entry["sha256"] and path.as_posix() != native and not path.as_posix().endswith("/" + native):
+                return False
+    return True
 
 
 def _text_cache(entries: list[dict]) -> dict:
@@ -632,7 +663,7 @@ def scan(split_roots: dict[str, Path], image_root: Path, index: dict, source_reg
         index_sha = prepared["sha256"]
         if "path" in index and hashlib.sha256(vault._read(Path(index["path"]))).hexdigest() != index["file_sha256"]:
             raise ValueError("index file changed since load_index")
-        code_files = [Path(__file__), Path(audit.__file__), _HERE / "vault.py", _HERE / "schema.py", _HERE / "protocol_v1.yaml"]
+        code_files = [Path(__file__), _INVENTORY, Path(audit.__file__), _HERE / "vault.py", _HERE / "schema.py", _HERE / "protocol_v1.yaml"]
         code_hashes = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in code_files}
         protocol_sha = load_protocol(_HERE / "protocol_v1.yaml")["sha256"]
         registry_sha, evidence_sha = _digest(source_registry), _digest(evidence)

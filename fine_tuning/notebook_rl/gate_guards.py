@@ -58,7 +58,7 @@ def _eligibility(root: Path, request: dict, protocol: dict, validator=None) -> d
         value = request[key]
         _require(type(value) is dict and set(value) == {"path", "file_sha256"}
                  and Path(value["path"]).is_absolute(), "path/SHA data descriptors required")
-    result = (validator or approval.validate_for_measurement)(root, **request)
+    result = (validator or approval.validate_for_gate_data)(root, **request)
     _require(result.get("status") == "VALIDATED_FOR_MEASUREMENT"
              and result.get("measurement_allowed") is True and result.get("training_allowed") is False
              and result.get("approval_created") is False and result.get("blockers") == [],

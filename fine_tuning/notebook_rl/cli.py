@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     generate = commands.add_parser("generate", help="Create one deterministic, UNAPPROVED private candidate pool")
-    generate.add_argument("--generator", required=True, choices=("chart", "graph", "circuit", "statics", "music", "chem"))
+    generate.add_argument("--generator", required=True, choices=("chart", "graph", "graph_pair", "circuit", "statics", "music", "chem"))
     generate.add_argument("--split", required=True, choices=SPLITS)
     generate.add_argument("--count", type=int, required=True)
     generate.add_argument("--seed", type=int, required=True)
