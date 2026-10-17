@@ -1,5 +1,17 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-17 15:17 KST — 실제 G9/G10 통과·vLLM 공존 시작 설정 오류
+
+새76cfc4e는 로컬771검사(1skip)/24입력검사와 원격32변경부/lock/pip/CUDA BF16/
+13모델파일 재검증을 통과했다. 새 native 실행의 G9/G10은 실제 통과했으나 HF 학습
+모델 공존 상태에서 vLLM 기본 gpu_memory_utilization0.9의 시작 검사(필요42.66GiB/
+가용38.06GiB)가 실패했다. 실제 OOM이나 optimizer update가 아니며 업데이트는0이다.
+vLLM0.11 공식 코드상 명시KV가 있으면 KV는10GiB를 그대로 사용한다. 시작 비율만
+0.7로 명시하는 최소 수정을 준비했고 동시16/문맥16K/BF16/이미지/캐시는 줄이지 않는다.
+수정19검사/Ruff/mypy1/독립검토 PASS이며 전체 CPU검사는 진행 중이다. 이전 실행은 보존한다.
+16:10/reserve0.20 연장을 질문했으나 승인 전에는 기존15:40/총2.30/reserve0.50을 유지한다.
+실제 RL/reload/150은 미완료이며 교수님MMDL/V8는 불변이다.
+
 ## 2026-10-17 14:53 KST — native G9 중단·로컬 전체/원격 변경부 검증 승인
 
 75c46dc의 실제 A40 native 실행은 G1 BF16/FP32 master 및 G3 초기 logprob 차이0을

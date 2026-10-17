@@ -310,6 +310,9 @@ def vllm_kwargs(model_path: Path, image_cfg: dict, kv_cache_memory_bytes: int,
             or image_cfg.get("preprocessing") != "qwen_vl_utils_0_0_14"):
         raise ValueError("engine: explicit positive budgets and pinned image preprocessing required")
     return dict(model=str(model_path), tokenizer=str(model_path), dtype="bfloat16", quantization=None,
+        # v0.11 startup checks this fraction before honoring the explicit KV bytes.
+        # Leave room for the colocated HF policy; this does not shrink the 10GiB KV.
+        gpu_memory_utilization=0.7,
         enforce_eager=False, enable_prefix_caching=False, mm_processor_cache_gb=0,
         limit_mm_per_prompt={"image": 2, "video": 0}, generation_config="vllm", tensor_parallel_size=1,
         mm_processor_kwargs={"size": {"shortest_edge": image_cfg["min_pixels"],

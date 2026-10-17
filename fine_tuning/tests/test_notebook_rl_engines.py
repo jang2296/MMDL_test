@@ -337,7 +337,10 @@ class EnginesTests(unittest.TestCase):
         args = vllm_kwargs(Path("model"), {"preprocessing": "qwen_vl_utils_0_0_14",
             "min_pixels": 1003520, "max_pixels": 4014080}, 10737418240, 16, 16384)
         self.assertEqual(args["kv_cache_memory_bytes"], 10737418240)
+        self.assertEqual(args["gpu_memory_utilization"], 0.7)
         self.assertEqual(args["max_num_seqs"], 16)
+        self.assertEqual(args["max_model_len"], 16384)
+        self.assertEqual(args["dtype"], "bfloat16")
         self.assertFalse(args["enforce_eager"])
         self.assertFalse(args["mm_processor_kwargs"]["do_resize"])
         self.assertEqual(args["mm_processor_cache_gb"], 0)

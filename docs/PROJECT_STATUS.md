@@ -1,5 +1,17 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-17 15:17 KST — 기울기 문제 통과 후 vLLM 시작 조건에서 중단
+
+76cfc4e의 strict deterministic native G9/G10은 실제 통과했다. 다음 vLLM 생성기가
+기본 gpu_memory_utilization0.9로 가용38.06GiB보다 큰42.66GiB를 요구해 시작을 거부했다.
+HF 학습 모델을 같은 GPU에 올린 구성을 고려하지 않은 시작 설정 누락이며 실제 OOM이 아니다.
+vLLM0.11 공식 gpu_worker.py는 시작 조건 후 명시KV를 그대로 사용한다. 시작 비율0.7만
+명시하고10GiB KV/16동시/16K문맥/BF16/이미지/출력은 유지하는 최소 수정을 준비 중이다.
+19변경부 CPU검사/Ruff/mypy1·독립검토 PASS, 로컬 전체 CPU검사는 진행 중이다.
+원문은 private runtime/failed-native-vllm-startup-v2/에 회수 중이다. 새 update0이며
+학습 checkpoint/reload/150 성공이 아니다. 연장 질문 전 기존총2.30/15:40/reserve0.50을
+그대로 적용한다. 교수님MMDL/V8는 불변이다.
+
 ## 2026-10-17 14:53 KST — native G9 실패 보존·검증 절차 재사용 승인
 
 실제 A40 G1과 G3 초기 차이0 이후 G9에서 OFF/직접동결 기울기가 불일치하여
