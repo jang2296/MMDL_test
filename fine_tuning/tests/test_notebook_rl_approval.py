@@ -578,7 +578,17 @@ print(json.dumps(result))
             self.assertEqual(a.validate_for_gate_data(self.root, expected_measurement_scope={}), {"route": "strict"})
             self.assertEqual(a.validate_for_gate_data(self.root, expected_measurement_scope={"purpose": a.SMOKE_PURPOSE}),
                              {"route": "limited"})
-            self.assertEqual((strict.call_count, limited.call_count), (1, 1))
+            strict.assert_called_once_with(self.root, expected_measurement_scope={})
+            limited.assert_called_once_with(self.root, expected_measurement_scope={"purpose": a.SMOKE_PURPOSE}, timeout=300)
+
+    def test_gate_data_timeout_defaults_and_explicit_override(self):
+        request = {"index": {}, "source_registry": {}, "evidence": {}, "data_report": None}
+        for scope, override, expected in (({}, {}, 120),
+                ({"purpose": a.SMOKE_PURPOSE}, {}, 300),
+                ({"purpose": a.SMOKE_PURPOSE}, {"timeout": 45}, 45)):
+            with self.subTest(scope=scope, override=override), patch.object(a, "_public_validate", return_value={}) as validate:
+                a.validate_for_gate_data(self.root, expected_measurement_scope=scope, **request, **override)
+                self.assertEqual(validate.call_args.args[1], expected)
 
     def test_limited_smoke_skips_quarantined_ids_before_returning_actors(self):
         removed = sorted(pid for pid, item in self.items.items() if item["split"] == "train")[0]

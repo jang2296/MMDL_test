@@ -653,6 +653,8 @@ def validate_for_gate_data(build_root: Path, **request) -> dict:
     """Only gate_session/G13 dispatch here; full measurement never opts in."""
     scope = request.get("expected_measurement_scope")
     limited = type(scope) is dict and scope.get("purpose") == SMOKE_PURPOSE
+    if limited:
+        request.setdefault("timeout", 300)
     return (validate_for_limited_smoke if limited else validate_for_measurement)(build_root, **request)
 
 
