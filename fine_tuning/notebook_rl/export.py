@@ -2,20 +2,55 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
-from pathlib import Path
+import stat
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import torch
 from safetensors.torch import save_file
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION, tensor_sha256
-from fine_tuning.notebook_rl.checkpoint import PolicyFactory, file_hash, load_eval, read_metadata
+from fine_tuning.notebook_rl.checkpoint import PolicyFactory, digest, file_hash, load_eval, read_metadata
 from fine_tuning.notebook_rl.policy import assert_base_unchanged, merged_named_tensors
+from fine_tuning.notebook_rl.resources import resource_path
+from fine_tuning.notebook_rl.vault import _read, _safe_root, _unique
 
-BASE_MANIFEST = Path(__file__).resolve().parents[2] / "manifests/models/baseline.json"
+BASE_MANIFEST = resource_path("manifests/models/baseline.json")
 _AUXILIARY = {"config.json", "generation_config.json", "chat_template.json", "merges.txt", "vocab.json",
               "tokenizer.json", "tokenizer_config.json", "preprocessor_config.json", "video_preprocessor_config.json"}
+
+
+def validate_export_identity(model_path: Path, arm: str) -> dict:
+    """Validate a completed derived export without the historical evaluator package."""
+    root = _safe_root(Path(model_path))
+    manifest = json.loads(_read(root / "export_manifest.json"), object_pairs_hook=_unique)
+    precision = {"fusion": "FP32", "export": "BF16",
+        "merger_masters": "FP32 checkpoint preserved; export rounds to BF16",
+        "unmerged_inference_bit_equivalent": False}
+    if (not isinstance(arm, str) or not arm or not isinstance(manifest, dict) or manifest.get("status") != "EXPORTED"
+            or manifest.get("format") != "derived-hf-bf16-v1" or manifest.get("arm") != arm
+            or manifest.get("base_id") != BASE_ID or manifest.get("base_revision") != BASE_REVISION
+            or manifest.get("precision_policy") != precision
+            or manifest["precision_policy"]["unmerged_inference_bit_equivalent"] is not False):
+        raise ValueError("export: complete pinned BF16 derived identity required")
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ValueError("export: nonempty file/hash inventory required")
+    for name, expected in files.items():
+        if (not isinstance(name, str) or name in ("", ".", "..")
+                or len(Path(name).parts) != 1 or PureWindowsPath(name).is_absolute()
+                or len(PureWindowsPath(name).parts) != 1
+                or not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+            raise ValueError("export: unsafe model file/hash inventory")
+        path = root / name
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or not path.resolve(strict=True).is_relative_to(root.resolve()) or file_hash(path) != expected):
+            raise ValueError("export: model file/hash mismatch")
+    return {"arm": arm, "manifest_sha256": digest(manifest), "files": files,
+            "derived_precision_policy": manifest["precision_policy"]}
 
 
 def _validate_base(model_path: Path, manifest_path: Path) -> tuple[dict, dict[str, str]]:

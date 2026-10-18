@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.sync_test_repo import POOL, PROOF, fingerprint, selected_files, sync
+from scripts.sync_test_repo import PINNED_RESOURCES, POOL, PROOF, fingerprint, selected_files, sync
 
 
 class TestRepoSyncTests(unittest.TestCase):
@@ -20,11 +20,17 @@ class TestRepoSyncTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('{"files": {}}' if name.endswith("manifest.json") else "")
+            for name, original in PINNED_RESOURCES.items():
+                for path in (root / "fine_tuning/notebook_rl/resources" / name, root / original):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text('{"metadata_only": true}')
             excluded = ["experiments/demo/predictions.jsonl", "fine_tuning/benchmark_records.json",
                         "fine_tuning/model.safetensors", ".env", "docs/P1/raw.md",
                         "fine_tuning/notebook_rl/private.json",
                         "fine_tuning/private/benchmark_inventory_v1.json",
-                        "fine_tuning/notebook_rl/private/benchmark_inventory_v1.json"]
+                        "fine_tuning/notebook_rl/private/benchmark_inventory_v1.json",
+                        "fine_tuning/notebook_rl/resources/unapproved.json",
+                        "fine_tuning/notebook_rl/resources/unapproved.txt"]
             for name in excluded:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,6 +44,13 @@ class TestRepoSyncTests(unittest.TestCase):
             self.assertIn("fine_tuning/example.py", selected)
             self.assertIn(inventory_name, selected)
             self.assertFalse(set(excluded) & selected.keys())
+            for name in PINNED_RESOURCES:
+                self.assertIn(f"fine_tuning/notebook_rl/resources/{name}", selected)
+            bundled = root / "fine_tuning/notebook_rl/resources/baseline.json"
+            bundled.write_text('{"wrong_revision": true}')
+            with self.assertRaisesRegex(ValueError, "Pinned bundled resource"):
+                selected_files(root)
+            bundled.write_text('{"metadata_only": true}')
             inventory.write_text('{"question":"private benchmark payload"}')
             with self.assertRaisesRegex(ValueError, "Benchmark payload"):
                 selected_files(root)

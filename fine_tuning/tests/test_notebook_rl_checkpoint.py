@@ -19,7 +19,7 @@ from transformers import Qwen3VLForConditionalGeneration
 from fine_tuning.modules import BASE_ID, BASE_REVISION, tensor_sha256
 from fine_tuning.notebook_rl.checkpoint import (capture_rng, digest, file_hash, load_eval,
     load_resume, make_optimizer, read_metadata, restore_rng, save)
-from fine_tuning.notebook_rl.export import export_merged
+from fine_tuning.notebook_rl.export import export_merged, validate_export_identity
 from fine_tuning.notebook_rl.policy import (assert_base_unchanged, completion_logprobs,
     configure_policy, merged_named_tensors, reference_logprobs)
 from fine_tuning.tests.test_notebook_rl_policy import config, inputs
@@ -305,11 +305,37 @@ class CheckpointTests(unittest.TestCase):
         for name in ("config.json", "preprocessor_config.json", "tokenizer.json", "chat_template.json"):
             self.assertEqual((out / name).read_bytes(), (self.model_path / name).read_bytes())
         assert_base_unchanged(self.bundle)
-        from experiments.input_recovery.runner import model_identity
-        self.assertEqual(model_identity(out, "MOD-RV")["arm"], "MOD-RV")
+        identity = validate_export_identity(out, "MOD-RV")
+        self.assertEqual(identity["arm"], "MOD-RV")
+        self.assertEqual(identity["manifest_sha256"], digest(manifest))
+        self.assertEqual(identity["files"], manifest["files"])
         with self.assertRaises(FileExistsError):
             export_merged(ckpt, self.model_path, out, "MOD-RV", binding=self.binding,
                 _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
+
+    def test_export_identity_rejects_wrong_precision_hash_and_path(self):
+        ckpt, _ = self.checkpoint(0)
+        out = self.root / "identity-export"
+        manifest = export_merged(ckpt, self.model_path, out, "MOD-RV", binding=self.binding,
+            _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
+        marker = out / "export_manifest.json"
+        for field, value in (("status", "PENDING"), ("format", "unknown"), ("arm", "MOD-FML"),
+                             ("base_id", "other/model"), ("base_revision", "0"*40),
+                             ("precision_policy", manifest["precision_policy"] | {"export": "FP32"}),
+                             ("precision_policy", manifest["precision_policy"] | {"unmerged_inference_bit_equivalent": 0}),
+                             ("files", {"../escape": "a"*64}),
+                             ("files", {"/etc/passwd": "a"*64}),
+                             ("files", {"C:\\escape": "a"*64}),
+                             ("files", {"config.json": "0"*64}), ("files", {})):
+            marker.write_text(json.dumps(manifest | {field: value}))
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                validate_export_identity(out, "MOD-RV")
+        marker.write_text(json.dumps(manifest))
+        name = "config.json"
+        (out / name).unlink()
+        (out / name).symlink_to(self.model_path / name)
+        with self.assertRaises(ValueError):
+            validate_export_identity(out, "MOD-RV")
 
     def test_wrong_arm_pinned_base_corruption_and_source_destination_refused(self):
         ckpt, _ = self.checkpoint(0)

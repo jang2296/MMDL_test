@@ -24,6 +24,7 @@ from pathlib import Path
 from . import approval
 from .dataset import SPLITS, _bytes, _sha, _write, load_images
 from .schema import ActorItem, from_json, load_protocol
+from .resources import resource_path
 from .vault import _read, _safe_root, _unique
 
 HERE = Path(__file__).resolve().parent
@@ -147,7 +148,7 @@ def runtime_check(job: dict, protocol: dict) -> dict:
     outer_end = min(financial.timestamp(), watcher.create_time()+maximum)-120
     if not math.isfinite(maximum) or maximum <= 0 or not time.time()+120 < deadline <= outer_end:
         raise ValueError("launch: job deadline must retain watchdog/financial recovery reserve")
-    lock = ROOT / protocol["environment"]["lock"]
+    lock = resource_path(protocol["environment"]["lock"], project_root=ROOT)
     if _sha(_read(lock)) != scope["environment_lock_sha256"]:
         raise ValueError("launch: lock bytes changed")
     for line in lock.read_text().splitlines():
@@ -158,7 +159,7 @@ def runtime_check(job: dict, protocol: dict) -> dict:
             raise ValueError(f"launch: exact installed lock mismatch: {name}")
     subprocess.run([sys.executable, "-m", "pip", "check"], check=True, capture_output=True, timeout=60)
     from .checkpoint import file_hash
-    manifest = read_json(ROOT / protocol["initial_checkpoint"]["manifest"])
+    manifest = read_json(resource_path(protocol["initial_checkpoint"]["manifest"], project_root=ROOT))
     model_root = Path(job["model_path"])
     if model_root.name != protocol["initial_checkpoint"]["revision"]:
         raise ValueError("launch: exact pinned HF snapshot path required")
@@ -189,17 +190,25 @@ def runtime_check(job: dict, protocol: dict) -> dict:
     if measuring and scope.get("purpose") != "FROZEN_WEIGHT_MEASUREMENT_ONLY":
         raise ValueError("launch: measurement-only runtime scope required")
     # Frozen Phase A loads one vLLM copy; training still loads HF plus vLLM.
-    weight_copies = 1 if measuring else 2
-    minimum = weight_copies*weight_bytes+protocol["engine"]["vllm"]["kv_cache_memory_bytes"]
+    shared_smoke = job.get("format") == "notebook-rl-shared-hf-smoke-job-v1"
+    if shared_smoke:
+        from .shared_smoke import PURPOSE, memory_floor
+        if scope.get("purpose") != PURPOSE:
+            raise ValueError("launch: explicit shared-policy bounded smoke authority required")
+        weight_copies, minimum = 1, memory_floor(protocol, weight_bytes)
+    else:
+        weight_copies = 1 if measuring else 2
+        minimum = weight_copies*weight_bytes+protocol["engine"]["vllm"]["kv_cache_memory_bytes"]
     if free <= minimum:
-        raise ValueError("launch: even weights plus KV exceed free memory; no automatic shrink")
+        raise ValueError("launch: persistent memory floor exceeds free memory; no automatic shrink")
     a = torch.ones((8, 8), device=f"cuda:{index}", dtype=torch.bfloat16)
     if not torch.equal(a@a, torch.full_like(a, 8)):
         raise ValueError("launch: actual BF16 matmul failed")
     return {"device": actual, "watchdog_pid": watcher_id, "deadline_timestamp": deadline,
             "free_memory_bytes": free, "minimum_weights_and_kv_bytes": minimum,
             "memory_fit_certified": False, "weight_copies": weight_copies,
-            "model_file_count": len(manifest["files"]), "determinism": determinism}
+            "model_file_count": len(manifest["files"]), "determinism": determinism,
+            "execution_profile": "hf_shared_policy_24gb_v1" if shared_smoke else "vllm_original"}
 
 
 def load_probes(value: dict, scope: dict, image_root: Path, prompts: dict, stack: ExitStack):

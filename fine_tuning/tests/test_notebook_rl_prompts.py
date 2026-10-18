@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from fine_tuning.notebook_rl import prompts
+from fine_tuning.notebook_rl.resources import resource_path
 from fine_tuning.notebook_rl.schema import ActorItem
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,7 +28,7 @@ class PromptTests(unittest.TestCase):
     def test_exact_p0_bytes(self):
         question = "What is {x} if {P0_BODY} stays literal?"
         for choices, file in (((), "mmmu_open_v1.txt"), (("A {x}", "B"), "mmmu_mcq_v1.txt")):
-            template = (ROOT / "prompts" / file).read_text()
+            template = resource_path("prompts/" + file).read_text()
             expected = template.format(hint_prefix="", question=question,
                                        options="".join(f"{chr(65 + i)}. {v}\n" for i, v in enumerate(choices)))
             self.assertEqual(prompts.p0_body(question, choices).encode(), expected.encode())

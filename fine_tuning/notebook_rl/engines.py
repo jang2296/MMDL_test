@@ -148,7 +148,7 @@ class InputPreparation:
         return reports
 
     def prepare(self, request: RolloutRequest) -> Prepared:
-        from mmdl.evaluation.backends.input_preparation import prepare_protocol_inputs
+        from .input_preparation import prepare_protocol_inputs
 
         _request(request)
         hashes = []
@@ -255,6 +255,7 @@ class HFRolloutEngine(InputPreparation):
                     ids = output.sequences[0, len(prepared.token_ids):].tolist()
                     lps = [float(score[0].float().log_softmax(-1)[token])
                            for token, score in zip(ids, output.scores, strict=True)]
+                    del output
                     finish = "stop" if ids and ids[-1] in eos_ids else "length"
                     completions.append(_completion(ids, lps, finish,
                         self.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)))

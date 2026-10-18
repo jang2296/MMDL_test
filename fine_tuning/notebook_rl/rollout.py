@@ -34,6 +34,7 @@ class RolloutConfig:
     diag_max_new_tokens: int = 256
     visual_lambda: float = 0.0
     master_seed: int = 3407
+    final_notebook: bool = False
 
     @classmethod
     def from_protocol(cls, protocol: dict, algorithm: str, *, master_seed: int = 3407):
@@ -44,7 +45,7 @@ class RolloutConfig:
             r["max_new_tokens"], protocol["context_limit"], algorithm in r["diag"]["enabled_in"],
             r["diag"]["n"], r["oracle_counterfactual"], r["self_perception_probe"],
             r["diag"]["max_new_tokens"], protocol["reward"]["visual_lambda"] if algorithm == "ALG-NB+D+V" else 0,
-            master_seed)
+            master_seed, r.get("final_notebook", False))
 
     def validate(self) -> None:
         if (self.max_attempts not in (1, 2, 3) or type(self.context_limit) is not int or self.context_limit < 1
@@ -53,7 +54,8 @@ class RolloutConfig:
                        for t in range(1, self.max_attempts+1))
                 or any(type(self.branch.get(t)) is not int or self.branch[t] < 0 for t in (1, 2))
                 or self.n_diag < 2 or self.diag_max_new_tokens < 1 or not 0 <= self.visual_lambda <= .1
-                or type(self.master_seed) is not int or not 0 <= self.master_seed < 2**31):
+                or type(self.master_seed) is not int or not 0 <= self.master_seed < 2**31
+                or type(self.final_notebook) is not bool):
             raise ValueError("rollout: invalid explicit budgets")
         if self.oracle_counterfactual or self.self_perception_probe:
             raise ValueError("rollout: optional diagnostic probes require a separate probe runner; never use loss groups")
@@ -215,8 +217,55 @@ def build_tree(actor: ActorItem, images: list, engine: Any, verifier: Any, promp
                       if s.result.slots else None} for g in groups for s in g.samples if s.result is not None],
         "verified_internal_module_responsibility": False}
     tree = ProblemTree(actor.problem_id, policy_version, groups, route, causes, notebook)
+    if cfg.final_notebook:
+        append_final_notebook(tree, images, engine, prompts, cfg, should_stop=should_stop)
     to_json(tree)
     return tree
+
+
+def append_final_notebook(tree: ProblemTree, images: list, engine: Any, prompts: dict,
+                          cfg: RolloutConfig, *, should_stop: Callable[[], bool] | None = None) -> dict:
+    """Preserve one post-recovery model note, independently of balanced DIAG training.
+
+    This audit action is never a loss group or a source of routing authority.
+    The original protocol stays opt-in: enabling it changes the measured call budget.
+    """
+    cfg.validate()
+    to_json(tree)
+    if engine.policy_version != tree.policy_version or "final_notebook" in tree.notebook:
+        raise ValueError("rollout: one fresh same-policy final notebook required")
+    record = {"status": "NO_RECOVERED_PATH", "used_for_loss": False, "used_for_routing": False,
+              "lesson_semantics_verified": False, "module_causality_certified": False}
+    tree.notebook["final_notebook"] = record
+    candidates = sorted((s for g in tree.groups if g.usable and g.kind != "DIAG" for s in g.samples
+                         if s.turn >= 2 and s.result is not None and s.result.status == "CORRECT"),
+                        key=lambda sample: (sample.turn, _hash(sample.sample_id)))
+    if not candidates:
+        return record
+    parent = candidates[0]
+    record["parent_sample_id"] = parent.sample_id
+    if should_stop is not None and should_stop():
+        record["status"] = "BUDGET_STOP"
+        return record
+    ids = continuation_ids(parent, prompt_builders.diagnose_text(parent.turn, prompts), engine.tokenizer)
+    if len(ids)+cfg.diag_max_new_tokens > cfg.context_limit:
+        record["status"] = "CONTEXT_BLOCKED"
+        return record
+    request = RolloutRequest(f"{tree.problem_id}:v{tree.policy_version}:FINAL_NOTE:{_hash(parent.sample_id)[:16]}",
+        ids, None, images, 1, cfg.diag_max_new_tokens,
+        seeds(tree.problem_id, tree.policy_version, parent.turn, "FINAL_NOTE:"+parent.sample_id, 1,
+              master_seed=cfg.master_seed))
+    output = _sample_request(request, engine, tree.policy_version, cfg.context_limit)
+    completion = output.completions[0]
+    status = ("TRUNCATED" if completion.finish_reason != "stop" else
+              "COMPLETED" if completion.text.strip() else "EMPTY")
+    record.update(status=status,
+                  request_id=request.request_id, prompt_token_ids=output.prompt_token_ids,
+                  completion_token_ids=completion.token_ids, sampler_logprobs=completion.logprobs,
+                  text=completion.text, finish_reason=completion.finish_reason, seed=request.seeds[0],
+                  policy_version=tree.policy_version)
+    to_json(tree)
+    return record
 
 
 def append_diagnoses(trees: list[ProblemTree], images: dict[str, list], engine: Any,

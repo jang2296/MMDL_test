@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .schema import ActorItem, from_json, to_json
+from .resources import resource_path
 from .vault import _read, _safe_root, _unique
 
 _HERE = Path(__file__).resolve().parent
@@ -303,13 +304,13 @@ def _gpu_scope(scope: dict, binding: dict, protocol: dict, files: dict) -> None:
     _require(scope["protocol_sha256"] == protocol["sha256"] and scope["code_sha256"] == code_hashes()
              and scope["input_files_sha256"] == binding["input_files_sha256"]
              and scope["arm"] in protocol["arms"] and isinstance(scope["runtime_id"], str) and scope["runtime_id"], "GPU_CURRENT_SCOPE_MISMATCH")
-    path = _PROJECT / protocol["initial_checkpoint"]["manifest"]
+    path = resource_path(protocol["initial_checkpoint"]["manifest"], project_root=_PROJECT)
     baseline = _read_json(path, files)
     model = {"model_id": baseline["repo_id"], "revision": baseline["revision"], "manifest_sha256": files[str(path)],
              "files_sha256": {entry["path"]: entry["sha256"] for entry in baseline["files"]}}
     _require(scope["model"] == model and model["model_id"] == protocol["initial_checkpoint"]["model_id"]
              and model["revision"] == protocol["initial_checkpoint"]["revision"], "GPU_MODEL_BINDING")
-    lock = _PROJECT / protocol["environment"]["lock"]
+    lock = resource_path(protocol["environment"]["lock"], project_root=_PROJECT)
     files[str(lock)] = _sha(_read(lock))
     _require(scope["environment_lock_sha256"] == files[str(lock)], "GPU_LOCK_BINDING")
     device = scope["device"]

@@ -7,6 +7,107 @@ same-state turn groups (T1:8, each T2:4), program-verifiable notebook rewards,
 and independently verified visual-error routing. No additional SFT or teacher labels.
 The complete data approval / GPU preflight / Phase-A workflow is **not yet complete**.
 
+## 24GB shared-policy smoke (3090 / 4090 target)
+
+`shared_smoke` adds a separate, bounded **ten-problem / at most two RL updates**
+execution profile, `hf_shared_policy_24gb_v1`. One live unmerged BF16 PEFT policy
+generates one completion at a time, then performs the existing RL update. The
+adapter-disabled F0 reference shares frozen base storage. It does not construct a
+second vLLM model, reserve its fixed 10GiB KV cache, or export merged weights on
+each update. Actual single/two-image logprob probes are required initially and
+after each update. A separate process checks the saved weights/step/cursor only
+after the capture process has exited.
+
+The original `protocol_v1.yaml`, BF16 precision, image budgets, 16K context,
+3072-token solution caps, T1/T2/T3 sample counts, rewards, routed parameter groups
+and optimizer are unchanged. `ALG-NB3` retains three solution turns;
+`ALG-NB+D` retains its existing two-turn, reward-trained DIAG configuration.
+The caller selects exactly one; this profile does not silently combine them.
+Additional final audit notes are explicitly bound into the execution identity;
+they are preserved for rejected trees too, and are **not** SFT targets, loss groups
+or routing authority. Existing verifier-based routing and balanced DIAG RL remain
+the only corresponding training signals. No real recovery means no claimed
+self-correction success; uniform rewards can yield zero updates.
+
+Use an explicit private job with format `notebook-rl-shared-hf-smoke-job-v1`,
+purpose `BOUNDED_SHARED_HF_RL_SMOKE_ONLY`, arm `MOD-RV`, one supported algorithm,
+and ten eligible, structure-distinct `problem_ids` including the bound one/two-image
+probe actors. Other fields follow `gate_session`'s checked descriptor/path/device
+schema. All exclusions, current-source data approvals, pinned model checks, clean
+MMDL_test commit and the owned financial watchdog still apply. Old approvals are
+not reusable after code changes. This is not approval for general training.
+
+```bash
+python -m fine_tuning.notebook_rl.shared_smoke --job /private/shared24-job.json --check
+python -m fine_tuning.notebook_rl.shared_smoke --job /private/shared24-job.json --execute
+# After the preceding process exits, start a new Python process:
+python -m fine_tuning.notebook_rl.shared_smoke --job /private/shared24-job.json --reload-check
+```
+
+`--check` validates data only, not GPU fit. `--execute` returning
+`CAPTURED_PENDING_FRESH_RELOAD` is **not** final verification. A failed synchronization,
+incomplete cohort, budget stop or zero-update run cannot pass the reload check.
+The launcher estimates a persistent floor of about **10.42GiB** (pinned serialized
+base plus conservative trainable/Adam allowance), excluding dynamic KV,
+activations, generation score tensors and workspace. HF keeps one completion's
+scores until extraction, then releases them before the next seed. **Actual 4B
+3090/4090 peak memory and runtime are unmeasured**; allocation failures stop without
+quantization, offload or automatic image/token reductions. Sequential generation
+trades throughput for memory; no speed or cost guarantee is implied.
+
+The native vLLM 48GB gate path remains unchanged. This path does not certify its
+G0–G13 gates, model efficacy or a finished large-scale pipeline. No Pod, model
+download or GitHub publication is started by these changes. Future smoke weights
+must only be removed after evidence recovery and successful verification; original
+caches and old checkpoints are never cleanup targets.
+
+## Local full-chain verification (2026-10-18)
+
+From a directory containing only the copied `fine_tuning/` package, using an
+environment with the pinned Torch/Transformers/PEFT dependencies already installed:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PWD" OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+python -m unittest fine_tuning.tests.test_notebook_rl_local_pipeline \
+  fine_tuning.tests.test_notebook_rl_rollout \
+  fine_tuning.tests.test_notebook_rl_portability -v
+```
+
+This is a **local software-contract check**, not a pretrained-4B training result:
+
+- A real random-initialized tiny Qwen generates six responses through three turns;
+  missing answers remain failures, not fabricated recovery.
+- Separate authored branch fixtures exercise two wrong attempts, a recovered third
+  attempt, and a final model-note record. Likelihoods and three optimizer updates
+  use the actual tiny Qwen image forward and production RL loss, with SFT calls
+  explicitly forbidden. The successful fixture texts are not model reasoning.
+- Verified wrong image facts enable Vision+four Mergers+LLM. Correct image facts
+  disable Vision while Mergers/LLM still change, including after an earlier Vision
+  update (no Adam momentum leak). A deliberately wrong model diagnosis cannot
+  override verified routing. Balanced diagnosis groups receive their own reward.
+- The fixed F0 reference stays unchanged; a new Python process reloads the saved
+  checkpoint and must reproduce every parameter hash and optimizer step.
+- An isolated folder-copy check denies `mmdl` and `experiments` imports and has no
+  sibling `src/`, `env/`, `manifests/` or `prompts/` directories. Pinned resources
+  and the unchanged processor preparation contract are bundled inside this package.
+
+`RolloutConfig.final_notebook` (or the explicit
+`rollout.final_notebook: true` protocol setting) adds **one audit-only generation
+per recovered problem**, even for `ALG-NB3` or a class excluded from DIAG training.
+It preserves the successful path's exact token history. The final audit note is
+not a loss group, teacher label, reward or routing authority. Existing class-balanced
+DIAG learning remains separate. Budget/context stops, empty notes, truncation and
+no recovered path remain explicit. The old protocol file is unchanged and opt-in;
+enabling this extra call requires a newly bound protocol and budget, not reuse of
+old approvals. Raw trees retain the note even when the collector rejects a
+uniform-reward problem for lack of an advantage signal.
+
+For private, write-once detailed evidence, set `MMDL_LOCAL_CONTRACT_EVIDENCE` to a
+new absolute directory before the command. Data, responses and checkpoints are
+not uploaded. This check does not run cloud GPUs, download models, approve a
+training campaign, or demonstrate MMMU improvement. The proposed multi-domain
+training pool and native Qwen4B/vLLM verification are still separate next steps.
+
 ## Current state
 
 Implemented and CPU-tested: strict wire records; actor/verifier separation through
@@ -323,7 +424,7 @@ Remaining prerequisites are concrete, not completed by passing CPU fixtures:
 
 | Prerequisite | Current limitation |
 |---|---|
-| Full benchmark exclusion | The scanner is implemented; full pinned input/index, OCR, embeddings and calibration evidence are not available. |
+| Full benchmark exclusion | The earlier 40-item graph smoke pool has a complete pinned scan and AI warning review. This is not clearance of the proposed multi-domain pool, human certification, or a reusable approval after code/protocol changes. |
 | Human render/leak review | D3/D7 require real reviewers. No generated or AI-reviewed sample is labelled human-approved. |
 | Actual GPU gates | G0–G13 evidence is validated by the approval worker; the complete GPU evidence-producing runner and its execution are not complete. |
 | Actual Phase A | The candidate/retry measurement core is implemented; complete provenance-bound assessment, held-out baselines, cap freezing and actual F0 GPU execution remain unfinished. Its partial measurement format is deliberately rejected by selection. |
@@ -363,15 +464,18 @@ Data/rollouts/weights go outside the checkout. Source entries are candidates, no
 approvals. Human render/leak review and the complete benchmark exclusion gates
 must be recorded before training; AI review is not human certification.
 
-The previous 100-file/16,740-row exclusion index is incomplete for the v2 protocol.
-Full pinned split coverage, per-image provenance, OCR, SSCD/SigLIP and calibration
-evidence must be supplied. Partial scans return `BLOCKED_NOT_CHECKED`, never a clean
+The old fingerprint-only 100-file/16,740-row exclusion index alone is incomplete
+for the v2 protocol. The later private graph-smoke evidence adds pinned coverage,
+per-image provenance, OCR, SSCD/SigLIP and calibration; new inputs must supply their
+own bound evidence. Partial scans return `BLOCKED_NOT_CHECKED`, never a clean
 training allowlist. Python file/import guards add defense in depth; they are not an
 OS sandbox against native code or another process with the same user permissions.
 
 The user's $2.30 budget prioritizes actual bounded RL updates and fresh checkpoint
 reload. A full pilot or 150-question evaluation is not promised within that budget.
 The design's 48GB two-engine configuration must not silently be shrunk to fit 24GB.
-GPU choice and human review are pending; CPU implementation continues independently.
+The previous owned A40 was deleted after preserving its pre-update failures;
+actual 4B RL/reload remains unverified. The current local check grants no new GPU
+or general-training authority. Human review remains separate from AI smoke review.
 The outer watchdog must interrupt in-flight GPU work; loop-level time checks alone
 cannot enforce a wall-clock limit. Saving or stopping a process does not delete a Pod.

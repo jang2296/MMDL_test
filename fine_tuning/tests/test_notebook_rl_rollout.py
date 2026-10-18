@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from fine_tuning.notebook_rl.engines import Completion, RolloutResult
 from fine_tuning.notebook_rl.prompts import load_prompts
-from fine_tuning.notebook_rl.rollout import (RolloutConfig, append_diagnoses, build_tree, continuation_ids,
+from fine_tuning.notebook_rl.rollout import (RolloutConfig, append_diagnoses, append_final_notebook, build_tree, continuation_ids,
                                             seeds, select_failures)
 from fine_tuning.notebook_rl.schema import from_json, ProblemTree, to_json
 from fine_tuning.notebook_rl.vault import write_split
@@ -147,6 +147,63 @@ class RolloutTests(unittest.TestCase):
         tree = self.tree(engine, replace(self.cfg, diag=True))
         self.assertEqual(len(tree.groups), 3)
         self.assertIsNone(tree.notebook["diagnosis_candidate"])
+
+    def test_final_notebook_after_recovery_even_without_diagnosis_training(self):
+        wrong = "Observed facts:\ncell[a][b] = 8\nSolution:\nFinal answer: 8"
+        right = "Error check:\nRecheck cell.\nObserved facts:\ncell[a][b] = 7\nSolution:\nFinal answer: 7"
+        note = "Cause: NON_VISUAL\nWrong item: none\nLesson: This deliberately disagrees with verified visual evidence."
+        engine = Engine([[wrong]*8, [right]*4, [right]*4, [note]])
+        cfg = replace(self.cfg, final_notebook=True)
+        tree = self.tree(engine, cfg)
+        final = tree.notebook["final_notebook"]
+        self.assertEqual(final["status"], "COMPLETED")
+        self.assertEqual(final["text"], note)
+        self.assertFalse(final["used_for_loss"])
+        self.assertFalse(final["used_for_routing"])
+        self.assertEqual(tree.route, "VISION_ON")
+        self.assertEqual([g.kind for g in tree.groups], ["T1", "T2", "T2"])
+        parent = next(s for g in tree.groups for s in g.samples if s.sample_id == final["parent_sample_id"])
+        self.assertEqual(final["prompt_token_ids"][:len(parent.prompt_token_ids)+len(parent.completion_token_ids)],
+                         parent.prompt_token_ids+parent.completion_token_ids)
+        with self.assertRaisesRegex(ValueError, "fresh"):
+            append_final_notebook(tree, [object()], engine, self.prompts, cfg)
+        self.assertEqual(from_json(ProblemTree, to_json(tree)), tree)
+
+    def test_final_notebook_no_fake_success_or_silent_context_extension(self):
+        for replies in ([["Final answer: 7"]*8],
+                        [["Final answer: 8"]*8, ["Final answer: 8"]*4, ["Final answer: 8"]*4]):
+            tree = self.tree(Engine(replies), replace(self.cfg, final_notebook=True))
+            self.assertEqual(tree.notebook["final_notebook"]["status"], "NO_RECOVERED_PATH")
+        engine = Engine([["Final answer: 8"]*8, ["Final answer: 7"]*4, ["Final answer: 7"]*4])
+        tree = self.tree(engine, replace(self.cfg, final_notebook=True, diag_max_new_tokens=5000))
+        self.assertEqual(tree.notebook["final_notebook"]["status"], "CONTEXT_BLOCKED")
+        self.assertEqual(len(engine.requests), 3)
+
+    def test_final_notebook_budget_stop_and_truncation_are_explicit(self):
+        engine = Engine([["Final answer: 8"]*8, ["Final answer: 7"]*4, ["Final answer: 7"]*4])
+        cfg = replace(self.cfg, final_notebook=True)
+        tree = build_tree(self.actor, [object()], engine, self.verifier, self.prompts, cfg, 0,
+            "verified-any-visual-v1", should_stop=lambda: len(engine.requests) >= 3)
+        self.assertEqual(tree.notebook["final_notebook"]["status"], "BUDGET_STOP")
+        self.assertEqual(len(engine.requests), 3)
+        engine = Engine([["Final answer: 8"]*8, ["Final answer: 7"]*4, ["Final answer: 7"]*4,
+                         ["Cause: VISUAL_MISREAD"]])
+        original = engine.sample
+        def truncated(requests):
+            outputs = original(requests)
+            if ":FINAL_NOTE:" in requests[0].request_id:
+                outputs[0].completions[0] = replace(outputs[0].completions[0], finish_reason="length")
+            return outputs
+        engine.sample = truncated
+        tree = self.tree(engine, cfg)
+        self.assertEqual(tree.notebook["final_notebook"]["status"], "TRUNCATED")
+        self.assertFalse(tree.notebook["final_notebook"]["lesson_semantics_verified"])
+
+    def test_empty_final_notebook_does_not_claim_completed_note(self):
+        engine = Engine([["Final answer: 8"]*8, ["Final answer: 7"]*4, ["Final answer: 7"]*4, [" "]])
+        tree = self.tree(engine, replace(self.cfg, final_notebook=True))
+        self.assertEqual(tree.notebook["final_notebook"]["status"], "EMPTY")
+        self.assertFalse(tree.notebook["final_notebook"]["used_for_loss"])
 
     def test_class_cap_applied_before_generating_balanced_diagnoses(self):
         actor, verifier_item, lineage, *_ = records()

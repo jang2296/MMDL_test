@@ -89,6 +89,27 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(batch.cursor, 0)
         called.assert_not_called()
 
+    def test_final_notebook_budget_stop_propagates_without_losing_closed_tree(self):
+        for signal in (False, True):
+            def stopped(*args, **kwargs):
+                tree = self.scripted(*args, **kwargs)
+                tree.notebook["final_notebook"] = {"status": "BUDGET_STOP", "used_for_loss": False}
+                if not signal:
+                    for sample in tree.groups[0].samples:
+                        sample.reward = 0.
+                return tree
+            with patch("fine_tuning.notebook_rl.batches.build_tree", side_effect=stopped):
+                batch = self.run_batch()
+            self.assertEqual(batch.status, "BUDGET_STOP")
+            self.assertEqual(batch.cursor, 1)
+            if signal:
+                self.assertEqual(batch.trees[0].notebook["final_notebook"]["status"], "BUDGET_STOP")
+                for values in batch.images.values():
+                    for image in values:
+                        image.close()
+            else:
+                self.assertIn('"final_notebook"', batch.discarded[0]["tree"])
+
 
 if __name__ == "__main__":
     unittest.main()

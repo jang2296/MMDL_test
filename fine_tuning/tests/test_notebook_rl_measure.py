@@ -175,13 +175,16 @@ class MeasurementLaunchTests(unittest.TestCase):
                                 ("mem_get_info", (48*1024**3, 48*1024**3))):
                 stack.enter_context(patch.object(torch.cuda, name, return_value=value))
             stack.enter_context(patch.object(torch, "ones", return_value=torch.ones((8, 8))))
-            for format_, copies in ((measure.FORMAT, 1), ("notebook-rl-training-job-v1", 2)):
+            from fine_tuning.notebook_rl import shared_smoke
+            for format_, copies in ((measure.FORMAT, 1), ("notebook-rl-training-job-v1", 2), (shared_smoke.FORMAT, 1)):
                 output.side_effect = ["git@github.com:jang2296/MMDL_test.git", "a"*40, "",
                                       "GPU-example, fixture GPU, fixture"]
-                result = launch.runtime_check(self.job | {"format": format_, "expected_gpu_scope": scope,
+                actual_scope = scope | {"purpose": shared_smoke.PURPOSE} if format_ == shared_smoke.FORMAT else scope
+                result = launch.runtime_check(self.job | {"format": format_, "expected_gpu_scope": actual_scope,
                     "deadline_utc": iso(now+3600)}, self.cfg)
                 self.assertEqual(result["weight_copies"], copies)
                 self.assertEqual(result["minimum_weights_and_kv_bytes"],
+                    shared_smoke.memory_floor(self.cfg, weight.stat().st_size) if format_ == shared_smoke.FORMAT else
                     copies*weight.stat().st_size+self.cfg["engine"]["vllm"]["kv_cache_memory_bytes"])
                 self.assertFalse(result["memory_fit_certified"])
 

@@ -22,6 +22,12 @@ AUTHORED_JSON = {
     "source_registry_bridge_v2.json", "source_registry_v1.json",
 }
 AUTHORED_JSON_PATHS = {"fine_tuning/notebook_rl/benchmark_inventory_v1.json"}
+PINNED_RESOURCES = {
+    "baseline.json": "manifests/models/baseline.json",
+    "requirements-vllm.lock": "env/requirements-vllm.lock",
+    "mmmu_mcq_v1.txt": "prompts/mmmu_mcq_v1.txt",
+    "mmmu_open_v1.txt": "prompts/mmmu_open_v1.txt",
+}
 EXPERIMENT_JSON = {
     "experiments/bottleneck_diagnostic/knowledge_cases.json",
     "experiments/bottleneck_diagnostic/knowledge_answer_key.json",
@@ -63,6 +69,14 @@ def selected_files(root: Path) -> dict[str, Path]:
         for path in (root / folder).glob("*"):
             if path.is_file() and path.suffix in {".json", ".csv"}:
                 files[path.relative_to(root).as_posix()] = path
+    resources = root / "fine_tuning/notebook_rl/resources"
+    if resources.exists():
+        for name, original in PINNED_RESOURCES.items():
+            bundled, canonical = resources / name, root / original
+            if (not bundled.is_file() or not canonical.is_file()
+                    or bundled.read_bytes() != canonical.read_bytes()):
+                raise ValueError(f"Pinned bundled resource differs from original: {name}")
+            files[bundled.relative_to(root).as_posix()] = bundled
     manifest = json.loads((root / POOL / "manifest.json").read_text())
     files[f"{POOL}/manifest.json"] = root / POOL / "manifest.json"
     for name, expected in manifest["files"].items():

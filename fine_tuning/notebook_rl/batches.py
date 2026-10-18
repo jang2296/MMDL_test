@@ -95,7 +95,8 @@ def collect_batch(actors: dict[str, ActorItem], structure_hashes: dict[str, str]
             for image in loaded+[im for values in images.values() for im in values]:
                 image.close()
             raise
-        stopped = any(r["status"] == "BUDGET_STOP" for r in tree.notebook.get("skipped_branches", []))
+        stopped = (any(r["status"] == "BUDGET_STOP" for r in tree.notebook.get("skipped_branches", []))
+                   or tree.notebook.get("final_notebook", {}).get("status") == "BUDGET_STOP")
         # Closed full raw trees, including discarded ones, are the caller's responsibility
         # to persist via its collector; this return value retains them in the discard ledger.
         if not has_learning_signal(tree):

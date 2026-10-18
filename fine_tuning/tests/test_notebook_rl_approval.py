@@ -16,6 +16,7 @@ from PIL import Image
 from fine_tuning.notebook_rl import approval as a, contamination as c
 from fine_tuning.notebook_rl.dataset import build_splits, freeze_selection
 from fine_tuning.notebook_rl.generators.common import GeneratedProblem
+from fine_tuning.notebook_rl.resources import resource_path
 from fine_tuning.notebook_rl.schema import ActorItem, load_protocol
 from fine_tuning.tests.test_notebook_rl_contamination import index_fixture
 from fine_tuning.tests.test_notebook_rl_schema import records
@@ -109,11 +110,12 @@ class ApprovalTests(unittest.TestCase):
         producer = self.base / "authored_producer.py"
         producer.write_text("# Authored unit-test evidence producer, not actual GPU execution.\n")
         producer_descriptor = {"path": str(producer), "file_sha256": a._sha(producer.read_bytes())}
-        baseline_path = a._PROJECT / self.protocol["initial_checkpoint"]["manifest"]
+        baseline_path = resource_path(self.protocol["initial_checkpoint"]["manifest"], project_root=a._PROJECT)
         baseline = json.loads(baseline_path.read_bytes())
         self.scope = {"protocol_sha256": self.protocol["sha256"], "code_sha256": a.code_hashes(),
             "input_files_sha256": self.receipt["input_files_sha256"], "runtime_id": "authored-not-a-real-runtime",
-            "arm": "MOD-FML", "environment_lock_sha256": a._sha((a._PROJECT / self.protocol["environment"]["lock"]).read_bytes()),
+            "arm": "MOD-FML", "environment_lock_sha256": a._sha(resource_path(
+                self.protocol["environment"]["lock"], project_root=a._PROJECT).read_bytes()),
             "model": {"model_id": baseline["repo_id"], "revision": baseline["revision"], "manifest_sha256": a._sha(baseline_path.read_bytes()),
                       "files_sha256": {f["path"]: f["sha256"] for f in baseline["files"]}},
             "device": {"type": "cuda", "uuid": "GPU-AUTHORED-FIXTURE", "name": "Authored fixture", "index": 0,

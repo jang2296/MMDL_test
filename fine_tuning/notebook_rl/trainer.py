@@ -48,7 +48,11 @@ def synchronize(bundle: PolicyBundle, preparation: Any, engine: Any, probes: lis
             or len({p.request.request_id for p in probes}) != 2):
         raise ValueError("trainer: fixed single/multi-image synchronization probes required")
     if push:
-        engine.push_weights(merged_named_tensors(bundle), step)
+        from .shared_policy_engine import SharedPolicyRolloutEngine
+        if isinstance(engine, SharedPolicyRolloutEngine):
+            engine.mark_updated(bundle, step)
+        else:
+            engine.push_weights(merged_named_tensors(bundle), step)
     if engine.policy_version != step:
         raise RuntimeError("trainer: sampler policy version not synchronized")
     reference = []

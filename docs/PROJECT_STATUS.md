@@ -1,5 +1,172 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-18 18:20 KST — 새3090 제한 시험 승인·배포 전 로컬 준비
+
+사용자가3090 RunPod로 시험하며 계속 추적하도록 승인했다. 대상은 공유HF10문항/최대2update와
+독립프로세스reload이며 대규모학습/900평가는 아니다.09:15:17UTC 잔액0.9286258243USD·현재
+과금0·계정Pod0/NetworkVolume0을 실제 조회했다. GPU catalog Community3090은0.22USDh이며
+재고는NONE/일시LOW로 변동했다. 마지막확인 재고를 다시 읽은 뒤 생성한다. 저장비 포함운영상한
+0.30USDh/회수예약0.20USD/최초과금부터GPU최대2시간+회수15분을 고정한다. 남은잔액으로
+성공/완주를 보장하지 않으며 자동충전·별도NetworkVolume·다른GPU를 생성하지 않는다.
+
+기존private train16의76입력/10measured source·제외 검사를 유지하고 새68codehash를 결합한다.
+기존single/two probe가 같은structure를 공유했으므로 별도의eligible distinct probe와10distinct
+structure를 동결한다. 새로운CPU입력승인·게시SHA·실제device/재정watchdog 결합 전 GPU시험은 없다.
+교수님MMDL/V8는 불변이다. 실험용MMDL_test에는 검증된fine_tuning/코드·테스트와 상태문서만
+정상게시하며 관련 없는 팀원문서/benchmark파생물/원문/weights는 복사하지 않는다.
+재고/실행상태·진행·오류·예산을10분마다 조회하고 회수·로컬검증 후 전용Pod만 삭제한다.
+원본증거는 `/home/jang2/mmdl-artifacts/notebook-rl-3090-20261018/`에 별도 보존한다.
+
+## 2026-10-18 16:10 KST — 24GB용 단일 공유모델 HF 경로 구현·검증
+
+`fine_tuning/notebook_rl/shared_smoke.py`는 새 `hf_shared_policy_24gb_v1` 실행 profile이다.
+하나의 live BF16 PEFT 정책이 순차 생성/기존 RL 업데이트/adapter-disabled F0 reference를
+공유한다. 두 번째 vLLM 가중치와 고정10GiB KV 예약 및 merged weight push를 제거한다.
+기존 native 경로와 `protocol_v1.yaml` SHA653fd442…·train.py/modules.py는 byte 불변이다.
+모델/revision·이미지1003520..4014080·context16384·solution3072·T1/T2/T3 수·보상·파라미터
+분할/optimizer는 자동 변경하지 않는다. 별도최대10문항/2update 연결 시험이며 일반 학습이나
+기존 vLLM G0–G13 통과를 의미하지 않는다. ALG-NB3와 ALG-NB+D는 원래 turn/DIAG 차이를
+유지한다. 사후 감사용 노트의 추가 호출은 새 실행 binding에 명시하며 loss/라우팅 근거가 아니다.
+
+원문 group/tree는 write-once 원장으로 남고 신호 없는 폐기 tree에도 최종 노트 상태를 보존한다.
+실제 회복/advantage가 없으면 이를 발명하지 않는다. initial/post-update one/two-image logprob
+probe를 강제하고, 실패 sync/불완전 cohort/예산 중단/0update를 완료로 판정하지 않는다.
+별도 reload 명령은 capture PID 종료, 현재 code/input/profile binding, 전체 parameter hash,
+optimizer step 및 동결된10 ID/cursor를 검사한다. 메모리 계산10.42GiB는 상주 하한/보수적
+trainable allowance일 뿐 동적KV·activation·workspace·생성 점수 tensor를 포함한 peak가 아니다.
+
+검증: 정상 PYTHONPATH 전체570 CPU tests/253.714초 exit0·Ruff·범위 mypy5·독립 Sol 검토 PASS.
+첫 전체검사570 중 기존 checkpoint subprocess1개는 잘못된 명령의 PYTHONPATH 누락으로
+실패했다. 소스 변경 없이 README 환경으로 해당1개/7.017초와 전체570을 다시 통과했고 두 로그를
+보존했다. checkpoint cursor의 필수 epoch/discarded IDs 누락은 개발 검토에서 수정 후 실제
+tiny Adam/checkpoint.save/load_resume 검사로 확인했다. 새 launcher의 GPU/rollout 조립 시험에
+쓰인 제어값은 authored fixture이며 실제4B 실행 증거가 아니다.
+
+별도 로컬5060 CUDA 시험은 tiny random Qwen BF16 기저/FP32 master의 생성4개·직접기울기
+업데이트1개·전후 두 probe delta0·frozen base 불변을 실제 확인했다. peak allocated68,595,712 /
+reserved69,206,016bytes는 이 tiny 시험 값이며 4B로 외삽하지 않는다. 학습 checkpoint를 저장하지
+않았고 프로세스 종료 후 로컬GPU0MiB/0%를 확인했다. 기존 실제4B RL update0 상태는 유지한다.
+
+증거 정본 `/home/jang2/mmdl-artifacts/notebook-rl-shared24-20261018/`:
+`sources_v1.sha256`172항목 SHAecf43a8a… 및 전후 재검사, `full_cpu_v2.log` SHA c05abfd9…,
+`full_cpu_v1.log`, `checkpoint_env_recheck_v1.log`, `tiny_cuda_probe_v1.json`,
+`independent_review_v1.json`, `ruff_v1.log`, `mypy_v1.log`, `verification_v1.json`.
+데이터 전수검사90개는 이전 변경 없는 suite의 기록이며 이번에 재실행했다고 쓰지 않는다.
+새 파일로 code hash가 바뀌었으므로 이전 데이터 승인/Pod job을 재사용하지 않는다.
+
+실제 pretrained4B의3090/4090 메모리/속도·10문항 RL·새 프로세스 GPU reload는 미실행이다.
+후속은 코드 게시/clean SHA→새10개 및 source 결합 승인→실제 장비/예산 검증→제한 smoke다.
+새 유료 Pod/모델 다운로드/게시/새4B checkpoint/가중치 삭제는0이며 잔액 약0.93USD로 완료를
+보장하지 않는다. 교수님 MMDL clean197838c1·MMDL_test clean8595d2ce·V8 558/900은 불변이다.
+
+## 2026-10-18 15:35 KST — 실제 Qwen4B·약10문항 시험은 로컬 GPU 용량에서 차단
+
+사용자가 실제 checkpoint의 문제풀이·정오 확인·재시도·사후 오답노트·검증 기반 V/M/L 또는
+M/L RL 업데이트를 시험하고, 성공 후 이번에 만든 변형 가중치만 제거하도록 요청했다.
+현재 pinned 원본13파일의 크기/SHA를 실제 캐시에서 전수 검증했으며 재다운로드는 없다.
+BF16 serialized weights8,875,719,344bytes가 로컬5060 전체VRAM8,546,484,224bytes를
+초과한다. `launch.py`의 두 가중치+고정10GiB KV만28,488,856,928bytes/26.532GiB이고,
+이것은 activation·adapter·gradient·optimizer를 제외한 하한이다. 실제CUDA BF16 작은 연산은
+통과했으므로 CUDA 설치 장애와 구분한다. 모델학습 할당/실제 응답/optimizer update는 모두0이다.
+
+현재 native launcher는 CUDA/owned financial watchdog/clean SHA/기존 데이터 gate를
+요구한다. 이를 끄거나 양자화·해상도/출력/KV 축소·device_map 학습 offload로 우회하지 않았다.
+CPU가 본질적으로 불가능하다는 결론은 아니다. 기존 별도HF sampler+policy+전체 export는
+RAM도 크게 쓰며, 공유PEFT CPU sampler·BF16 CPU/FP32 master 산술·동기화·실제 peak/runtime를
+별도 구현·검증해야 한다. tiny CPU 시험의 FP32 기저 결과를 실제4B BF16 CPU 성공으로 쓰지 않는다.
+
+같은 native 학습을 검증하려면 충분한VRAM의 GPU와 새 유료 실행의 비용 상한·최대시간 확인이
+필요하다. 현재는 새 cloud 실행/게시/학습 성공/새 checkpoint/가중치 삭제가 없다. 승인 후에도
+기존 program40/train16의 승인 범위를 새 protocol/source에 자동 재사용하지 않고 새10개 입력과
+노트 생성·DIAG 학습 설정을 결합해야 한다. 모든 답이 같아 advantage가 없거나 실제 회복이 없으면
+그 상태를 보고하며 가짜 오답·회복을 만들지 않는다. 성공·재로딩·증거 확인 뒤 새 시험weights만
+삭제하며 원본 HF 캐시·기존 checkpoint·원문 기록은 보존한다.
+
+근거 정본: `/home/jang2/mmdl-artifacts/notebook-rl-real10-20261018/local_preflight_v1.json`.
+MMDL clean197838c1/MMDL_test clean8595d2ce와 V8 558/900은 불변이다.
+
+## 2026-10-18 02:23 KST — 로컬 오답노트·라우팅 RL·폴더 단독 실행 검증
+
+이번 목표인 **로컬 소규모 소프트웨어 연결 검증**과 이전 미완료인 native4B GPU 학습을
+구분한다. `fine_tuning/notebook_rl/rollout.py`의 선택적 최종 노트는 회복 경로의 원문 token을
+보존하고 예산/문맥/빈답/잘림/미회복 상태를 기록한다. `batches.py`는 예산 종료를 전파하고
+advantage가 없어 버린 문제도 원문·노트를 보존한다. 감사 노트는 loss/라우팅과 분리하며,
+class-balanced DIAG 행동의 프로그램 검증 보상은 실제 RL update에 별도로 연결한다.
+기존 frozen protocol을 자동 변경하지 않았다. 노트 활성화는 새 protocol 및 호출 예산이 필요하다.
+
+`test_notebook_rl_local_pipeline.py`에서 실제 작은 Qwen VLM의 이미지 forward/logprob와
+생산 RL 손실로3회 가중치를 갱신했다. 첫 Vision ON은V/M/L, 다음OFF는M/L만 변화하고
+이전Adam momentum에도V hash는 유지됐다. 두 원인 class의 DIAG 보상·비균일 advantage를
+세 번째 update에 포함했고 SFT/CE 진입점을 금지했다. 고정 reference/기저는 불변이다.
+별도 Python 프로세스의 checkpoint reload는 모든 parameter hash·step3·cursor가 일치했다.
+성공 경로 문장은 **의도적으로 작성한 제어흐름 fixture**이며 실제4B 자기수정 결과가 아니다.
+별도 실제 무작위 tiny 생성6개는 실패로 남겨 거짓 회복을 만들지 않았다. 직접 optimizer
+검사의 상태는 `UPDATED_UNSYNCHRONIZED`이며 native vLLM 증거로 승격하지 않는다.
+
+`resources.py`·`input_preparation.py`와 동봉한 byte동일 manifest/lock/P0를 이용하여
+fine_tuning만 복사한 환경에서 src/env/manifests/prompts 없이 notebook-RL 연결 시험을
+통과했다. 외부 `mmdl`/`experiments` import도 차단한 검사다. 모든 과거 fine_tuning 명령의
+독립성이나 의존성 설치 없이 실행 가능함을 주장하지 않는다. 이전 train.py/modules.py와
+protocol_v1.yaml은 각각 기존 SHA를 유지한다.
+
+- 고정 소스:167파일 전수 SHA 일치.
+- notebook 전체 CPU:559 tests/315.178초/exit0.
+- 별도 데이터 환경의 생성기·adapter:90 tests/627.343초/exit0.
+- Ruff 및 Sol 독립 완료 감사:PASS. 완료한 소스/증거만 판정했다.
+- 변경부8파일 mypy는 기존 `scripts/test_reference.sh`와 같은
+  `--follow-imports=skip --ignore-missing-imports` 정책으로 PASS다. 별도 엄격 호출은
+  외부 qwen_vl_utils의 type stub/py.typed 부재1건을 보고했다. 외부 라이브러리 및 untyped
+  함수 본문까지 전부 정적 검증했다고 주장하지 않으며 runtime guard/test는 변경하지 않았다.
+- 이전 두 전체검사 실패는 child의 bare module명 때문이며 실패 원문은 보존했다.
+  canonical reload-worker 경로 수정 후 직접 실행과 unittest discover 모두 통과했다.
+
+로컬 증거 루트는 `/home/jang2/mmdl-artifacts/notebook-rl-local-20261018/`이다.
+`contract-final-v4/verification.json` SHA는
+`2aeec54206395bc7f37ba6e9462e159c9d54ff72b47c51971d9c02dd63143d88`,
+`full_cpu_final_v3.log` SHA는
+`8efc649d8748836da2ebbceb18995ffa0bed0f1e8e773888f389dc791b8136e8`,
+`data_cpu_v1.log` SHA는
+`116a90f9faf1d4649d0da0e06523277d801d097893a30547a4837e4b38d9effb`다.
+요구사항별 완료 감사는 같은 루트의 `local_completion_verification_v1.json`에 있다.
+재현 명령과 해석 범위는 `fine_tuning/notebook_rl/README.md`의 local 검증 절을 따른다.
+
+다분야 본학습 pool은 아직 승인되지 않았다. 기존 program graph40(train16/dev8/sealed8/
+style_sealed8)의 제한 AI 검토·제외 검사는 그 범위에만 유효하다. 새 source/protocol/input에
+예전 승인을 재사용하지 않으며 TabMWP/Geometry3K/PGPS9K 및 실제 ChEBI 원천의 남은
+출처·권리·제외·검토 조건을 완료했다고 표시하지 않는다. 데이터 생성기 시험은 학습 승인이 아니다.
+이번 RunPod·모델취득·GitHub게시0, MMDL clean197838c1/MMDL_test clean8595d2ce 및
+V8 558/900은 불변이다. 실제4B RL/GPU동기화·reload/PhaseA/150·성능개선은 별도 미완료다.
+
+## 2026-10-17 15:35 KST — 소유 Pod·작업 볼륨 삭제, 실제 학습 검증은 미완료
+
+독립검토에서 두 실패 실행14파일·환경8파일·job2개 및 복구400파일의 실제 로컬 SHA와
+기존 원격 receipt 일치를 확인했다. 소유Pod e10034q5chqqcr를 삭제204→get404,
+계정Pod0(cluster 포함)/NetworkVolume0/추가페이지없음으로 확인했다. container30GB와
+workspace120GB의 설치환경·모델cache는 원격 복구 불가이고 로컬 입력·코드·실패 기록은
+보존됐다.06:34:37UTC 공식 GraphQL 잔액0.9286258243USD/현재과금0USDh를 직접 확인했다.
+결제·자동충전은 변경하지 않았으며 최종 청구서는 아니다. 증거는 private runtime/
+owned_pod_cleanup_final_v1.json과 goal_blocked_audit_v1.json이다.
+
+코드 수정4185db7·문서포함 clean 게시8595d2ce의 CPU검증은 완료했지만 실제 GPU 재검증,
+RL update/reload/150평가는 미완료다. update0이며 학습 성공을 주장하지 않는다.
+16:10 연장은 승인되지 않았고 새 GPU 실행·종료시각 승인이 필요하다. 동일 권한 차단이
+3연속 goal turn에서 반복됐고 GPU 검증 전 가능한 독립 준비·보존 작업은 완료했다.
+교수님MMDL clean HEAD197838c1·기존 V8 558/900은 불변이다. 이 기록은 내부 상태이며
+게시8595d2ce 이후 운영기록만 추가했고 실험 코드나 교수님 저장소를 변경하지 않았다.
+
+## 2026-10-17 15:30 KST — 중지 후 재개 입력 복구 원장 검증
+
+추가 GPU 실행 없이 로컬 원본385개/2,064,900,296bytes를 전수 stream SHA 검증했다.
+누락·변경·위험 경로0이다. 기존 전송387개와 최신 v4 승인13개를 합친400개,
+2,065,510,375bytes 및 새 metadata2개를 포함한402개 명시적 전송 목록을 고정했다.
+private runtime/private-restore-inputs-v1.json SHA는 c2b553c6ec58e2d4a8cb2ce2f39cc40a345e59aeca6b8df0371d0fa956a5bfe3,
+files-from SHA는30acafef67423965940f2d498697a130b763f839d82e51c50fca18e44ea7cbaa다.
+생성기 assert/roundtrip/Ruff와 독립 연결 검토 PASS이며 기존 원본·원장은 불변이다.
+code/venv/baseweights/credential은 전송 목록에 없고64개 source binding은 clean GitHub
+8595d2cebb01cdc93c4d0463a70ab3354c05df88와 일치한다. 이는 로컬 복구 준비 증거이지
+실제 원격 전송·destination safety·GPU 학습·새 실행 승인이 아니다. 실행 재개에는 새 시간
+승인이 필요하며 현재15:40 한도를 유지한다. 실제 RL update0/reload 미완료는 그대로다.
+
 ## 2026-10-17 15:24 KST — 로컬 수정 검증·게시 완료, GPU 중지·연장 승인 대기
 
 메모리 시작 비율0.7 최소 수정은 로컬771 tests(1skip,325.963초), 입력24 tests(23.344초),
