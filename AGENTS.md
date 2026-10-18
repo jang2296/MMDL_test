@@ -1,5 +1,31 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-18 18:42 KST — 3090 실기기 CUDA/UVM 접근 실패·회수 후 삭제
+
+24GB 공유정책 코드와 필요한 동봉 resource를 MMDL_test feature branch의
+`ce2bc35edaf80f539641d4ae64c7fa7d1b0b1f4c`에 정상 게시했다. 게시 checkout64검사,
+EOF 공백 delta14검사·게시3검사/Ruff/범위mypy6·30경로 byte/mode 독립 검토를 통과했다.
+기존 전체570검사는 생산172항목 중171항목이 동일하고 input_preparation.py의 추가 EOF
+한 줄만 제거된 이전 증거다. 새68code·10distinct structure/단일5·복수5 입력 승인도 실제
+112.168초/차단0으로 통과했다. 이는 실제4B GPU 학습 성공이 아니다.
+
+승인된 단일3090 Pod `kxxt6w3fpsb7ur`를09:37:00.141UTC/0.22USDh로 생성했으나,
+공식PyTorch CUDA12.8.1 이미지의 최초 장치검사부터 Torch CUDA 불가·직접cuInit999였다.
+실제3090/24576MiB·driver와libcuda580.178.04는 일치했고 nvidia1/ctl은 열리지만
+`/dev/nvidia-uvm`은 errno5 EIO였다. 환경변수를 제거해도999다. GPU메모리 부족이나
+학습 코드 실패가 아니라 호스트/컨테이너 UVM 접근 단계 장애이며 정확한 kernel 원인은
+미확정이다. shared host driver/reset/검증완화·무근거 재시도는 하지 않았다.
+
+GitHub clone·입력414파일 전송·설치·모델다운로드·원문생성·실제RL update·새checkpoint는
+모두0이다. 로컬 진단2로그의SHA·실Pod identity·boot41줄과 삭제 전 원장을 보존·검증했다.
+소유Pod만 delete204→get404·cluster포함 계정Pod0/NetworkVolume0/전체페이지 완료로
+확인했다. container30GB/Podvolume120GB는 폐기됐으며 실험자료는 보내기 전이었다.
+09:42:09UTC 잔액0.9107895021USD/과금0.241USDh는 삭제 직후 지연 가능한 snapshot이지
+최종청구/현재0과금 인증이 아니다. 새 대체Pod는 만들지 않았고 실제4B RL/reload는 미검증이다.
+09:43:04UTC 후속조회는 잔액0.9107895021USD/현재과금0USDh이며 삭제 후 지연이 해소됐다.
+원본은 private `notebook-rl-3090-20261018/runtime/{predelete_local_verification_v1,
+owned_pod_cleanup_final_v1}.json`이다. 교수님MMDL·V8 558/900은 불변이다.
+
 ## 2026-10-18 18:20 KST — 사용자3090 제한 시험·계속 추적 승인
 
 사용자가 새3090 RunPod 시험과 계속 추적을 명시 승인했다. 이번 범위는 새공유HF profile의

@@ -1,5 +1,36 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-18 18:42 KST — 3090 최초 CUDA/UVM 사전검사 실패·자원 삭제
+
+실험 코드는 MMDL_test `ce2bc35edaf80f539641d4ae64c7fa7d1b0b1f4c`에 정상 게시했다.
+명시30경로 byte/mode·동봉 manifest/lock/P0와 게시 검사, checkout64검사/34.602초,
+EOF-only delta14검사/30.617초·Ruff/mypy6 및 독립 검토를 통과했다. 과거 전체570 CPU
+증거는 production172항목 중171동일/나머지 추가EOF newline 제거 전이며 이를 새 전체
+재실행으로 부풀리지 않는다. 현재68code 결합 입력 승인112.168초/차단0·10distinct
+structure(단일5/복수5)·414개 비공개 전송목록은 로컬 준비/검증일 뿐 원격 실행이 아니다.
+
+09:37:00.141UTC 소유Pod kxxt6w3fpsb7ur를0.22USDh의 RTX3090으로 생성했다.
+실제3090 24576MiB/driver580.178.04·libcuda580.178.04, 공식 컨테이너CUDA12.8.1을
+확인했으나 Torch뿐 아니라 직접cuInit도999였다. nvidia1/ctl open은 정상인 반면
+/dev/nvidia-uvm open은 errno5 EIO이며 환경변수 제거 후에도999였다. 이 시점에는
+코드clone/입력전송/설치/모델다운로드/추론/update/checkpoint가 모두0이다. 원인은
+호스트/컨테이너 UVM 장치 접근 단계로 좁혀졌으나 정확한 kernel 원인은 미확정이다.
+VRAM 적합성/실제4B RL/reload는 검증하지 못했다. 공유 driver/reset/재설치/조건축소나
+변경 없는 동일 실패 재시도·추가 유료Pod는 진행하지 않았다.
+
+두 진단로그1997/212bytes의 SHA와 실identity·boot41줄을 로컬 보존·검증한 뒤 소유Pod만
+delete204→get404로 삭제했다. cluster포함 Pod0/NetworkVolume0/전체페이지 완료를 확인했다.
+container30GB와Podvolume120GB는 폐기했지만 입력/모델/실험결과는 원격에 없었고 로컬 준비본은
+모두 보존된다. 09:42:09UTC GraphQL 잔액0.9107895021USD/currentSpend0.241USDh는 삭제직후
+지연snapshot이며 최종청구 또는0과금 인증이 아니다. 이전0.9286258243USD와 구분한다.
+상태는 HARDWARE_PREFLIGHT_FAILED/CLEANUP_VERIFIED이고 실험 완료/학습 성공이 아니다.
+09:43:04UTC 후속 GraphQL은 같은잔액0.9107895021USD·현재과금0USDh로 확인됐다.
+
+근거: `/home/jang2/mmdl-artifacts/notebook-rl-3090-20261018/runtime/`의
+`cuda-diagnostic-v1.log`, `cuda-device-access-v1.log`, `predelete_local_verification_v1.json`,
+`owned_pod_cleanup_final_v1.json`. 새 code 실행SHA는 ce2bc35e이며 후속 상태문서 commit과
+구분한다. 교수님MMDL/V8 558/900·기존 원문/가중치는 불변이다.
+
 ## 2026-10-18 18:20 KST — 새3090 제한 시험 승인·배포 전 로컬 준비
 
 사용자가3090 RunPod로 시험하며 계속 추적하도록 승인했다. 대상은 공유HF10문항/최대2update와
