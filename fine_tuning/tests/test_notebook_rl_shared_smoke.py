@@ -1,6 +1,8 @@
 """24GB execution boundaries; authored orchestration is not 4B/GPU evidence."""
 import copy
 import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack, redirect_stdout
@@ -40,6 +42,51 @@ class SharedSmokeTests(unittest.TestCase):
         for value in (True, 0, -1, 1.5):
             with self.assertRaises(ValueError):
                 smoke.memory_floor(self.cfg, value)
+
+    def test_cold_boot_keeps_teacher_and_private_reads_blocked(self):
+        # Fresh process catches optional SDK discovery hidden by warm test imports.
+        code = r'''
+import importlib, importlib.util, json, sys
+from pathlib import Path
+from unittest.mock import patch
+import torch
+from fine_tuning.notebook_rl.shared_smoke import _prepare_hf_dependencies
+from fine_tuning.notebook_rl.guards import install_guards, assert_no_teacher_imports
+with patch.object(torch.nn.Module, 'register_parameter', side_effect=AssertionError('startup constructed model parameters')) as init:
+    imports = _prepare_hf_dependencies()
+    init.assert_not_called()
+assert set(imports) == {'LoraConfig', 'get_peft_model', 'AutoProcessor', 'Qwen3VLForConditionalGeneration'}
+assert not torch.cuda.is_initialized()
+assert_no_teacher_imports()
+root = Path(sys.argv[1])
+install_guards(forbidden_roots=[root/'benchmark'], vault_files=[root/'vault'],
+               allow_vault=False, allow_benchmark=False)
+from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+from peft import LoraConfig, get_peft_model
+from fine_tuning.tests.test_notebook_rl_policy import bundle
+policy = bundle()
+assert all(policy.params.values())
+for action in (lambda: __import__('openai'), lambda: importlib.import_module('openai'),
+               lambda: importlib.util.find_spec('openai'),
+               lambda: (root/'benchmark/data').read_bytes(), lambda: (root/'vault').read_bytes()):
+    try:
+        action()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError('teacher/private read escaped guards')
+assert_no_teacher_imports()
+print(json.dumps({'cold_hf_imports': 'PASS', 'guarded_tiny_policy': 'PASS', 'teacher_and_private_access': 'BLOCKED'}))
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/"benchmark").mkdir()
+            (root/"benchmark/data").write_text("private benchmark")
+            (root/"vault").write_text("private answer")
+            result = subprocess.run([sys.executable, "-c", code, directory],
+                                    capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"guarded_tiny_policy": "PASS"', result.stdout)
 
     def test_ten_eligible_unique_structures_and_actual_bound_probes(self):
         before = copy.deepcopy(self.cfg)

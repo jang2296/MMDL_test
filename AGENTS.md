@@ -1,5 +1,64 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-18 20:14 KST — HF import 수정 전체CPU·입력검증 통과, 게시 준비
+
+같은68code SHA의 Linux 복사본 전체794검사296.668초/환경별1skip·입력24검사42.116초·
+19집중검사/최종명 cold회귀1개4.168초·Ruff·bounded mypy1·게시안전3검사가 PASS다.
+Windows마운트 전체검사는 느린I/O로 소유process만 중단했으며 PASS로 세지 않는다.
+최종test명은 hf_문자열의 게시secret검출 오탐을 피한 identifier-only 변경이고 본문은 동일하다.
+외부의존성까지 좇은 mypy는 기존psutil stub부재1건이며 범위검사와 구분한다. 새117.343초
+입력검증은16적격/차단0·10distinct/단일5복수5로 통과했고 원본76입력/10source/protocol은
+불변이다. 독립 코드·입력delta 검토 PASS다. 기존 승인된 로컬전체/원격변경부 방식으로
+새 clean SHA의 변경부·정상lock/pipcheck·CUDA/BF16·13모델 재해시 뒤 같은소유Pod에서만
+재실행한다. 실제4B update/reload는 여전히0/미검증이며 원래GPU/금융기한·MMDL/V8는 불변이다.
+
+## 2026-10-18 20:05 KST — shared HF cold import 차단 원인 재현·최소수정 검사 중
+
+첫 capture3236은247.452초/exit2였다. 실제 AutoProcessor 최초import에서 Transformers가
+openai의 존재를find_spec으로 탐지하다 기존teacher guard에 차단됐다. 모델load_base 이전이며
+응답0/update0/checkpoint0이다. peak33,554,432bytes는 runtime BF16 probe이지 모델 적합성
+실측이 아니다. 실패3파일 원격/로컬SHA를 검증해 private failed_capture_v1에 보존했다.
+guards.py는 수정하지 않는다. shared_smoke의 정확runtime검사 후/guard설치 전 신뢰HF·PEFT
+심볼4개를 초기화하며 model/processor 생성과 actor/vault 작업은 계속guard 뒤에 둔다.
+실제cold subprocess/tiny정책/teacher3진입·vault·benchmark차단 포함19집중검사8.520초 및
+독립 delta검토 PASS다. 최초test-only 초안은 stateless GELU까지 모델로 오인해 실패했으며
+파라미터 등록 차단으로 구분해 수정했다. 전체CPU/새code결합 입력/정상게시·새clean clone을
+거치기 전 재실행하지 않는다. GPU/금융기한은 원래값 유지이며 교수님MMDL/V8는 불변이다.
+근거 private retry-v1/runtime/failed_capture_local_verification_v1.json 및 새 검사로그다.
+
+## 2026-10-18 19:56 KST — 새3090 정상setup·793+24검사 통과, 제한실행 제출
+
+소유Pod2uiqg6ym30ou3y의 정상setup491은2786.392초/exit0·793+24 CPU tests/pipcheck/
+실제CUDA BF16/지정13모델hash를 통과했다. 원격/로컬4환경파일SHA와 입력414파일/
+2,065,615,841bytes·68codehash도 일치한다. 실제 cgroup RAM은약30GB이며 doctor의 host RAM과
+구분한다. clean MMDL_test8e9a8ee…/정상lock·원래10distinct 구조를 유지하고10:55:45UTC
+watchdog3234/capture3236의 기존 --execute→별도 --reload-check를 제출했다. 현재 입력검증이며
+실제4B update0확인/reload미검증이다. 고정10문항/최대2update 범위이며 새900/대규모학습은 아니다.
+최초과금09:59:13.359/GPU11:59:13.359/job11:57:13.359/recovery12:14:13.359UTC·0.30USDh/
+reserve0.20은 불변이다.10:51UTC 잔액0.7152243244USD/현재과금0.241USDh다. 폐기 전에 결과를
+로컬 회수·검증하며 교수님MMDL/V8는 불변이다. 증거 private retry-v1/runtime/
+setup_local_verification_v1.json·remote_input_sha_verification_v1.json을 따른다.
+
+## 2026-10-18 19:10 KST — 사용자3090 재시도·새 호스트 CUDA/BF16 통과, 설치 중
+
+사용자 재시도 승인 후 소유Pod `2uiqg6ym30ou3y`를09:59:13.359UTC/3090 0.22USDh로
+생성했다. CUDA조건 인자충돌400은 Pod생성 전 거부됐고 조건 하나만 제거한 요청이 성공했다.
+새 실제GPU UUID0481210a…/driver570.211.01/24576MiB·RAM약30GB이며 이전580/UVM장애
+GPU와 다르다. UVM open/cuInit0/실제CUDA BF16 PASS다. cgroup v2만 읽던 첫 메타데이터
+조회는 실패로 보존했고 실제v1 RAM limit을 별도로 확인했다. GitHub MMDL_test clean
+`8e9a8ee83ca7dc7aded0141d6dbb461a92fbbeb2`를 직접clone했다. 개인키/코드overlay는 없다.
+원래68code/414비공개입력·10distinct구조를 재사용하며 실제GPU fit/RL/reload는 아직 아니다.
+
+정상setup259의 NVIDIA 다운로드 지연을 실제 계측했다. 소유watchdog/pip만 종료하고 닫힌
+로그 SHAaf4ae5a0…를 보존한 뒤, 같은lock의14개 공식PyPI wheel을 전체SHA/크기/metadata
+검증해 선설치하는491 watchdog으로 재개했다. 이후변경없는setup을exec하므로 부모관계,
+전체CPU/pipcheck/doctor/13모델hash를 유지한다. 원래setup1시간은 보수적11:01UTC로
+묶었으며 최초과금은 재설정하지 않는다. 전체GPU cutoff11:59:13.359UTC/job11:57:13.359UTC,
+회수12:14:13.359UTC·운영상한0.30USDh/reserve0.20은 고정이다. 10:09:15UTC 실제잔액
+0.8760048299USD/현재과금0.241USDh·Pod RUNNING/설치중이다. 10분 자동조회cell218이 있다.
+입력은 byte보존 rsync압축 전송중이며 SHA검증 전 완료로 쓰지 않는다. 증거는 private
+`notebook-rl-3090-20261018/retry-v1/`다. 교수님MMDL/V8는 불변이고 성공주장/새900은 없다.
+
 ## 2026-10-18 18:42 KST — 3090 실기기 CUDA/UVM 접근 실패·회수 후 삭제
 
 24GB 공유정책 코드와 필요한 동봉 resource를 MMDL_test feature branch의

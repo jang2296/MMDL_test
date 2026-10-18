@@ -110,6 +110,15 @@ def _final_notes(batch, actors, image_root, engine, prompts, cfg, should_stop):
     return {t.problem_id: t.notebook["final_notebook"]["status"] for t in trees}
 
 
+def _prepare_hf_dependencies() -> dict:
+    # HF probes optional SDK availability on import; actual SDK imports stay blocked.
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+    return {value.__name__: value.__module__ for value in (
+        LoraConfig, get_peft_model, AutoProcessor, Qwen3VLForConditionalGeneration)}
+
+
 def execute(job: dict, protocol: dict, checked: dict) -> dict:
     if not gate_session._eligible(checked) or preflight(job, protocol) != checked:
         raise ValueError("shared smoke: fresh complete data eligibility required before model allocation")
@@ -127,6 +136,7 @@ def execute(job: dict, protocol: dict, checked: dict) -> dict:
     from .updates import optimizer_step
     from .verifier_service import VerifierService
 
+    runtime["trusted_hf_imports"] = _prepare_hf_dependencies()
     root, output = Path(job["build_root"]), Path(job["output"])
     binding = _binding(job, protocol, checked)
     _safe_root(output.parent, create=True)

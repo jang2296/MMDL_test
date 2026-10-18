@@ -1,5 +1,52 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-18 20:14 KST — import 수정794 CPU/새 입력 통과·동일Pod 재검증 준비
+
+Linux 코드복사본68 SHA를 확인하고 전체794검사296.668초/1환경skip과 입력24검사42.116초를
+통과했다. Windows마운트 전체검사는 I/O 지연으로 소유process만 중단했으며 완료로 세지 않는다.
+19집중검사·최종test명 cold회귀1개4.168초/Ruff/bounded mypy1/게시안전3도 PASS다.
+full의 test본문과 최종본은 identifier-only 차이이며 hf_문자열의 게시secret검출 오탐을 피했다.
+외부의존성-wide mypy의 기존psutil stub부재1건은 별도 한계다. 새prepared_v3 검증117.343초는
+16적격/차단0·동일10distinct/단일5복수5이며 원래76입력/10source/선정/probe/protocol은 불변이다.
+독립 코드·입력delta 검토 PASS이며, 기존 승인된 로컬전체/원격변경부 검증 방식으로 새 clean SHA/
+같은venv의 정상lock/pipcheck·변경부·CUDA/BF16·13모델 재해시 후에만 재실행한다.
+유일한production변경은 shared_smoke.py의 신뢰dependency 초기화 순서다. 실제GPU update0/
+reload미검증·원래금융기한은 유지한다. 교수님MMDL/V8·과거실패원문은 불변이다.
+
+## 2026-10-18 20:05 KST — shared HF cold import guard 충돌·수정 검증 중
+
+첫 actual shared capture는247.452초/exit2이며 attempted0/update0/checkpoint0이다.
+build_policy의 첫AutoProcessor import가 Transformers의 optional openai find_spec을 실행해
+기존teacher guard에 차단됐다. 직접API/teacher 호출이 아니며 load_base 이전이다.
+실패launch/result/log3파일의 원격/로컬SHA를 검증해 별도 보존했다. 실측peak33,554,432bytes는
+runtime BF16 probe값이므로4B 모델 적합성으로 해석하지 않는다.
+
+최소수정은 정확runtime검사 후/guard설치 전 HF·PEFT4심볼의 신뢰startup import다.
+guards.py·프로토콜·모델·데이터·정밀도/이미지/출력·보상·모듈범위는 불변이고 실제모델/processor
+생성과 actor/vault 작업은 guard 뒤다. cold subprocess의 실제tiny정책과 teacher3진입·vault·
+benchmark차단을 포함19집중검사8.520초 및 독립검토 PASS다. test-only 첫 초안의stateless GELU
+오인은 기록하고 파라미터 등록 여부로 구분했다. 전체CPU/새code결합 입력 승인과 정상Git게시·
+clean clone/환경검증 뒤에만 재실행한다. 원래금융/GPU기한은 늘리지 않으며 새학습 성공은 아니다.
+증거 private retry-v1/runtime/failed_capture_local_verification_v1.json 및 hf_import_fix_* 로그다.
+
+## 2026-10-18 19:56 KST — 새3090 정상setup·793+24검사 통과, 제한실행 제출
+
+사용자 재시도로 생성한 소유Pod `2uiqg6ym30ou3y`는 이전 UVM장애와 다른 실제3090
+UUID0481210a…/driver570.211.01이며 CUDA/BF16을 통과했다. MMDL_test clean8e9a8ee…
+직접clone과414개 비공개 입력/2,065,615,841bytes·68code SHA를 검증했다. 지정13모델을
+병렬 취득·검증한 뒤 정상setup도 재검증했다. 같은lock14개 NVIDIA wheel의 공식SHA
+선설치 후 변경 없는setup491은2786.392초/exit0,793+24 CPU검사/pipcheck/doctor/모델
+검증으로 닫혔고4개 로그·환경 파일의 원격/로컬SHA가 일치한다. doctor RAM은 host값이며
+실제cgroup RAM29,999,996,928bytes와 구분한다.
+
+10:55:45UTC 기존 shared_smoke --execute→별도process --reload-check를 예산watchdog3234/
+capture3236으로 제출했다. 고정10distinct/단일5·복수5/ALG-NB3/최대2update이며 새900이나
+대규모학습이 아니다. 두 production 입력검증과 runtime/GPU/모델 검사를 생략하지 않는다.
+현재는 실행 전 입력검증이며 실제4B update/reload 성공은 아직 아니다. 최초과금09:59:13.359UTC,
+GPU11:59:13.359/job11:57:13.359/recovery12:14:13.359UTC·0.30USDh/reserve0.20은 불변이다.
+10:51:04UTC 실제잔액0.7152243244USD·현재과금0.241USDh다. 근거는 private retry-v1/runtime의
+remote_input_sha_verification_v1.json 및 setup_local_verification_v1.json이다. 교수님MMDL/V8는 불변이다.
+
 ## 2026-10-18 18:42 KST — 3090 최초 CUDA/UVM 사전검사 실패·자원 삭제
 
 실험 코드는 MMDL_test `ce2bc35edaf80f539641d4ae64c7fa7d1b0b1f4c`에 정상 게시했다.
