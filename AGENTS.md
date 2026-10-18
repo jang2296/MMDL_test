@@ -1,5 +1,29 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-18 21:01 KST — 3090 재시도 부분회수·삭제 완료, 실제 RL 미완료
+
+새a48505c는795 CPU검사304.774초/환경skip1·입력24/52.351초·44집중검사/Ruff/mypy2/
+게시3검사·독립delta검토를 통과했다. Pod는GitHub에서직접 clean clone했고16개새입력/68code
+SHA 및 정상lock/pipcheck·44원격검사6.004초/CUDA BF16/13모델 재해시를18.749초에 통과했다.
+11:36:33UTC watchdog4022/capture4024의 실제실행은 sampler override없이4B 적재·두이미지
+probe delta0·T1/T2/T3를 진행했다. 닫힌GROUP4개/고유20응답/10101생성token·완료TREE1개다.
+고정8문항 학습batch를 모으기 전 한도에 도달해 actual optimizer update0이며 batch/checkpoint/
+result.json/reload/최종추가audit note는 없다. 진행중 생성은 완료·보존됐다고 세지 않는다.
+TREE의VISION_OFF는 한 사례의 검증 기반 경로이지 내부모듈 유일책임·학습성공이 아니다.
+
+outer는1239.431초 BUDGET_STOP으로 종료했다. 원래 GPU11:59:13.359/job11:57:13.359UTC
+한도는 유지했고 연장은 승인되지 않았다. GPU0%/1MiB·소유프로세스 부재를 확인한 뒤8payload+
+4control의 모든원격/로컬SHA·20token decode/유한logprob·12개재시도 부모feedback/verifier/
+route를 주검증·독립Sol검증했다. 실패v1/v2·설치/재검증·원래입력도 보존했다.
+소유Pod2uiqg6ym30ou3y는12:00:47UTC delete204→get404·cluster포함 Pod0/NetworkVolume0/
+전체페이지 완료로 삭제했다. container30GB/workspace120GB·모델cache는 폐기·원격복구불가지만
+로컬입력/원문/로그는 보존됐다. 새학습가중치는 생성되지 않았다.12:00:52UTC 실제잔액
+0.4343583743USD/현재과금0USDh는 snapshot이며 최종청구서와 구분한다. 새유료작업은 없다.
+근거 private notebook-rl-3090-20261018/retry-v1/runtime의 final_capture_local_verification_v3.json,
+closed_capture_v3_remote_inventory.json·owned_pod_cleanup_final_v1.json이다. 교수님MMDL clean
+HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8 558/900은 불변이다. 이 종료는10문항
+실제RL/reload 또는 대규모학습pipeline 완료가 아니며 새실행에는 새시간/비용 확인이 필요하다.
+
 ## 2026-10-18 20:34 KST — 실제4B 적재·동기검사 통과, sampling 기본값 충돌 중단·수정
 
 363d09d clean clone의 정상lock/pipcheck·변경부24검사5.113초·실제CUDA/BF16·13모델 재해시를

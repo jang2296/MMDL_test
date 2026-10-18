@@ -1,5 +1,40 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-18 21:01 KST — 새3090 실제 재시도 부분 종료·로컬 검증·Pod 삭제
+
+상태: `CLOSED_PARTIAL_BUDGET_STOP / CLEANUP_VERIFIED`, 실제학습 완료가 아니다.
+실행 code `a48505c37427436c22893012f8b196b08b9ad67b`는 직접GitHub clean clone이며
+새16입력/68code SHA·정상lock/pipcheck·44원격검사6.004초/실제CUDA BF16/13모델 재해시를
+18.749초에 통과했다. 동일소스 로컬795검사304.774초/skip1·입력24/52.351초·Ruff/mypy2/
+게시3검사와 독립delta검토도 PASS다. full795 Linux복사본과 최종68code/변경test byte를 대조했다.
+
+실제4B 적재·단일/복수이미지 초기logprob delta0 및 수정sampler의 T1/T2/T3가 진행됐다.
+닫힌GROUP은 T1 8/1884token, T2 4/2880, T2 4/3723(length1), T3 4/1614이며 고유20응답/
+10101token이다. 완료TREE는1개/VISION_OFF다. 이는 한 사례의검증경로이며 전체성능이나
+모듈원인 인증이 아니다. 다른진행중 생성은 완료로세지 않는다. 고정8문항 학습배치가 모이기
+전에 한도종료돼 optimizer update0·batch0/checkpoint0·fresh reload미검증·최종추가audit note
+미실행이다. 강제종료로 result.json도 없으며 outer BUDGET_STOP을 정상학습종료로 바꾸지 않는다.
+
+11:36:33UTC 제출한 watch4022/capture4024는1239.431초 BUDGET_STOP으로 종료했다.
+GPU0%/1MiB·소유프로세스 부재 후8payload+4control의 크기/SHA, launch/job/Pod/code 결합,
+20토큰원문 decode/유한logprob, GROUP/TREE와12개부모feedback·verifier/reward/cause/route를
+주검증과 독립Sol검증했다. teacher·gold 삽입 없이 부모풀이와 제한feedback을 재사용했다.
+이전cold import실패·잘못된sampling v2 8응답·모든기존입력/실패증거는 별도보존하고 재사용하지 않는다.
+
+회수·로컬검증 후 정확한소유Pod `2uiqg6ym30ou3y`를12:00:47UTC delete204→get404로
+삭제했다. cluster포함 계정Pod0/NetworkVolume0·전체페이지 완료를 확인했다. container30GB/
+workspace120GB·설치/모델cache는 폐기돼 원격복구불가이며 로컬원문/입력/설치로그는 보존된다.
+새변형모델은 생성되지 않았다. 실제잔액12:00:52UTC `0.4343583743 USD`, 현재과금 `0 USD/h`.
+이는최종청구서가 아니며 이미발생한비용을0으로보지 않는다. 원래GPU/job/회수한도는 유지했고
+연장승인은없다. 교수님MMDL HEAD197838c11557911a14a46d87b7f52fda0cac5b3c/V8는 clean/불변이다.
+
+증거: `/home/jang2/mmdl-artifacts/notebook-rl-3090-20261018/retry-v1/runtime/`의
+`closed_capture_v3/`, `closed_capture_v3_remote_inventory.json`, `closed_capture_v3.log`,
+`final_capture_local_verification_v3.json`, `revalidation_local_verification_v3.json`,
+`stopped_sampling_local_verification_v2.json`, `owned_pod_cleanup_final_v1.json`.
+현재검증은 실제연결·생성·재시도까지이며10문항RL/reload·학습메모리 적합성·성능개선·대규모
+학습완료는아니다. 다음유료실행은 현재잔액·시간·예상rollout비용을 다시확인해야한다.
+
 ## 2026-10-18 20:34 KST — 실제4B 적재·동기검사 후 sampling 충돌 중단, 수정 검증
 
 363d09d clean clone/정상lock/pipcheck/24변경부·CUDA BF16/13모델 재해시가16.649초에
