@@ -82,6 +82,9 @@ class SharedPolicyEngineTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "probes"):
             engine.sample([request()])
         self.certify(bundle, engine)
+        bundle.model.generation_config.temperature = .7
+        bundle.model.generation_config.top_p = .8
+        bundle.model.generation_config.transformers_version = "4.57.1"
         score_refs = []
         original = bundle.model.generate
 

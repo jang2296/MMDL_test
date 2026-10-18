@@ -1,5 +1,20 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-10-18 20:34 KST — 실제4B 적재·동기검사 후 sampling 충돌 중단, 수정 검증
+
+363d09d clean clone/정상lock/pipcheck/24변경부·CUDA BF16/13모델 재해시가16.649초에
+통과했다. v2는 실제4B를3090 약10.2GiB에 적재하고 두 이미지probe maxdelta0을 관측했다.
+하지만 Transformers4.57.1이 학습용명시temperature1/top_p1을 모델기본0.7/0.8로 덮어써
+11:27:57UTC 소유watchdog를 중단했다. 완료GROUP1개/8응답은 잘못된sampling으로 격리하며
+update0/checkpoint0이다. 정합probe delta0만으로 sampling이 인증되는 것은 아니다.
+HF generate에 use_model_defaults=False만 추가했고 실제작은Qwen의 수정전실패/수정후
+44검사9.978초/Ruff/범위mypy2·독립delta검토 PASS다. 전체795검사304.774초/환경skip1 및
+새prepared_v4의120.671초/차단0·10distinct 입력검증도 통과했다. 중단된5파일의 원격/로컬
+SHA와GROUP1/응답8/정책version0을 검증해 보존했으며 잘못된sampling은 학습에 쓰지 않는다.
+teacher/vault/benchmark guard·프로토콜·10문항·batch8·원래GPU11:59:13.359UTC 한도는
+유지한다. 다음실행은 검증된 새GitHub exactSHA clean clone 이후에만 가능하다.
+새학습/reload/개선 성공을 아직 주장하지 않으며 교수님MMDL/V8는 불변이다.
+
 ## 2026-10-18 20:14 KST — import 수정794 CPU/새 입력 통과·동일Pod 재검증 준비
 
 Linux 코드복사본68 SHA를 확인하고 전체794검사296.668초/1환경skip과 입력24검사42.116초를

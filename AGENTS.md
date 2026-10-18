@@ -1,5 +1,21 @@
 # AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
 
+## 2026-10-18 20:34 KST — 실제4B 적재·동기검사 통과, sampling 기본값 충돌 중단·수정
+
+363d09d clean clone의 정상lock/pipcheck·변경부24검사5.113초·실제CUDA/BF16·13모델 재해시를
+16.649초/exit0으로 통과했다. v2 실제4B는3090 약10.2GiB/GPU35%에서 적재됐고 단일/복수
+이미지 초기logprob probe의 maxdelta0을 확인했다. 그러나 pinned Transformers4.57.1이
+명시한 학습용temperature1/top_p1을 모델기본0.7/0.8로 덮어쓰는 실제warning을 관측했다.
+11:27:57UTC 소유watchdog를 중단해GPU0%/1MiB를 확인했다. 완료GROUP1개/8응답은 보존하되
+학습·재개에 쓰지 않는다. update0/checkpoint0이며 초기동기검사를 sampler인증으로 쓰지 않는다.
+유일한production 수정은 HF generate의 use_model_defaults=False다. 실제작은Qwen에서
+수정전0.7/0.8 실패를 재현했고 수정후44집중검사9.978초/Ruff/범위mypy2·독립delta 검토가
+PASS다. guards.py/10문항/ALG-NB3/n8-4-4/이미지/BF16/batch8/기한은 불변이며 전체CPU와
+새code결합 입력검증은 완료했다. 전체795검사304.774초/환경skip1·새입력120.671초/차단0·
+10distinct 및 원래76입력/10source SHA를 확인했다. 게시·새clean clone/원격변경부검증 뒤에만
+다음실행을 제출한다. 중단된5파일의 원격/로컬SHA도 검증했다. 기존원문·교수님MMDL/V8는
+불변이고 실제RL/reload 성공이 아니다.
+
 ## 2026-10-18 20:14 KST — HF import 수정 전체CPU·입력검증 통과, 게시 준비
 
 같은68code SHA의 Linux 복사본 전체794검사296.668초/환경별1skip·입력24검사42.116초·

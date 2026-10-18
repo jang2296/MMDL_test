@@ -134,6 +134,27 @@ class EnginesTests(unittest.TestCase):
             expected = engine.probe_logprobs(request(), c.token_ids)
             torch.testing.assert_close(torch.tensor(c.logprobs), torch.tensor(expected), atol=1e-5, rtol=1e-5)
 
+    def test_model_defaults_cannot_override_explicit_rollout_recipe(self):
+        engine = self.engine()
+        model_defaults = engine.model.generation_config
+        model_defaults.temperature, model_defaults.top_p = .7, .8
+        model_defaults.bos_token_id, model_defaults.transformers_version = 1, "4.57.1"
+        original = engine.model._prepare_generation_config
+        observed = []
+        def prepare(*args, **kwargs):
+            effective, model_kwargs = original(*args, **kwargs)
+            observed.append((effective.do_sample, effective.temperature, effective.top_p,
+                             effective.top_k, effective.repetition_penalty, effective.bos_token_id))
+            return effective, model_kwargs
+        with patch.object(engine.model, "_prepare_generation_config", side_effect=prepare):
+            result = engine.sample([request()])[0]
+        self.assertEqual(observed, [(True, 1.0, 1.0, 0, 1.0, 1)]*2)
+        self.assertEqual((model_defaults.temperature, model_defaults.top_p), (.7, .8))
+        for completion in result.completions:
+            expected = engine.probe_logprobs(request(), completion.token_ids)
+            torch.testing.assert_close(torch.tensor(completion.logprobs), torch.tensor(expected),
+                                       atol=1e-5, rtol=1e-5)
+
     def test_explicit_sampling_pins_and_hf_official_refusal(self):
         self.assertEqual(SamplingSettings().name, "temperature_1")
         self.assertEqual(QWEN_OFFICIAL.name, "qwen_official")

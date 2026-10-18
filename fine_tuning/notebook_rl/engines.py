@@ -251,7 +251,7 @@ class HFRolloutEngine(InputPreparation):
                     devices = [device.index or 0] if device.type == "cuda" else []
                     with torch.random.fork_rng(devices=devices), torch.no_grad():
                         torch.manual_seed(seed)
-                        output = self.model.generate(**batch, generation_config=cfg)
+                        output = self.model.generate(**batch, generation_config=cfg, use_model_defaults=False)
                     ids = output.sequences[0, len(prepared.token_ids):].tolist()
                     lps = [float(score[0].float().log_softmax(-1)[token])
                            for token, score in zip(ids, output.scores, strict=True)]
