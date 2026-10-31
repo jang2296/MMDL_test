@@ -1,6 +1,7 @@
 {
   "version": "pod-chain-params-v1",
   "notes": [
+    "main has no prefilter block (chain.check_params refuses one): its items are the pilot's pass-rate selection, measured with k=4 and kept at 1..3 passes (user decision 2026-10-31).",
     "main, first segment: the pilot's pass-rate selection (pinned by sha256) -> N=min(selected, 3000) rounded down to K -> training from fresh F0 (main cannot resume the completed pilot: different N/K protocol, contract and preparation) -> reload -> sentinel F0/FT.",
     "train.problems = min(len(fixed) + len(selection_source.dropped_ids) of the pilot's out/rule.json, 3000) // 4 * 4 (the distinct-structure selected items).",
     "local_train caps --max-seconds at 86400. If the segment ends with BUDGET_STOP (train exit 2, chain exit 2), its committed checkpoints (every 50 updates) are continued by a NEW approved main job planned from params-main-resume.json."

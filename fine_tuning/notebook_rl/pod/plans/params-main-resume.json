@@ -1,6 +1,7 @@
 {
   "version": "pod-chain-params-v1",
   "notes": [
+    "main has no prefilter block (chain.check_params refuses one): its items are the pilot's pass-rate selection, measured with k=4 and kept at 1..3 passes (user decision 2026-10-31).",
     "main, later segment: local_train train --resume-from the stopped segment (closed, BUDGET_STOP or DISK_LOW, not completed) from its last committed cadence checkpoint. Everything that is bound must equal the stopped segment: python, model_path, frozen_approval, vllm, train (incl. max_seconds, which is in the execution contract), and the preparation/minimal paths below.",
     "resume.* point at the FIRST segment's run dir (preparation and minimum) and at the stopped segment's out/train."
   ],

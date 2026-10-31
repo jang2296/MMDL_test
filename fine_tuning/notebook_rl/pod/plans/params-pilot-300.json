@@ -1,7 +1,7 @@
 {
   "version": "pod-chain-params-v1",
   "notes": [
-    "pilot-300: F0 pass rate (k=8) on ALL eligible train items -> keep 1..7 passes -> N=300, K=4 training from F0 -> reload -> sentinel F0/FT.",
+    "pilot-300: F0 pass rate (k=4, user decision 2026-10-31) on ALL eligible train items -> keep 1..3 passes -> N=300, K=4 training from F0 -> reload -> sentinel F0/FT.",
     "prefilter.items = number of eligible distinct-structure train items. Get it on CPU with the same flags: `local_run propose-proof ... --train-problems 1 --problems-per-update 1 --max-updates 1 --output /tmp/count.json`, then items = len(fixed) + len(selection_source.dropped_ids). A larger value is refused by propose-proof, a smaller one measures only the first items in the rule's hash order.",
     "vllm values must equal the ones stage1 measured with (or be re-decided before the pilot; they are protocol-bound). train.max_seconds and the timeouts are set from the stage1 receipt via pod/cost.py before G4."
   ],
@@ -19,6 +19,6 @@
   "train": {"problems": 300, "per_update": 4, "checkpoint_every": 25,
             "evidence_audit_rule": {"first": true, "last": true, "every": 25}, "max_seconds": 43200},
   "timeouts": {"cpu": 1800, "passrate": 86400, "minimal": 2400, "reload": 1800, "train_close": 3600, "evaluate": 7200},
-  "prefilter": {"items": "<eligible distinct-structure train items>", "k": 8, "seed_namespace": "proof-pilot-f0",
-                "min_pass": 1, "max_pass": 7, "max_blocking": 0}
+  "prefilter": {"items": "<eligible distinct-structure train items>", "k": 4, "seed_namespace": "proof-pilot-f0",
+                "min_pass": 1, "max_pass": 3, "max_blocking": 0}
 }

@@ -79,14 +79,14 @@ def make_params(case):
         params["sentinels_per_subject"] = 1
         params["train"] = {"problems": 8, "per_update": 4, "checkpoint_every": 1, "evidence_audit_rule": None,
                            "max_seconds": 1800}
-        params["prefilter"] = {"items": 16, "k": 8, "seed_namespace": "proof-stage1-f0", "min_pass": 1,
-                               "max_pass": 7, "max_blocking": 0}
+        params["prefilter"] = {"items": 16, "k": 4, "seed_namespace": "proof-stage1-f0", "min_pass": 1,
+                               "max_pass": 3, "max_blocking": 0}
     elif case == "pilot-300":
         params["train"] = {"problems": 300, "per_update": 4, "checkpoint_every": 25,
                            "evidence_audit_rule": {"first": True, "last": True, "every": 25},
                            "max_seconds": 43200}
-        params["prefilter"] = {"items": 3420, "k": 8, "seed_namespace": "proof-pilot-f0", "min_pass": 1,
-                               "max_pass": 7, "max_blocking": 0}
+        params["prefilter"] = {"items": 3420, "k": 4, "seed_namespace": "proof-pilot-f0", "min_pass": 1,
+                               "max_pass": 3, "max_blocking": 0}
     else:
         params["train"] = {"problems": 12, "per_update": 4, "checkpoint_every": 50,
                            "evidence_audit_rule": {"first": True, "last": True, "every": 50},
@@ -230,6 +230,14 @@ class PlanTests(unittest.TestCase):
                 params = make_params(case)["prefilter"]
                 self.assertEqual(str(params["k"]), value(steps["passrate-measure"], "--k"))
                 self.assertEqual(params["seed_namespace"], value(steps["passrate-measure"], "--seed-namespace"))
+
+    def test_proof_t1_cap_is_8192_in_every_protocol_command(self):
+        # user decision 2026-10-31: T1 cap 8192 (= the fast8k eval cap); retries/notes keep their own caps
+        self.assertEqual("8192", value(chain.PROOF_FLAGS, "--turn1-max-new-tokens"))
+        for case in ("stage1", "pilot-300", "main-selection"):
+            for name, argv in argvs(planned(case)).items():
+                if "--turn1-contract" in argv:
+                    self.assertEqual("8192", value(argv, "--turn1-max-new-tokens"), (case, name))
 
     def test_prefix_caching_flag_follows_the_vllm_block_in_every_protocol_command(self):
         params = make_params("stage1")
@@ -395,7 +403,16 @@ class TemplateTests(unittest.TestCase):
                 filled = fill(template)
                 self.assertNotEqual(template, filled)
                 chain.check_params(stage, filled)
-                chain.check_spec(chain.plan(stage, filled, SHA))
+                spec = chain.check_spec(chain.plan(stage, filled, SHA))
+                if "prefilter" in template:  # user decision 2026-10-31: k=4, keep 1..3 passes
+                    pre = template["prefilter"]
+                    self.assertEqual((4, 1, 3, 0), (pre["k"], pre["min_pass"], pre["max_pass"], pre["max_blocking"]))
+                    steps = argvs(spec)
+                    self.assertEqual("4", value(steps["passrate-measure"], "--k"))
+                    self.assertEqual(("1", "3"), (value(steps["passrate-select"], "--min-pass"),
+                                                  value(steps["passrate-select"], "--max-pass")))
+                else:
+                    self.assertIn("k=4", " ".join(template["notes"]))
 
     def test_cost_plans_project_a_synthetic_receipt(self):
         expected = {"cost-plan-v1.json": ["stage1", "pilot-300", "main"],
@@ -408,6 +425,9 @@ class TemplateTests(unittest.TestCase):
                 result = cost.project(RECEIPT, plan, receipt_sha256="r" * 64, plan_sha256="p" * 64)
                 self.assertEqual(stages, [row["name"] for row in result["stages"]])
                 self.assertEqual("projection", result["label"])
+                self.assertTrue(plan["notes"][0].startswith("ESTIMATES:"))
+                if name == "cost-plan-prefilter-v1.json":  # k=4 first attempts per item
+                    self.assertEqual({4}, {row["n_samples"] for row in plan["stages"]})
 
 
 # ---------------------------------------------------------------- B. run

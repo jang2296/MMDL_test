@@ -1,8 +1,9 @@
 {
   "version": "cost-plan-v1",
   "notes": [
+    "ESTIMATES: every number in this plan is an estimate or an upper bound, not a measurement; only a projection from a measured receipt (pod/cost.py) may be quoted, and it is labelled projection.",
     "Training stages; project with the TRAIN step's receipt (<run_dir>/throughput_receipt.json written by the chain's stage-receipt step, or <run_dir>/out/train/throughput_receipt.json).",
-    "retries_per_item 1.4 = the only measured value: local NF4/HF fixed-ten run hf-pool-v3/local-test-v3/ten/throughput_receipt.json (sha256 3278b5c9c01adabd592fa8ee2f710f4d45ef63dc53a21a571c89aacd27230812; 10 items, n=4, T1 cap 1024). The proof uses T1 cap 4096 and BF16/vLLM, so it is an estimate until stage1 measures it.",
+    "retries_per_item 1.4 = the only measured value: local NF4/HF fixed-ten run hf-pool-v3/local-test-v3/ten/throughput_receipt.json (sha256 3278b5c9c01adabd592fa8ee2f710f4d45ef63dc53a21a571c89aacd27230812; 10 items, n=4, T1 cap 1024). The proof uses T1 cap 8192 (user decision 2026-10-31) and BF16/vLLM, so it is an estimate until stage1 measures it; longer T1 also raises tokens per item relative to that receipt.",
     "main items 3000 is the cap (min(selected, 3000)); the pass-rate prefilter and the sentinel evaluations are not in this plan (prefilter: cost-plan-prefilter-v1.json).",
     "hourly_usd 0.59 = A40 Secure read on 2026-10-30 (engineering.md); setup_minutes 30 and reserve_usd 2.0 (about 3.4 A40 hours for deadline -> terminate -> collect) are judgment."
   ],

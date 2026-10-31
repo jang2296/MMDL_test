@@ -1,15 +1,22 @@
-"""Pre-registered F0-vs-FT MMMU-val proof: merged export, c16 run wrapper, preregistration, analysis.
+"""Pre-registered F0-vs-FT MMMU-val proof: merged export, fast8k run wrapper, preregistration, analysis.
 
-Nothing here trains or selects. ``run-eval`` only registers the three c16 variant IDs inside its
+Nothing here trains or selects. ``run-eval`` only registers the three fast8k variant IDs inside its
 own process and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
-``analyze`` re-scores preserved raw responses with the frozen V8 scorer and reduces several seeds
-only by the per-item mean (CLAUDE.md §2.8): there is no reducer argument, no repeated
-(arm, protocol) run, and no second FT checkpoint.
+The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots, an 8192-token
+output cap, the training image budget 262144..1003520 pixels and a 24576 context (user decision
+2026-10-31: speed/cost of the RunPod proof). The c16 variant files stay on disk but are not registered.
+Scope (user decision 2026-10-31): every preregistered run is a ``--mode partial`` run on exactly the
+342 MMMU-val items the frozen B2 + team-final-answer-v8 baseline got wrong (the subset file, bound by
+sha256 in the preregistration; evaluation only, never training). The course run (mmmu-val-v8, 900
+items, plain scripts/eval.sh) keeps its code path but is not preregistered.
+``analyze`` re-scores preserved raw responses with the frozen V8 scorer (the only scorer here) and
+reduces several seeds only by the per-item mean (CLAUDE.md §2.8): there is no reducer argument, no
+repeated (arm, protocol) run, and no second FT checkpoint.
 
 Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --run-id R
 --ledger L`` must precede every evaluation run (``run-eval`` or the plain course ``scripts/eval.sh``; R is the run
 directory name artifact_root/runs/R). It refuses a second start of the same (arm, variant) unless the first is
-recorded with ``ledger-fail --ledger L --run-id R --reason ...`` (refused for a COMPLETE run). ``analyze --ledger L``
+recorded with ``ledger-fail --ledger L --run-id R --reason ...`` (refused for a finished run). ``analyze --ledger L``
 is required: it refuses a run that was never started, started under another (arm, variant) or recorded FAILED, and any
 live started run of a registered (arm, variant) that is not the one analyzed (an omitted or replaced repeat).
 """
@@ -40,13 +47,17 @@ from mmdl.runtime.contracts import MODEL_ID, MODEL_REVISION, SUBJECTS, sample_se
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-FORMAT = "notebook-rl-proof-prereg-v1"
+FORMAT = "notebook-rl-proof-prereg-v2"
+SUBSET_VERSION = "proof-eval-subset-v1"
+# The evaluator's summary status of a run that finished every planned item: full runs end COMPLETE, partial
+# (--sample-id) runs end PARTIAL; anything else (INCOMPLETE, RUNNING, absent) is not finished.
+FINISHED = {"course": "COMPLETE", "statistical": "PARTIAL"}
 PARSER = "team-final-answer-v8"
 COURSE = "mmmu-val-v8"
-SENSITIVITY = "mmmu-val-v8-c16-seed3407-v1"
+SENSITIVITY = "mmmu-val-v8-fast8k-seed3407-v1"
 # variant id -> (config file, seed, max concurrent requests, role)
 VARIANTS = {COURSE: (ROOT / "configs/eval/mmmu_val_v8.yaml", 3407, 2, "course")} | {
-    f"mmmu-val-v8-c16-seed{s}-v1": (HERE / f"eval_configs/mmmu_val_v8_c16_seed{s}.yaml", s, 16, "statistical")
+    f"mmmu-val-v8-fast8k-seed{s}-v1": (HERE / f"eval_configs/mmmu_val_v8_fast8k_seed{s}.yaml", s, 32, "statistical")
     for s in (3407, 3408, 3409)}
 B2_PREDICTIONS = ROOT / "analysis_exports/mmmu_20260924/team_final_v8/official_b2/predictions.jsonl"
 BASE_MODEL_REF = ROOT / "manifests/models/baseline.json"
@@ -140,12 +151,16 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
 
 
 # ---------------------------------------------------------------------------------------------
-# c16 run wrapper: in-process registration of exactly three IDs; src/ files stay untouched
+# fast8k run wrapper: in-process registration of exactly three IDs; src/ files stay untouched
 # ---------------------------------------------------------------------------------------------
 
 V8 = "mmmu-val-v8"
-C16_SLOTS = 16
-REGISTERED = {vid: seed for vid, (_, seed, slots, _) in VARIANTS.items() if slots == C16_SLOTS}
+# The only differences of a registered variant from its mmmu-val-v8 twin besides protocol_id and seed.
+FAST_SLOTS = 32
+FAST_MAX_NEW_TOKENS = 8192
+FAST_PIXELS = {"min_pixels": 262144, "max_pixels": 1003520}  # = the training image budget (local_profile)
+FAST_MAX_MODEL_LEN = 24576
+REGISTERED = {vid: seed for vid, (_, seed, _, role) in VARIANTS.items() if role == "statistical"}
 PATCHED_SRC = ("src/mmdl/runtime/contracts.py", "src/mmdl/evaluation/backends/vllm_backend.py",
                "src/mmdl/evaluation/cli.py", "src/mmdl/evaluation/engine.py")
 REGISTRATION_FILE = "variant_registration.json"
@@ -158,15 +173,15 @@ def variant_registration(protocol_id: str) -> dict:
     return {
         "format": "proof-eval-variant-registration-v1", "protocol_id": protocol_id,
         "protocol_file_sha256": sha256_file(VARIANTS[protocol_id][0]),
-        "registered": {pid: {"seed": seed, "parser": PARSER,
-                             "control_images": dict(contracts.CONTROL_IMAGES[V8]),
-                             "execution_profile": dict(contracts.EXECUTION_PROFILES[V8], batch_size=C16_SLOTS)}
+        "registered": {pid: {"seed": seed, "parser": PARSER, "max_new_tokens": FAST_MAX_NEW_TOKENS,
+                             "control_images": _fast_images(contracts), "execution_profile": _fast_execution(contracts)}
                        for pid, seed in REGISTERED.items()},
         "patched": {
-            "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, 16 slots, V8 parser, all else "
+            "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, 32 slots, 8192 output tokens, "
+                                                       "262144..1003520 pixels, 24576 context, V8 parser; all else "
                                                        "validated as the mmmu-val-v8 twin; other IDs unchanged",
             "mmdl.evaluation.backends.vllm_backend.VLLMBackend.__init__": "registered IDs: slot check sees 2, vLLM "
-                                                                          "max_num_seqs=16, batch_size=16; other IDs unchanged"},
+                                                                          "max_num_seqs=32, batch_size=32; other IDs unchanged"},
         "src_files": {p: sha256_file(ROOT / p) for p in PATCHED_SRC},
         "proof_eval_sha256": sha256_file(Path(__file__)),
         "entry_point": "python -m fine_tuning.notebook_rl.proof_eval run-eval <scripts/eval.sh arguments>; "
@@ -185,14 +200,22 @@ def _record_registration(run_dir: Path, registration: dict) -> None:
     _write_once(path, json.dumps(registration, indent=2, sort_keys=True) + "\n")
 
 
+def _fast_images(contracts) -> dict:
+    return dict(contracts.CONTROL_IMAGES[V8], **FAST_PIXELS)
+
+
+def _fast_execution(contracts) -> dict:
+    return dict(contracts.EXECUTION_PROFILES[V8], batch_size=FAST_SLOTS, max_model_len=FAST_MAX_MODEL_LEN)
+
+
 @contextmanager
 def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterator[None]:
-    """Register exactly the c16 IDs in this process; tables and functions are restored on exit."""
+    """Register exactly the fast8k IDs in this process; tables and functions are restored on exit."""
     from mmdl.evaluation.backends import vllm_backend
     from mmdl.runtime import contracts
 
     if any(pid in contracts.CONTROL_IMAGES or pid in contracts.EXECUTION_PROFILES for pid in REGISTERED):
-        raise RuntimeError("proof_eval: c16 IDs already registered (nested use or src changed)")
+        raise RuntimeError("proof_eval: fast8k IDs already registered (nested use or src changed)")
     original_validate = contracts.validate_configs
     original_init = vllm_backend.VLLMBackend.__init__
 
@@ -200,12 +223,16 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
         pid = cfg.get("protocol_id")
         if pid not in REGISTERED:
             return original_validate(cfg, hw)
-        seed = cfg["generation"].get("seed")
+        seed, tokens = cfg["generation"].get("seed"), cfg["generation"].get("max_new_tokens")
         if (type(seed) is not int or seed != REGISTERED[pid] or cfg.get("parser") != PARSER
+                or type(tokens) is not int or tokens != FAST_MAX_NEW_TOKENS
+                or cfg.get("image") != contracts.CONTROL_IMAGES[pid]
                 or cfg["execution"] != contracts.EXECUTION_PROFILES[pid]):
-            raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, 16 slots and the V8 parser")
+            raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, 32 slots, 8192 output tokens, "
+                             "262144..1003520 pixels, 24576 context and the V8 parser")
         twin = copy.deepcopy(cfg)
-        twin["protocol_id"], twin["generation"]["seed"] = V8, 3407
+        twin["protocol_id"], twin["generation"]["seed"], twin["generation"]["max_new_tokens"] = V8, 3407, 32768
+        twin["image"] = dict(contracts.CONTROL_IMAGES[V8])
         twin["execution"] = dict(contracts.EXECUTION_PROFILES[V8])
         return original_validate(twin, hw)
 
@@ -225,7 +252,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
             def llm(**kwargs):
                 if kwargs.get("max_num_seqs") != 2:
                     raise RuntimeError("proof_eval: unexpected VLLMBackend structure; refusing to widen slots")
-                return llm_cls(**kwargs | {"max_num_seqs": C16_SLOTS})
+                return llm_cls(**kwargs | {"max_num_seqs": FAST_SLOTS})
             return llm, sampling_cls, version
 
         vllm_backend._vllm = widened
@@ -235,12 +262,12 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
             vllm_backend._vllm = real
         if self.batch_size != 2 or self.cfg is not view:
             raise RuntimeError("proof_eval: unexpected VLLMBackend structure after load")
-        self.cfg, self.batch_size = cfg, C16_SLOTS
+        self.cfg, self.batch_size = cfg, FAST_SLOTS
 
     try:
         for pid in REGISTERED:
-            contracts.CONTROL_IMAGES[pid] = dict(contracts.CONTROL_IMAGES[V8])
-            contracts.EXECUTION_PROFILES[pid] = dict(contracts.EXECUTION_PROFILES[V8], batch_size=C16_SLOTS)
+            contracts.CONTROL_IMAGES[pid] = _fast_images(contracts)
+            contracts.EXECUTION_PROFILES[pid] = _fast_execution(contracts)
         setattr(contracts, "validate_configs", validate_configs)
         setattr(vllm_backend.VLLMBackend, "__init__", init)
         yield
@@ -253,7 +280,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
 
 
 def run_eval(argv: list[str]) -> int:
-    """Same argv as scripts/eval.sh, for one of the three c16 variant files only."""
+    """Same argv as scripts/eval.sh, for one of the three fast8k variant files only."""
     from mmdl.runtime.artifacts import default_path
 
     pre = argparse.ArgumentParser(prog="proof_eval run-eval", add_help=False)
@@ -264,7 +291,7 @@ def run_eval(argv: list[str]) -> int:
     protocol = known.protocol if known.protocol.is_absolute() else ROOT / known.protocol
     pid = yaml.safe_load(protocol.read_text(encoding="utf-8")).get("protocol_id")
     if pid not in REGISTERED or sha256_file(protocol) != sha256_file(VARIANTS[pid][0]):
-        raise ValueError("proof_eval: run-eval runs only the three preregistered c16 variant files; "
+        raise ValueError("proof_eval: run-eval runs only the three preregistered fast8k variant files; "
                          "the c2 course run (mmmu-val-v8) uses plain scripts/eval.sh")
     artifact_root = known.artifact_root if known.artifact_root.is_absolute() else ROOT / known.artifact_root
     run_dir = artifact_root / "runs" / known.run_id
@@ -304,47 +331,70 @@ def _b2_split(path: Path) -> dict:
             "wrong_ids": wrong, "right_ids": right}
 
 
-def build_preregistration(b2_predictions: Path = B2_PREDICTIONS) -> dict:
+def _subset(path: Path, b2: dict) -> dict:
+    """The evaluation subset file: exactly the frozen B2 V8 wrong IDs, derived from the same B2 file."""
+    path = Path(path)
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
+    if (loaded.get("version") != SUBSET_VERSION or not isinstance(ids, list) or ids != b2["wrong_ids"]
+            or loaded.get("count") != len(ids) or loaded.get("source_sha256") != b2["sha256"]):
+        raise ValueError("proof_eval: the subset must be the sorted frozen B2 V8 wrong IDs of the same B2 file")
+    return {"path": str(path.resolve()), "sha256": sha256_file(path), "version": SUBSET_VERSION, "count": len(ids),
+            "source": loaded.get("source"), "source_sha256": loaded["source_sha256"], "ids": ids,
+            "rule": "B2 + team-final-answer-v8 wrong items; evaluation only, never training (CLAUDE.md §2.2)"}
+
+
+def build_preregistration(subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
     variants = {}
     for vid, (path, seed, concurrency, role) in VARIANTS.items():
+        if role != "statistical":  # the course run is not in the 342-item proof plan
+            continue
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         if (cfg["protocol_id"] != vid or cfg["generation"]["seed"] != seed or cfg["parser"] != PARSER
                 or cfg["execution"]["batch_size"] != concurrency or cfg["status"] != "FROZEN"):
             raise ValueError(f"proof_eval: variant file disagrees with its declaration: {vid}")
         variants[vid] = {"path": _rel(path), "sha256": sha256_file(path), "config_digest": digest(cfg),
                          "seed": seed, "concurrency": concurrency, "role": role}
-    statistical = [v for v, row in variants.items() if row["role"] == "statistical"]
+    statistical = list(variants)
     runs = [{"arm": arm, "variant": v, "role": "statistical"} for arm in ("F0", "FT") for v in statistical]
-    runs.append({"arm": "FT", "variant": COURSE, "role": "course"})
     base_ref = json.loads(BASE_MODEL_REF.read_text(encoding="utf-8"))
+    b2 = _b2_split(b2_predictions)
+    items = _subset(subset, b2)
+    n = items["count"]
     return {
         "format": FORMAT, "status": "FROZEN",
         "arms": {
-            "F0": {"definition": f"untrained BF16 base {MODEL_ID}@{MODEL_REVISION}, re-run (stored B2 is not F0)",
+            "F0": {"definition": f"untrained BF16 base {MODEL_ID}@{MODEL_REVISION}, re-run on the subset "
+                                 "(the stored B2 answers are not F0 and not the comparator)",
                    "model_ref": _rel(BASE_MODEL_REF), "model_sha256": digest(base_ref["files"])},
             "FT": {"definition": "merged BF16 export of the single notebook-pipeline checkpoint (proof_eval export)",
                    "model_ref": "bound at analysis by --ft-model-ref; all FT runs must share its model_sha256"},
         },
+        "evaluation_subset": items,
         "protocol_variants": variants,
         "runs": runs,
-        "paired_run_rules": ["each (arm, variant) run exactly once, full 900, status COMPLETE",
+        "paired_run_rules": [f"each (arm, variant) run exactly once with --mode partial and one --sample-id per "
+                             f"subset ID; status {FINISHED['statistical']}; run_manifest expected_ids, "
+                             f"identity.ids_sha256 and predictions are exactly the {n} subset IDs",
                              "F0 and FT of one variant share identity.protocol_sha256",
                              "all statistical runs share identity.code_sha256",
                              "every record seed equals sample_seed(variant seed, id)",
                              "stored V8 correctness/parse_status must equal the re-score"],
-        "scorer": {"parser": PARSER, "files": _scorer_files()},
+        "scorer": {"parser": PARSER, "files": _scorer_files(),
+                   "only_scorer": "strict team-final-answer-v8 re-score; proof_eval has no second (Qwen-style) "
+                                  "score: Qwen's published MMMU scoring uses an LLM-assisted judge, which is not "
+                                  "used without approval (CLAUDE.md §7.3)"},
         "primary_endpoint": {
-            "statistic": "mean over the 900 items of (FT seed-mean correctness - F0 seed-mean correctness), "
-                         "= mean of per-seed strict V8 accuracies FT - F0",
-            "variants": statistical,
-            "ci": {"method": "paired item bootstrap, percentile", "resamples": BOOTSTRAP_RESAMPLES,
-                   "seed": BOOTSTRAP_SEED, "level": 0.95},
+            "statistic": f"mean over the {n} subset items of (FT seed-mean correctness - F0 seed-mean correctness) "
+                         f"= FT - F0 of the seed mean of per-seed strict V8 accuracy on the subset; each per-seed "
+                         f"accuracy = items answered correctly / {n} (= recovered count / {n})",
+            "variants": statistical, "items": n,
+            "ci": {"method": "paired item bootstrap over the subset items, percentile",
+                   "resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED, "level": 0.95},
         },
         "sensitivity": {"mcnemar_exact_two_sided": {"variant": SENSITIVITY,
-                                                    "pairs": "per-item correctness F0 vs FT, seed 3407 only"}},
+                                                    "pairs": "per-item correctness F0 vs FT on the subset, seed 3407 only"}},
         "secondary_endpoints": {
-            "b2_wrong_recovery": "seed-mean accuracy on the 342 frozen B2 V8 wrong items, F0 and FT",
-            "b2_right_retention": "seed-mean accuracy on the 558 frozen B2 V8 right items, F0 and FT",
             "length_cutoff_rate": "seed-mean share with finish_reason == length, F0 and FT",
             "missing_final_answer_rate": "seed-mean share with V8 parse_status != PARSED, F0 and FT",
             "per_discipline": "seed-mean accuracy per arm and FT-F0 with the same paired bootstrap",
@@ -352,18 +402,37 @@ def build_preregistration(b2_predictions: Path = B2_PREDICTIONS) -> dict:
         },
         "disciplines": DISCIPLINES,
         "single_answer_rule": SINGLE_ANSWER_RULE,
-        "mmmu_val_budget": {"checkpoints_per_arm": 1, "runs": len(runs),
-                            "rule": "no other MMMU-val runs, seeds or checkpoints; MMMU-val never selects a checkpoint"},
-        "course_facing_run": {"arm": "FT", "variant": COURSE, "seed": 3407, "concurrency": 2,
-                              "rule": "reported as-is; not pooled with or substituted by the statistical runs"},
-        "b2_reference": _b2_split(b2_predictions),
+        "mmmu_val_budget": {"checkpoints_per_arm": 1, "runs": len(runs), "items_per_run": n,
+                            "rule": "no other MMMU-val runs, seeds, items or checkpoints; MMMU-val never selects a "
+                                    "checkpoint"},
+        "course_facing_run": {"status": "DROPPED", "variant": COURSE,
+                              "rule": "user decision 2026-10-31: the proof evaluates only the subset; the course "
+                                      "protocol code path is kept but no course run is preregistered"},
+        "limitations": [
+            f"{n}-only: regressions on the {len(b2['right_ids'])} items B2 answered correctly cannot be detected "
+            "(user decision 2026-10-31, budget)",
+            "the subset was chosen because B2 answered these items wrongly once; a re-run of the untrained base "
+            "answers some of them correctly by sampling alone (regression to the mean), so the comparator is the "
+            "paired F0 re-run on the same IDs and seeds, never B2's 0 correct",
+            f"accuracy on the {n} subset is not an MMMU-val accuracy and is not comparable to the 62.00% B2 "
+            "baseline or the official 67.4",
+            "the fast8k variants (8192 output tokens, 262144..1003520 pixels, 32 concurrent) differ from the "
+            "course protocol (32768 tokens, official pixels, 2 concurrent)",
+        ],
+        "notes": [
+            "user decision 2026-10-31 (speed and cost of the RunPod proof): 8K output, the training image budget "
+            "and 32 concurrent requests for the paired arms (fast8k replaces c16); the proof runs only on the "
+            f"{n} B2 V8 wrong items; the course-protocol run is dropped from the proof plan",
+            "supersedes proof-prereg/prereg.json (format notebook-rl-proof-prereg-v1, 900 items, c16, course run)",
+        ],
+        "b2_reference": b2,
     }
 
 
-def preregister(output: Path, b2_predictions: Path = B2_PREDICTIONS) -> str:
+def preregister(output: Path, subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> str:
     """Write-once preregistration plus ``<output>.sha256``; returns the file hash."""
     output = Path(output)
-    _write_once(output, json.dumps(build_preregistration(b2_predictions), indent=2, sort_keys=True) + "\n")
+    _write_once(output, json.dumps(build_preregistration(subset, b2_predictions), indent=2, sort_keys=True) + "\n")
     value = sha256_file(output)
     _write_once(output.with_name(output.name + ".sha256"), value + "\n")
     return value
@@ -459,10 +528,11 @@ def ledger_start(prereg_path: Path, arm: str, variant: str, run_id: str, ledger:
 
 
 def ledger_fail(ledger: Path, run_id: str, reason: str, artifact_root: Path) -> dict:
-    """Record a started run as FAILED (crashed, abandoned); a COMPLETE run directory cannot be declared failed."""
+    """Record a started run as FAILED (crashed, abandoned); a finished run directory cannot be declared failed."""
     summary = Path(artifact_root) / "runs" / run_id / "summary.json"
-    if summary.is_file() and json.loads(summary.read_text(encoding="utf-8")).get("status") == "COMPLETE":
-        raise ValueError(f"proof_eval: {run_id} is COMPLETE; a completed run cannot be replaced by marking it failed")
+    status = json.loads(summary.read_text(encoding="utf-8")).get("status") if summary.is_file() else None
+    if status in FINISHED.values():
+        raise ValueError(f"proof_eval: {run_id} is {status}; a finished run cannot be replaced by marking it failed")
     return _append(ledger, "FAIL", run_id=run_id, reason=reason)
 
 
@@ -491,24 +561,34 @@ def check_ledger(ledger: Path, prereg_sha: str, runs: dict[tuple[str, str], dict
 # ---------------------------------------------------------------------------------------------
 
 def load_run(path: Path, prereg: dict) -> dict:
-    """Validate one standard eval run directory (or its predictions.jsonl) against the preregistration."""
+    """Validate one eval run directory (or its predictions.jsonl) against the preregistration.
+
+    A statistical run must be the partial run on exactly the preregistered subset (status PARTIAL); a course
+    run, if a preregistration ever lists one, the full 900-item run (status COMPLETE)."""
     path = Path(path)
     run_dir = path.parent if path.is_file() else path
-    identity = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8")).get("identity", {})
-    if not {"protocol_sha256", "model_sha256", "code_sha256"} <= identity.keys() or identity.get("mode") != "full":
-        raise ValueError(f"proof_eval: {run_dir} is not an original full evaluation run")
-    if json.loads((run_dir / "summary.json").read_text(encoding="utf-8")).get("status") != "COMPLETE":
-        raise ValueError(f"proof_eval: {run_dir} is not COMPLETE")
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    identity = manifest.get("identity", {})
     cfg = yaml.safe_load((run_dir / "resolved_eval_config.yaml").read_text(encoding="utf-8"))
     matches = [v for v, row in prereg["protocol_variants"].items() if row["config_digest"] == digest(cfg)]
     if len(matches) != 1:
         raise ValueError(f"proof_eval: {run_dir} protocol config is not preregistered")
     variant = prereg["protocol_variants"][matches[0]]
-    expected = set(prereg["b2_reference"]["wrong_ids"]) | set(prereg["b2_reference"]["right_ids"])
+    if variant["role"] == "course":
+        mode, expected = "full", sorted(set(prereg["b2_reference"]["wrong_ids"]) | set(prereg["b2_reference"]["right_ids"]))
+    else:
+        mode, expected = "partial", sorted(prereg["evaluation_subset"]["ids"])
+    if not {"protocol_sha256", "model_sha256", "code_sha256"} <= identity.keys() or identity.get("mode") != mode:
+        raise ValueError(f"proof_eval: {run_dir} is not an original {mode} evaluation run")
+    if manifest.get("expected_ids") != expected or identity.get("ids_sha256") != digest(expected):
+        raise ValueError(f"proof_eval: {run_dir} sample set differs from the preregistered {len(expected)} IDs")
+    status = json.loads((run_dir / "summary.json").read_text(encoding="utf-8")).get("status")
+    if status != FINISHED[variant["role"]]:
+        raise ValueError(f"proof_eval: {run_dir} is {status}, not {FINISHED[variant['role']]}")
     rows = [json.loads(line) for line in (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
             if line.strip()]
-    if len(rows) != 900 or {row["id"] for row in rows} != expected:
-        raise ValueError(f"proof_eval: {run_dir} must hold the 900 preregistered items exactly once")
+    if len(rows) != len(expected) or {row["id"] for row in rows} != set(expected):
+        raise ValueError(f"proof_eval: {run_dir} must hold the {len(expected)} preregistered items exactly once")
     items = {}
     for row in rows:
         if row.get("_record_sha256") != digest({k: v for k, v in row.items() if k != "_record_sha256"}):
@@ -525,7 +605,7 @@ def load_run(path: Path, prereg: dict) -> dict:
     registration = run_dir / REGISTRATION_FILE
     return {"arm": arm, "variant": matches[0], "seed": variant["seed"], "run_dir": str(run_dir.resolve()),
             "identity": {k: identity.get(k) for k in ("protocol_sha256", "model_sha256", "code_sha256",
-                                                     "git_commit", "job_id", "run_role")},
+                                                     "git_commit", "job_id", "run_role", "mode", "ids_sha256")},
             "registration": json.loads(registration.read_text(encoding="utf-8")) if registration.exists() else None,
             "items": items}
 
@@ -592,32 +672,32 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_ref: Path, ledger
                 raise ValueError("proof_eval: the course run must come from plain scripts/eval.sh")
         elif (reg is None or reg.get("protocol_id") != v
               or reg.get("protocol_file_sha256") != prereg["protocol_variants"][v]["sha256"]):
-            raise ValueError(f"proof_eval: c16 run {(arm, v)} lacks its matching {REGISTRATION_FILE}")
+            raise ValueError(f"proof_eval: statistical run {(arm, v)} lacks its matching {REGISTRATION_FILE}")
     if len({digest({k: x for k, x in r["registration"].items() if k not in ("protocol_id", "protocol_file_sha256")})
             for r in stat_runs}) != 1:
         raise ValueError("proof_eval: statistical runs must share one registration (src and proof_eval bytes)")
     ledger_summary = check_ledger(ledger, prereg_sha, runs)
 
-    ids = sorted(runs[("F0", statistical[0])]["items"])
-    wrong, right = prereg["b2_reference"]["wrong_ids"], prereg["b2_reference"]["right_ids"]
+    ids = sorted(runs[("F0", statistical[0])]["items"])  # = the preregistered subset (load_run)
     arms: dict[str, dict[str, Any]] = {}
     for arm in ("F0", "FT"):
         seeds = [runs[(arm, v)] for v in statistical]
         correct = seed_mean([{i: r["items"][i]["correct"] for i in ids} for r in seeds])
         per_seed = {str(r["seed"]): _mean(r["items"][i]["correct"] for i in ids) for r in seeds}
+        count_per_seed = {str(r["seed"]): sum(r["items"][i]["correct"] for i in ids) for r in seeds}
         accuracy = _mean(correct.values())
         if not math.isclose(accuracy, _mean(per_seed.values()), abs_tol=1e-12):
             raise AssertionError("proof_eval: item mean and seed mean disagree")
         arms[arm] = {
             "item_mean": correct, "accuracy": accuracy, "accuracy_per_seed": per_seed,
-            "b2_wrong_recovery": _mean(correct[i] for i in wrong),
-            "b2_right_retention": _mean(correct[i] for i in right),
+            "correct_per_seed": count_per_seed,
             "length_cutoff_rate": _mean(seed_mean([{i: r["items"][i]["length"] for i in ids} for r in seeds]).values()),
             "missing_final_answer_rate": _mean(
                 seed_mean([{i: r["items"][i]["missing_final"] for i in ids} for r in seeds]).values()),
         }
     diff = {i: arms["FT"]["item_mean"][i] - arms["F0"]["item_mean"][i] for i in ids}
-    sens = runs[("F0", SENSITIVITY)]["items"], runs[("FT", SENSITIVITY)]["items"]
+    sensitivity = prereg["sensitivity"]["mcnemar_exact_two_sided"]["variant"]
+    sens = runs[("F0", sensitivity)]["items"], runs[("FT", sensitivity)]["items"]
     report: dict[str, Any] = {
         "format": "notebook-rl-proof-report-v1", "preregistration_sha256": prereg_sha,
         "single_answer_rule": prereg["single_answer_rule"], "ledger": ledger_summary,
@@ -625,35 +705,45 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_ref: Path, ledger
                  for r in runs.values()],
         "ft_model_ref": {"sha256": sha256_file(Path(ft_model_ref)), "model_sha256": ft_sha,
                          "export": ref.get("export")},
-        "primary": {"FT_minus_F0": _mean(diff.values()), "ci95": paired_bootstrap(list(diff.values())),
+        "primary": {"items": len(ids), "scorer": PARSER,
+                    "FT_minus_F0": _mean(diff.values()), "ci95": paired_bootstrap(list(diff.values())),
                     "F0_accuracy": arms["F0"]["accuracy"], "FT_accuracy": arms["FT"]["accuracy"],
-                    "accuracy_per_seed": {a: arms[a]["accuracy_per_seed"] for a in arms}},
+                    "accuracy_per_seed": {a: arms[a]["accuracy_per_seed"] for a in arms},
+                    "correct_per_seed": {a: arms[a]["correct_per_seed"] for a in arms}},
         "sensitivity_mcnemar_seed3407": mcnemar_exact({i: sens[0][i]["correct"] for i in ids},
                                                       {i: sens[1][i]["correct"] for i in ids}),
-        "secondary": {a: {k: arms[a][k] for k in ("b2_wrong_recovery", "b2_right_retention",
-                                                   "length_cutoff_rate", "missing_final_answer_rate")}
+        "secondary": {a: {k: arms[a][k] for k in ("length_cutoff_rate", "missing_final_answer_rate")}
                       for a in arms},
+        "limitations": prereg.get("limitations", []),
         "per_discipline": {}, "per_subject": {},
     }
     for name, subjects in DISCIPLINES.items():
         members = [i for i in ids if _subject(i) in subjects]
+        if not members:
+            continue
         report["per_discipline"][name] = {
             "n": len(members), **{a: _mean(arms[a]["item_mean"][i] for i in members) for a in arms},
             "FT_minus_F0": _mean(diff[i] for i in members), "ci95": paired_bootstrap([diff[i] for i in members])}
     for subject in SUBJECTS:
         members = [i for i in ids if _subject(i) == subject]
-        report["per_subject"][subject] = {a: _mean(arms[a]["item_mean"][i] for i in members) for a in arms} | {
-            "FT_minus_F0": _mean(diff[i] for i in members)}
+        if not members:
+            continue
+        report["per_subject"][subject] = {"n": len(members), **{a: _mean(arms[a]["item_mean"][i] for i in members)
+                                                                for a in arms},
+                                          "FT_minus_F0": _mean(diff[i] for i in members)}
     course = runs.get(("FT", COURSE))
-    if course is None:
+    if ("FT", COURSE) not in allowed:
+        report["course_facing"] = dict(prereg["course_facing_run"])
+    elif course is None:
         report["course_facing"] = {"status": "NOT_RUN"}
     else:
-        c = {i: course["items"][i]["correct"] for i in ids}
+        wrong, right = prereg["b2_reference"]["wrong_ids"], prereg["b2_reference"]["right_ids"]
+        c = {i: row["correct"] for i, row in course["items"].items()}
         report["course_facing"] = {
             "status": "COMPLETE", "variant": COURSE, "seed": 3407, "correct": sum(c.values()),
             "accuracy": _mean(c.values()), "b2_wrong_recovery": _mean(c[i] for i in wrong),
             "b2_right_retention": _mean(c[i] for i in right),
-            "note": "single preregistered course-protocol FT run; not pooled with the c16 statistical runs"}
+            "note": "single preregistered course-protocol FT run; not pooled with the statistical runs"}
     return report
 
 
@@ -662,13 +752,16 @@ def render_markdown(report: dict) -> str:
     pct = lambda x: f"{100 * x:.2f}"  # noqa: E731
     lines = ["# Notebook-RL MMMU-val proof report", "",
              f"Preregistration sha256 `{report['preregistration_sha256']}`", "",
-             f"Primary (c16, seeds 3407/3408/3409, seed-mean strict V8): F0 {pct(p['F0_accuracy'])}%, "
+             f"Primary ({p['items']} preregistered items, statistical variants, seeds "
+             f"{'/'.join(p['accuracy_per_seed']['F0'])}, seed-mean strict V8 only): "
+             f"F0 {pct(p['F0_accuracy'])}%, "
              f"FT {pct(p['FT_accuracy'])}%, FT-F0 {pct(p['FT_minus_F0'])} pp "
              f"[95% paired bootstrap {pct(p['ci95'][0])}, {pct(p['ci95'][1])}]", "",
-             "| arm | " + " | ".join(f"seed {s}" for s in p["accuracy_per_seed"]["F0"]) + " |",
+             "| arm | " + " | ".join(f"seed {s} correct/{p['items']}" for s in p["accuracy_per_seed"]["F0"]) + " |",
              "|---|" + "---|" * len(p["accuracy_per_seed"]["F0"])]
     for arm, seeds in p["accuracy_per_seed"].items():
-        lines.append(f"| {arm} | " + " | ".join(pct(v) for v in seeds.values()) + " |")
+        lines.append(f"| {arm} | " + " | ".join(f"{p['correct_per_seed'][arm][s]} ({pct(v)}%)"
+                                                for s, v in seeds.items()) + " |")
     m = report["sensitivity_mcnemar_seed3407"]
     lines += ["", f"McNemar exact (seed 3407): F0-only right {m['f0_right_ft_wrong']}, "
               f"FT-only right {m['f0_wrong_ft_right']}, p = {m['p_value']:.4g}", "",
@@ -679,13 +772,15 @@ def render_markdown(report: dict) -> str:
     for name, row in report["per_discipline"].items():
         lines.append(f"| {name} | {row['n']} | {pct(row['F0'])} | {pct(row['FT'])} | {pct(row['FT_minus_F0'])} | "
                      f"[{pct(row['ci95'][0])}, {pct(row['ci95'][1])}] |")
-    lines += ["", "| subject | F0 | FT | FT-F0 |", "|---|---|---|---|"]
+    lines += ["", "| subject | n | F0 | FT | FT-F0 |", "|---|---|---|---|---|"]
     for name, row in report["per_subject"].items():
-        lines.append(f"| {name} | {pct(row['F0'])} | {pct(row['FT'])} | {pct(row['FT_minus_F0'])} |")
+        lines.append(f"| {name} | {row['n']} | {pct(row['F0'])} | {pct(row['FT'])} | {pct(row['FT_minus_F0'])} |")
     course = report["course_facing"]
     lines += ["", "Course-facing run (FT, mmmu-val-v8, c2, seed 3407): " + (
         f"{course['correct']}/900 = {pct(course['accuracy'])}% (not pooled)" if course["status"] == "COMPLETE"
-        else "NOT_RUN"), "", report["single_answer_rule"], ""]
+        else course["status"]), ""]
+    lines += [f"- Limitation: {text}" for text in report["limitations"]]
+    lines += ["", report["single_answer_rule"], ""]
     return "\n".join(lines)
 
 
@@ -693,9 +788,9 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["run-eval"]:
         return run_eval(argv[1:])
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run-eval", help="scripts/eval.sh arguments for one c16 variant file (passed through verbatim)")
+    sub.add_parser("run-eval", help="scripts/eval.sh arguments for one fast8k variant file (passed through verbatim)")
     exp = sub.add_parser("export", help="merge one local_train checkpoint into a BF16 eval model + model_ref.json")
     exp.add_argument("--checkpoint", type=Path, required=True)
     exp.add_argument("--binding", type=Path, required=True, help="binding JSON or launch.json holding 'binding'")
@@ -704,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("--code-commit", required=True, help="40-hex Git commit of the training code")
     pre = sub.add_parser("preregister", help="write the frozen preregistration and its .sha256")
     pre.add_argument("--output", type=Path, required=True)
+    pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
     start = sub.add_parser("ledger-start", help="append the START of one evaluation run (before run-eval/eval.sh); "
                            "refused when that (arm, variant) has a started run not recorded as FAILED")
@@ -712,7 +808,7 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--variant", required=True, help="a preregistered protocol variant id")
     start.add_argument("--run-id", required=True, help="the run directory name artifact_root/runs/<run-id>")
     start.add_argument("--ledger", type=Path, required=True)
-    fail = sub.add_parser("ledger-fail", help="record a started run as FAILED (refused for a COMPLETE run)")
+    fail = sub.add_parser("ledger-fail", help="record a started run as FAILED (refused for a finished COMPLETE/PARTIAL run)")
     fail.add_argument("--ledger", type=Path, required=True)
     fail.add_argument("--run-id", required=True)
     fail.add_argument("--reason", required=True)
@@ -730,7 +826,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"EXPORTED {args.output / 'model_ref.json'} unmerged_inference_bit_equivalent="
               f"{ref['export']['unmerged_inference_bit_equivalent']}")
     elif args.command == "preregister":
-        print(f"PREREGISTERED {args.output} sha256={preregister(args.output, args.b2_predictions)}")
+        print(f"PREREGISTERED {args.output} sha256={preregister(args.output, args.subset, args.b2_predictions)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger)
         print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['run_id']}")

@@ -22,7 +22,23 @@ from fine_tuning.tests import test_notebook_rl_pod as pod_tests
 
 REPO = pod_tests.REPO
 DATA_REVISION = '98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68'
-REAL_PREREG = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg/prereg.json')
+REAL_PREREG = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg-v2/prereg.json')
+REAL_SUBSET = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-eval-subset-v1/b2_v8_wrong_ids.json')
+SUBSET_IDS = ['validation_Art_1', 'validation_Math_12', 'validation_Physics_3']
+
+
+def write_subset(volume, ids=SUBSET_IDS, raw=None):
+    """A proof-eval-subset-v1 file under <volume>/eval-data/proof/; returns (path, sha256)."""
+    path = Path(volume)/'eval-data/proof/b2_v8_wrong_ids.json'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw if raw is not None else json.dumps(
+        {'version': 'proof-eval-subset-v1', 'count': len(ids), 'sample_ids': ids, 'source': 'fixture',
+         'source_sha256': '0'*64}).encode())
+    return str(path), common.sha256_file(path)
+
+
+def sample_ids(argv):
+    return [argv[i+1] for i, token in enumerate(argv) if token == '--sample-id']
 EVAL_PAYLOADS = {'README.md': b'readme', 'Art/validation-00000-of-00001.parquet': b'art-parquet',
                  'Math/validation-00000-of-00001.parquet': b'math-parquet'}
 
@@ -383,9 +399,12 @@ class EvalStagePlanTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
+        self.volume = str(self.root/'w/vol')
 
-    def params(self, stage, volume='/w/vol', **changes):
-        value = {'version': 'eval-stage-params-v1', 'commit': 'a'*40, 'repo_root': str(REPO),
+    def params(self, stage, volume=None, **changes):
+        volume = volume or self.volume
+        subset, subset_sha = write_subset(volume)
+        value = {'subset': subset, 'subset_sha256': subset_sha,'version': 'eval-stage-params-v1', 'commit': 'a'*40, 'repo_root': str(REPO),
                  'python': f'{volume}/venv-0123456789abcdef/bin/python', 'volume_root': volume,
                  'artifact_root': f'{volume}/eval-data/artifacts', 'prereg': f'{volume}/eval-data/proof/prereg.json',
                  'prereg_sha256': 'b'*64, 'ledger': f'{volume}/eval-data/proof/ledger.jsonl',
@@ -418,20 +437,24 @@ class EvalStagePlanTests(unittest.TestCase):
         self.assertNotEqual(json.loads(first)['meta']['params_sha256'], other['meta']['params_sha256'])
 
     def test_specs_pass_the_real_chain_check_and_keep_pin_export_ledger_run_order(self):
-        for stage in job.EVAL_STAGES:
+        self.assertEqual(('eval-f0', 'eval-ft'), eval_stage.STAGES)
+        with self.assertRaisesRegex(ValueError, 'not in the proof plan'):  # user decision 2026-10-31: 342 only
+            eval_stage.plan('eval-course', self.params('eval-course'))
+        for stage in eval_stage.STAGES:
             spec = chain.check_spec(eval_stage.plan(stage, self.params(stage)))
             names = [s['name'] for s in spec['steps']]
             kinds = [n.split('-')[0] for n in names]
-            pins = {'eval-f0': 1, 'eval-ft': 3, 'eval-course': 2}[stage]
+            pins = {'eval-f0': 2, 'eval-ft': 4}[stage]
             self.assertEqual(['pin']*pins, kinds[:pins], names)
-            runs = 1 if stage == 'eval-course' else 3
+            self.assertEqual(['pin-subset', 'pin-prereg'], names[:2])
+            runs = 3
             body = (['export'] if stage == 'eval-ft' else []) + ['ledger']*runs + ['eval']*runs
             self.assertEqual(body, kinds[pins:], names)
             for step in spec['steps']:
                 if step['name'].startswith('eval-'):
                     rid = step['name'].removeprefix('eval-')
                     self.assertIn(f'ledger-{rid}', names[:names.index(step['name'])])
-                    self.assertTrue(all(p.startswith('/w/vol/eval-data/artifacts/runs/'+rid) for p in step['expect_files']))
+                    self.assertTrue(all(p.startswith(f'{self.volume}/eval-data/artifacts/runs/'+rid) for p in step['expect_files']))
             self.assertEqual(stage, spec['meta']['stage'])
             self.assertEqual(stage, spec['meta']['job_stage'])  # chain.run binds the spec to the job's stage
 
@@ -451,7 +474,7 @@ class EvalStagePlanTests(unittest.TestCase):
 
     def planned_runs(self):
         found = set()
-        for stage in job.EVAL_STAGES:
+        for stage in eval_stage.STAGES:
             for step in eval_stage.plan(stage, self.params(stage))['steps']:
                 if step['name'].startswith('ledger-'):
                     argv = step['argv']
@@ -460,53 +483,73 @@ class EvalStagePlanTests(unittest.TestCase):
 
     def test_runs_and_arguments_match_the_preregistered_design(self):
         statistical = [v for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical']
-        self.assertEqual({(a, v) for a in ('F0', 'FT') for v in statistical} | {('FT', proof_eval.COURSE)},
-                         self.planned_runs())  # = proof_eval.build_preregistration's runs
-        steps = {stage: eval_stage.plan(stage, self.params(stage))['steps'] for stage in job.EVAL_STAGES}
-        snapshot = '/w/vol/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17'
+        self.assertEqual({(a, v) for a in ('F0', 'FT') for v in statistical},
+                         self.planned_runs())  # = proof_eval.build_preregistration's runs (no course run)
+        steps = {stage: eval_stage.plan(stage, self.params(stage))['steps'] for stage in eval_stage.STAGES}
+        snapshot = f'{self.volume}/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17'
         for stage, (model_ref, model_path) in {
                 'eval-f0': (f'{REPO}/manifests/models/baseline.json', snapshot),
-                'eval-ft': ('/w/vol/ft-export/model_ref.json', '/w/vol/ft-export/model'),
-                'eval-course': ('/w/vol/ft-export/model_ref.json', '/w/vol/ft-export/model')}.items():
+                'eval-ft': (f'{self.volume}/ft-export/model_ref.json', f'{self.volume}/ft-export/model')}.items():
             for step in [s for s in steps[stage] if s['name'].startswith('eval-')]:
                 argv = step['argv']
                 value = {k: argv[argv.index(k)+1] for k in ('--protocol', '--hardware', '--model-ref', '--model-path',
-                                                            '--data-root', '--run-id', '--job-id', '--run-role')}
-                self.assertEqual((model_ref, model_path, '/w/vol/eval-data/mmmu', 'evaluation'),
-                                 (value['--model-ref'], value['--model-path'], value['--data-root'], value['--run-role']))
+                                                            '--data-root', '--run-id', '--job-id', '--run-role',
+                                                            '--mode')}
+                # partial on exactly the pinned subset; cli refuses run role evaluation for a partial run
+                self.assertEqual((model_ref, model_path, f'{self.volume}/eval-data/mmmu', 'standalone', 'partial'),
+                                 (value['--model-ref'], value['--model-path'], value['--data-root'], value['--run-role'],
+                                  value['--mode']))
+                self.assertEqual(SUBSET_IDS, sample_ids(argv))
                 self.assertEqual(f'{REPO}/fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml', value['--hardware'])
                 self.assertEqual(value['--job-id']+'-evaluation', value['--run-id'])
-                if stage == 'eval-course':
-                    self.assertEqual(f'{REPO}/configs/eval/mmmu_val_v8.yaml', value['--protocol'])
-                    self.assertEqual('nbrl-proof-v1-ft-course-s3407-evaluation', value['--run-id'])
-                    self.assertEqual(['bash', f'{REPO}/scripts/eval.sh'], argv[2:4])
-                else:
-                    self.assertEqual(['-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval'], argv[1:4])
-                    self.assertIn('c16_seed', value['--protocol'])
+                self.assertEqual(['-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval'], argv[1:4])
+                variant = value['--protocol'].removeprefix(f'{REPO}/')
+                self.assertRegex(variant, r'^fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_fast8k_seed340[789]\.yaml$')
+                self.assertRegex(value['--run-id'], r'^nbrl-proof-v1-f[t0]-fast8k-s340[789]-evaluation$')
         export = next(s for s in steps['eval-ft'] if s['name'] == 'export-ft')['argv']
         self.assertEqual(snapshot, export[export.index('--base')+1])
         self.assertEqual('e'*40, export[export.index('--code-commit')+1])
 
-    @unittest.skipUnless(REAL_PREREG.is_file(), 'local preregistration not present')
+    @unittest.skipUnless(REAL_PREREG.is_file() and REAL_SUBSET.is_file(), 'local preregistration not present')
     def test_planned_runs_equal_the_real_preregistration(self):
-        prereg = json.loads(REAL_PREREG.read_text())
+        prereg, _ = proof_eval.load_preregistration(REAL_PREREG)  # hash sidecar + scorer bytes unchanged
         self.assertEqual({(r['arm'], r['variant']) for r in prereg['runs']}, self.planned_runs())
+        raw = REAL_SUBSET.read_bytes()
+        self.assertEqual(prereg['evaluation_subset']['sha256'], common.sha256_bytes(raw))
+        planned_files = {}
+        for stage in eval_stage.STAGES:
+            params = self.params(stage)  # writes the fixture subset; replaced by the real one just below
+            subset, subset_sha = write_subset(self.volume, raw=raw)  # the real subset, copied under eval-data
+            for step in eval_stage.plan(stage, params | {'subset': subset, 'subset_sha256': subset_sha})['steps']:
+                if step['name'] == 'pin-subset':
+                    self.assertEqual(prereg['evaluation_subset']['sha256'], step['argv'][-1])
+                if step['name'].startswith('eval-'):
+                    argv = step['argv']
+                    self.assertEqual(prereg['evaluation_subset']['ids'], sample_ids(argv))
+                    planned_files[argv[argv.index('--protocol')+1]] = common.sha256_file(argv[argv.index('--protocol')+1])
+        self.assertEqual({f"{REPO}/{row['path']}": row['sha256'] for row in prereg['protocol_variants'].values()},
+                         planned_files)  # every planned protocol file is byte-identical to the preregistered one
+        self.assertEqual({v: row['concurrency'] for v, row in prereg['protocol_variants'].items()},
+                         {v: row[2] for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical'})
 
     def test_params_are_refused(self):
         for stage, changes in (
-                ('eval-x', {}), ('eval-f0', {'checkpoint': '/w/vol/ckpt'}), ('eval-course', {'ft_export': None}),
-                ('eval-f0', {'repo_root': 'relative/repo'}), ('eval-f0', {'ledger': '/w/vol/eval-data/../l.jsonl'}),
+                ('eval-x', {}), ('eval-f0', {'checkpoint': f'{self.volume}/ckpt'}), ('eval-course', {'ft_export': None}),
+                ('eval-f0', {'repo_root': 'relative/repo'}), ('eval-f0', {'ledger': f'{self.volume}/eval-data/../l.jsonl'}),
                 ('eval-f0', {'prereg_sha256': 'B'*64}), ('eval-f0', {'commit': 'abc'}),
-                ('eval-f0', {'python': '/usr/bin/python3'}), ('eval-f0', {'python': '/w/vol/venv-x/bin/python'}),
-                ('eval-f0', {'python': '/w/vol/sub/venv-0123456789abcdef/bin/python'}),
+                ('eval-f0', {'python': '/usr/bin/python3'}), ('eval-f0', {'python': f'{self.volume}/venv-x/bin/python'}),
+                ('eval-f0', {'python': f'{self.volume}/sub/venv-0123456789abcdef/bin/python'}),
                 ('eval-f0', {'artifact_root': '/w/eval-artifacts'}),
-                ('eval-f0', {'artifact_root': '/w/vol/eval-data/mmmu/out'}),
-                ('eval-f0', {'prereg': '/w/vol/eval-data/hf-cache/p.json'}),
+                ('eval-f0', {'artifact_root': f'{self.volume}/eval-data/mmmu/out'}),
+                ('eval-f0', {'prereg': f'{self.volume}/eval-data/hf-cache/p.json'}),
                 ('eval-f0', {'run_prefix': '-bad'}), ('eval-f0', {'run_prefix': 'x'*42}),
-                ('eval-f0', {'version': 'v0'})):
+                ('eval-f0', {'version': 'v0'}), ('eval-f0', {'subset_sha256': 'c'*64}),
+                ('eval-f0', {'subset': '/elsewhere/b2_v8_wrong_ids.json'}),
+                ('eval-course', {}), ('eval-x', {'subset': None})):
             params = self.params(stage if stage != 'eval-x' else 'eval-f0', **changes)
-            if changes.get('ft_export', 1) is None:
-                del params['ft_export']
+            for key in ('ft_export', 'subset'):
+                if key in changes and changes[key] is None:
+                    del params[key]
             with self.assertRaises(ValueError, msg=(stage, changes)):
                 eval_stage.plan(stage, params)
 
@@ -517,8 +560,9 @@ class EvalStagePlanTests(unittest.TestCase):
         prereg.write_text('{}')
         specs = {stage: eval_stage.plan(stage, self.params(stage, volume=volume,
                                                            prereg_sha256=common.sha256_file(prereg)))
-                 for stage in job.EVAL_STAGES}
-        pin = specs['eval-f0']['steps'][0]['argv']
+                 for stage in eval_stage.STAGES}
+        self.assertEqual('pin-prereg', specs['eval-f0']['steps'][1]['name'])
+        pin = specs['eval-f0']['steps'][1]['argv']
         with mock.patch('sys.stdout', new=io.StringIO()):
             self.assertEqual(0, chain.main(pin[3:]))
             prereg.write_text('{"changed": true}')
@@ -561,8 +605,9 @@ class EvalStagePlanTests(unittest.TestCase):
                         else:
                             proof_eval.main(argv[3:])
                     args, hw = seen[0]
-                    self.assertEqual(('full', 'evaluation', name.removeprefix('eval-'), True, 'a40_48gb'),
-                                     (args['mode'], args['run_role'], args['run_id'], args['no_download'], hw['name']))
+                    self.assertEqual(('partial', 'standalone', name.removeprefix('eval-'), True, 'a40_48gb', SUBSET_IDS),
+                                     (args['mode'], args['run_role'], args['run_id'], args['no_download'], hw['name'],
+                                      args['sample_id']))
 
 
 if __name__ == '__main__':

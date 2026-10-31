@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import shutil
 import sys
 import tempfile
 import unittest
@@ -23,7 +24,9 @@ from mmdl.runtime.artifacts import digest, sha256_file
 from mmdl.runtime.contracts import SUBJECTS, sample_seed
 
 IDS = sorted(f"validation_{s}_{k}" for s in SUBJECTS for k in range(1, 31))
-C16 = [f"mmmu-val-v8-c16-seed{s}-v1" for s in (3407, 3408, 3409)]
+SUBSET = IDS[:342]  # the synthetic B2 below answers exactly these wrong
+FAST = [f"mmmu-val-v8-fast8k-seed{s}-v1" for s in (3407, 3408, 3409)]
+C16_FILES = [pe.HERE / f"eval_configs/mmmu_val_v8_c16_seed{s}.yaml" for s in (3407, 3408, 3409)]
 
 
 def flatten(value, prefix=""):
@@ -32,36 +35,45 @@ def flatten(value, prefix=""):
     return {prefix[:-1]: value}
 
 
-def write_run(root, name, cfg, model_sha, outcome, *, code="c" * 64, protocol=None, seed=None, registration=None):
-    """outcome(index) -> True / False / None (None = empty, length-cut response).
+def write_run(root, name, cfg, model_sha, outcome, *, code="c" * 64, protocol=None, seed=None, registration=None,
+              ids=None, mode="partial"):
+    """A run directory written by the evaluator's own RunWriter + finalize (as engine.run does).
 
-    registration: None = what run-eval writes (c16 IDs only); True/False forces presence/absence.
+    outcome(index) -> True / False / None (None = empty, length-cut response); ids default: the subset.
+    registration: None = what run-eval writes (fast8k IDs only); True/False forces presence/absence.
     """
+    from mmdl.evaluation.writer import RunWriter, finalize
+
+    ids = list(SUBSET if ids is None else ids)
     run = root / name
-    run.mkdir()
     seed = cfg["generation"]["seed"] if seed is None else seed
-    rows = []
-    for index, sid in enumerate(IDS):
-        result = outcome(index)
-        raw, finish = ("", "length") if result is None else ("Answer: A", "stop")
-        row = {"id": sid, "subject": pe._subject(sid), "question_type": "multiple-choice",
-               "options": ["p", "q", "r", "s"], "answer": "A" if result else "B", "question": "Q?",
-               "raw_response": raw, "finish_reason": finish, "seed": sample_seed(seed, sid)}
-        row |= score_with_parser(raw, "multiple-choice", row["options"], row["answer"], pe.PARSER, finish,
-                                 question="Q?")
-        rows.append(row | {"_record_sha256": digest(row)})
-    (run / "predictions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     identity = {"protocol_sha256": protocol or digest(cfg), "model_sha256": model_sha, "code_sha256": code,
-                "mode": "full", "git_commit": "0" * 40}
-    (run / "run_manifest.json").write_text(json.dumps({"identity": identity, "expected_ids": IDS}))
-    (run / "summary.json").write_text(json.dumps({"status": "COMPLETE"}))
+                "ids_sha256": digest(ids), "mode": mode, "git_commit": "0" * 40}
+    with RunWriter(run, identity, ids) as writer:
+        for index, sid in enumerate(ids):
+            result = outcome(index)
+            raw, finish = ("", "length") if result is None else ("Answer: A", "stop")
+            row = {"id": sid, "subject": pe._subject(sid), "question_type": "multiple-choice",
+                   "options": ["p", "q", "r", "s"], "answer": "A" if result else "B", "question": "Q?",
+                   "raw_response": raw, "finish_reason": finish, "seed": sample_seed(seed, sid),
+                   "generated_tokens": 1, "generation_seconds": 0.0}
+            writer.save(row | score_with_parser(raw, "multiple-choice", row["options"], row["answer"], pe.PARSER,
+                                                finish, question="Q?"))
+        finalize(run, ids, mode)
     (run / "resolved_eval_config.yaml").write_text(yaml.safe_dump(cfg, sort_keys=False))
     if registration is None:
         registration = cfg["protocol_id"] in pe.REGISTERED
     if registration:
-        pid = cfg["protocol_id"] if cfg["protocol_id"] in pe.REGISTERED else C16[0]
+        pid = cfg["protocol_id"] if cfg["protocol_id"] in pe.REGISTERED else FAST[0]
         (run / pe.REGISTRATION_FILE).write_text(json.dumps(pe.variant_registration(pid)))
     return run
+
+
+def write_subset(path, b2, ids=None, **changes):
+    value = {"version": pe.SUBSET_VERSION, "purpose": "fixture", "source": str(b2), "source_sha256": sha256_file(b2),
+             "count": len(SUBSET if ids is None else ids), "sample_ids": list(SUBSET if ids is None else ids)}
+    path.write_text(json.dumps(value | changes))
+    return path
 
 
 def variant_cfg(vid):
@@ -69,26 +81,42 @@ def variant_cfg(vid):
 
 
 class ProofAnalysisTests(unittest.TestCase):
+    # Over the 342 subset items: F0 even items right (171), every 30th odd item empty + length-cut (11).
+    # FT seeds: 206 / 171 / 136 right.
+    f0_outcome = staticmethod(lambda i: None if i % 30 == 29 else i % 2 == 0)
+    ft_outcomes = {3407: lambda i: i % 2 == 0 or i % 10 == 1, 3408: lambda i: i % 2 == 0,
+                   3409: lambda i: i % 2 == 0 and i % 10 != 0}
+
+    @classmethod
+    def setUpClass(cls):
+        """The six runs go through the evaluator's RunWriter (one fsync per record) once; setUp copies them."""
+        tmp = tempfile.TemporaryDirectory(prefix="proof-eval-class-")
+        cls.addClassCleanup(tmp.cleanup)
+        root = cls.template = Path(tmp.name)
+        b2 = root / "b2.jsonl"
+        b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
+        pe.preregister(root / "prereg.json", write_subset(root / "subset.json", b2), b2_predictions=b2)
+        (root / "model_ref.json").write_text(json.dumps({
+            "files": [{"path": "model.safetensors", "bytes": 1, "sha256": "f" * 64}],
+            "export": {"unmerged_inference_bit_equivalent": False}}))
+        f0 = json.loads((root / "prereg.json").read_text())["arms"]["F0"]["model_sha256"]
+        ft = digest(json.loads((root / "model_ref.json").read_text())["files"])
+        for v in FAST:
+            write_run(root, f"f0-{v}", variant_cfg(v), f0, cls.f0_outcome)
+        for v, s in zip(FAST, (3407, 3408, 3409)):
+            write_run(root, f"ft-{v}", variant_cfg(v), ft, cls.ft_outcomes[s])
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="proof-eval-")
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        b2 = self.root / "b2.jsonl"
-        b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
-        self.prereg = self.root / "prereg.json"
-        self.prereg_sha = pe.preregister(self.prereg, b2_predictions=b2)
+        self.root = Path(tmp.name) / "case"
+        shutil.copytree(self.template, self.root)
+        self.b2, self.subset, self.prereg = self.root / "b2.jsonl", self.root / "subset.json", self.root / "prereg.json"
+        self.prereg_sha = sha256_file(self.prereg)
         self.f0 = json.loads(self.prereg.read_text())["arms"]["F0"]["model_sha256"]
         self.ft_ref = self.root / "model_ref.json"
-        self.ft_ref.write_text(json.dumps({"files": [{"path": "model.safetensors", "bytes": 1, "sha256": "f" * 64}],
-                                           "export": {"unmerged_inference_bit_equivalent": False}}))
         self.ft = digest(json.loads(self.ft_ref.read_text())["files"])
-        # F0: even items right; every 30th odd item empty + length-cut. FT seeds: 60% / 50% / 40%.
-        self.f0_outcome = lambda i: None if i % 30 == 29 else i % 2 == 0
-        self.ft_outcomes = {3407: lambda i: i % 2 == 0 or i % 10 == 1, 3408: lambda i: i % 2 == 0,
-                            3409: lambda i: i % 2 == 0 and i % 10 != 0}
-        self.runs = [write_run(self.root, f"f0-{v}", variant_cfg(v), self.f0, self.f0_outcome) for v in C16]
-        self.runs += [write_run(self.root, f"ft-{v}", variant_cfg(v), self.ft, self.ft_outcomes[s])
-                      for v, s in zip(C16, (3407, 3408, 3409))]
+        self.runs = [self.root / f"f0-{v}" for v in FAST] + [self.root / f"ft-{v}" for v in FAST]
         self.ledger = self.root / "ledger.jsonl"
         for run in self.runs:
             self.start(run)
@@ -101,75 +129,128 @@ class ProofAnalysisTests(unittest.TestCase):
     def analyze(self, runs, ref=None):
         return pe.analyze(self.prereg, runs, ref or self.ft_ref, self.ledger)
 
-    def test_variants_differ_from_v8_only_in_concurrency_and_seed(self):
+    def test_variants_differ_from_v8_only_in_seed_slots_length_pixels_and_context(self):
+        from fine_tuning.notebook_rl import local_profile
+
         base = flatten(variant_cfg(pe.COURSE))
         self.assertEqual(pe.VARIANTS[pe.COURSE][0], pe.ROOT / "configs/eval/mmmu_val_v8.yaml")
-        for vid, seed in zip(C16, (3407, 3408, 3409)):
+        self.assertEqual([v for v, row in pe.VARIANTS.items() if row[3] == "statistical"], FAST)
+        self.assertEqual(set(pe.REGISTERED), set(FAST))
+        fast = {"execution.batch_size": 32, "generation.max_new_tokens": 8192, "image.min_pixels": 262144,
+                "image.max_pixels": 1003520, "execution.max_model_len": 24576}
+        for vid, seed in zip(FAST, (3407, 3408, 3409)):
             cfg = flatten(variant_cfg(vid))
             self.assertEqual(set(cfg), set(base))
             changed = {k for k in base if cfg[k] != base[k]}
-            expected = {"protocol_id", "execution.batch_size"} | ({"generation.seed"} if seed != 3407 else set())
+            expected = {"protocol_id", *fast} | ({"generation.seed"} if seed != 3407 else set())
             self.assertEqual(changed, expected, vid)
-            self.assertEqual((cfg["protocol_id"], cfg["execution.batch_size"], cfg["generation.seed"]),
-                             (vid, 16, seed))
+            self.assertEqual({k: cfg[k] for k in fast}, fast)
+            self.assertEqual((cfg["protocol_id"], cfg["generation.seed"]), (vid, seed))
+        # the eval image budget is the training one (protocol image of the local/pod training profile)
+        image = local_profile.build_protocol(repair_notebook=True, context_limit=24576)["image"]
+        self.assertEqual({k: image[k] for k in pe.FAST_PIXELS}, pe.FAST_PIXELS)
+        # the c16 files stay on disk but are no longer part of the proof
+        self.assertTrue(all(path.is_file() for path in C16_FILES))
+        self.assertFalse({path.resolve() for path in C16_FILES} & {row[0].resolve() for row in pe.VARIANTS.values()})
 
     def test_preregistration_is_frozen_hashed_and_write_once(self):
         prereg, sha = pe.load_preregistration(self.prereg)
         self.assertEqual(sha, self.prereg_sha)
         self.assertEqual(len(prereg["b2_reference"]["wrong_ids"]), 342)
         self.assertEqual(len(prereg["b2_reference"]["right_ids"]), 558)
-        self.assertEqual(len(prereg["runs"]), 7)
-        self.assertEqual(set(prereg["protocol_variants"]), set(C16) | {pe.COURSE})
-        self.assertEqual(prereg["course_facing_run"]["concurrency"], 2)
-        self.assertEqual(prereg["mmmu_val_budget"]["checkpoints_per_arm"], 1)
+        self.assertEqual(prereg["runs"], [{"arm": a, "variant": v, "role": "statistical"} for a in ("F0", "FT")
+                                          for v in FAST])  # no course run
+        self.assertEqual(set(prereg["protocol_variants"]), set(FAST))
+        self.assertEqual({prereg["protocol_variants"][v]["concurrency"] for v in FAST}, {32})
+        self.assertEqual(prereg["primary_endpoint"]["variants"], FAST)
+        self.assertEqual(prereg["primary_endpoint"]["items"], 342)
+        self.assertEqual(prereg["sensitivity"]["mcnemar_exact_two_sided"]["variant"], FAST[0])
+        self.assertEqual(prereg["course_facing_run"]["status"], "DROPPED")
+        self.assertEqual((prereg["mmmu_val_budget"]["checkpoints_per_arm"], prereg["mmmu_val_budget"]["runs"],
+                          prereg["mmmu_val_budget"]["items_per_run"]), (1, 6, 342))
+        subset = prereg["evaluation_subset"]
+        self.assertEqual((subset["ids"], subset["sha256"], subset["count"]), (SUBSET, sha256_file(self.subset), 342))
+        self.assertEqual(subset["ids"], prereg["b2_reference"]["wrong_ids"])
+        self.assertIn("558", prereg["limitations"][0])
+        self.assertIn("LLM-assisted judge", prereg["scorer"]["only_scorer"])
         with self.assertRaises(FileExistsError):
-            pe.preregister(self.prereg, b2_predictions=self.root / "b2.jsonl")
+            pe.preregister(self.prereg, self.subset, b2_predictions=self.b2)
         self.prereg.write_text(self.prereg.read_text().replace('"FROZEN"', '"DRAFT"', 1))
         with self.assertRaisesRegex(ValueError, "sidecar"):
             pe.load_preregistration(self.prereg)
 
-    def test_analysis_means_bootstrap_mcnemar_splits_and_course(self):
-        course = write_run(self.root, "ft-course", variant_cfg(pe.COURSE), self.ft, self.ft_outcomes[3407])
-        self.start(course)
-        report = self.analyze(self.runs + [course / "predictions.jsonl"])
+    def test_analysis_means_bootstrap_mcnemar_and_splits_on_the_subset(self):
+        report = self.analyze([run / "predictions.jsonl" for run in self.runs[:3]] + self.runs[3:])
         p = report["primary"]
-        self.assertEqual(p["accuracy_per_seed"]["FT"], {"3407": 0.6, "3408": 0.5, "3409": 0.4})
+        self.assertEqual((p["items"], p["scorer"]), (342, pe.PARSER))
+        self.assertEqual(p["correct_per_seed"], {"F0": {"3407": 171, "3408": 171, "3409": 171},
+                                                 "FT": {"3407": 206, "3408": 171, "3409": 136}})
+        for seed, count in p["correct_per_seed"]["FT"].items():  # per-seed accuracy = recovered count / 342
+            self.assertAlmostEqual(p["accuracy_per_seed"]["FT"][seed], count / 342)
         self.assertAlmostEqual(p["F0_accuracy"], 0.5)
         self.assertAlmostEqual(p["FT_accuracy"], 0.5)
-        self.assertAlmostEqual(p["FT_minus_F0"], 0.0)  # best-of-seeds would give +0.10
+        self.assertAlmostEqual(p["FT_minus_F0"], 0.0)  # best-of-seeds would give +35/342
         self.assertLessEqual(p["ci95"][0], 0.0)
         self.assertGreaterEqual(p["ci95"][1], 0.0)
         m = report["sensitivity_mcnemar_seed3407"]
-        self.assertEqual((m["f0_right_ft_wrong"], m["f0_wrong_ft_right"]), (0, 90))
-        self.assertTrue(math.isclose(m["p_value"], 2 / 2 ** 90))
-        wrong = range(342)
-        expected_recovery = sum(self.f0_outcome(i) is True for i in wrong) / 342
-        self.assertAlmostEqual(report["secondary"]["F0"]["b2_wrong_recovery"], expected_recovery)
-        ft_right = sum(sum(bool(f(i)) for f in self.ft_outcomes.values()) / 3 for i in range(342, 900)) / 558
-        self.assertAlmostEqual(report["secondary"]["FT"]["b2_right_retention"], ft_right)
-        self.assertAlmostEqual(report["secondary"]["F0"]["length_cutoff_rate"], 30 / 900)
-        self.assertAlmostEqual(report["secondary"]["F0"]["missing_final_answer_rate"], 30 / 900)
-        self.assertEqual(sum(r["n"] for r in report["per_discipline"].values()), 900)
-        self.assertEqual(set(report["per_subject"]), set(SUBJECTS))
-        self.assertEqual(report["course_facing"]["correct"], 540)
+        self.assertEqual((m["f0_right_ft_wrong"], m["f0_wrong_ft_right"]), (0, 35))
+        self.assertTrue(math.isclose(m["p_value"], 2 / 2 ** 35))
+        self.assertEqual(set(report["secondary"]["F0"]), {"length_cutoff_rate", "missing_final_answer_rate"})
+        self.assertAlmostEqual(report["secondary"]["F0"]["length_cutoff_rate"], 11 / 342)
+        self.assertAlmostEqual(report["secondary"]["F0"]["missing_final_answer_rate"], 11 / 342)
+        self.assertEqual(sum(r["n"] for r in report["per_discipline"].values()), 342)
+        self.assertEqual(sum(r["n"] for r in report["per_subject"].values()), 342)
+        self.assertEqual(report["course_facing"]["status"], "DROPPED")
         self.assertEqual(report["preregistration_sha256"], self.prereg_sha)
-        self.assertIn("Course-facing run", pe.render_markdown(report))
+        markdown = pe.render_markdown(report)
+        self.assertIn("206 (60.23%)", markdown)
+        self.assertIn("Course-facing run (FT, mmmu-val-v8, c2, seed 3407): DROPPED", markdown)
+        self.assertIn("Limitation: 342-only", markdown)
+
+    def test_runs_must_be_partial_runs_on_exactly_the_preregistered_subset(self):
+        cfg, out = variant_cfg(FAST[0]), self.ft_outcomes[3407]
+        cases = {"missing one": dict(ids=SUBSET[:-1]), "one swapped for a B2-right item": dict(ids=SUBSET[:-1] + [IDS[400]]),
+                 "full 900-item run": dict(ids=IDS, mode="full")}
+        for name, changes in cases.items():
+            with self.subTest(name):
+                run = write_run(self.root, "ft-" + name.replace(" ", "-"), cfg, self.ft, out, **changes)
+                with self.assertRaisesRegex(ValueError, "sample set differs|not an original partial"):
+                    self.analyze(self.runs[:3] + [run] + self.runs[4:])
+        unfinished = write_run(self.root, "ft-incomplete", cfg, self.ft, out)
+        summary = json.loads((unfinished / "summary.json").read_text())
+        (unfinished / "summary.json").write_text(json.dumps(summary | {"status": "INCOMPLETE"}))
+        with self.assertRaisesRegex(ValueError, "is INCOMPLETE, not PARTIAL"):
+            self.analyze(self.runs[:3] + [unfinished] + self.runs[4:])
+        manifest = json.loads((self.runs[3] / "run_manifest.json").read_text())
+        manifest["identity"]["ids_sha256"] = digest(IDS)
+        (self.runs[3] / "run_manifest.json").write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "sample set differs"):
+            self.analyze(self.runs)
+
+    def test_preregistration_refuses_a_subset_that_is_not_the_b2_wrong_set(self):
+        for name, path in {"other ids": write_subset(self.root / "s1.json", self.b2, ids=SUBSET[:-1] + [IDS[400]]),
+                           "unsorted": write_subset(self.root / "s2.json", self.b2, ids=SUBSET[::-1]),
+                           "other source": write_subset(self.root / "s3.json", self.b2, source_sha256="0" * 64),
+                           "wrong count": write_subset(self.root / "s4.json", self.b2, count=341),
+                           "other version": write_subset(self.root / "s5.json", self.b2, version="v0")}.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, "B2 V8 wrong IDs"):
+                pe.preregister(self.root / f"prereg-{name}.json", path, b2_predictions=self.b2)
 
     def test_best_of_selection_is_impossible_through_the_api(self):
         self.assertEqual(list(inspect.signature(pe.seed_mean).parameters), ["per_seed"])
         self.assertEqual(list(inspect.signature(pe.analyze).parameters), ["prereg_path", "run_paths", "ft_model_ref", "ledger"])
         self.assertEqual(pe.seed_mean([{"a": True}, {"a": False}, {"a": False}]), {"a": 1 / 3})
-        best = write_run(self.root, "ft-again", variant_cfg(C16[2]), self.ft, lambda i: i % 2 == 0 or i % 10 == 1)
+        best = write_run(self.root, "ft-again", variant_cfg(FAST[2]), self.ft, lambda i: i % 2 == 0 or i % 10 == 1)
         with self.assertRaisesRegex(ValueError, "duplicate run"):
             self.analyze(self.runs + [best])
-        extra_cfg = variant_cfg(C16[0])
+        extra_cfg = variant_cfg(FAST[0])
         extra_cfg["generation"]["seed"] = 3410
         extra = write_run(self.root, "ft-3410", extra_cfg, self.ft, self.ft_outcomes[3407])
         with self.assertRaisesRegex(ValueError, "not preregistered"):
             self.analyze(self.runs + [extra])
         with self.assertRaisesRegex(ValueError, "missing"):
             self.analyze(self.runs[:-1])
-        other = write_run(self.root, "ft-other-ckpt", variant_cfg(C16[2]), "e" * 64, self.ft_outcomes[3409])
+        other = write_run(self.root, "ft-other-ckpt", variant_cfg(FAST[2]), "e" * 64, self.ft_outcomes[3409])
         with self.assertRaisesRegex(ValueError, "one checkpoint per arm"):
             self.analyze(self.runs[:-1] + [other])
 
@@ -181,22 +262,22 @@ class ProofAnalysisTests(unittest.TestCase):
         (run / "predictions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         with self.assertRaisesRegex(ValueError, "re-score"):
             self.analyze(self.runs)
-        wrong_seed = write_run(self.root, "ft-seed", variant_cfg(C16[0]), self.ft, self.ft_outcomes[3407], seed=1)
+        wrong_seed = write_run(self.root, "ft-seed", variant_cfg(FAST[0]), self.ft, self.ft_outcomes[3407], seed=1)
         with self.assertRaisesRegex(ValueError, "seed"):
             self.analyze(self.runs[:3] + [wrong_seed] + self.runs[4:])
-        unpaired = write_run(self.root, "ft-proto", variant_cfg(C16[0]), self.ft, self.ft_outcomes[3407],
+        unpaired = write_run(self.root, "ft-proto", variant_cfg(FAST[0]), self.ft, self.ft_outcomes[3407],
                              protocol="9" * 64)
         with self.assertRaisesRegex(ValueError, "protocol hash differs"):
             self.analyze(self.runs[:3] + [unpaired] + [self.runs[4], self.runs[5]])
 
-    def test_run_eval_provenance_is_required_for_c16_and_forbidden_for_course(self):
-        bare = write_run(self.root, "ft-bare", variant_cfg(C16[0]), self.ft, self.ft_outcomes[3407],
+    def test_run_eval_provenance_is_required_and_the_dropped_course_run_is_refused(self):
+        bare = write_run(self.root, "ft-bare", variant_cfg(FAST[0]), self.ft, self.ft_outcomes[3407],
                          registration=False)
         with self.assertRaisesRegex(ValueError, pe.REGISTRATION_FILE):
             self.analyze(self.runs[:3] + [bare] + self.runs[4:])
-        course = write_run(self.root, "ft-course-wrapped", variant_cfg(pe.COURSE), self.ft, self.ft_outcomes[3407],
-                           registration=True)
-        with self.assertRaisesRegex(ValueError, "plain scripts/eval.sh"):
+        course = write_run(self.root, "ft-course", variant_cfg(pe.COURSE), self.ft, self.ft_outcomes[3407],
+                           ids=IDS, mode="full")
+        with self.assertRaisesRegex(ValueError, "protocol config is not preregistered"):  # course dropped
             self.analyze(self.runs + [course])
         registration = json.loads((self.runs[5] / pe.REGISTRATION_FILE).read_text())
         registration["proof_eval_sha256"] = "0" * 64
@@ -215,16 +296,18 @@ class ProofAnalysisTests(unittest.TestCase):
         self.assertEqual([e["event"] for e in events], ["START"] * 6)
         self.assertEqual({e["run_id"] for e in events}, {r.name for r in self.runs})
         self.assertEqual({e["preregistration_sha256"] for e in events}, {self.prereg_sha})
-        with self.assertRaisesRegex(ValueError, "already started as f0-" + C16[0]):
-            pe.ledger_start(self.prereg, "F0", C16[0], "f0-again", self.ledger)
+        with self.assertRaisesRegex(ValueError, "already started as f0-" + FAST[0]):
+            pe.ledger_start(self.prereg, "F0", FAST[0], "f0-again", self.ledger)
         with self.assertRaisesRegex(ValueError, "already started"):  # a resume is not a second start
-            pe.ledger_start(self.prereg, "F0", C16[0], self.runs[0].name, self.ledger)
+            pe.ledger_start(self.prereg, "F0", FAST[0], self.runs[0].name, self.ledger)
         with self.assertRaisesRegex(ValueError, "not a preregistered run"):
             pe.ledger_start(self.prereg, "F0", pe.COURSE, "f0-course", self.ledger)
         with self.assertRaisesRegex(ValueError, "not a preregistered run"):
-            pe.ledger_start(self.prereg, "FT", "mmmu-val-v8-c16-seed3410-v1", "ft-3410", self.ledger)
+            pe.ledger_start(self.prereg, "FT", "mmmu-val-v8-fast8k-seed3410-v1", "ft-3410", self.ledger)
+        with self.assertRaisesRegex(ValueError, "not a preregistered run"):
+            pe.ledger_start(self.prereg, "FT", "mmmu-val-v8-c16-seed3407-v1", "ft-c16", self.ledger)
         with self.assertRaisesRegex(ValueError, "run_id invalid"):
-            pe.ledger_start(self.prereg, "FT", pe.COURSE, "../escape", self.ledger)
+            pe.ledger_start(self.prereg, "FT", FAST[1], "../escape", self.ledger)
         with self.assertRaisesRegex(ValueError, "started, not yet failed"):
             pe.ledger_fail(self.ledger, "never-started", "x", self.root)
         with self.assertRaisesRegex(ValueError, "and a reason"):
@@ -233,14 +316,14 @@ class ProofAnalysisTests(unittest.TestCase):
         pe.ledger_fail(self.ledger, self.runs[0].name, "pod preempted", self.root)
         with self.assertRaisesRegex(ValueError, "started, not yet failed"):
             pe.ledger_fail(self.ledger, self.runs[0].name, "again", self.root)
-        pe.ledger_start(self.prereg, "F0", C16[0], "f0-second", self.ledger)
+        pe.ledger_start(self.prereg, "F0", FAST[0], "f0-second", self.ledger)
         with self.assertRaisesRegex(ValueError, "already started as f0-second"):
-            pe.ledger_start(self.prereg, "F0", C16[0], "f0-third", self.ledger)
+            pe.ledger_start(self.prereg, "F0", FAST[0], "f0-third", self.ledger)
         self.assertEqual([e["event"] for e in self.ledger_events()][6:], ["FAIL", "START"])
         self.assertEqual(oct(self.ledger.stat().st_mode & 0o777), "0o600")
 
-    def test_ledger_fail_refuses_a_complete_run_and_a_tampered_chain_is_refused(self):
-        with self.assertRaisesRegex(ValueError, "COMPLETE"):
+    def test_ledger_fail_refuses_a_finished_run_and_a_tampered_chain_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "is PARTIAL; a finished run"):
             pe.ledger_fail(self.ledger, self.runs[0].name, "score was low", self.run_root())
         self.assertEqual(len(self.ledger_events()), 6)
         lines = self.ledger.read_bytes().splitlines(keepends=True)
@@ -253,10 +336,10 @@ class ProofAnalysisTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "chain broken|partial line"):
                     pe.read_ledger(broken)
         with self.assertRaisesRegex(ValueError, "chain broken|partial line"):
-            pe.ledger_start(self.prereg, "FT", pe.COURSE, "ft-course", self.root / "broken-delete.jsonl")
+            pe.ledger_start(self.prereg, "FT", FAST[0], "ft-x", self.root / "broken-delete.jsonl")
 
     def run_root(self):
-        """An artifact root whose runs/<run_id> holds the synthetic COMPLETE runs."""
+        """An artifact root whose runs/<run_id> holds the synthetic finished (PARTIAL) runs."""
         root = self.root / "artifacts"
         (root / "runs").mkdir(parents=True, exist_ok=True)
         for run in self.runs:
@@ -265,7 +348,7 @@ class ProofAnalysisTests(unittest.TestCase):
         return root
 
     def test_analyze_refuses_unstarted_failed_replaced_and_omitted_runs(self):
-        again = write_run(self.root, "ft-again", variant_cfg(C16[2]), self.ft, lambda i: i % 2 == 0 or i % 10 == 1)
+        again = write_run(self.root, "ft-again", variant_cfg(FAST[2]), self.ft, lambda i: i % 2 == 0 or i % 10 == 1)
         runs = self.runs[:5] + [again]  # a repeat of (FT, seed 3409) that was never started in the ledger
         with self.assertRaisesRegex(ValueError, "ft-again was never started"):
             self.analyze(runs)
@@ -281,15 +364,9 @@ class ProofAnalysisTests(unittest.TestCase):
         self.assertEqual(report["ledger"]["starts"], 7)
         self.assertEqual(report["ledger"]["head"], pe.read_ledger(self.ledger)[1])
         self.assertEqual(report["ledger"]["file_sha256"], sha256_file(self.ledger))
-        # A started course run that is not supplied is an omitted run, not a NOT_RUN course.
-        course = write_run(self.root, "ft-course", variant_cfg(pe.COURSE), self.ft, self.ft_outcomes[3407])
-        self.start(course)
-        with self.assertRaisesRegex(ValueError, "ft-course .* not the one analyzed"):
-            self.analyze(runs)
-        self.assertEqual(self.analyze(runs + [course])["course_facing"]["status"], "COMPLETE")
         # A run started under another (arm, variant) than its content declares.
         other = self.root / "ledger-2.jsonl"
-        keys = [("F0", C16[0]), ("F0", C16[2]), ("F0", C16[1]), ("FT", C16[0]), ("FT", C16[1]), ("FT", C16[2])]
+        keys = [("F0", FAST[0]), ("F0", FAST[2]), ("F0", FAST[1]), ("FT", FAST[0]), ("FT", FAST[1]), ("FT", FAST[2])]
         for run, (arm, variant) in zip(self.runs, keys):
             pe.ledger_start(self.prereg, arm, variant, run.name, other)
         with self.assertRaisesRegex(ValueError, "another .arm, variant. or FAILED"):
@@ -317,10 +394,10 @@ class ProofAnalysisTests(unittest.TestCase):
         cli = self.root / "cli.jsonl"
         base = ["--prereg", str(self.prereg), "--ledger", str(cli)]
         with mock.patch("builtins.print") as printed:
-            self.assertEqual(pe.main(["ledger-start", *base, "--arm", "FT", "--variant", pe.COURSE, "--run-id", "c1"]), 0)
+            self.assertEqual(pe.main(["ledger-start", *base, "--arm", "FT", "--variant", FAST[0], "--run-id", "c1"]), 0)
             self.assertEqual(pe.main(["ledger-fail", "--ledger", str(cli), "--run-id", "c1", "--reason", "oom",
                                       "--artifact-root", str(self.root / "no-artifacts")]), 0)
-            self.assertEqual(pe.main(["ledger-start", *base, "--arm", "FT", "--variant", pe.COURSE, "--run-id", "c2"]), 0)
+            self.assertEqual(pe.main(["ledger-start", *base, "--arm", "FT", "--variant", FAST[0], "--run-id", "c2"]), 0)
             self.assertEqual(pe.main([*argv, "--ledger", str(self.ledger)]), 0)
         self.assertEqual([e["event"] for e in pe.read_ledger(cli)[0]], ["START", "FAIL", "START"])
         self.assertTrue(out.with_suffix(".json").is_file())
@@ -430,17 +507,26 @@ class ProofRunEvalTests(unittest.TestCase):
         hws = {p.name: yaml.safe_load(p.read_text())
                for p in [*sorted((pe.ROOT / "configs/hardware").glob("*.yaml")), A40]}
         cfgs = {p.name: yaml.safe_load(p.read_text()) for p in sorted((pe.ROOT / "configs/eval").glob("*.yaml"))}
-        v8, c16 = cfgs["mmmu_val_v8.yaml"], variant_cfg(C16[0])
-        cfgs |= {"v8_batch16": changed(v8, execution__batch_size=16),
+        v8, fast = cfgs["mmmu_val_v8.yaml"], variant_cfg(FAST[0])
+        cfgs |= {"v8_batch32": changed(v8, execution__batch_size=32),
                  "v8_seed3408": changed(v8, generation__seed=3408),
-                 "unregistered_c16": changed(c16, protocol_id="mmmu-val-v8-c16-seed3410-v1"),
-                 "unregistered_c16_seed3410": changed(c16, protocol_id="mmmu-val-v8-c16-seed3410-v1",
-                                                      generation__seed=3410)}
-        bad_registered = {"wrong_seed": changed(c16, generation__seed=3408),
-                          "two_slots": changed(c16, execution__batch_size=2),
-                          "v4_parser": changed(c16, parser="team-final-answer-v4"),
-                          "official_resize": changed(c16, image__resize_owner="official_processor")}
-        registered = {vid: variant_cfg(vid) for vid in C16}
+                 "v8_8k_low_res": changed(v8, generation__max_new_tokens=8192, image__min_pixels=262144,
+                                          image__max_pixels=1003520, execution__max_model_len=24576),
+                 "unregistered_fast": changed(fast, protocol_id="mmmu-val-v8-fast8k-seed3410-v1"),
+                 "unregistered_fast_seed3410": changed(fast, protocol_id="mmmu-val-v8-fast8k-seed3410-v1",
+                                                       generation__seed=3410),
+                 **{f"old_{p.stem}": yaml.safe_load(p.read_text()) for p in C16_FILES}}
+        bad_registered = {"wrong_seed": changed(fast, generation__seed=3408),
+                          "two_slots": changed(fast, execution__batch_size=2),
+                          "sixteen_slots": changed(fast, execution__batch_size=16),
+                          "32k_output": changed(fast, generation__max_new_tokens=32768),
+                          "4k_output": changed(fast, generation__max_new_tokens=4096),
+                          "official_pixels": changed(fast, image__min_pixels=1003520, image__max_pixels=4014080),
+                          "max_pixels_only": changed(fast, image__max_pixels=1310720),
+                          "40960_context": changed(fast, execution__max_model_len=40960),
+                          "v4_parser": changed(fast, parser="team-final-answer-v4"),
+                          "official_resize": changed(fast, image__resize_owner="official_processor")}
+        registered = {vid: variant_cfg(vid) for vid in FAST}
         tables = copy.deepcopy((contracts.CONTROL_IMAGES, contracts.EXECUTION_PROFILES))
         functions = (contracts.validate_configs, VLLMBackend.__init__)
         outside = {(c, h): validation_outcome(cfgs[c], hws[h]) for c in cfgs for h in hws}
@@ -453,9 +539,13 @@ class ProofRunEvalTests(unittest.TestCase):
                     self.assertEqual(validation_outcome(cfg, hw), outside[("mmmu_val_v8.yaml", h)], (vid, h))
             for name, cfg in bad_registered.items():
                 self.assertIsNotNone(validation_outcome(cfg, hws["a40_48gb.yaml"]), name)
-            self.assertIn("named fixed protocol", validation_outcome(cfgs["unregistered_c16"], hws["a40_48gb.yaml"])[1])
-            cfg, _ = contracts.load_configs(pe.VARIANTS[C16[2]][0], A40)  # the cli.py import path
-            self.assertEqual((cfg["generation"]["seed"], cfg["execution"]["batch_size"]), (3409, 16))
+            for name in ("unregistered_fast", "old_mmmu_val_v8_c16_seed3407"):
+                self.assertIn("named fixed protocol", validation_outcome(cfgs[name], hws["a40_48gb.yaml"])[1])
+            cfg, _ = contracts.load_configs(pe.VARIANTS[FAST[2]][0], A40)  # the cli.py import path
+            self.assertEqual((cfg["generation"]["seed"], cfg["execution"]["batch_size"],
+                              cfg["generation"]["max_new_tokens"], cfg["execution"]["max_model_len"],
+                              cfg["image"]["min_pixels"], cfg["image"]["max_pixels"]),
+                             (3409, 32, 8192, 24576, 262144, 1003520))
             with self.assertRaisesRegex(RuntimeError, "already registered"):
                 with pe.registered_variants():
                     pass
@@ -463,23 +553,27 @@ class ProofRunEvalTests(unittest.TestCase):
         self.assertEqual((contracts.validate_configs, VLLMBackend.__init__), functions)
         self.assertEqual({k: validation_outcome(cfgs[k[0]], hws[k[1]]) for k in outside}, outside)
 
-    def test_backend_gets_sixteen_slots_only_for_registered_ids(self):
+    def test_backend_gets_thirty_two_slots_only_for_registered_ids(self):
         from mmdl.evaluation.backends.vllm_backend import VLLMBackend
 
-        hw, c16, v8 = yaml.safe_load(A40.read_text()), variant_cfg(C16[1]), variant_cfg(pe.COURSE)
+        hw, fast, v8 = yaml.safe_load(A40.read_text()), variant_cfg(FAST[1]), variant_cfg(pe.COURSE)
         FakeLLM.calls.clear()
         recorded = []
         with backend_mocks():
             with self.assertRaisesRegex(ValueError, "one or two active requests"):
-                VLLMBackend("model", c16, hw)
+                VLLMBackend("model", fast, hw)
             with pe.registered_variants(on_backend=lambda: recorded.append(True)):
-                wide = VLLMBackend("model", c16, hw)
+                wide = VLLMBackend("model", fast, hw)
                 plain = VLLMBackend("model", v8, hw)
                 with self.assertRaisesRegex(ValueError, "one or two active requests"):
-                    VLLMBackend("model", changed(v8, execution__batch_size=16), hw)
-        self.assertEqual([call["max_num_seqs"] for call in FakeLLM.calls], [16, 2])
-        self.assertEqual((wide.batch_size, plain.batch_size), (16, 2))
-        self.assertIs(wide.cfg, c16)
+                    VLLMBackend("model", changed(v8, execution__batch_size=32), hw)
+        self.assertEqual([(c["max_num_seqs"], c["max_model_len"], c["mm_processor_kwargs"]["size"],
+                           c["enable_prefix_caching"]) for c in FakeLLM.calls],
+                         [(32, 24576, {"shortest_edge": 262144, "longest_edge": 1003520}, False),
+                          (2, 40960, {"shortest_edge": 1003520, "longest_edge": 4014080}, False)])
+        self.assertEqual((wide.batch_size, plain.batch_size), (32, 2))
+        self.assertEqual(wide.max_model_len, 24576)
+        self.assertIs(wide.cfg, fast)
         self.assertEqual(recorded, [True])
 
     def test_run_eval_calls_the_eval_sh_entry_point_and_records_registration(self):
@@ -492,7 +586,8 @@ class ProofRunEvalTests(unittest.TestCase):
         def fake_run(args, cfg, hw, root):
             run_dir = args.artifact_root / "runs" / args.run_id
             run_dir.mkdir(parents=True, exist_ok=args.resume)
-            seen.update(cfg=cfg, cwd=Path.cwd(), hw=hw["name"], model_ref=args.model_ref)
+            seen.update(cfg=cfg, cwd=Path.cwd(), hw=hw["name"], model_ref=args.model_ref, mode=args.mode,
+                        sample_id=args.sample_id, run_role=args.run_role)
             VLLMBackend(str(args.model_path), cfg, hw, "base", str(args.base_path))
             return {"status": "SMOKE"}
 
@@ -500,34 +595,39 @@ class ProofRunEvalTests(unittest.TestCase):
             root = Path(tmp)
             (root / "data").mkdir()
             (root / "data/manifest.json").write_text("{}")
-            argv = ["--protocol", "fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_c16_seed3408.yaml",
+            argv = ["--protocol", "fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_fast8k_seed3408.yaml",
                     "--hardware", str(A40), "--model-ref", "manifests/models/baseline.json",
                     "--model-path", str(root / "model"), "--base-path", str(root / "base"),
                     "--data-root", str(root / "data"), "--artifact-root", str(root / "art"),
-                    "--run-id", "c16-3408-smoke", "--mode", "smoke", "--no-download"]
+                    "--job-id", "fast8k-3408", "--run-role", "standalone", "--run-id", "fast8k-3408-evaluation",
+                    "--mode", "partial", *(x for sid in SUBSET[:3] for x in ("--sample-id", sid)), "--no-download"]
             cwd, saved_argv = Path.cwd(), list(sys.argv)
             FakeLLM.calls.clear()
             with backend_mocks(), mock.patch.object(engine, "run", fake_run), mock.patch.dict(os.environ):
                 self.assertEqual(pe.main(["run-eval", *argv]), 0)
-                run_dir = root / "art/runs/c16-3408-smoke"
+                run_dir = root / "art/runs/fast8k-3408-evaluation"
                 registration = json.loads((run_dir / pe.REGISTRATION_FILE).read_text())
                 registration_path = run_dir / pe.REGISTRATION_FILE
                 registration_path.write_text(json.dumps(registration | {"proof_eval_sha256": "0" * 64}))
                 with self.assertRaisesRegex(ValueError, "different variant registration"):
                     pe.run_eval(argv + ["--resume"])
-            self.assertEqual((seen["cfg"]["generation"]["seed"], seen["cfg"]["execution"]["batch_size"]), (3408, 16))
+            self.assertEqual((seen["cfg"]["generation"]["seed"], seen["cfg"]["execution"]["batch_size"],
+                              seen["cfg"]["generation"]["max_new_tokens"], seen["cfg"]["image"]["max_pixels"]),
+                             (3408, 32, 8192, 1003520))
+            # --mode partial and every --sample-id reach the evaluator unchanged (the real cli validation ran)
+            self.assertEqual((seen["mode"], seen["sample_id"], seen["run_role"]), ("partial", SUBSET[:3], "standalone"))
             self.assertEqual((seen["cwd"], seen["hw"], seen["model_ref"]),
                              (pe.ROOT, "a40_48gb", Path("manifests/models/baseline.json")))
-            self.assertEqual([call["max_num_seqs"] for call in FakeLLM.calls], [16])
-            self.assertEqual(registration, pe.variant_registration(C16[1]))
-            self.assertEqual(set(registration["registered"]), set(C16))
+            self.assertEqual([(call["max_num_seqs"], call["max_model_len"]) for call in FakeLLM.calls], [(32, 24576)])
+            self.assertEqual(registration, pe.variant_registration(FAST[1]))
+            self.assertEqual(set(registration["registered"]), set(FAST))
             self.assertEqual(registration["proof_eval_sha256"], sha256_file(Path(pe.__file__)))
             self.assertEqual(set(registration["src_files"]), set(pe.PATCHED_SRC))
             self.assertEqual((Path.cwd(), sys.argv), (cwd, saved_argv))
-            self.assertFalse(set(C16) & set(contracts.EXECUTION_PROFILES))
-            for protocol in (pe.ROOT / "configs/eval/mmmu_val_v8.yaml", root / "edited.yaml"):
+            self.assertFalse(set(FAST) & set(contracts.EXECUTION_PROFILES))
+            for protocol in (pe.ROOT / "configs/eval/mmmu_val_v8.yaml", root / "edited.yaml", *C16_FILES):
                 if protocol.name == "edited.yaml":
-                    protocol.write_text(pe.VARIANTS[C16[0]][0].read_text() + "# edited\n")
+                    protocol.write_text(pe.VARIANTS[FAST[0]][0].read_text() + "# edited\n")
                 with self.assertRaisesRegex(ValueError, "plain scripts/eval.sh"):
                     pe.run_eval(["--protocol", str(protocol), "--run-id", "refused"])
 

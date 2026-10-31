@@ -1,21 +1,28 @@
 """Plan the proof's MMMU-val evaluation stages as pod/chain.py specs (`pod-chain-spec-v1`).
 
-CLI: python -m fine_tuning.notebook_rl.pod.eval_stage plan --stage {eval-f0,eval-ft,eval-course}
+CLI: python -m fine_tuning.notebook_rl.pod.eval_stage plan --stage {eval-f0,eval-ft}
          --params PARAMS.json --output STEPS.json
 Writes STEPS.json once (an existing file is refused) and prints its sha256, the value the approved job's
 main argv passes as `chain run --spec STEPS.json --spec-sha256 HEX`. Same params -> same bytes. Executes
 nothing; analysis (`proof_eval analyze`) stays local after collection.
 
 Arms, variants, seeds and config files come from proof_eval.VARIANTS, the table its preregistration is
-built from: statistical runs F0 and FT x c16 seeds 3407/3408/3409 (`proof_eval run-eval`), one course run
-FT x mmmu-val-v8 (c2, seed 3407; plain scripts/eval.sh). Every stage pins its inputs first (`chain pin`),
+built from: statistical runs F0 and FT x fast8k seeds 3407/3408/3409 (32 slots, 8192 output tokens,
+262144..1003520 pixels, 24576 context; `proof_eval run-eval`). Scope (user decision 2026-10-31): every
+run is `--mode partial --run-role standalone` with one `--sample-id` per ID of the pinned subset file
+(the 342 B2 V8 wrong items; the evaluator refuses run role `evaluation` for a partial run). The course
+run (FT x mmmu-val-v8, plain scripts/eval.sh) keeps its code path here but stage `eval-course` is refused:
+it is not in the proof plan. Every stage pins its inputs first (`chain pin`: subset, prereg, ...),
 then appends all of its ledger STARTs, then runs; the ledger START of a run always precedes the run, and
-an omitted or replaced seed stays visible to `analyze --ledger`. Run ids: <run_prefix>-<arm>-<tag>-evaluation.
+an omitted or replaced seed stays visible to `analyze --ledger`.
+Run ids: <run_prefix>-<arm>-fast8k-s<seed>-evaluation (job id = run id without -evaluation).
 
 params (`eval-stage-params-v1`), absolute canonical paths:
   all stages   commit (40-hex clone commit, --require-commit), repo_root (the clone), python
                (<volume_root>/venv-<16 hex>/bin/python), volume_root, artifact_root, prereg, prereg_sha256,
-               ledger, run_prefix; artifact_root, ledger and prereg under <volume_root>/eval-data/
+               ledger, run_prefix, subset (proof-eval-subset-v1 JSON), subset_sha256; artifact_root, ledger,
+               prereg and subset under <volume_root>/eval-data/. `plan` reads the subset only after its
+               sha256 equals subset_sha256.
   eval-ft      + checkpoint, checkpoint_metadata_sha256 (sha256 of <checkpoint>/metadata.json, which pins
                every checkpoint file), binding, binding_sha256, training_commit, ft_export (new dir)
   eval-course  + ft_export, ft_model_ref_sha256 (sha256 of <ft_export>/model_ref.json written by eval-ft)
@@ -44,7 +51,10 @@ PROOF = "fine_tuning.notebook_rl.proof_eval"
 HARDWARE = "fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml"
 BASE_REF = "manifests/models/baseline.json"
 COMMON = {"version", "commit", "repo_root", "python", "volume_root", "artifact_root", "prereg",
-          "prereg_sha256", "ledger", "run_prefix"}
+          "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256"}
+STAGES = ("eval-f0", "eval-ft")  # planned; eval-course is dropped from the proof (user decision 2026-10-31)
+SUBSET_VERSION = proof_eval.SUBSET_VERSION
+MMMU_ID = re.compile(r"validation_[A-Za-z_]+_[0-9]{1,3}\Z")
 EXTRA = {"eval-f0": set(),
          "eval-ft": {"checkpoint", "checkpoint_metadata_sha256", "binding", "binding_sha256",
                      "training_commit", "ft_export"},
@@ -53,12 +63,14 @@ PREFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,40}\Z")
 VENV_PYTHON = re.compile(r"/venv-[0-9a-f]{16}/bin/python\Z")
 # Raw responses (with MMMU questions and gold), the ledger and the prereg live under <volume_root>/eval-data,
 # the root the training preflight proves every training-side guard forbids.
-UNDER_EVAL_ROOT = ("artifact_root", "ledger", "prereg")
+UNDER_EVAL_ROOT = ("artifact_root", "ledger", "prereg", "subset")
 
 
 def _check(stage: str, params: Any) -> dict[str, Any]:
     if stage not in EVAL_STAGES:
         raise ValueError(f"stage must be one of {EVAL_STAGES}")
+    if stage not in STAGES:
+        raise ValueError(f"{stage} is not in the proof plan (user decision 2026-10-31: the 342-item subset only)")
     keys = COMMON | EXTRA[stage]
     if not isinstance(params, dict) or set(params) != keys:
         raise ValueError(f"{stage} params must have exactly the keys {sorted(keys)}")
@@ -99,9 +111,23 @@ def _runs(stage: str) -> list[tuple[str, str]]:
             "eval-course": [("FT", proof_eval.COURSE)]}[stage]
 
 
+def subset_ids(params: dict[str, Any]) -> list[str]:
+    """The pinned subset's sorted unique MMMU-val IDs; refused unless the file has the params' sha256."""
+    raw = Path(params["subset"]).read_bytes()
+    if sha256_bytes(raw) != params["subset_sha256"]:
+        raise ValueError("subset file sha256 differs from params.subset_sha256")
+    loaded = json.loads(raw)
+    ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
+    if (loaded.get("version") != SUBSET_VERSION or not isinstance(ids, list) or not ids
+            or loaded.get("count") != len(ids) or ids != sorted(set(ids))
+            or not all(isinstance(i, str) and MMMU_ID.match(i) for i in ids)):
+        raise ValueError(f"subset must be {SUBSET_VERSION} with sorted unique MMMU-val sample_ids and their count")
+    return ids
+
+
 def run_id(prefix: str, arm: str, variant: str) -> str:
     seed = proof_eval.VARIANTS[variant][1]
-    tag = "course" if variant == proof_eval.COURSE else "c16"
+    tag = "course" if variant == proof_eval.COURSE else "fast8k"
     return f"{prefix}-{arm.lower()}-{tag}-s{seed}-evaluation"
 
 
@@ -114,7 +140,8 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     py, repo, artifacts = p["python"], p["repo_root"], p["artifact_root"]
     snapshot = (f"{p['volume_root']}/hf-cache/hub/models--{MODEL_ID.replace('/', '--')}"
                 f"/snapshots/{MODEL_REVISION}")
-    pins = [("prereg", p["prereg"], p["prereg_sha256"])]
+    ids = subset_ids(p)
+    pins = [("subset", p["subset"], p["subset_sha256"]), ("prereg", p["prereg"], p["prereg_sha256"])]
     if stage == "eval-ft":
         pins += [("checkpoint", f"{p['checkpoint']}/metadata.json", p["checkpoint_metadata_sha256"]),
                  ("binding", p["binding"], p["binding_sha256"])]
@@ -142,8 +169,11 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
                  "--model-path", model_path, "--base-path", snapshot,
                  "--data-root", f"{p['volume_root']}/{EVAL_DATA_ROOT}", "--artifact-root", artifacts,
                  "--public-root", f"{artifacts}/public", "--require-commit", p["commit"],
-                 "--job-id", rid.removesuffix("-evaluation"), "--run-role", "evaluation", "--run-id", rid,
-                 "--mode", "full", "--no-download"]
+                 "--job-id", rid.removesuffix("-evaluation"), "--run-id", rid, "--no-download"]
+        if variant == proof_eval.COURSE:
+            flags += ["--run-role", "evaluation", "--mode", "full"]
+        else:  # cli refuses run role evaluation for a partial run; standalone records the same identity
+            flags += ["--run-role", "standalone", "--mode", "partial", *(x for i in ids for x in ("--sample-id", i))]
         run_dir = f"{artifacts}/runs/{rid}"
         expect = [f"{run_dir}/summary.json", f"{run_dir}/predictions.jsonl"]
         if variant == proof_eval.COURSE:  # the course run is the plain entry point, never run-eval
@@ -165,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     plan_parser = sub.add_parser("plan", help="write the chain spec of one evaluation stage")
-    plan_parser.add_argument("--stage", choices=EVAL_STAGES, required=True)
+    plan_parser.add_argument("--stage", choices=STAGES, required=True)
     plan_parser.add_argument("--params", type=Path, required=True)
     plan_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)

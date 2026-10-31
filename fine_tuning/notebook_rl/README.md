@@ -2501,17 +2501,23 @@ FLAGS=(--note-contract repair-note-compact-v1 --answer-verified-route --finaliza
 
 ```bash
 "$PY" -m $M.proof_eval export --checkpoint CKPT --binding BINDING_OR_LAUNCH.json --base BF16_SNAPSHOT --output EXPORT --code-commit SHA40
-"$PY" -m $M.proof_eval preregister --output PREREG.json [--b2-predictions PATH]            # PREREG.json.sha256도 기록
+"$PY" -m $M.proof_eval preregister --output PREREG.json --subset B2_V8_WRONG_IDS.json [--b2-predictions PATH]   # PREREG.json.sha256도 기록
 "$PY" -m $M.proof_eval ledger-start --prereg PREREG.json --arm F0|FT --variant VARIANT --run-id RID --ledger LEDGER.jsonl   # 매 run 전
-"$PY" -m $M.proof_eval run-eval <scripts/eval.sh와 같은 인자>          # c16 변형 파일만; --protocol .../eval_configs/mmmu_val_v8_c16_seed{3407,3408,3409}.yaml
+"$PY" -m $M.proof_eval run-eval <scripts/eval.sh와 같은 인자>          # fast8k 변형 파일만; --protocol .../eval_configs/mmmu_val_v8_fast8k_seed{3407,3408,3409}.yaml
 "$PY" -m $M.proof_eval ledger-fail --ledger LEDGER.jsonl --run-id RID --reason TEXT [--artifact-root ROOT]   # COMPLETE run은 거부
 "$PY" -m $M.proof_eval analyze --prereg PREREG.json --ledger LEDGER.jsonl --runs RUN_DIR [...] --ft-model-ref EXPORT/model_ref.json --output REPORT
 ```
 
-- `export`는 체크포인트 하나를 BF16 평가 모델 + `model_ref.json`으로 병합한다. 변형 id는 `mmmu-val-v8-c16-seed{3407,3408,3409}-v1`
-  (statistical, 동시 16)과 `mmmu-val-v8`(course, 동시 2, seed 3407, `configs/eval/mmmu_val_v8.yaml`).
-- 과제용 점수는 사전 등록한 course run 하나(`mmmu-val-v8`, 평소의 `scripts/eval.sh`, 동시 2·seed 3407)이며 이것도
-  `ledger-start` 뒤에 시작한다. `run-eval`은 c16 변형 3개만 허용한다.
+- `export`는 체크포인트 하나를 BF16 평가 모델 + `model_ref.json`으로 병합한다. 변형 id는 `mmmu-val-v8-fast8k-seed{3407,3408,3409}-v1`
+  (statistical, 동시 32, 출력 8192, 이미지 262144..1003520 = 학습 예산, 문맥 24576; 사용자 결정 2026-10-31)과
+  `mmmu-val-v8`(course, 동시 2, 32K, 공식 해상도, seed 3407, `configs/eval/mmmu_val_v8.yaml`). c16 파일은 남아 있지만 등록하지 않는다.
+  현재 사전 등록: `hf-pool-v3/proof-prereg-v2/prereg.json`(이전 `proof-prereg/`는 변경 없이 보존). 범위(사용자 결정
+  2026-10-31): B2 + V8이 틀린 342문항(`proof-eval-subset-v1/b2_v8_wrong_ids.json`, 평가 전용)만, 모든 run은
+  `--mode partial --run-role standalone`과 문항별 `--sample-id`(완료 summary 상태 `PARTIAL`). F0/FT × seed 3개 = 6 run,
+  course run은 계획에서 제외(코드 경로는 유지) → 62.00% baseline과 비교 가능한 점수 없음, 558 정답 문항의 퇴행은 검출 불가.
+- course run(`mmmu-val-v8`, 평소의 `scripts/eval.sh`)은 v2 사전 등록에 없다. `run-eval`은 fast8k 변형 3개만 허용한다.
+  `analyze`는 run의 `expected_ids`·`ids_sha256`·예측이 사전 등록한 342개와 정확히 같고 `mode: partial`/`PARTIAL`일 때만 받는다.
+  채점은 strict V8 하나뿐이다(Qwen 공개 채점은 LLM 보조 판정이라 쓰지 않는다).
 - `analyze --ledger`는 ledger에 시작 기록이 없는 run, 다른 (arm, variant)로 시작된 run, FAILED run, 등록된 변형의 누락·
   교체된 반복을 거부한다. seed는 문항별 평균으로만 합치며 reducer 인자·반복 run·두 번째 FT 체크포인트는 없다(§2.8).
   `<output>.json`과 `<output>.md`를 쓴다.

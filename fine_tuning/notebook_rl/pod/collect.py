@@ -4,7 +4,7 @@ confirms every remote action, this module only records evidence.
 pack      (on the Pod)  tar of CLOSED run dirs only + sha256 manifest; --unclosed-dead-owner also
                         takes a hard-killed run (dead owner, no process env names the run dir),
                         labelled UNCLOSED in the manifest
-pack-eval (on the Pod)  one MMMU evaluation stage (eval-f0|eval-ft|eval-course): its start.sh run dir
+pack-eval (on the Pod)  one MMMU evaluation stage (eval-f0|eval-ft; eval-course is not planned): its run dir
                         plus exactly what `proof_eval analyze` reads (the stage's planned run dirs under
                         artifact_root, the ledger, the prereg and, for FT, model_ref.json; never model
                         weights), same manifest/verify/ledger flow, manifest "kind": "eval"
@@ -47,7 +47,7 @@ EVAL_KIND = "eval"
 # Exactly what proof_eval.load_run reads from a run directory (no samples/, prompts/, logs, source.patch).
 EVAL_RUN_FILES = ("run_manifest.json", "summary.json", "predictions.jsonl", "resolved_eval_config.yaml",
                   "variant_registration.json")
-EVAL_REQUIRED = EVAL_RUN_FILES[:4]  # variant_registration.json: required for the c16 (statistical) runs
+EVAL_REQUIRED = EVAL_RUN_FILES[:4]  # variant_registration.json: required for the fast8k (statistical) runs
 LEDGER_VERSION = "pod-cleanup-ledger-v1"
 ORDER = ("REMOTE_VERIFIED", "LOCAL_VERIFIED", "POD_TERMINATED", "OWNED_STORAGE_DELETED",
          "CLEANUP_VERIFIED")
@@ -228,7 +228,8 @@ def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
     Packed (archive paths): <run dir name>/** (logs, chain.jsonl), eval/runs/<run id>/<EVAL_RUN_FILES>
     for each run the stage plans, eval/<ledger>, eval/<prereg> + .sha256 and, for eval-ft/eval-course,
     eval/model_ref.json. The merged model weights are never packed. Every planned run needs its ledger
-    START and must be COMPLETE, or be recorded FAILED in the ledger (packed as it is, marked FAILED).
+    START and must be finished (summary PARTIAL for the subset runs, COMPLETE for a full run), or be recorded
+    FAILED in the ledger (packed as it is, marked FAILED).
     """
     from .. import proof_eval  # lazy: numpy/yaml are not needed by pack, verify or state
     from . import chain, eval_stage
@@ -273,20 +274,21 @@ def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
         for file in present:
             _plain_file(base / file, artifacts)
         summary = read_json(base / "summary.json") if "summary.json" in present else None
-        complete = isinstance(summary, dict) and summary.get("status") == "COMPLETE"
+        role = proof_eval.VARIANTS[variant][3]
+        finished = proof_eval.FINISHED[role]  # COMPLETE (full course run) or PARTIAL (the subset runs)
+        done = isinstance(summary, dict) and summary.get("status") == finished
         if rid in failed:
-            if complete:
-                raise CollectError(f"{rid}: the ledger records FAILED but summary.json is COMPLETE")
+            if done:
+                raise CollectError(f"{rid}: the ledger records FAILED but summary.json is {finished}")
             status = "FAILED"
-        elif complete:
-            statistical = proof_eval.VARIANTS[variant][3] == "statistical"
-            missing = [f for f in (*EVAL_REQUIRED, proof_eval.REGISTRATION_FILE if statistical else None)
+        elif done:
+            missing = [f for f in (*EVAL_REQUIRED, proof_eval.REGISTRATION_FILE if role == "statistical" else None)
                        if f and f not in present]
             if missing:
-                raise CollectError(f"{rid}: COMPLETE run lacks {missing}")
-            status = "COMPLETE"
+                raise CollectError(f"{rid}: {finished} run lacks {missing}")
+            status = finished
         else:
-            raise CollectError(f"{rid}: summary is not COMPLETE and the ledger has no FAIL for it "
+            raise CollectError(f"{rid}: summary is not {finished} and the ledger has no FAIL for it "
                                "(record it with proof_eval ledger-fail first)")
         sources += [(base / f, f"eval/runs/{rid}/{f}") for f in present]
         eval_runs.append({"run_id": rid, "arm": arm, "variant": variant, "status": status,

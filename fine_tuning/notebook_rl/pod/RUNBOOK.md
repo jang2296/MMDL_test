@@ -53,9 +53,9 @@ Placeholders: `<COMMIT40>` full MMDL_test SHA, `<POD_ID>` the RunPod Pod id, `<R
 | G4 | step 3, stage 2 | job `pilot-300`, after step 5 re-ran `cost.py` on the stage-1 receipt |
 | G5 | step 3, stage 3 | job `main`, after step 5 re-ran `cost.py` on the pilot receipt |
 | GE | step 2 | MMMU validation on the volume (`eval_data: true` in the `pod-prep-v1` job; benchmark data next to training data, so every training Pod must prove its guards forbid it) |
-| GF0 | stage `eval-f0` (2c) | uploading `prereg.json` + `.sha256` to `<volume>/eval-data/proof/`; an A40 Pod and the job (price, balance, cutoff, spec sha256); 3 F0 runs. May run while training runs on another Pod |
+| GF0 | stage `eval-f0` (2c) | uploading `prereg.json` + `.sha256` and the 342-ID subset file to `<volume>/eval-data/proof/`; an A40 Pod and the job (price, balance, cutoff, spec sha256); 3 F0 runs on the 342 items. May run while training runs on another Pod |
 | GFT | stage `eval-ft` (2c) | after the training stage is collected (step 4) and the one FT checkpoint is named: export + 3 FT runs |
-| GC | stage `eval-course` (2c) | after `eval-ft` wrote the export (its `model_ref.json` sha256 pinned): the one course run |
+| GC | (dropped) | no course run: the user dropped it from the proof plan on 2026-10-31 (342-item subset only) |
 
 **How an approval is recorded and bound.** The user writes the `approval` block of the job file:
 `approved_by_user: true`, `approved_utc`, `approval_note`, and `approved_sha256`, the sha256 of the
@@ -131,7 +131,7 @@ Pod) plus recovery (`collect pack`, download).
   pricing page).
 - **If the MMMU-val proof (section 2c) also runs on this volume**, add about 20 GB (JUDGMENT): 0.7 GB eval
   data (325 MiB of parquet per `manifests/datasets/mmmu.json` plus about 333 MiB of `.arrow` the evaluator
-  writes next to it, both measured locally), about 1 GB per evaluation run x 7 runs (the local B2 run dir
+  writes next to it, both measured locally), about 1 GB per evaluation run x 6 runs (342 items each, so less) (the local B2 run dir
   is 1009 MB) and about 9 GB for the merged BF16 FT export.
 - The job's `min_free_gib` (step 3) is the stop line for free space during the run; set it to at least
   one checkpoint plus margin (for example 10).
@@ -252,27 +252,41 @@ sandbox. `fine_tuning.notebook_rl.launch` and `gate_session` take explicit `forb
 job files; if either runs on a Pod, its job must list `/workspace/mmdl-volume/eval-data` itself.
 Evaluation Pods need neither the training bundle nor this link.
 
-## 2c. MMMU-val proof evaluation (stages `eval-f0`, `eval-ft`, `eval-course`)
+## 2c. MMMU-val proof evaluation (stages `eval-f0`, `eval-ft`; `eval-course` is not planned)
 
-Preregistered design (`proof_eval preregister`; local file
-`/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg/prereg.json` with its
-`.sha256`): F0 (untrained BF16 base, re-run) and FT (merged export of the single training checkpoint) on
-the c16 variants with seeds 3407, 3408, 3409 (statistical, paired), plus one course-protocol run FT x
-`mmmu-val-v8` (concurrency 2, seed 3407). **The course-facing score is that one preregistered c2 seed-3407
-FT run, reported as it is; it is never pooled with, replaced by or chosen among the c16 runs, and the c16
-seeds are combined only as the mean of per-seed accuracy (CLAUDE.md §2.8).** No other MMMU-val run, seed
-or checkpoint; MMMU-val never selects a checkpoint. `proof_eval analyze` runs locally after collection.
-Nothing here was run on a Pod; the specs were checked on CPU only (`fine_tuning/tests/test_notebook_rl_pod_eval.py`).
+Preregistered design (`proof_eval preregister --subset ...`; local file
+`/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg-v2/prereg.json`, sha256
+`f392cb3abc174dde5d56f07a188bad619ede69ea833ff3eb44a18528bfeb0848`, with its `.sha256`; its `notes` and
+`limitations` record the decisions below; the 900-item `proof-prereg/` is superseded and kept unchanged). User decisions 2026-10-31:
+
+- **Items:** only the 342 MMMU-val items the frozen B2 + `team-final-answer-v8` baseline answered wrongly,
+  listed in `hf-pool-v3/proof-eval-subset-v1/b2_v8_wrong_ids.json` (sha256
+  `edc16a9d89b25a24f9125d699217461d2728e2aefba4385d85be2d896353b55c`; evaluation only, never training).
+  The prereg embeds the IDs and binds that sha256. Every run is `--mode partial` with one `--sample-id` per ID.
+- **Arms:** F0 (untrained BF16 base, re-run on the same 342; the stored B2 answers are not the comparator) and
+  FT (merged export of the single training checkpoint), paired per item, seeds 3407/3408/3409.
+- **Protocol:** the fast8k variants `mmmu-val-v8-fast8k-seed{3407,3408,3409}-v1` = `mmmu-val-v8` except seed,
+  32 concurrent requests, `max_new_tokens` 8192, pixels 262144..1003520 (= the training image budget),
+  `max_model_len` 24576. The c16 files stay in `eval_configs/` but `run-eval` refuses them.
+- **Primary outcome:** per-seed strict V8 accuracy on the 342 (= recovered count / 342), reported as the seed
+  mean, FT - F0 with a paired item bootstrap (CLAUDE.md §2.8: seeds are combined only as the mean).
+  `proof_eval` has only the V8 scorer; Qwen's own MMMU scoring uses an LLM-assisted judge, not used here.
+- **Course run dropped:** no FT x `mmmu-val-v8` (c2, 32K, official pixels) run is preregistered, so this
+  proof yields **no score comparable to the 62.00% B2 baseline**, and regressions on the 558 items B2 got
+  right cannot be detected. The course code path (`scripts/eval.sh`, `COURSE` in `proof_eval`) is kept.
+
+No other MMMU-val run, item, seed or checkpoint; MMMU-val never selects a checkpoint. `proof_eval analyze`
+runs locally after collection. Nothing here was run on a Pod; the specs were checked on CPU only
+(`fine_tuning/tests/test_notebook_rl_pod_eval.py`).
 
 | Gate | Before | User approves |
 |---|---|---|
 | GE | step 2 | MMMU validation on the volume (`eval_data: true`), see section 2 |
-| GF0 | stage `eval-f0` | uploading `prereg.json` + `.sha256` (MMMU item ids and B2 correctness, no item content) to `<volume>/eval-data/proof/`; an A40 Pod (price, balance, cutoff) and the F0 job with its spec sha256. May run while training runs on another Pod |
+| GF0 | stage `eval-f0` | uploading `prereg.json` + `.sha256` and the subset file (MMMU item ids and B2 correctness, no item content) to `<volume>/eval-data/proof/`; an A40 Pod (price, balance, cutoff) and the F0 job with its spec sha256. May run while training runs on another Pod |
 | GFT | stage `eval-ft` | after the training stage is collected (section 4) and the one FT checkpoint is named (path, `metadata.json` sha256, binding file sha256): export + 3 FT runs |
-| GC | stage `eval-course` | after `eval-ft` wrote the export (its `model_ref.json` sha256 pinned): the one course run |
 
-1. Params (`eval-stage-params-v1`, absolute paths). `artifact_root`, `ledger` and `prereg` must be under
-   `<volume_root>/eval-data/` (raw responses hold MMMU questions, gold and images; the training guards
+1. Params (`eval-stage-params-v1`, absolute paths). `artifact_root`, `ledger`, `prereg` and `subset` must be
+   under `<volume_root>/eval-data/` (raw responses hold MMMU questions, gold and images; the training guards
    forbid that root). `python` is the manifest venv (vllm lock). Example for `eval-ft`:
 
    ```json
@@ -281,33 +295,51 @@ Nothing here was run on a Pod; the specs were checked on CPU only (`fine_tuning/
     "artifact_root": "/workspace/mmdl-volume/eval-data/artifacts",
     "prereg": "/workspace/mmdl-volume/eval-data/proof/prereg.json", "prereg_sha256": "<sha256>",
     "ledger": "/workspace/mmdl-volume/eval-data/proof/ledger.jsonl", "run_prefix": "nbrl-proof-v1",
+    "subset": "/workspace/mmdl-volume/eval-data/proof/b2_v8_wrong_ids.json",
+    "subset_sha256": "edc16a9d89b25a24f9125d699217461d2728e2aefba4385d85be2d896353b55c",
     "checkpoint": "<abs checkpoint dir>", "checkpoint_metadata_sha256": "<sha256 of its metadata.json>",
     "binding": "<abs launch.json or binding JSON>", "binding_sha256": "<sha256>",
     "training_commit": "<40-hex training commit>", "ft_export": "/workspace/mmdl-volume/ft-export"}
    ```
 
-   `eval-f0` has only the common keys (no `checkpoint`..`ft_export`); `eval-course` has the common keys plus
-   `ft_export` and `ft_model_ref_sha256` (`sha256sum <ft_export>/model_ref.json` after `eval-ft`'s export).
-2. Plan (writes once, prints the spec sha256; same params give the same bytes):
+   `eval-f0` has only the common keys (no `checkpoint`..`ft_export`). `plan --stage eval-course` is refused.
+2. Plan (writes once, prints the spec sha256; same params and subset file give the same bytes; `plan` reads
+   the subset only after its sha256 equals `subset_sha256`):
    `python -m fine_tuning.notebook_rl.pod.eval_stage plan --stage eval-f0 --params <P> --output /workspace/jobs/eval-f0.steps.json`.
    Steps, all argv lists run by `pod/chain.py` from the clone root:
-   - every stage: `chain pin` of the prereg (and of the checkpoint `metadata.json` + binding, or of the
-     export's `model_ref.json`) before anything else;
+   - every stage: `chain pin` of the subset file, then of the prereg (and of the checkpoint `metadata.json` +
+     binding for `eval-ft`) before anything else;
    - `eval-ft`: `proof_eval export --checkpoint --binding --base <pinned snapshot> --output <ft_export>
      --code-commit <training_commit>` (one merge of the one checkpoint);
    - then all of the stage's `proof_eval ledger-start` lines (arm/variant exactly as preregistered), then the runs:
-     `eval-f0`/`eval-ft`: `proof_eval run-eval` x seeds 3407/3408/3409 with the c16 variant files;
-     `eval-course`: `env MMDL_PYTHON=<venv python> bash scripts/eval.sh --protocol configs/eval/mmmu_val_v8.yaml`.
-     All runs: hardware `fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml`, `--data-root
-     <volume>/eval-data/mmmu --no-download`, `--run-role evaluation --job-id <id> --run-id <id>-evaluation
-     --require-commit <commit> --mode full`, run ids `<run_prefix>-{f0,ft}-c16-s<seed>-evaluation` and
-     `<run_prefix>-ft-course-s3407-evaluation`.
-3. Job: `pod-job-v1` with `stage` `eval-f0` | `eval-ft` | `eval-course`, **no `data` key** (refused for eval
+     `proof_eval run-eval` x seeds 3407/3408/3409 with the fast8k variant files. All runs: hardware
+     `fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml`, `--data-root <volume>/eval-data/mmmu
+     --no-download`, `--require-commit <commit> --job-id <id> --run-id <id>-evaluation --run-role standalone
+     --mode partial` and one `--sample-id` per subset ID (the evaluator refuses run role `evaluation` for a
+     partial run; a finished partial run's `summary.json` status is `PARTIAL`, an unfinished one
+     `INCOMPLETE`), run ids `<run_prefix>-{f0,ft}-fast8k-s<seed>-evaluation`.
+3. Job: `pod-job-v1` with `stage` `eval-f0` | `eval-ft`, **no `data` key** (refused for eval
    stages), `main` = `["<venv python>", "-m", "fine_tuning.notebook_rl.pod.chain", "run", "--spec",
    "<steps>", "--spec-sha256", "<printed sha>"]` (the approval binds the argv, so it binds the spec), `smoke`
    = a GPU check that does **not** touch MMMU (an MMMU smoke run would be an MMMU-val run outside the
-   preregistered budget). `max_main_seconds`: there is no measured A40 c16 or c2 throughput yet; set it with
-   the user and expect a `BUDGET_STOP` or timeout to be reported as such, never retried silently.
+   preregistered budget). `max_main_seconds`: no A40 throughput has been measured, so every number below is
+   an estimate; set the value with the user and report a `BUDGET_STOP` or timeout as such, never retried
+   silently.
+   - `eval-f0` (3 fast8k runs of 342 items, the first measurement): output is capped at 8192 tokens per item
+     (at most 2.80M generated tokens per run by construction; for scale, the 32K R2 run generated 3.72M for
+     all 900) and 32 requests share each decode step. The B2-wrong items are likely longer than average
+     (R2's 75 length stops are failures by definition), so do not scale R2's mean down by 342/900. Read each
+     finished run's `summary.json` `evaluation_seconds_this_invocation`.
+   - `eval-ft`: from eval-f0's measured seconds per run x 3, plus the export, with margin.
+   KV cache (estimate, from the model config: 36 layers x 8 KV heads x head_dim 128 x K,V x BF16 = 147,456 B
+   = 144 KiB per token): about 45 GiB visible x `gpu_memory_utilization` 0.90 (fixed in src) = about
+   40.5 GiB, minus about 8.3 GiB BF16 weights and an unmeasured 2-6 GiB activation/encoder reserve, leaves
+   about 26-30 GiB = about 190K-220K tokens. Per request: input at most 2,655 tokens (the measured R2 maximum
+   at the larger 1310720-pixel budget; mean 593) + at most 8,192 output. Worst case 32 x 10,847 = 347K
+   tokens does not fit, so vLLM preempts and recomputes (slower, no truncation, no error); with the R2 means
+   (593 input, 4,132 output at the 32K cap) the average resident load is about 32 x 2.7K = 85K tokens, which
+   fits. `max_model_len` 24576 only bounds one request (input <= 16,384 tokens) and vLLM's start check needs
+   one 24,576-token sequence (about 3.4 GiB of KV) to fit.
 4. Run as in section 3 (one Pod per stage; dry run first, then `--execute`). The preflight for an eval
    stage checks clone, lock, venv, model, disk and mount as for training, skips the training data, and
    adds `eval_data`: each recorded MMMU file under `eval-data/mmmu` resolves inside `eval-data` with its
@@ -325,11 +357,15 @@ Rules for these stages:
   record it with `proof_eval ledger-fail --ledger <L> --run-id <R> --reason <text> --artifact-root
   <artifact_root>` and report it, or resume it in place under the same run id (`--resume`). Neither is
   planned by `eval_stage.py`; a resume or partial re-run spec needs its own review and approval.
-- `analyze` needs, collected from the volume: `<artifact_root>/runs/<run id>/` of all 7 runs, the ledger,
-  the prereg and `<ft_export>/model_ref.json`. `collect pack-eval` packs exactly these per stage (step 4):
+- `analyze` needs, collected from the volume: `<artifact_root>/runs/<run id>/` of all 6 runs, the ledger,
+  the prereg and `<ft_export>/model_ref.json`. It refuses a run whose `run_manifest.json` `expected_ids`,
+  `identity.ids_sha256` or `predictions.jsonl` is not exactly the preregistered 342, a run that is not
+  `mode: partial` with summary `PARTIAL`, and keeps the seed-mean-only and ledger rules. `collect pack-eval`
+  packs exactly these per stage (step 4), each finished run marked `PARTIAL` (or `FAILED` per the ledger):
   from each planned run dir only `run_manifest.json`, `summary.json`, `predictions.jsonl`,
-  `resolved_eval_config.yaml` and `variant_registration.json` (c16 runs), plus the ledger, the prereg with its
-  `.sha256`, `model_ref.json` (`eval-ft`, `eval-course`) and the stage's start.sh run dir (`chain.jsonl`, logs).
+  `resolved_eval_config.yaml` and `variant_registration.json`, plus the ledger, the prereg with its
+  `.sha256`, `model_ref.json` (`eval-ft`) and the stage's start.sh run dir (`chain.jsonl`, logs).
+  `proof_eval ledger-fail` refuses a run whose summary is `PARTIAL` (finished) or `COMPLETE`.
   Not collected, so lost with the volume: `samples/`, `prompts/`, the evaluator's other run files, and the
   merged model weights (`<ft_export>/model/`). Raw MMMU responses are never published (§2.2, §5): eval packs
   are downloaded and extracted only under `/home/jang2/mmdl-artifacts/` and `collect verify` refuses
@@ -359,7 +395,7 @@ Every stage is one new Pod session or one new `<RUN>` directory; never reuse a r
    params give the same bytes. The proof protocol is fixed in `chain.py`, not in the params:
    `--note-contract repair-note-compact-v1 --answer-verified-route --finalization-reward`, the ten
    `--slotless-source`s of the local `chain-ten-v15.sh`, `--turn1-contract p0-eval-aligned-v1
-   --turn1-max-new-tokens 4096 --retry-out-of-choice incorrect-v1` (`local_train train` gets only the
+   --turn1-max-new-tokens 8192 --retry-out-of-choice incorrect-v1` (`local_train train` gets only the
    first four; it restores the rest from the minimum). Every run also gets `--policy-precision bf16
    --rollout-engine vllm` with the params' vLLM budget, admission
    `verified-functional-repair-exploration-v1`, and `--frozen-approval`/`--frozen-approval-sha256` on
@@ -367,7 +403,7 @@ Every stage is one new Pod session or one new `<RUN>` directory; never reuse a r
 
    | stage | steps (in order) |
    |---|---|
-   | `stage1` | `prefilter-propose` (all-eligible, N0=`prefilter.items`=16, K=1) -> `prefilter-prepare` -> `passrate-measure` (k=8, F0) -> `passrate-select` (1..7, rehearsal only) -> `propose` (all-eligible, N=8, K=4) -> `prepare` -> `minimal` (2 problems, 1 update, save) -> `minimal-reload` (new process) -> `train` (2 updates, checkpoint every 1, `--max-seconds 1800`) -> `train-reload` -> `eval-f0`, `eval-ft` (`evaluate-pool` on the sentinels) -> `replay-f0`, `replay-ft`, `compare` (CPU) -> `stage-receipt` |
+   | `stage1` | `prefilter-propose` (all-eligible, N0=`prefilter.items`=16, K=1) -> `prefilter-prepare` -> `passrate-measure` (k=4, F0) -> `passrate-select` (1..3, rehearsal only) -> `propose` (all-eligible, N=8, K=4) -> `prepare` -> `minimal` (2 problems, 1 update, save) -> `minimal-reload` (new process) -> `train` (2 updates, checkpoint every 1, `--max-seconds 1800`) -> `train-reload` -> `eval-f0`, `eval-ft` (`evaluate-pool` on the sentinels) -> `replay-f0`, `replay-ft`, `compare` (CPU) -> `stage-receipt` |
    | `pilot-300` | the same, with `prefilter.items` = every eligible distinct-structure train item, and `propose` takes `--passrate-selection`/`--passrate-report` from this run (N=300, K=4) |
    | `main` (first segment) | `selection-pin` (the pilot's `out/passrate-selection.json` sha256) -> `propose` from that selection (N = min(selected, 3000) rounded down to K) -> `prepare` -> `minimal` -> `minimal-reload` -> `train` (checkpoint every 50) -> `train-reload` -> `eval-f0`, `eval-ft` -> `replay-*`, `compare` -> `stage-receipt` |
    | `main` (later segment) | `train --resume-from <stopped segment>` with the first segment's preparation and minimum -> `train-reload` -> `eval-f0`, `eval-ft` -> `replay-*`, `compare` -> `stage-receipt` |
@@ -493,7 +529,7 @@ Every stage is one new Pod session or one new `<RUN>` directory; never reuse a r
    restart a failed run automatically; the next attempt needs a new approval, a new `<RUN>`, and a stated
    reason that differs from the failure.
 6. Stage order is fixed: stage 1 `bf16-smoke-throughput` -> step 5 -> **G4** `pilot-300` -> step 5 ->
-   **G5** `main` -> its collection (step 4) -> **GFT** `eval-ft` -> **GC** `eval-course`; **GF0** `eval-f0`
+   **G5** `main` -> its collection (step 4) -> **GFT** `eval-ft` (no course run: dropped 2026-10-31); **GF0** `eval-f0`
    is independent of training and may run any time after **GE** (section 2c; one evaluation Pod at a
    time). A stage-1 or pilot failure stops the plan; report it as it is. A main segment that ends
    `BUDGET_STOP` or `DISK_LOW` in its train step is not a completed main: it continues only as a new
@@ -510,7 +546,7 @@ for every later stage, so it is kept until the last one. The ledger of an interm
 (`bf16-smoke-throughput`, `pilot-300`, `main`, `eval-f0`, `eval-ft`) therefore **stops at `POD_TERMINATED`**;
 that is the correct end state for it, not an unfinished cleanup. `OWNED_STORAGE_DELETED` and
 `CLEANUP_VERIFIED` are appended only in the ledger of the final stage (the last one that will run, normally
-`eval-course`), after the user deleted the volume (and anything else this job created) because no later
+`eval-ft`), after the user deleted the volume (and anything else this job created) because no later
 stage will use it. `collect.py` enforces part of this: `OWNED_STORAGE_DELETED` needs
 `--run-ledger` for every run that used the storage (this ledger included) and refuses unless each of
 those ledgers already holds `REMOTE_VERIFIED` and `LOCAL_VERIFIED`; the list of runs itself is the
@@ -575,14 +611,13 @@ sha256sum /workspace/outbox/<RUN>.tar /workspace/outbox/<RUN>.manifest.json    #
 # [USER] download both files into the private inbox below
 ```
 
-`--params` is the file `eval_stage plan` read, `--stage` one of `eval-f0|eval-ft|eval-course`; `--name`
+`--params` is the file `eval_stage plan` read, `--stage` one of `eval-f0|eval-ft` (`eval-course` is refused: not planned); `--name`
 defaults to the run dir name. The pack refuses unless: `RUNPOD_POD_ID` is set (recorded as `pod_id`);
 `chain.jsonl` is the log of exactly the spec these params plan (its hash chain starts at that spec's
 sha256) and, for `MAIN_EXIT 0`, ends `CHAIN_END COMPLETE`; the ledger is a valid hash chain with a START
-(this prereg, this arm/variant) for every planned run id; each planned run is COMPLETE
-(`summary.json`) or recorded FAILED in the ledger (a FAIL for a COMPLETE run is refused); the prereg and
-its `.sha256` equal `params.prereg_sha256`; for `eval-course` the `model_ref.json` equals
-`params.ft_model_ref_sha256`; no packed file, and no directory between it and its root, is a symlink
+(this prereg, this arm/variant) for every planned run id; each planned run is finished (`summary.json`
+status `PARTIAL` for the subset runs) or recorded FAILED in the ledger (a FAIL for a finished run is
+refused); the prereg and its `.sha256` equal `params.prereg_sha256`; no packed file, and no directory between it and its root, is a symlink
 and every path lies under `artifact_root`, `<volume>/eval-data` or `ft_export`. A FAILED run is packed with
 whatever of its five files exist, marked `FAILED` in `eval_runs` (its directory may be absent). If the
 chain stopped before the ledger STARTs (pin failure, preflight/smoke failure) there is nothing to
@@ -606,7 +641,7 @@ python -m fine_tuning.notebook_rl.pod.collect verify --archive $A/<RUN>.tar --ma
 ```
 
 `OWNED_STORAGE_DELETED` (final ledger only) lists **every** run's cleanup ledger with `--run-ledger`: the
-training stages and each eval stage pack (`eval-f0`, `eval-ft`, `eval-course`), the final one included;
+training stages and each eval stage pack (`eval-f0`, `eval-ft`), the final one included;
 each must already hold `REMOTE_VERIFIED` and `LOCAL_VERIFIED`, so no stage's results can be left
 unrecovered when the volume goes. Analysis is local and only after all three eval packs are verified
 (`E=$A/recovered`; the last pack's ledger extends the earlier snapshots, so use it):
@@ -634,7 +669,7 @@ P=fine_tuning/notebook_rl/pod/plans
 # training stages (stage1, pilot-300, main) from the TRAIN receipt (the chain's stage receipt)
 python -m fine_tuning.notebook_rl.pod.cost --receipt <run>/throughput_receipt.json --plan $P/cost-plan-v1.json \
   --cap-usd <USD> --output projections/<name>-train.json
-# F0 pass-rate prefilter (k=8 first attempts, no update) from the PASSRATE receipt
+# F0 pass-rate prefilter (k=4 first attempts, no update) from the PASSRATE receipt
 python -m fine_tuning.notebook_rl.pod.cost --receipt <run>/out/passrate/throughput_receipt.json \
   --plan $P/cost-plan-prefilter-v1.json --cap-usd <USD> --output projections/<name>-prefilter.json
 ```
@@ -643,9 +678,9 @@ python -m fine_tuning.notebook_rl.pod.cost --receipt <run>/out/passrate/throughp
 `setup_minutes` 30 (judgment), stages `stage1` 8 / `pilot-300` 300 / `main` 3000 items (3000 is the cap),
 `n_samples` 4. `retries_per_item` 1.4 is the only measured value: the local NF4/HF fixed-ten receipt
 `hf-pool-v3/local-test-v3/ten/throughput_receipt.json`, sha256 `3278b5c9...230812`, with a T1 cap of
-1024 tokens, not the proof's 4096. Treat it as an estimate until stage 1 measures it.
+1024 tokens, not the proof's 8192. Treat it as an estimate until stage 1 measures it.
 `cost-plan-prefilter-v1.json`: `stage1-prefilter` 16 and `pilot-300-prefilter` 3420 items (the freeze-v2
-INCLUDED train count, an upper bound), `n_samples` 8, no retries, setup and reserve 0 (they are counted
+INCLUDED train count, an upper bound), `n_samples` 4 (k=4), no retries, setup and reserve 0 (they are counted
 in the training plan). Add the two totals. Before G4/G5, copy a plan and replace the item counts with the
 planned ones (`prefilter.items`, the main `train.problems`). The sentinel evaluations are in neither
 plan; their receipts are `out/eval-*/throughput_receipt.json`.

@@ -61,7 +61,7 @@ class EvalPackFixture(unittest.TestCase):
                 proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, run_id=rid,
                                    preregistration_sha256=PREREG_SHA)
 
-    def write_run(self, rid, variant, status='COMPLETE'):
+    def write_run(self, rid, variant, status='PARTIAL'):  # the evaluator's finished status of a --sample-id run
         base = self.artifacts/'runs'/rid
         (base/'samples').mkdir(parents=True)
         files = {'run_manifest.json': '{"identity": {}}', 'summary.json': json.dumps({'status': status}),
@@ -109,7 +109,7 @@ class PackEvalTests(EvalPackFixture):
         rids = [rid for _, _, rid in self.planned(params, 'eval-ft')]
         self.assertEqual(('eval', 'eval-ft', POD, rids), (manifest['kind'], manifest['stage'], manifest['pod_id'],
                                                          manifest['eval_run_ids']))
-        self.assertEqual(['COMPLETE']*3, [r['status'] for r in manifest['eval_runs']])
+        self.assertEqual(['PARTIAL']*3, [r['status'] for r in manifest['eval_runs']])
         paths = {f['path'] for f in manifest['files']}
         analyze_inputs = {f'eval/runs/{rid}/{name}' for rid in rids for name in (
             'run_manifest.json', 'summary.json', 'predictions.jsonl', 'resolved_eval_config.yaml',
@@ -173,39 +173,38 @@ class PackEvalTests(EvalPackFixture):
                                        place, self.root/'r3.json')
             self.assertFalse(place.exists())
 
-    def test_eval_f0_has_no_model_ref_and_eval_course_checks_the_pinned_one(self):
+    def test_eval_f0_has_no_model_ref_and_eval_course_is_not_packable(self):
         params, run_dir = self.stage('eval-f0')
         manifest = self.pack('eval-f0', params, run_dir)
         self.assertEqual(3, len(manifest['eval_runs']))
         self.assertIsNone(manifest['model_ref_sha256'])
         self.assertNotIn('eval/model_ref.json', {f['path'] for f in manifest['files']})
-        params, run_dir = self.stage('eval-course')
-        manifest = self.pack('eval-course', params, run_dir, name='course')
-        self.assertEqual([proof_eval.COURSE], [r['variant'] for r in manifest['eval_runs']])
-        self.assertIn('eval/model_ref.json', {f['path'] for f in manifest['files']})
-        self.assertNotIn(f"eval/runs/{manifest['eval_run_ids'][0]}/variant_registration.json",
-                         {f['path'] for f in manifest['files']})  # the course run has none
-        (self.export/'model_ref.json').write_text('{"kind": "merged", "files": ["changed"]}')
-        with self.assertRaisesRegex(collect.CollectError, 'ft_model_ref_sha256'):
-            self.pack('eval-course', params, run_dir, name='course2')
+        with self.assertRaisesRegex(ValueError, 'not in the proof plan'):  # course dropped (user, 2026-10-31)
+            self.pack('eval-course', self.params('eval-course'), run_dir, name='course')
+        # a full-mode COMPLETE summary is not the finished status of a planned partial run
+        params, run_dir = self.stage('eval-ft', complete=False)
+        for _, variant, rid in self.planned(params, 'eval-ft'):
+            self.write_run(rid, variant, status='COMPLETE')
+        with self.assertRaisesRegex(collect.CollectError, 'summary is not PARTIAL'):
+            self.pack('eval-ft', params, run_dir, name='full')
 
     def test_failed_runs_are_packed_marked_failed_when_the_ledger_says_so(self):
         params, run_dir = self.stage('eval-ft', state='MAIN_EXIT 1', complete=False)
         first, second, third = (rid for _, _, rid in self.planned(params, 'eval-ft'))
-        self.write_run(first, 'mmmu-val-v8-c16-seed3407-v1')
-        self.write_run(second, 'mmmu-val-v8-c16-seed3408-v1', status='RUNNING')  # killed mid-run
-        with self.assertRaisesRegex(collect.CollectError, f'{second}: summary is not COMPLETE'):
+        self.write_run(first, 'mmmu-val-v8-fast8k-seed3407-v1')
+        self.write_run(second, 'mmmu-val-v8-fast8k-seed3408-v1', status='RUNNING')  # killed mid-run
+        with self.assertRaisesRegex(collect.CollectError, f'{second}: summary is not PARTIAL'):
             self.pack('eval-ft', params, run_dir)
         for rid in (second, third):  # the third never started its directory
             proof_eval.ledger_fail(self.ledger, rid, 'chain stopped', self.artifacts)
         manifest = self.pack('eval-ft', params, run_dir)
-        self.assertEqual(['COMPLETE', 'FAILED', 'FAILED'], [r['status'] for r in manifest['eval_runs']])
+        self.assertEqual(['PARTIAL', 'FAILED', 'FAILED'], [r['status'] for r in manifest['eval_runs']])
         self.assertEqual([], manifest['eval_runs'][2]['files'])
         self.assertIn(f'eval/runs/{second}/summary.json', {f['path'] for f in manifest['files']})
         self.assertEqual(['FAILED', 'FAILED'], [r['status'] for r in self.verify()['eval_runs'][1:]])
-        # a ledger FAIL cannot turn a COMPLETE run into a failed one
+        # a ledger FAIL cannot turn a finished (PARTIAL) run into a failed one
         proof_eval._append(self.ledger, 'FAIL', run_id=first, reason='forged')
-        with self.assertRaisesRegex(collect.CollectError, 'FAILED but summary.json is COMPLETE'):
+        with self.assertRaisesRegex(collect.CollectError, 'FAILED but summary.json is PARTIAL'):
             self.pack('eval-ft', params, run_dir, name='forged')
 
     def test_refusals_ledger_start_summary_symlinks_prereg_and_owner(self):
@@ -218,7 +217,7 @@ class PackEvalTests(EvalPackFixture):
         self.start_all(params, 'eval-ft', skip=rids[1:2])
         with self.assertRaisesRegex(collect.CollectError, f'{rids[1]}: no ledger START'):
             self.pack('eval-ft', params, run_dir)
-        proof_eval._append(self.ledger, 'START', arm='FT', variant='mmmu-val-v8-c16-seed3408-v1',
+        proof_eval._append(self.ledger, 'START', arm='FT', variant='mmmu-val-v8-fast8k-seed3408-v1',
                            run_id=rids[1], preregistration_sha256=PREREG_SHA)
         # STARTs recorded under another preregistration
         good_ledger = self.ledger.read_bytes()
@@ -280,9 +279,9 @@ class PackEvalTests(EvalPackFixture):
         with self.assertRaisesRegex(collect.CollectError, 'chain never started'):
             self.pack('eval-f0', params, failed_early)
         # a chain that ran another spec (other params) or whose log was cut
-        _, other_run = self.stage('eval-course', spec_params=self.params('eval-course', run_prefix='other'))
+        _, other_run = self.stage('eval-ft', spec_params=self.params('eval-ft', run_prefix='other'))
         with self.assertRaisesRegex(collect.CollectError, 'not the log of the spec'):
-            self.pack('eval-course', self.params('eval-course'), other_run)
+            self.pack('eval-ft', self.params('eval-ft'), other_run)
         # MAIN_EXIT 0 whose chain did not end COMPLETE
         stopped = pod_tests.make_run_dir(self.root/'runs', 'stopped', state='MAIN_EXIT 0', result=False)
         spec = json.dumps(eval_stage.plan('eval-f0', params), indent=2, sort_keys=True)+'\n'

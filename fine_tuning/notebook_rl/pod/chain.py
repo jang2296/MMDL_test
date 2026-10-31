@@ -64,7 +64,9 @@ SLOTLESS_SOURCES = ("hf-chebi-role", "hf-deepweeds", "hf-geometry3k", "hf-gvlqa"
 TRAIN_FLAGS = ["--note-contract", "repair-note-compact-v1", "--answer-verified-route", "--finalization-reward",
                *(item for source in SLOTLESS_SOURCES for item in ("--slotless-source", source))]
 # local_train train takes only TRAIN_FLAGS; the turn1/retry/scale options are restored from the minimum.
-PROOF_FLAGS = [*TRAIN_FLAGS, "--turn1-contract", "p0-eval-aligned-v1", "--turn1-max-new-tokens", "4096",
+# T1 cap 8192 (user decision 2026-10-31, = the proof's fast8k eval cap); retries keep 1024, the final note
+# keeps its 8192 reservation in the 24576 context (repair_notebook), so the note prompt holds <= 16384 tokens.
+PROOF_FLAGS = [*TRAIN_FLAGS, "--turn1-contract", "p0-eval-aligned-v1", "--turn1-max-new-tokens", "8192",
                "--retry-out-of-choice", "incorrect-v1"]
 ADMISSION = "verified-functional-repair-exploration-v1"
 MAIN_MAX_ITEMS = 3000

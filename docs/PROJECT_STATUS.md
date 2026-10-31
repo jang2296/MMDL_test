@@ -77,7 +77,38 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
   `eval_stage.plan`이 `job_stage` 기록, 회귀시험 추가. 검증: 학습 프로세스의 MMMU 접근 경로 없음, 승인·재무·데이터 pin 우회 없음, §2.8 위반·누락 실행 은폐 없음,
   미검증 결과 삭제 경로 없음, pilot→main 프로토콜 변경 경로 없음. Pod에서 증거 필요(미해결): R1 network volume의 statvfs가 quota를 보고하는지(DISK_LOW 신뢰성,
   1단계 disk.jsonl과 콘솔 수치 대조), R2 다른 호스트에서 아직 실행 중인 segment는 감지 불가(POD_TERMINATED 후 재개 순서로만 방지), R3 장치 사용량은 시점 표본,
-  R4 eval-data 격리 검사는 /workspace 1단계 깊이, R5 approval_request 첫 읽기는 미pin(guard 경로에만 영향). 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
+  R4 eval-data 격리 검사는 /workspace 1단계 깊이, R5 approval_request 첫 읽기는 미pin(guard 경로에만 영향).
+- **로컬 풀 평가 결함 2(실제 GPU에서 발견)**: evaluate-pool이 actor guard 설치 후 `local_pool_eval._cohort`에서 `public_pool`로 lineage.jsonl(차단 vault 파일)을
+  읽어 `vault path blocked` → 실패. 수정: `_cohort`는 actor 파일만 읽음. 실제 guard를 설치한 subprocess 회귀시험 4개(수정 되돌리면 같은 오류로 실패함을 확인).
+  v15 캡처는 코드 해시 결속(준비·재로딩·평가) 때문에 수정 코드로 평가 불가 → v16 동결본으로 로컬 전체 재실행.
+- **코드 동결 v16(RunPod용)**: `hf-pool-v3/proof-freeze-v16/package-root-v16`(479파일, manifest `9cd942bf…`), 새 증거·승인 export
+  `approval-export.json`(sha `5ae7ac68b0881792b8747737c4006922ba275e70cc5786197dc3b0f3d0ff97c7`), frozen 모드 실제 데이터 시험:
+  propose-proof(고정 8, 남은 3,409, sentinel 14과목×1) → prepare-pool `LOCAL_POOL_DATA_VALIDATED`. 그 시험이 연 파일(감사 hook 기록)은
+  vault·dataset manifest·approval export·data_request뿐 → Pod 데이터 번들 `/home/jang2/mmdl-artifacts/pod-outbox/proof-data-v16.tar`
+  (4,054파일, 480MB, archive sha `5783e4bf…`, manifest sha `bb508992919a509be925e0bcabb57b8ec1522347bb6f6d4fd3b99b7ad477cbea`, verify 0 오류). 업로드 안 함(GD 승인 필요).
+- **MMDL_test 로컬 동기화**(`scripts.sync_test_repo --sync`, 1,113파일, --check 차이 0, .py 전부 v16과 동일). commit·push 안 함(G0 사용자 승인 필요).
+- **v16 로컬 재실행 진행 중**: `local-test-v4/chain-v16.sh`(rule v2 동일 seed → 준비 → NF4 cache → 최소 → 재로딩 → 고정10 → 대조군 → 평가12 ×3 → 비교 → GPU 통과율 4문항×k4).
+- **사용자 결정(2026-10-31, 속도·비용)**: ① 로컬 확인과 동시에 RunPod 준비 진행 ② RunPod 조작(volume·Pod 생성/종료)은 Claude가 도구로 대행하되 단계마다 승인
+  ③ 학습 전(F0) 평가를 학습과 병렬로 별도 Pod·seed별 분할 ④ 사전 거르기 k=4(유지 1..3). 추가 지시: "MMMU/Pro 오염 금지·지도학습 금지·기존과 동일한 프롬프트·
+  오답노트형 자기개선을 유지하고, 8K 토큰 한도에 여러 문제 병렬, 사진은 고해상도 불필요, 가능한 빠르고 싸게 파인튜닝으로 성능을 높여야 한다".
+  MMDL_test commit·push 승인(G0) — 단, 이 지시로 코드가 바뀌므로 v17 동결 후 올림.
+  적용: 학습 T1 상한 4096→8192, 학습 이미지는 이미 저해상도(262144–1003520 픽셀) 유지, 짝 비교 평가 변형을 8K·262144–1003520·동시32로 교체(새 사전등록 v2),
+  과제 protocol 1회(32K·공식 해상도·동시2·seed 3407)는 62% baseline과 비교 가능한 유일한 점수라 그대로 둠.
+- **RunPod 읽기 조회(2026-10-31, MCP read만)**: pod 0·network volume 0, 사용액 9월 $14.98·10월 $21.48(합 $36.47), 잔액은 API 권한 없음(organization 403).
+  A40 Secure $0.59/h 재고 HIGH(CA-MTL-1, EU-SE-1)이나 두 지역 모두 network volume 미지원(지원 17개 지역 목록에 없음).
+  48GB 대안: L40 $0.82(US-KS-2, LOW), L40S $1.09, RTX 6000 Ada $0.99. A40 호스트 CUDA 12.4·13.2 가용, 12.8 없음 → `minCudaVersion 12.8`로 13.2 호스트.
+  **사용자 결정**: "A40으로 하고 A40에서 돌린 결과는 로컬에 저장하면서 확인하도록 하며 만일 A40을 다 썼다면 바로 삭제해서 비용이 나가지 않게 해."
+  → network volume 대신 A40 Pod 자체 volume disk(`/workspace`)에 환경·모델 설치, 단계마다 결과를 로컬로 내려받아 검증(LOCAL_VERIFIED) 후 즉시 Pod 삭제.
+  SSH: 로컬 `~/.ssh/id_rsa`가 계정 등록 키와 일치(Pod 명령·scp 회수 가능). 이미지 `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404`
+  (digest `sha256:4d1721e62b56d345c83b4fd6090664be6daf9312caab5b2e76f23d8231941851`). 과금 단계(Pod 생성)는 각각 가격·상한·잔액을 보이고 승인 후.
+- **사용자 지시(2026-10-31)**: "현재 런포드의 잔액은 50.42달러이고 잔액을 확인하여 가면서 진행할 수 있도록 하며 가능한 이 잔액으로 3000문제 학습 후
+  틀린 360문제를 풀어보게 하고 채점까지 해봐. 런포드에서는 학습과 GPU연산 및 CPU까지 활용한 vLLM을 적극적으로 사용하고 오염도 검사로 거를 번호는
+  먼저 로컬에서 확인하고 하드코딩해도 좋다." 선택: **잔액 안에서 끝까지 자동 진행**(단계마다 결과 로컬 회수·검증·보고·Pod 즉시 삭제, 예상 비용이
+  잔액(여유분 제외)을 넘거나 실패하면 중단 후 질문), **평가는 B2-V8 오답 342문항만**(F0 재실행과 FT를 같은 342문항·같은 조건으로 짝 비교;
+  과제 protocol 900 실행은 이번 증명에서 제외, 기존 정답 558문항의 하락은 측정하지 않음).
+  잔액 50.42달러(사용자 제공, 2026-10-31 기준). 이후 잔액 = 50.42 − 이 시점 이후 billing 합.
+  오답 ID 목록 `hf-pool-v3/proof-eval-subset-v1/b2_v8_wrong_ids.json`(342개, sha `edc16a9d…`, 원천 V8 predictions sha 기록, 평가 전용).
+  오염 제외는 이미 로컬 고정(eligible 3,418 → 증명 규칙 후보 3,417, approval export에 결속) — Pod는 해시만 확인. 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후
