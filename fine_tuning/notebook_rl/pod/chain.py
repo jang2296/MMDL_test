@@ -78,15 +78,22 @@ PREP_TOKEN = "@PREPARATION_SHA256@"
 # stage1 trains on its own pass-rate selection (all-eligible items can carry no reward variance), sized at run time.
 SIZE_TOKENS = ("@TRAIN_PROBLEMS@", "@MAX_UPDATES@")
 COMMON_KEYS = {"version", "python", "run_dir", "model_path", "vault", "approval_request", "frozen_approval",
-               "seed", "sentinels_per_subject", "min_free_gib", "vllm", "train", "timeouts"}  # + optional "notes"
+               "seed", "sentinels_per_subject", "min_free_gib", "vllm", "train", "timeouts"}
+# "prefilter_vllm" (prefilter stages only): the vLLM budget of prefilter-propose/prefilter-prepare/passrate-measure,
+# a process that never trains, so it may take a larger max_num_seqs/KV cache/utilization; absent = "vllm" (argv
+# unchanged). The training preparation consumes only the selection and its report, never the prefilter protocol.
+OPTIONAL_COMMON_KEYS = {"notes", "prefilter_vllm"}
 STAGE_KEYS = {"stage1": ({"prefilter"}, set()), "pilot-300": ({"prefilter"}, set()),
               "main": (set(), {"selection", "resume"})}  # main: exactly one of the optional keys
 SUB_KEYS = {"frozen_approval": {"path", "sha256"}, "selection": {"path", "sha256", "report"},
             "vllm": {"gpu_memory_utilization", "max_num_seqs", "kv_cache_memory_bytes", "enable_prefix_caching"},
+            "prefilter_vllm": {"gpu_memory_utilization", "max_num_seqs", "kv_cache_memory_bytes",
+                               "enable_prefix_caching"},
             "train": {"problems", "per_update", "checkpoint_every", "evidence_audit_rule", "max_seconds"},
             "timeouts": {"cpu", "passrate", "minimal", "reload", "train_close", "evaluate"},
             "prefilter": {"items", "k", "seed_namespace", "min_pass", "max_pass", "max_blocking"},
             "resume": {"from", "preparation", "minimal", "minimal_reload"}}
+OPTIONAL_SUB_KEYS = {"prefilter": {"item_batch"}}  # passrate measure's --item-batch; absent = today's argv
 
 
 class ChainError(ValueError):
@@ -108,23 +115,24 @@ def _int(value: Any, name: str, low: int, high: int | None = None) -> int:
     return value
 
 
-def _keys(value: Any, keys: set[str], name: str) -> dict:
-    if not isinstance(value, dict) or set(value) != keys:
-        raise ChainError(f"{name} must have exactly the keys {sorted(keys)}")
+def _keys(value: Any, keys: set[str], name: str, optional: set[str] | frozenset[str] = frozenset()) -> dict:
+    if not isinstance(value, dict) or not keys <= set(value) <= keys | optional:
+        raise ChainError(f"{name} must have exactly the keys {sorted(keys)}"
+                         + (f" plus optionally {sorted(optional)}" if optional else ""))
     return value
 
 
 def check_params(stage: str, params: Any) -> dict:
     required, optional = STAGE_KEYS[stage]
     keys = set(params) if isinstance(params, dict) else set()
-    if (not COMMON_KEYS | required <= keys or keys - COMMON_KEYS - required - optional - {"notes"}
-            or stage == "main" and len(keys & optional) != 1):
+    if (not COMMON_KEYS | required <= keys or keys - COMMON_KEYS - required - optional - OPTIONAL_COMMON_KEYS
+            or stage == "main" and len(keys & optional) != 1 or "prefilter_vllm" in keys and "prefilter" not in keys):
         raise ChainError(f"{stage} params need {sorted(COMMON_KEYS | required)}"
                          + (" plus exactly one of selection|resume" if stage == "main" else ""))
     if params["version"] != PARAMS_VERSION:
         raise ChainError(f"params version must be {PARAMS_VERSION}")
     for key in keys & set(SUB_KEYS):
-        _keys(params[key], SUB_KEYS[key], key)
+        _keys(params[key], SUB_KEYS[key], key, OPTIONAL_SUB_KEYS.get(key, set()))
     for key in ("python", "run_dir", "model_path", "vault", "approval_request"):
         _path(params[key], key)
     _path(params["frozen_approval"]["path"], "frozen_approval.path")
@@ -134,14 +142,18 @@ def check_params(stage: str, params: Any) -> dict:
             raise ChainError(f"{name} must be a lowercase sha256")
     _int(params["seed"], "seed", 0)
     _int(params["sentinels_per_subject"], "sentinels_per_subject", 1)
-    free, vllm = params["min_free_gib"], params["vllm"]
+    free = params["min_free_gib"]
     if isinstance(free, bool) or not isinstance(free, (int, float)) or not math.isfinite(free) or free <= 0:
         raise ChainError("min_free_gib must be a positive number")
-    if (type(vllm["gpu_memory_utilization"]) is not float or not 0 < vllm["gpu_memory_utilization"] <= 1
-            or type(vllm["enable_prefix_caching"]) is not bool):
-        raise ChainError("vllm.gpu_memory_utilization must be a float in (0, 1]; enable_prefix_caching a bool")
-    _int(vllm["max_num_seqs"], "vllm.max_num_seqs", 1)
-    _int(vllm["kv_cache_memory_bytes"], "vllm.kv_cache_memory_bytes", 1)
+    for name in ("vllm", "prefilter_vllm"):
+        if name not in params:
+            continue
+        vllm = params[name]
+        if (type(vllm["gpu_memory_utilization"]) is not float or not 0 < vllm["gpu_memory_utilization"] <= 1
+                or type(vllm["enable_prefix_caching"]) is not bool):
+            raise ChainError(f"{name}.gpu_memory_utilization must be a float in (0, 1]; enable_prefix_caching a bool")
+        _int(vllm["max_num_seqs"], f"{name}.max_num_seqs", 1)
+        _int(vllm["kv_cache_memory_bytes"], f"{name}.kv_cache_memory_bytes", 1)
     train = params["train"]
     per_update = _int(train["per_update"], "train.per_update", 1)
     problems = _int(train["problems"], "train.problems", per_update, MAIN_MAX_ITEMS if stage == "main" else None)
@@ -160,6 +172,8 @@ def check_params(stage: str, params: Any) -> dict:
         if not 0 <= _int(pre["min_pass"], "prefilter.min_pass", 0) <= _int(pre["max_pass"], "prefilter.max_pass", 0) <= k:
             raise ChainError("prefilter: 0 <= min_pass <= max_pass <= k")
         _int(pre["max_blocking"], "prefilter.max_blocking", 0)
+        if "item_batch" in pre:
+            _int(pre["item_batch"], "prefilter.item_batch", 1)
         if not isinstance(pre["seed_namespace"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}",
                                                                           pre["seed_namespace"]):
             raise ChainError("prefilter.seed_namespace must match passrate's namespace pattern")
@@ -170,11 +184,13 @@ def check_params(stage: str, params: Any) -> dict:
     return params
 
 
-def _scale(params: dict, items: int, per_update: int, *, training: bool, sized: bool = False) -> list[str]:
+def _scale(params: dict, items: int, per_update: int, *, training: bool, sized: bool = False,
+           prefilter: bool = False) -> list[str]:
     """Scale flags; bound into the protocol hash, so identical for every command of one preparation.
 
-    `sized`: N and M are the run-time SIZE_TOKENS that `with-train-size` fills from the selection."""
-    vllm, train = params["vllm"], params["train"]
+    `sized`: N and M are the run-time SIZE_TOKENS that `with-train-size` fills from the selection.
+    `prefilter`: the prefilter preparation's budget ("prefilter_vllm" when given, else "vllm")."""
+    vllm, train = params.get("prefilter_vllm", params["vllm"]) if prefilter else params["vllm"], params["train"]
     flags = ["--problems-per-update", str(per_update), "--max-updates", SIZE_TOKENS[1] if sized else str(items // per_update),
              "--train-problems", SIZE_TOKENS[0] if sized else str(items)]
     if training:
@@ -219,11 +235,13 @@ def plan(stage: str, params: dict, params_sha256: str) -> dict:
     size: list[str] = []
     if "prefilter" in params:  # F0 pass-rate measurement on its own label-blind preparation (K=1)
         pre = params["prefilter"]
-        prefilter_scale = _scale(params, pre["items"], 1, training=False)
+        prefilter_scale = _scale(params, pre["items"], 1, training=False, prefilter=True)
         proof_rule("prefilter-", f"{out}/prefilter-rule.json", f"{out}/prefilter-prep", prefilter_scale, [], [])
         step("passrate-measure", module("passrate", "measure", "--preparation",
              f"{out}/prefilter-prep/preparation.json", "--model-path", params["model_path"], "--k", str(pre["k"]),
-             "--seed-namespace", pre["seed_namespace"], *PROOF_FLAGS, *prefilter_scale, *frozen,
+             "--seed-namespace", pre["seed_namespace"],
+             *(["--item-batch", str(pre["item_batch"])] if "item_batch" in pre else []),
+             *PROOF_FLAGS, *prefilter_scale, *frozen,
              "--output", f"{out}/passrate"),
              [f"{out}/passrate/summary.json", f"{out}/passrate/throughput_receipt.json"], t["passrate"])
         step("passrate-select", module("passrate", "select", "--report", f"{out}/passrate", "--min-pass",

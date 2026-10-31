@@ -43,8 +43,12 @@ class SyncProbe:
 
 
 def synchronize(bundle: PolicyBundle, preparation: Any, engine: Any, probes: list[SyncProbe],
-                protocol: dict, step: int, *, push: bool, image_counts: tuple[int, ...] = (1, 2)) -> list[dict]:
-    """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage."""
+                protocol: dict, step: int, *, push: bool, image_counts: tuple[int, ...] = (1, 2),
+                threshold: float | None = None) -> list[dict]:
+    """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage.
+
+    `threshold`: None = the protocol's HF threshold; scale.synchronize passes the bound vLLM-only one for its
+    sampler report (the engine's own cap still refuses anything above 0.02 for HF engines)."""
     if (image_counts not in ((1,), (1, 2)) or sorted(len(p.request.images) for p in probes) != list(image_counts)
             or len({p.request.request_id for p in probes}) != len(probes)):
         raise ValueError("trainer: fixed single/multi-image synchronization probes required")
@@ -64,7 +68,8 @@ def synchronize(bundle: PolicyBundle, preparation: Any, engine: Any, probes: lis
             values = completion_logprobs(bundle, inputs, len(probe.completion_ids),
                                         chunk=protocol["model"]["logprob_chunk"])[0].cpu().tolist()
             reference.append((probe.request, probe.completion_ids, values))
-    reports = engine.validate_sync(reference, protocol["engine"]["probe_max_mean_abs_logprob_diff"],
+    limit = protocol["engine"]["probe_max_mean_abs_logprob_diff"] if threshold is None else threshold
+    reports = engine.validate_sync(reference, limit,
                                    **({} if image_counts == (1, 2) else {"image_counts": image_counts}))
     # Only after actual engine probe validation may the separate preparer advance.
     preparation.policy_version = step

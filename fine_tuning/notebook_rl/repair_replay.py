@@ -187,6 +187,11 @@ def _expected_journal(trees: list[ProblemTree]) -> list[dict]:
     return expected
 
 
+def raw_journal_paths(root: Path) -> list[Path]:
+    """Capture-journal files in write order: the writer's `:04d` widens past raw-9999, so order by (width, name)."""
+    return sorted(root.glob("raw-*.json"), key=lambda path: (len(path.name), path.name))
+
+
 def validate_journal(capture_root: Path, raw_records: list, trees: list[ProblemTree], *,
                      complete: bool = True) -> dict[str, str]:
     """Match every durable external row to original embedded calls, including all siblings.
@@ -197,7 +202,7 @@ def validate_journal(capture_root: Path, raw_records: list, trees: list[ProblemT
             or any(type(tree) is not ProblemTree for tree in trees)
             or len({tree.problem_id for tree in trees}) != len(trees)):
         raise ValueError("repair replay: original journal and unique trees required")
-    files = sorted(path.name for path in capture_root.glob("raw-*.json"))
+    files = [path.name for path in raw_journal_paths(capture_root)]
     names = [f"raw-{index:04d}.json" for index in range(len(raw_records))]
     if (files if complete else files[:len(names)]) != names:
         raise ValueError("repair replay: contiguous complete raw journal required")
@@ -398,7 +403,7 @@ def replay_capture(capture_root: Path, *, protocol: dict, prepared: dict, actors
     from .checkpoint import file_hash
 
     if (any((file_hash if name in checkpoint_paths else _sha)(capture_root / name) != sha for name, sha in paths.items())
-            or sorted(path.name for path in capture_root.glob("raw-*.json")) != [row["file"] for row in index["raw_records"]]):
+            or [path.name for path in raw_journal_paths(capture_root)] != [row["file"] for row in index["raw_records"]]):
         raise ValueError("repair replay: original evidence changed during independent replay")
     report = {"version": VERSION, "problem_ids": ids, "eligible_problem_ids": [tree.problem_id for tree in eligible],
         "protocol_sha256": protocol["sha256"], "capture_binding_sha256": digest(binding),

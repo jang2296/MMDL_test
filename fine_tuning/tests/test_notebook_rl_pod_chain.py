@@ -64,6 +64,8 @@ TRAIN_SCALE = {"stage1": STAGE1_SCALE,
                "main-selection": expected_scale(12, 4, ["--checkpoint-every-updates", "50",
                                                         "--evidence-audit-rule", RULE_50])}
 PREFILTER_SCALE = {"stage1": expected_scale(16, 1), "pilot-300": expected_scale(3420, 1)}
+PREFILTER_VLLM = {"gpu_memory_utilization": 0.85, "max_num_seqs": 64, "kv_cache_memory_bytes": 21474836480,
+                  "enable_prefix_caching": True}  # a valid prefilter_vllm budget for the tests below
 
 
 def make_params(case):
@@ -372,6 +374,10 @@ class PlanTests(unittest.TestCase):
             ("vllm utilization not a float", "stage1", ("vllm", "gpu_memory_utilization"), 1, None),
             ("extra train key", "stage1", ("train", "extra"), 1, None),
             ("zero timeout", "stage1", ("timeouts", "cpu"), 0, None),
+            ("prefilter item_batch zero", "pilot-300", ("prefilter", "item_batch"), 0, None),
+            ("prefilter item_batch not an int", "stage1", ("prefilter", "item_batch"), True, None),
+            ("prefilter item_batch string", "stage1", ("prefilter", "item_batch"), "8", None),
+            ("unknown prefilter key", "stage1", ("prefilter", "bogus"), 1, None),
         ]
         for label, case, path, new, pattern in cases:
             params = make_params(case)
@@ -389,6 +395,74 @@ class PlanTests(unittest.TestCase):
         params = make_params("main-selection")
         params["train"]["problems"] = 3000
         self.assertEqual(750, int(value(argvs(chain.plan("main", params, SHA))["propose"], "--max-updates")))
+
+    def test_prefilter_item_batch_is_optional_and_forwarded_only_to_passrate_measure(self):
+        for case in ("stage1", "pilot-300"):
+            with self.subTest(case):
+                base = argvs(planned(case))
+                self.assertFalse(any("--item-batch" in argv for argv in base.values()))
+                params = make_params(case)
+                params["prefilter"]["item_batch"] = 8
+                steps = argvs(chain.plan(STAGE[case], params, SHA))
+                self.assertEqual("8", value(steps["passrate-measure"], "--item-batch"))
+                for name, argv in steps.items():
+                    if name != "passrate-measure":
+                        self.assertNotIn("--item-batch", argv, name)
+                        self.assertEqual(base[name], argv, name)
+                stripped = list(steps["passrate-measure"])
+                cut = stripped.index("--item-batch")
+                self.assertEqual(["--item-batch", "8"], stripped[cut:cut + 2])
+                del stripped[cut:cut + 2]
+                self.assertEqual(base["passrate-measure"], stripped)
+                parse_with_real_parser(self, steps["passrate-measure"])
+
+    def test_prefilter_vllm_budget_applies_only_to_the_prefilter_steps(self):
+        prefilter_names = ("prefilter-propose", "prefilter-prepare", "passrate-measure")
+        for case in ("stage1", "pilot-300"):
+            with self.subTest(case):
+                params = make_params(case)
+                params["prefilter_vllm"] = {**PREFILTER_VLLM}
+                steps = argvs(chain.plan(STAGE[case], params, SHA))
+                base = argvs(planned(case))
+                for name in prefilter_names:
+                    argv = steps[name]
+                    self.assertEqual("0.85", value(argv, "--vllm-gpu-memory-utilization"), name)
+                    self.assertEqual("64", value(argv, "--vllm-max-num-seqs"), name)
+                    self.assertEqual("21474836480", value(argv, "--vllm-kv-cache-memory-bytes"), name)
+                    self.assertIn("--vllm-enable-prefix-caching", argv, name)
+                for name, argv in steps.items():
+                    if name not in prefilter_names:
+                        self.assertEqual(base[name], argv, name)
+                parse_with_real_parser(self, steps["passrate-measure"])
+                parse_with_real_parser(self, steps["prefilter-propose"])
+
+    def test_absent_prefilter_vllm_leaves_the_planned_argv_unchanged(self):
+        for case in STAGE:
+            with self.subTest(case):
+                spec = chain.plan(STAGE[case], make_params(case), SHA)
+                self.assertEqual(planned(case), spec)
+                for item in spec["steps"]:
+                    self.assertNotIn("0.85", item["argv"], item["name"])
+        steps = argvs(planned("stage1"))
+        for name in ("prefilter-propose", "prefilter-prepare", "passrate-measure"):
+            self.assertTrue(contains(steps[name], VLLM_TAIL), name)
+
+    def test_prefilter_vllm_is_refused_when_misplaced_or_malformed(self):
+        cases = [
+            ("no prefilter in the stage", "main-selection", {**PREFILTER_VLLM}),
+            ("missing key", "stage1", {key: val for key, val in PREFILTER_VLLM.items() if key != "max_num_seqs"}),
+            ("extra key", "stage1", {**PREFILTER_VLLM, "bogus": 1}),
+            ("utilization is an int", "stage1", {**PREFILTER_VLLM, "gpu_memory_utilization": 1}),
+            ("max_num_seqs zero", "stage1", {**PREFILTER_VLLM, "max_num_seqs": 0}),
+            ("kv bytes is a bool", "stage1", {**PREFILTER_VLLM, "kv_cache_memory_bytes": True}),
+            ("prefix caching is a string", "stage1", {**PREFILTER_VLLM, "enable_prefix_caching": "yes"}),
+        ]
+        for label, case, budget in cases:
+            with self.subTest(label):
+                params = make_params(case)
+                params["prefilter_vllm"] = budget
+                with self.assertRaises(chain.ChainError):
+                    chain.plan(STAGE[case], params, SHA)
 
 
 def fill(item, key=""):

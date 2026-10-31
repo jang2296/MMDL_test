@@ -446,6 +446,33 @@ class EnginesTests(unittest.TestCase):
             engine.validate_sync([(r, ids, [-2.0]) for r, ids, _ in probes], .02)
         self.assertFalse(engine._synchronized)
 
+    def test_sync_threshold_cap_is_002_for_transformers_and_004_only_for_vllm_sampler(self):
+        # User decision 2026-10-31 "vLLM 전용 기준 0.04로 보정": HF<->HF stays 0.02, never loosened.
+        self.assertEqual((InputPreparation.sync_threshold_cap, VLLMRolloutEngine.sync_threshold_cap), (.02, .04))
+        hf = self.engine()
+        self.assertEqual(hf.sync_threshold_cap, .02)
+        hf_probes = [(request(count, key=f"probe-{count}"), [12, 13], hf.probe_logprobs(request(count), [12, 13]))
+                     for count in (1, 2)]
+        shifted = [(r, ids, [p - .03 for p in ref]) for r, ids, ref in hf_probes]
+        with self.assertRaisesRegex(RuntimeError, "disagree"):
+            hf.validate_sync(shifted, .02)  # a 0.03 mean still fails the HF threshold
+        for threshold in (.03, .04):
+            with self.subTest(hf_threshold=threshold), self.assertRaisesRegex(ValueError, "strict threshold"):
+                hf.validate_sync(hf_probes, threshold)
+        engine, _, _, _ = pushed_engine()
+        engine.probe_logprobs = lambda r, c: [-1.0] * len(c)
+        for delta, passed in ((.03, True), (.05, False)):
+            probes = [(request(1), [12], [-1.0 - delta]), (request(2), [12], [-1.0 - delta])]
+            with self.subTest(vllm_delta=delta):
+                if passed:
+                    self.assertEqual([round(r["mean_abs_delta"], 6) for r in engine.validate_sync(probes, .04)],
+                                     [.03, .03])
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "disagree"):
+                        engine.validate_sync(probes, .04)
+        with self.assertRaisesRegex(ValueError, "strict threshold"):
+            engine.validate_sync([(request(1), [12], [-1.0]), (request(2), [12], [-1.0])], .05)
+
     def test_vllm_source_rule_transport_expands_once_and_preserves_literal_history(self):
         engine = VLLMRolloutEngine.__new__(VLLMRolloutEngine)
         InputPreparation.__init__(engine, Processor(), tiny_model().config, {"preprocessing": "hf_processor"}, 64)

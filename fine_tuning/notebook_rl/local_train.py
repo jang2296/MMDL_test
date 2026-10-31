@@ -17,7 +17,7 @@ from . import approval, checkpoint, scale as scale_options
 from .cli import artifact_path
 from .dataset import load_images
 from .local_profile import DEFAULT_NOTE_CONTRACT, NOTE_CONTRACT_CHOICES, PROFILE, local_prompts, restore_protocol
-from .repair_replay import read_snapshot as _repair_read
+from .repair_replay import raw_journal_paths, read_snapshot as _repair_read
 from .local_run import (_binding, _install_actor_guards, cache_readiness, make_probes,
                         parameter_hashes, probe_evidence, read_preparation, verify_changes, write_json,
                         _positive_error_relationship, relationship_learning_summary)
@@ -170,13 +170,14 @@ def _repair_probe_binding(forward: dict, sync: list, step: int, actors: list, *,
     _sync_rows(sync, step, actors, image_counts=image_counts)
 
 
-def _sync_rows(sync: list, step: int, actors: list, *, image_counts=(1, 2)) -> None:
+def _sync_rows(sync: list, step: int, actors: list, *, image_counts=(1, 2), threshold: float = .02) -> None:
+    """`threshold`: 0.02 for HF reports; a vLLM sampler report passes scale.sampler_sync_threshold (0.04)."""
     selected = covering_actors(actors, image_counts)
     if (type(sync) is not list or len(sync) != len(selected)
             or any(type(row) is not dict or type(row.get("policy_version")) is not int or row["policy_version"] != step
                 or any(type(row.get(key)) not in (int, float) or not math.isfinite(row[key]) or row[key] < 0
                        for key in ("mean_abs_delta", "max_abs_delta"))
-                or row["mean_abs_delta"] > .02 or row["mean_abs_delta"] > row["max_abs_delta"] for row in sync)
+                or row["mean_abs_delta"] > threshold or row["mean_abs_delta"] > row["max_abs_delta"] for row in sync)
             or [row.get("request_id") for row in sync] != ["local-sync:" + actor.problem_id for actor in selected]):
         raise ValueError("local train: exact single/multi-image repair forward and synchronized probes required")
 
@@ -216,7 +217,7 @@ def notebook_learning_gate(capture: Path, result: dict, update: dict, protocol: 
         raise ValueError("local train: notebook objective contract differs from update")
     paths, seen_trees, seen_samples = [], set(), set()
     signal_groups, contributing = 0, 0
-    for path in sorted(capture.glob("raw-*.json")):
+    for path in raw_journal_paths(capture):
         record = _read(path)
         if record.get("kind") != "TREE":
             continue
@@ -423,7 +424,7 @@ def fact_credit_learning_gate(capture: Path, result: dict, update: dict, protoco
     regraded_trees, regraded_scores = [], {}
     original_actions: set[str] = set()
     signal_groups, contributing = 0, native_contributing
-    for path in sorted(capture.glob("raw-*.json")):
+    for path in raw_journal_paths(capture):
         record = _read(path)
         if record.get("kind") != "TREE":
             continue
@@ -725,7 +726,7 @@ def training_parent_gate(capture: Path, reload: Path, *, admission: str = STRICT
     root = Path(prepared["build_root"])
     forbidden = [Path(request["index"]["path"]).parent, Path.home() / "mmdl-data/evaluation"]
     trees = [from_json(ProblemTree, json.dumps(row["raw"], allow_nan=False))
-             for path in sorted(capture.glob("raw-*.json")) if (row := _read(path)).get("kind") == "TREE"]
+             for path in raw_journal_paths(capture) if (row := _read(path)).get("kind") == "TREE"]
     if admission == ASSESSMENT_CREDIT_ADMISSION:
         restored = _read(Path(reload) / "result.json")
         update, result = _read(capture / "update.json"), _read(capture / "result.json")
@@ -1185,7 +1186,7 @@ def _scaled_training_replay(capture: Path, result: dict | None, contract: dict, 
     for ordinal, link in enumerate(tree_links):
         if (type(link) is not dict or set(link) != {"problem_id", "tree_file", "tree_file_sha256", "preparation_file",
                 "preparation_file_sha256", "preparation_receipt_sha256"}
-                or type(link["tree_file"]) is not str or re.fullmatch(r"raw-[0-9]{4}\.json", link["tree_file"]) is None
+                or type(link["tree_file"]) is not str or re.fullmatch(r"raw-[0-9]{4,}\.json", link["tree_file"]) is None
                 or link["preparation_file"] != f"repair-preparation-{ordinal:04d}.json"
                 or link["problem_id"] != flat[start * size + ordinal]):
             raise ValueError("local train: scaled repair TREE/preparation link differs")
@@ -1283,7 +1284,8 @@ def _scaled_training_replay(capture: Path, result: dict | None, contract: dict, 
                                                  if opts["rollout_engine"] == "vllm" else [])
         for name in sync_names:
             sync, paths[name] = _repair_read(capture / name)
-            _sync_rows(sync, step + 1, probe_source(prepared, actors), image_counts=probe_counts(prepared))
+            _sync_rows(sync, step + 1, probe_source(prepared, actors), image_counts=probe_counts(prepared),
+                       threshold=scale_options.sampler_sync_threshold(protocol) if name.startswith("sampler-") else .02)
         name = f"checkpoint-pair-{index:02d}"
         if (step + 1) % every == 0:
             committed, checkpoint_paths = checkpoint_snapshot(capture, name, binding=launch["binding"])
@@ -1387,7 +1389,7 @@ def validate_native_updates(capture: Path, result: dict, contract: dict, protoco
     step = 0
     paths = sorted(capture.glob("pair-*.json"))
     trees = [from_json(ProblemTree, json.dumps(record["raw"], allow_nan=False))
-             for path in sorted(capture.glob("raw-*.json")) if (record := _read(path)).get("kind") == "TREE"]
+             for path in raw_journal_paths(capture) if (record := _read(path)).get("kind") == "TREE"]
     if (type(result.get("optimizer_updates")) is not int or not 1 <= result["optimizer_updates"] <= 5
             or len(contract["pair_ids"]) != 5 or any(len(pair) != 2 for pair in contract["pair_ids"])
             or len({pid for pair in contract["pair_ids"] for pid in pair}) != 10

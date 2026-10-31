@@ -120,6 +120,23 @@ class RepairReplayTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     replay.validate_journal(root, raw_records, [tree])
 
+    def test_raw_journal_beyond_9999_orders_numerically(self) -> None:
+        tree = ProblemTree("a", 0, [], "VISION_OFF", {}, {})
+        event = {"kind": "TREE", "raw": {"fixture": 1}}
+        names = [f"raw-{index:04d}.json" for index in range(10002)]
+        self.assertEqual((names[9998], names[10001]), ("raw-9998.json", "raw-10001.json"))
+        self.assertNotEqual(sorted(names), names)  # lexicographic order puts raw-10000 before raw-1001
+        records = [{"file": name, "kind": "TREE", "sha256": self.write(self.root, name, event)} for name in names]
+        self.assertEqual([path.name for path in replay.raw_journal_paths(self.root)], names)
+        with patch.object(replay, "_expected_journal", return_value=[event] * len(names)):
+            self.assertEqual(list(replay.validate_journal(self.root, records, [tree])), names)
+            # resume prefix: the 10001st record's file (raw-10000) is the last of the contiguous start
+            with patch.object(replay, "_expected_journal", return_value=[event] * 10001):
+                self.assertEqual(len(replay.validate_journal(self.root, records[:10001], [tree], complete=False)), 10001)
+            (self.root / "raw-10001.json").unlink()
+            with self.assertRaisesRegex(ValueError, "contiguous complete raw journal"):
+                replay.validate_journal(self.root, records, [tree])
+
     def test_online_only_and_intact_malformed_sources_keep_original_members(self) -> None:
         for malformed in (False, True):
             with self.subTest(malformed=malformed), tempfile.TemporaryDirectory() as directory:

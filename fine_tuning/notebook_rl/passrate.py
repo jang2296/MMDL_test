@@ -25,14 +25,14 @@ from contextlib import ExitStack
 from functools import partial
 from importlib import import_module
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from . import prompts as prompt_builders
 from .dataset import SPLITS, _bytes, _sha, _write, load_images
-from .engines import RolloutRequest, _completion
+from .engines import RolloutRequest, RolloutResult, _completion
 from .local_data import project_observation_actors
 from .local_profile import DEFAULT_NOTE_CONTRACT, NOTE_CONTRACT_CHOICES, build_protocol, local_prompts
-from .rollout import BLOCKING, RolloutConfig, _hash, _sample_request, seeds
+from .rollout import BLOCKING, RolloutConfig, _hash, seeds
 from .vault import _read, _unique, read_actors, read_lineage
 from .verifier import Verifier
 
@@ -61,46 +61,82 @@ def first_attempt_request(actor, images: list, prompts: dict, *, policy_version:
         seeds(actor.problem_id, policy_version, 1, branch, k, master_seed=MASTER_SEED))
 
 
-def _measure_item(actor, images: list, prompts: dict, engine: Any, verifier: Any, split: str, *,
-                  policy_version: int, k: int, cfg: RolloutConfig, seed_namespace: str) -> dict:
+def _sample_batch(requests: list[RolloutRequest], engine: Any, policy_version: int,
+                  context_limit: int) -> list[RolloutResult | None]:
+    """rollout._sample_request's checks for several requests sampled in ONE engine.sample call.
+
+    Each request keeps its own messages, images, n, cap and seeds; None marks a CONTEXT_BLOCKED request,
+    which is never sent to the sampler. One request is exactly `_sample_request` (without its hooks)."""
+    prepared: dict[str, Any] = {}
+    for request in requests:
+        try:
+            item = engine.prepare(request)
+            if len(item.token_ids) + request.max_new_tokens > context_limit:
+                raise ValueError("CONTEXT_BLOCKED: prompt plus completion reservation")
+        except ValueError as exc:
+            if not str(exc).startswith("CONTEXT_BLOCKED:"):
+                raise
+            continue
+        prepared[request.request_id] = item
+    live = [r for r in requests if r.request_id in prepared]
+    if not live:
+        return [None] * len(requests)
+    if engine.policy_version != policy_version:
+        raise RuntimeError("passrate: policy changed before sampling")
+    outputs = engine.sample(live)
+    if (len(outputs) != len(live) or engine.policy_version != policy_version
+            or any(out.request_id != r.request_id or len(out.completions) != r.n
+                   or out.prompt_token_ids != prepared[r.request_id].token_ids
+                   or r.prompt_token_ids is not None and out.prompt_token_ids != r.prompt_token_ids
+                   for r, out in zip(live, outputs))):
+        raise RuntimeError("passrate: sampler altered the actual state, version or group size")
+    by_id = {r.request_id: out for r, out in zip(live, outputs)}
+    return [by_id.get(r.request_id) for r in requests]
+
+
+def _measure_items(actors: list, images: list[list], prompts: dict, engine: Any, verifier: Any, split: str, *,
+                   policy_version: int, k: int, cfg: RolloutConfig, seed_namespace: str) -> Iterator[dict]:
+    """The first-attempt requests of all `actors` in one engine.sample call; rows graded and yielded in order.
+
+    A row's `seconds` runs from its batch's start to the end of its own grading (one item: the item's time)."""
     from .notebook_synthesis import grade_options
 
     began = time.monotonic()
-    # The collector's T1 (rollout.build_tree): a bound eval-aligned contract sets its own cap and V8 grading.
-    turn1 = prompt_builders.turn1_contract(actor, prompts)
-    request = first_attempt_request(actor, images, prompts, policy_version=policy_version, k=k,
-        max_new_tokens=cfg.max_new_tokens[1] if turn1 is None else turn1["max_new_tokens"],
-        seed_namespace=seed_namespace)
-    grading = grade_options(1, None if turn1 is None else turn1["version"])
-    statuses: list[str] = []
-    finishes: list[str] = []
-    tokens: list[int] = []
-    raw: list[str] = []
-    prompt_tokens = prompt_sha = None
-    try:
-        output = _sample_request(request, engine, policy_version, cfg.context_limit)
-    except ValueError as exc:
-        if not str(exc).startswith("CONTEXT_BLOCKED:"):
-            raise
-        statuses = ["CONTEXT_BLOCKED"] * k
-    else:
-        prompt_tokens, prompt_sha = len(output.prompt_token_ids), _hash(output.prompt_token_ids)
-        for completion in output.completions:
-            _completion(completion.token_ids, completion.logprobs, completion.finish_reason, completion.text)
-            # Same call the collector's native audit makes for a T1 sample.
-            statuses.append(verifier.grade(actor.problem_id, completion.text, completion.finish_reason,
-                                           actor.mode, **grading).status)
-            finishes.append(completion.finish_reason)
-            tokens.append(len(completion.token_ids))
-            raw.append(hashlib.sha256(completion.text.encode("utf-8")).hexdigest())
-    return {"problem_id": actor.problem_id, "family": actor.family, "source": actor.source, "split": split,
-            "policy_version": policy_version, "k": k, "passes": statuses.count("CORRECT"),
-            "blocking": sum(status in BLOCKING for status in statuses),
-            "statuses": dict(sorted(Counter(statuses).items())),
-            "finish_reasons": dict(sorted(Counter(finishes).items())), "completion_tokens": tokens,
-            "prompt_tokens": prompt_tokens, "prompt_sha256": prompt_sha, "request_id": request.request_id,
-            "seeds": list(request.seeds), "response_sha256": raw,
-            "seconds": round(time.monotonic() - began, 3)}
+    plans = []
+    for actor, item_images in zip(actors, images, strict=True):
+        # The collector's T1 (rollout.build_tree): a bound eval-aligned contract sets its own cap and V8 grading.
+        turn1 = prompt_builders.turn1_contract(actor, prompts)
+        request = first_attempt_request(actor, item_images, prompts, policy_version=policy_version, k=k,
+            max_new_tokens=cfg.max_new_tokens[1] if turn1 is None else turn1["max_new_tokens"],
+            seed_namespace=seed_namespace)
+        plans.append((actor, request, grade_options(1, None if turn1 is None else turn1["version"])))
+    outputs = _sample_batch([request for _, request, _ in plans], engine, policy_version, cfg.context_limit)
+    for (actor, request, grading), output in zip(plans, outputs, strict=True):
+        statuses: list[str] = []
+        finishes: list[str] = []
+        tokens: list[int] = []
+        raw: list[str] = []
+        prompt_tokens = prompt_sha = None
+        if output is None:
+            statuses = ["CONTEXT_BLOCKED"] * k
+        else:
+            prompt_tokens, prompt_sha = len(output.prompt_token_ids), _hash(output.prompt_token_ids)
+            for completion in output.completions:
+                _completion(completion.token_ids, completion.logprobs, completion.finish_reason, completion.text)
+                # Same call the collector's native audit makes for a T1 sample.
+                statuses.append(verifier.grade(actor.problem_id, completion.text, completion.finish_reason,
+                                               actor.mode, **grading).status)
+                finishes.append(completion.finish_reason)
+                tokens.append(len(completion.token_ids))
+                raw.append(hashlib.sha256(completion.text.encode("utf-8")).hexdigest())
+        yield {"problem_id": actor.problem_id, "family": actor.family, "source": actor.source, "split": split,
+               "policy_version": policy_version, "k": k, "passes": statuses.count("CORRECT"),
+               "blocking": sum(status in BLOCKING for status in statuses),
+               "statuses": dict(sorted(Counter(statuses).items())),
+               "finish_reasons": dict(sorted(Counter(finishes).items())), "completion_tokens": tokens,
+               "prompt_tokens": prompt_tokens, "prompt_sha256": prompt_sha, "request_id": request.request_id,
+               "seeds": list(request.seeds), "response_sha256": raw,
+               "seconds": round(time.monotonic() - began, 3)}
 
 
 def _check_weights(weights: Any) -> None:
@@ -129,19 +165,26 @@ def _outside_build(build_root: Path, output: Path) -> None:
 
 def measure(build_root: Path, split: str, ids: list[str] | None, *, protocol: dict, engine: Any, k: int,
             seed_namespace: str, output: Path, on_record: Callable[[dict], None] | None = None,
-            verifier: Any = None, weights: dict | None = None, lineage: dict | None = None) -> dict:
+            verifier: Any = None, weights: dict | None = None, lineage: dict | None = None,
+            item_batch: int = 1) -> dict:
     """k first attempts per item; records.jsonl is fsynced per item, summary.json closes the run.
 
     `verifier` defaults to the in-process vault Verifier; the CLI passes the isolated service.
     `weights`: what was loaded (F0_WEIGHTS by default); recorded in summary.json.
     `lineage`: the split's lineage read before the actor guards (the CLI); None reads it here (unguarded callers).
+    `item_batch`: items whose first-attempt requests go to the sampler in ONE engine.sample call (runtime only:
+    every request keeps its own messages, images, n, cap and seeds, so records do not depend on it). After the
+    call returns each item is graded, written and fsynced in `ids` order before the next. There is no resume
+    (records.jsonl is created exclusively): a crash keeps every written item and loses the unwritten items of
+    the batch in flight (at most item_batch); a new run needs a new output directory.
     """
     build_root, output = Path(build_root), Path(output)
     weights = dict(F0_WEIGHTS) if weights is None else weights
     _check_weights(weights)
     if (split not in SPLITS or type(k) is not int or not K_RANGE[0] <= k <= K_RANGE[1]
-            or not isinstance(seed_namespace, str) or not _NAMESPACE.fullmatch(seed_namespace)):
-        raise ValueError("passrate: known split, k in 4..8 and a plain seed namespace required")
+            or not isinstance(seed_namespace, str) or not _NAMESPACE.fullmatch(seed_namespace)
+            or type(item_batch) is not int or item_batch < 1):
+        raise ValueError("passrate: known split, k in 4..8, a plain seed namespace and item_batch >= 1 required")
     _outside_build(build_root, output)
     manifest_sha = _sha(_read(build_root / "manifest.yaml"))
     actors = {a.problem_id: a for a in project_observation_actors(read_actors(build_root / split), protocol)}
@@ -160,25 +203,29 @@ def measure(build_root: Path, split: str, ids: list[str] | None, *, protocol: di
     rows: list[dict] = []
     with (output / "records.jsonl").open("xb") as stream:
         os.fchmod(stream.fileno(), 0o600)
-        for pid in chosen:
+        for start in range(0, len(chosen), item_batch):
+            batch = chosen[start:start + item_batch]
             with ExitStack() as stack:
-                images = load_images(actors[pid], build_root / "images")
-                for image in images:
-                    stack.callback(image.close)
-                row = _measure_item(actors[pid], images, prompts, engine, verifier, split,
-                                    policy_version=policy_version, k=k, cfg=cfg, seed_namespace=seed_namespace)
-            # A crash after this point still keeps every completed item.
-            stream.write(_bytes(row) + b"\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-            rows.append(row)
-            if on_record is not None:
-                on_record(copy.deepcopy(row))
+                images = []
+                for pid in batch:
+                    images.append(load_images(actors[pid], build_root / "images"))
+                    for image in images[-1]:
+                        stack.callback(image.close)
+                for row in _measure_items([actors[pid] for pid in batch], images, prompts, engine, verifier, split,
+                                          policy_version=policy_version, k=k, cfg=cfg, seed_namespace=seed_namespace):
+                    # A crash after this point still keeps every completed item.
+                    stream.write(_bytes(row) + b"\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    rows.append(row)
+                    if on_record is not None:
+                        on_record(copy.deepcopy(row))
     statuses: Counter = Counter()
     for row in rows:
         statuses.update(row["statuses"])
     summary = {"version": VERSION, "status": "MEASURED_NOT_TRAINING_APPROVAL", "split": split, "k": k,
                "seed_namespace": seed_namespace, "master_seed": MASTER_SEED, "policy_version": policy_version,
+               "item_batch": item_batch,
                "weights": weights, "protocol_sha256": protocol["sha256"],
                "build_manifest_sha256": manifest_sha, "items": len(rows), "ids": chosen,
                "status_counts": dict(sorted(statuses.items())),
@@ -396,7 +443,7 @@ def _cli_measure(args: argparse.Namespace) -> dict:
             raise ValueError("passrate: verifier dataset changed")
         summary = measure(build_root, split, ids, protocol=protocol, engine=engine, k=args.k,
                           seed_namespace=args.seed_namespace, output=args.output, verifier=service, weights=weights,
-                          lineage=lineage,
+                          lineage=lineage, item_batch=args.item_batch,
                           on_record=lambda row: print(json.dumps({"event": "ITEM", "problem_id": row["problem_id"],
                                                                   "passes": row["passes"], "k": row["k"]}), flush=True))
     if original_access and original_access["denied_original_access_attempts"]:
@@ -405,7 +452,7 @@ def _cli_measure(args: argparse.Namespace) -> dict:
         completion_tokens=summary["completion_tokens_total"], wall_seconds=time.monotonic() - began, updates=0,
         update_seconds=0., n_samples=summary["k"], retries_per_item=0., startup_seconds=startup,
         extra={"run": "passrate", "sampler": scale_options.sampler_label(protocol), **(schema or {}),
-               "completion_scope": "first_attempt_records",
+               "completion_scope": "first_attempt_records", "item_batch": summary["item_batch"],
                **({"data_verification": verification} if verification is not None else {})})
     return summary
 
@@ -426,6 +473,8 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--binding", type=Path)
     run.add_argument("--k", type=int, required=True)
     run.add_argument("--seed-namespace", required=True)
+    run.add_argument("--item-batch", type=int, default=1,
+                     help="items per engine.sample call (runtime only; records do not depend on it)")
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--note-contract", choices=NOTE_CONTRACT_CHOICES, default=DEFAULT_NOTE_CONTRACT)
     from .local_profile import add_repair_cli_arguments
@@ -447,6 +496,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage == "measure":
         if args.standalone_base != (args.cache_check is not None):
             parser.error("--standalone-base requires exactly its --cache-check")
+        if args.item_batch < 1:
+            parser.error("--item-batch must be at least 1")
         if (args.checkpoint is None) != (args.binding is None):
             parser.error("--checkpoint requires --binding (a launch.json or a binding object) and vice versa")
         if args.answer_verified_route != bool(args.slotless_source):

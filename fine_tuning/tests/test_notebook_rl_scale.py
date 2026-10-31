@@ -76,8 +76,13 @@ class ProtocolTests(unittest.TestCase):
         for options in cases:
             with self.subTest(options=options):
                 protocol = repair(**options)
-                label = ({"vllm_sync_probe": scale.VLLM_SYNC_PROBE} if options.get("rollout_engine") == "vllm" else {})
+                vllm_case = options.get("rollout_engine") == "vllm"
+                label = ({"vllm_sync_probe": scale.VLLM_SYNC_PROBE,
+                          "vllm_sync_threshold": scale.VLLM_SYNC_THRESHOLD_LABEL} if vllm_case else {})
                 self.assertEqual(protocol["scale"], {"version": scale.VERSION, **options, **label})
+                # HF<->HF stays 0.02 everywhere; the calibrated vLLM-only key exists only in vLLM protocols.
+                self.assertEqual(protocol["engine"]["probe_max_mean_abs_logprob_diff"], .02)
+                self.assertEqual(protocol["engine"].get(scale.VLLM_SYNC_THRESHOLD_KEY), .04 if vllm_case else None)
                 self.assertEqual(restore_protocol(json.loads(json.dumps(protocol)))["sha256"], protocol["sha256"])
                 hashes.add(protocol["sha256"])
                 self.assertEqual(protocol["batch"]["problems_per_step"], scale.options(protocol)["problems_per_update"])
@@ -101,6 +106,39 @@ class ProtocolTests(unittest.TestCase):
                 forged["scale"]["vllm_sync_probe"] = value
             with self.subTest(value=value), self.assertRaises(ValueError):
                 scale.options(forged)
+
+    def test_vllm_only_calibrated_sync_threshold_is_bound_and_cannot_be_forged(self):
+        # User decision 2026-10-31 "vLLM 전용 기준 0.04로 보정": vLLM protocols only; HF/NF4 protocols unchanged.
+        vllm = repair(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
+        self.assertEqual((scale.VLLM_SYNC_THRESHOLD, scale.VLLM_SYNC_THRESHOLD_LABEL),
+                         (.04, "vllm-hf-bf16-calibrated-0.04-v1"))
+        self.assertEqual(vllm["scale"]["vllm_sync_threshold"], scale.VLLM_SYNC_THRESHOLD_LABEL)
+        self.assertEqual(scale.sampler_sync_threshold(vllm), .04)
+        self.assertEqual(vllm["engine"]["probe_max_mean_abs_logprob_diff"], .02)
+        bf16_hf = repair(policy_precision="bf16")
+        for protocol in (bf16_hf, repair(rollout_batch_rows=4), build_protocol(repair_notebook=True, context_limit=24576)):
+            with self.subTest(protocol=protocol.get("scale")):
+                self.assertNotIn(scale.VLLM_SYNC_THRESHOLD_KEY, protocol["engine"])
+                self.assertNotIn("vllm_sync_threshold", protocol.get("scale", {}))
+                with self.assertRaises(ValueError):
+                    scale.sampler_sync_threshold(protocol)
+        forgeries = [("scale", "vllm_sync_threshold", None), ("scale", "vllm_sync_threshold", "vllm-hf-0.05-v0"),
+                     ("engine", scale.VLLM_SYNC_THRESHOLD_KEY, None), ("engine", scale.VLLM_SYNC_THRESHOLD_KEY, .05),
+                     ("engine", scale.VLLM_SYNC_THRESHOLD_KEY, .02)]
+        for group, key, value in forgeries:
+            forged = copy.deepcopy(vllm)
+            forged[group].pop(key)
+            if value is not None:
+                forged[group][key] = value
+            with self.subTest(group=group, value=value), self.assertRaises(ValueError):
+                scale.options(forged)
+        for group, key, value in (("engine", scale.VLLM_SYNC_THRESHOLD_KEY, .04),
+                                  ("scale", "vllm_sync_threshold", scale.VLLM_SYNC_THRESHOLD_LABEL)):
+            forged = copy.deepcopy(bf16_hf)
+            forged[group][key] = value
+            with self.subTest(hf_added=key), self.assertRaises(ValueError):
+                scale.options(forged)
+        self.assertEqual(restore_protocol(json.loads(json.dumps(vllm)))["sha256"], vllm["sha256"])
 
     def test_invalid_groups_fail_closed(self):
         for options in ({}, {"unknown": 1}, {"rollout_batch_rows": 0}, {"rollout_batch_rows": True},
@@ -371,6 +409,7 @@ class TinyEngineTests(unittest.TestCase):
 
         def hf_sync(probes, threshold):
             events.append(("hf-probes", shared.policy_version))
+            self.assertEqual(threshold, .02)  # the HF<->HF report never takes the vLLM-only threshold
             return original(probes, threshold)
 
         shared.validate_sync = hf_sync
@@ -384,10 +423,12 @@ class TinyEngineTests(unittest.TestCase):
         rng = torch.get_rng_state()
         hf, vllm = scale.synchronize(bundle, sampler, shared, probes(), protocol, 0, push=False)
         self.assertTrue(torch.equal(torch.get_rng_state(), rng))
-        # The sampler is probed on the live HF policy's own continuation (probe seed, 32 tokens), same threshold.
+        # The sampler is probed on the live HF policy's own continuation (probe seed, 32 tokens) against the bound
+        # vLLM-only calibrated threshold; the HF report keeps the protocol's 0.02.
         threshold, probed = seen[0]
-        self.assertEqual(threshold, protocol["engine"]["probe_max_mean_abs_logprob_diff"])
-        self.assertEqual(threshold, .02)
+        self.assertEqual(threshold, protocol["engine"][scale.VLLM_SYNC_THRESHOLD_KEY])
+        self.assertEqual(threshold, .04)
+        self.assertEqual(protocol["engine"]["probe_max_mean_abs_logprob_diff"], .02)
         own = shared.sample([dataclasses.replace(p.request, max_new_tokens=32) for p in probes()])
         self.assertEqual([ids for _, ids in probed], [result.completions[0].token_ids for result in own])
         self.assertTrue(all(0 < len(ids) <= 32 and ids != [7, 8] for _, ids in probed))
@@ -409,7 +450,7 @@ class TinyEngineTests(unittest.TestCase):
             scale.synchronize(bundle, sampler, shared, probes(44), protocol, 1, push=False)
 
     def test_push_rows_record_pre_push_discrimination(self):
-        from fine_tuning.notebook_rl.engines import InputPreparation
+        from fine_tuning.notebook_rl.engines import InputPreparation, VLLMRolloutEngine
 
         bundle = self.bundle()
         protocol = self.protocol(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
@@ -419,6 +460,7 @@ class TinyEngineTests(unittest.TestCase):
         class Sampler:
             """Real validate_sync; the previous (old) weights read `old` away from the live HF policy."""
             validate_sync = InputPreparation.validate_sync
+            sync_threshold_cap = VLLMRolloutEngine.sync_threshold_cap
 
             def __init__(self, version, old, new=0.):
                 self.policy_version, self.old, self.new, self.pushed = version, old, new, False
@@ -454,11 +496,13 @@ class TinyEngineTests(unittest.TestCase):
             self.assertAlmostEqual(row["pre_push_mean_abs_delta"], .05, places=3)
             self.assertLess(row["mean_abs_delta"], 1e-3)  # post-push certification is unchanged
             self.assertEqual(row["probe_source"], scale.VLLM_SYNC_PROBE)
-        # The 0.02 post-push threshold still fails at 0.03 even though the pre-push measurement succeeded.
+        # The bound vLLM-only 0.04 post-push threshold: 0.03 passes, 0.05 fails although measured pre-push.
+        rows = push(Sampler(1, .05, .03), 2)
+        self.assertTrue(all(abs(row["mean_abs_delta"] - .03) < 1e-3 for row in rows))
         with self.assertRaisesRegex(RuntimeError, "disagree"):
-            push(Sampler(1, .05, .03), 2)
+            push(Sampler(2, .05, .05), 3)
         # A sampler that cannot be probed before the push is recorded as unmeasured, not failed.
-        refusing = Sampler(2, 0.)
+        refusing = Sampler(3, 0.)
         original = refusing.probe_logprobs
 
         def refuse(request, ids):
@@ -467,12 +511,12 @@ class TinyEngineTests(unittest.TestCase):
             return original(request, ids)
 
         refusing.probe_logprobs = refuse
-        rows = push(refusing, 3)
+        rows = push(refusing, 4)
         self.assertTrue(all(row["pre_push_measured"] is False and "refuses probes" in row["pre_push_reason"]
                             and "pre_push_mean_abs_delta" not in row for row in rows))
 
-    def test_vllm_sync_threshold_is_unchanged_and_an_immediate_eos_is_refused(self):
-        from fine_tuning.notebook_rl.engines import InputPreparation
+    def test_vllm_sync_uses_the_calibrated_threshold_and_an_immediate_eos_is_refused(self):
+        from fine_tuning.notebook_rl.engines import InputPreparation, VLLMRolloutEngine
 
         protocol = self.protocol(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
         reference = [-27.781, -5.629, -.5, -1.25]
@@ -480,6 +524,7 @@ class TinyEngineTests(unittest.TestCase):
         class Sampler:
             """The real InputPreparation.validate_sync over scripted vLLM logprobs (reference + delta)."""
             validate_sync = InputPreparation.validate_sync
+            sync_threshold_cap = VLLMRolloutEngine.sync_threshold_cap
 
             def __init__(self, delta):
                 self.delta, self.policy_version = delta, 0
@@ -505,11 +550,13 @@ class TinyEngineTests(unittest.TestCase):
                       for pid, count in (("0", 1), ("1", 2))]
             policy, sampler = Policy(ids, finish), Sampler(delta)
 
-            def hf(bundle, preparation, engine, probes, protocol, step, *, push, **kwargs):
+            def hf(bundle, preparation, engine, probes, protocol, step, *, push, threshold=None, **kwargs):
                 if engine is preparation:
+                    self.assertIsNone(threshold)  # HF report: the protocol's 0.02
                     return sync_rows(step)
+                self.assertEqual(threshold, .04)
                 values = [(p.request, p.completion_ids, reference[:len(p.completion_ids)]) for p in probes]
-                return engine.validate_sync(values, protocol["engine"]["probe_max_mean_abs_logprob_diff"])
+                return engine.validate_sync(values, threshold)
 
             rng = torch.get_rng_state()
             try:
@@ -526,8 +573,9 @@ class TinyEngineTests(unittest.TestCase):
         self.assertEqual([(row["probe_source"], row["completion_ids"]) for row in rows],
                          [(scale.VLLM_SYNC_PROBE, [3, 4, 5, 6])] * 2)
         self.assertAlmostEqual(rows[0]["mean_abs_delta"], .0066)
+        self.assertAlmostEqual(run(.03)[0]["mean_abs_delta"], .03)  # above HF's 0.02, within the vLLM-only 0.04
         with self.assertRaisesRegex(RuntimeError, "disagree"):
-            run(.03)
+            run(.05)
         for ids, finish in (((), "length"), ((9,), "stop")):
             with self.subTest(ids=ids), self.assertRaisesRegex(RuntimeError, "at once"):
                 run(.0, ids, finish)
@@ -860,10 +908,15 @@ class ScaledTrainFixture:
         return {"version": "repair-update-evidence-v1", "S_gradient_verified": status, "step": update["step_before"],
                 "functional_verified": False, "repair_learning_verified": False, "benefit_verified": False}
 
-    def synchronize(self, bundle, preparation, engine, probes, protocol, step, *, push):
+    sampler_delta = 0.  # mean/max |delta| the scripted vLLM sampler report records
+
+    def synchronize(self, bundle, preparation, engine, probes, protocol, step, *, push, threshold=None):
         self.sync_calls.append((preparation.kind, engine.kind, step, push))
+        # HF reports take the protocol's 0.02 (None); the vLLM sampler report the bound vLLM-only 0.04.
+        self.assertEqual(threshold, .04 if engine.kind == "vllm" else None)
         engine.policy_version = step
-        return sync_rows(step)
+        delta = self.sampler_delta if engine.kind == "vllm" else 0.
+        return [row | {"mean_abs_delta": delta, "max_abs_delta": delta} for row in sync_rows(step)]
 
     # ---- drivers
     def train(self, output: Path, **kwargs):
@@ -1194,6 +1247,24 @@ class VllmTrainTests(ScaledTrainFixture, unittest.TestCase):
         (capture / "sampler-sync-02.json").unlink()
         with self.assertRaises((ValueError, OSError)):
             self.replay(capture)
+
+    def test_replay_checks_sampler_rows_against_004_and_hf_rows_against_002(self):
+        self.sampler_delta = .03  # above the HF 0.02, within the vLLM-only 0.04 (user decision 2026-10-31)
+        capture = self.root / "run"
+        self.assertEqual(self.train(capture)["optimizer_updates"], 5)
+        self.assertEqual({row["mean_abs_delta"] for row in json.loads((capture / "sampler-sync-02.json").read_text())},
+                         {.03})
+        self.close(capture)
+        self.assertEqual(self.replay(capture)["optimizer_updates"], 5)
+        for name, delta in (("sampler-sync-02.json", .05), ("sync-02.json", .03)):
+            path = capture / name
+            original = path.read_bytes()
+            path.write_text(json.dumps([row | {"mean_abs_delta": delta, "max_abs_delta": delta}
+                                        for row in json.loads(original)]))
+            with self.subTest(name=name, delta=delta), self.assertRaisesRegex(ValueError, "synchronized probes"):
+                self.replay(capture)
+            path.write_bytes(original)
+        self.assertEqual(self.replay(capture)["optimizer_updates"], 5)
 
 
 if __name__ == "__main__":

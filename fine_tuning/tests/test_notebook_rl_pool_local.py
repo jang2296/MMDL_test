@@ -1764,10 +1764,15 @@ class SyncCoverageGuardTests(unittest.TestCase):
                                                                                                 "length", "")])
                                                       for r in requests])
         vllm = object()
+        # A separate sampler exists only under a vLLM protocol, whose report takes the bound vLLM-only threshold.
+        vllm_protocol = local_profile.build_protocol(repair_notebook=True, context_limit=24576, scale={
+            "policy_precision": "bf16", "rollout_engine": "vllm", "vllm": {"gpu_memory_utilization": .5,
+            "max_num_seqs": 4, "kv_cache_memory_bytes": 1 << 30, "enable_prefix_caching": False}})
         with patch.object(trainer, "synchronize", side_effect=lambda *args, **kwargs: seen.append(kwargs) or []):
             scale.synchronize(None, hf, hf, one, {}, 0, push=False, image_counts=(1,))
-            scale.synchronize(None, vllm, hf, both, {}, 1, push=True)
-        self.assertEqual(seen, [{"push": False, "image_counts": (1,)}, {"push": True}, {"push": True}])
+            scale.synchronize(None, vllm, hf, both, vllm_protocol, 1, push=True)
+        self.assertEqual(seen, [{"push": False, "image_counts": (1,)}, {"push": True},
+                                {"push": True, "threshold": scale.VLLM_SYNC_THRESHOLD}])
 
 
 class PoolV2SingleImageEndToEndTests(V2StageRunner, PoolV2Fixture):

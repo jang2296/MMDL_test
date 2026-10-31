@@ -116,6 +116,9 @@ def _completion(ids: list[int], logprobs: list[float], finish: str, text: str) -
 
 
 class InputPreparation:
+    # HF<->HF probe threshold cap (fixed). Only VLLMRolloutEngine overrides it (cross-engine calibration).
+    sync_threshold_cap = 0.02
+
     def __init__(self, processor: Any, model_config: Any, image_cfg: dict, context_limit: int):
         self.processor, self.tokenizer, self.model_config = processor, processor.tokenizer, model_config
         self.image_cfg, self.context_limit = dict(image_cfg), context_limit
@@ -142,13 +145,16 @@ class InputPreparation:
 
     def validate_sync(self, probes: list[tuple[RolloutRequest, list[int], list[float]]], threshold: float,
                       image_counts: tuple[int, ...] = (1, 2)) -> list[dict]:
-        """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage."""
+        """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage.
+
+        The threshold may not exceed the engine's `sync_threshold_cap` (0.02; a non-subclass caller gets 0.02)."""
         self._initialization_open = False
         self._synchronized = False
         if not self._push_complete:
             raise RuntimeError("engine: a failed/partial push cannot be certified by probes")
         if (image_counts not in ((1,), (1, 2)) or sorted(len(p[0].images) for p in probes) != list(image_counts)
-                or type(threshold) not in (int, float) or not 0 < threshold <= 0.02):
+                or type(threshold) not in (int, float)
+                or not 0 < threshold <= getattr(self, "sync_threshold_cap", 0.02)):
             raise ValueError("engine: fixed single/multi-image HF probes and strict threshold required")
         reports = []
         engine: Any = self
@@ -545,6 +551,11 @@ def _clear_encoder_cache(worker: Any) -> bool:
 
 class VLLMRolloutEngine(InputPreparation):
     supported_sampling = frozenset(("temperature_1", "qwen_official"))
+    # User decision 2026-10-31 "vLLM 전용 기준 0.04로 보정": vLLM-sampler<->HF-policy probes only (the exact
+    # value is bound by scale.VLLM_SYNC_THRESHOLD). A40 vLLM 0.11.0 vs HF BF16, identical F0 weights: max measured
+    # mean |delta| 0.0228 (ScienceQA 001890, 1,120 image tokens) -- a cross-engine numeric gap, not a weight error.
+    sync_threshold_cap = 0.04
+
     def __init__(self, model_path: Path, image_cfg: dict, kv_cache_memory_bytes: int,
                  max_num_seqs: int, max_model_len: int, *, enable_prefix_caching: bool = False,
                  gpu_memory_utilization: float = 0.7):

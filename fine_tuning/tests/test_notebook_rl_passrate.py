@@ -36,12 +36,16 @@ def message_ids(request) -> list[int]:
 
 
 class ScriptedEngine:
-    """Returns script(request) -> list[str]; prompts are the hash of the real messages."""
+    """Returns script(request) -> list[str] per request; prompts are the hash of the real messages.
+
+    Each request's output depends on that request alone (as a per-seed sampler's would); `batches` records
+    the problem ids of every sample call and `fail_on` crashes the call with that index."""
     policy_version = 0
 
     def __init__(self, script, *, blocked=(), fail_on=None):
         self.script, self.blocked, self.fail_on = script, set(blocked), fail_on
         self.requests: list = []
+        self.batches: list[list[str]] = []
 
     def prepare(self, request):
         if request.request_id.split(":v0")[0] in self.blocked:
@@ -49,14 +53,18 @@ class ScriptedEngine:
         return SimpleNamespace(token_ids=message_ids(request), pixels={}, images=[], image_key="x", image_spans=())
 
     def sample(self, requests, *, on_completion=None):
-        request = requests[0]
-        if self.fail_on is not None and len(self.requests) == self.fail_on:
+        if self.fail_on is not None and len(self.batches) == self.fail_on:
             raise RuntimeError("scripted crash")
-        self.requests.append(request)
-        texts = self.script(request)
-        assert len(texts) == request.n
-        completions = [Completion([1000 + i, 2], [-.1, -.2], "stop", text) for i, text in enumerate(texts)]
-        return [RolloutResult(request.request_id, self.prepare(request).token_ids, completions)]
+        self.batches.append([request.request_id.split(":v0")[0] for request in requests])
+        results = []
+        for request in requests:
+            self.requests.append(request)
+            texts = self.script(request)
+            assert len(texts) == request.n
+            completions = [Completion([1000 + seed % 1000, 2], [-.1, -.2], "stop", text)
+                           for seed, text in zip(request.seeds, texts, strict=True)]
+            results.append(RolloutResult(request.request_id, self.prepare(request).token_ids, completions))
+        return results
 
 
 class PassrateTests(unittest.TestCase):
@@ -207,6 +215,70 @@ class PassrateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             passrate.select(out, self.rules(), self.root / "crash.json")
 
+    def per_seed(self, request):
+        """A per-seed-deterministic sampler: each sample's text is a function of its own seed only."""
+        pid = request.request_id.split(":v0")[0]
+        return [self.right(pid) if seed % 3 else WRONG for seed in request.seeds]
+
+    def test_item_batch_changes_only_the_sampler_calls_not_records_order_or_selection(self):
+        a, b, c = self.ids
+        order = [c, a, b]
+        clock = SimpleNamespace(monotonic=lambda: 0.)  # `seconds` is a wall time; frozen so bytes can be compared
+        runs = {}
+        for item_batch, blocked in ((1, ()), (2, ()), (4, ()), (1, {a}), (4, {a})):
+            out, seen = self.out(), []
+            engine = ScriptedEngine(self.per_seed, blocked=blocked)
+            with patch.object(passrate, "time", clock):
+                summary = self.measure({}, ids=order, output=out, engine=engine, on_record=seen.append,
+                                       item_batch=item_batch)
+            selection = passrate.select(out, self.rules(), self.root / f"sel-{out.name}.json")
+            runs[item_batch, bool(blocked)] = ((out / "records.jsonl").read_bytes(), summary, selection, engine.batches)
+            self.assertEqual([row["problem_id"] for row in seen], order)
+            self.assertEqual(summary["item_batch"], item_batch)
+        records, summary, selection, batches = runs[1, False]
+        self.assertEqual(batches, [[c], [a], [b]])
+        self.assertEqual(runs[2, False][3], [[c, a], [b]])
+        self.assertEqual(runs[4, False][3], [[c, a, b]])
+        self.assertEqual((runs[1, True][3], runs[4, True][3]), ([[c], [b]], [[c, b]]))  # blocked: never sampled
+        for key in ((2, False), (4, False), (4, True)):
+            base = runs[1, key[1]]
+            with self.subTest(key=key):
+                self.assertEqual(runs[key][0], base[0])  # records.jsonl byte-identical, in ids order
+                self.assertEqual({**runs[key][1], "item_batch": 1}, base[1])
+                self.assertEqual({**runs[key][2], "report_sha256": None}, {**base[2], "report_sha256": None})
+        self.assertEqual({e["id"]: e["reason"] for e in runs[4, True][2]["excluded"]}[a], "BLOCKING")
+        self.assertEqual([json.loads(line)["statuses"] for line in runs[4, True][0].splitlines()][1],
+                         {"CONTEXT_BLOCKED": 4})
+        self.assertEqual(summary["passes_total"], sum(seed % 3 != 0 for row in map(json.loads, records.splitlines())
+                                                      for seed in row["seeds"]))
+
+    def test_a_crash_inside_a_batch_keeps_every_item_written_before_it(self):
+        a, b, c = self.ids
+        out = self.out()
+        engine = ScriptedEngine(self.per_seed, fail_on=1)  # the second sample call (item c) crashes
+        with self.assertRaisesRegex(RuntimeError, "scripted crash"):
+            self.measure({}, output=out, engine=engine, item_batch=2)
+        rows = [json.loads(line) for line in (out / "records.jsonl").read_text().splitlines()]
+        self.assertEqual([r["problem_id"] for r in rows], [a, b])
+        self.assertFalse((out / "summary.json").exists())
+        real = Verifier(self.build / "train")
+
+        class FailsOnB:
+            def grade(self, pid, *args, **kwargs):
+                if pid == b:
+                    raise RuntimeError("grading crash")
+                return real.grade(pid, *args, **kwargs)
+
+        out, seen = self.out(), []
+        engine = ScriptedEngine(self.per_seed)
+        with self.assertRaisesRegex(RuntimeError, "grading crash"):
+            self.measure({}, output=out, engine=engine, item_batch=4, verifier=FailsOnB(), on_record=seen.append)
+        self.assertEqual(engine.batches, [[a, b, c]])
+        self.assertEqual([json.loads(line)["problem_id"] for line in (out / "records.jsonl").read_text().splitlines()],
+                         [a])
+        self.assertEqual([row["problem_id"] for row in seen], [a])
+        self.assertFalse((out / "summary.json").exists())
+
     def test_blocking_statuses_are_counted_not_converted_to_failures(self):
         a, b, c = self.ids
         real = Verifier(self.build / "train")
@@ -240,7 +312,9 @@ class PassrateTests(unittest.TestCase):
         for kwargs, error in (({"k": 3}, ValueError), ({"k": 9}, ValueError), ({"k": True}, ValueError),
                               ({"namespace": ""}, ValueError), ({"namespace": "a/b"}, ValueError),
                               ({"ids": []}, ValueError), ({"ids": [self.ids[0]] * 2}, ValueError),
-                              ({"ids": ["missing"]}, ValueError), ({"output": self.build / "inside"}, ValueError)):
+                              ({"ids": ["missing"]}, ValueError), ({"output": self.build / "inside"}, ValueError),
+                              ({"item_batch": 0}, ValueError), ({"item_batch": True}, ValueError),
+                              ({"item_batch": 2.0}, ValueError)):
             with self.subTest(kwargs=kwargs), self.assertRaises(error):
                 self.measure({}, engine=engine, **kwargs)
         with self.assertRaises(ValueError):
@@ -377,6 +451,27 @@ class PassrateTests(unittest.TestCase):
         self.assertEqual(sum(row["statuses"].values()), 4)
         self.assertTrue(set(row["statuses"]) <= {"INVALID_NO_FINAL", "TRUNCATED", "INCORRECT", "CORRECT", "INVALID_MULTIPLE"})
 
+    def test_tiny_transformers_engine_samples_each_request_identically_in_an_item_batch(self):
+        # HF sample() loops the requests, each with its own forked per-seed RNG (serial) or its own row chunks,
+        # so --item-batch is allowed there: identical records (CPU float32; no speedup on HF).
+        from fine_tuning.notebook_rl.engines import HFRolloutEngine
+
+        model = tiny_model()
+        clock = SimpleNamespace(monotonic=lambda: 0.)
+        for rows in (None, 2):
+            engine = HFRolloutEngine(model, Processor(), {"preprocessing": "hf_processor"}, 24576, batch_rows=rows)
+            records = []
+            for item_batch in (1, 2):
+                out = self.out()
+                with patch("fine_tuning.notebook_rl.passrate.RolloutConfig.from_protocol",
+                           return_value=SimpleNamespace(max_new_tokens={1: 6}, context_limit=24576)), \
+                        patch.object(passrate, "time", clock):
+                    self.measure({}, ids=self.ids[:2], output=out, engine=engine, item_batch=item_batch)
+                records.append((out / "records.jsonl").read_bytes())
+            with self.subTest(batch_rows=rows):
+                self.assertEqual(records[0], records[1])
+                self.assertEqual(len(records[0].splitlines()), 2)
+
     def test_cli_select_and_hard_negatives_and_argument_errors(self):
         a, b, c = self.ids
         report = self.report({a: 4, b: 1, c: 2})
@@ -393,7 +488,7 @@ class PassrateTests(unittest.TestCase):
         base = ["measure", "--build-root", str(self.build), "--model-path", "/m", "--k", "4",
                 "--seed-namespace", "x", "--output", str(self.root / "cli-run")]
         for extra in (["--standalone-base"], ["--checkpoint", "/c"], ["--answer-verified-route"],
-                      ["--finalization-reward"], ["--slotless-source", "s"]):
+                      ["--finalization-reward"], ["--slotless-source", "s"], ["--item-batch", "0"]):
             with self.subTest(extra=extra), patch("sys.stderr"), self.assertRaises(SystemExit):
                 passrate.main([*base, *extra])
 
@@ -420,7 +515,7 @@ class FakeVLLM(ScriptedEngine):
         self.events.append(("initialize_weights", version))
 
     def sample(self, requests, *, on_completion=None):
-        self.events.append(("sample", requests[0].request_id.split(":v0")[0]))
+        self.events.append(("sample", *(request.request_id.split(":v0")[0] for request in requests)))
         return super().sample(requests, on_completion=on_completion)
 
 
@@ -541,6 +636,21 @@ class VllmSamplerSynchronizationTests(unittest.TestCase):
         self.assertEqual(json.loads((out / "summary.json").read_text())["weights"],
                          {"checkpoint": None, "trainable_sha256": None})
 
+    def test_item_batch_sends_that_many_items_per_sampler_call_and_is_recorded(self):
+        code, out = self.run_cli(*self.vllm_args("--item-batch", "2"))
+        self.assertEqual(code, 0)
+        summary = json.loads((out / "summary.json").read_text())
+        ids = summary["ids"]
+        self.assertEqual(len(ids), 3)
+        self.assertEqual([event for event in self.events if event[0] == "sample"],
+                         [("sample", *ids[:2]), ("sample", ids[2])])
+        self.assertEqual([json.loads(line)["problem_id"] for line in (out / "records.jsonl").read_text().splitlines()],
+                         ids)
+        receipt = json.loads((out / "throughput_receipt.json").read_text())
+        self.assertEqual((summary["item_batch"], receipt["item_batch"], receipt["items"]), (2, 2, 3))
+        code, out = self.run_cli(*self.vllm_args())
+        self.assertEqual(json.loads((out / "throughput_receipt.json").read_text())["item_batch"], 1)
+
     def test_vllm_without_both_probe_kinds_refuses_before_loading_or_sampling(self):
         protocol = build_protocol(repair_notebook=True, context_limit=24576)
         for ids in ([self.singles[0], self.singles[1]], [self.pair]):
@@ -599,8 +709,8 @@ class EvalAlignedFirstAttemptTests(unittest.TestCase):
         except Stop:
             pass
         measuring = ScriptedEngine(lambda request: [reply] * request.n)
-        row = passrate._measure_item(MCQ, images, prompts, measuring, eval_verifier(), "train", policy_version=0,
-                                     k=4, cfg=cfg, seed_namespace="x")
+        [row] = passrate._measure_items([MCQ], [images], prompts, measuring, eval_verifier(), "train",
+                                        policy_version=0, k=4, cfg=cfg, seed_namespace="x")
         return row, training.requests[0], measuring.requests[0]
 
     def test_passrate_t1_is_the_collector_t1_and_a_bare_correct_letter_is_correct(self):

@@ -714,7 +714,13 @@ approval. The projection is not a measurement of the next stage.
   the commands of one preparation. The pass-rate prefilter always has its own protocol (K=1,
   N=`prefilter.items`). `propose-proof` checks a selection's vault, split and F0 weights, not its
   protocol, so keep the vLLM budget the same from the pilot prefilter to main, or the selection was
-  measured under another sampler budget.
+  measured under another sampler budget. Exception, opt-in: params `prefilter_vllm` (same schema as
+  `vllm`, prefilter stages only) sets the budget of `prefilter-propose`/`prefilter-prepare`/
+  `passrate-measure` alone (no training in that process); absent, the planned argv is unchanged. The
+  selection is then recorded as measured under that larger budget, not the training one.
+- vLLM sync threshold (user decision 2026-10-31, "vLLM 전용 기준 0.04로 보정"): the HF<->HF probe
+  threshold stays 0.02; only the separate vLLM-sampler<->HF-policy report uses the calibrated 0.04
+  (`scale.vllm_sync_threshold` = `vllm-hf-bf16-calibrated-0.04-v1`, bound into vLLM protocols only).
 - The chain's `eval-f0`/`eval-ft` steps are the held-out sentinel pool evaluation
   (`first_attempt_accuracy`; `recovery_rate_diagnostic` is not an accuracy, §2.8). MMMU evaluation is
   section 2c.

@@ -27,6 +27,16 @@ RECEIPT_NAME = "throughput_receipt.json"
 # vLLM sync probes: a continuation the current HF policy itself sampled, not forced tail tokens.
 VLLM_SYNC_PROBE = "hf-policy-sampled-32-v1"
 VLLM_SYNC_PROBE_TOKENS = 32
+# User decision 2026-10-31, verbatim: "vLLM 전용 기준 0.04로 보정". The HF<->HF threshold
+# engine.probe_max_mean_abs_logprob_diff stays 0.02; only the separate vLLM-sampler<->HF-policy report uses 0.04.
+# Evidence (A40, vLLM 0.11.0 vs HF BF16, identical F0 weights, no push): hf-gvlqa:000541 32 tokens mean |d| 0.0066;
+# ScienceQA 001890 (1,120 image tokens) 32 tokens 0.0245, 4x128-token continuations pooled 0.0208 (per continuation
+# 0.0191-0.0228, median 0.0002, 13% of tokens > 0.05): a consistent cross-engine numeric gap, not a weight error.
+# Max measured 0.0228 -> 0.04 (about 1.75x headroom). Bound into vLLM protocols only (HF/NF4 hashes unchanged).
+VLLM_SYNC_THRESHOLD = 0.04
+VLLM_SYNC_THRESHOLD_LABEL = "vllm-hf-bf16-calibrated-0.04-v1"
+VLLM_SYNC_THRESHOLD_KEY = "vllm_probe_max_mean_abs_logprob_diff"
+_LABEL_KEYS = ("vllm_sync_probe", "vllm_sync_threshold")
 
 
 def _count(value: Any, low: int, high: int | None = None) -> bool:
@@ -67,6 +77,8 @@ def bind(protocol: dict, explicit: dict) -> None:
     """Bind the group into an unhashed repair protocol and keep its batch/budget fields consistent."""
     group = validate(explicit)
     protocol["scale"] = {"version": VERSION, **group, **_probe_label(group)}
+    if _probe_label(group):
+        protocol["engine"][VLLM_SYNC_THRESHOLD_KEY] = VLLM_SYNC_THRESHOLD
     opts = options(protocol)
     protocol["batch"].update(problems_per_step=opts["problems_per_update"],
                              max_attempted_problems_per_step=opts["problems_per_update"])
@@ -83,15 +95,26 @@ def explicit(protocol: dict) -> dict | None:
         return None
     if type(bound) is not dict or bound.get("version") != VERSION:
         raise ValueError("scale: unknown bound option group version")
-    group = validate({key: value for key, value in bound.items() if key not in ("version", "vllm_sync_probe")})
-    if {key: value for key, value in bound.items() if key == "vllm_sync_probe"} != _probe_label(group):
-        raise ValueError("scale: a vLLM group binds exactly its sampler sync probe source")
+    group = validate({key: value for key, value in bound.items() if key != "version" and key not in _LABEL_KEYS})
+    labels, engine = _probe_label(group), protocol.get("engine")
+    if ({key: value for key, value in bound.items() if key in _LABEL_KEYS} != labels or type(engine) is not dict
+            or (VLLM_SYNC_THRESHOLD_KEY in engine) != bool(labels)
+            or engine.get(VLLM_SYNC_THRESHOLD_KEY, VLLM_SYNC_THRESHOLD) != VLLM_SYNC_THRESHOLD):
+        raise ValueError("scale: a vLLM group binds exactly its sampler sync probe source and calibrated threshold")
     return group
 
 
 def _probe_label(group: dict) -> dict:
     """Bound only for vLLM sampling, so every HF/NF4 protocol hash is unchanged."""
-    return {"vllm_sync_probe": VLLM_SYNC_PROBE} if (DEFAULTS | group)["rollout_engine"] == "vllm" else {}
+    return ({"vllm_sync_probe": VLLM_SYNC_PROBE, "vllm_sync_threshold": VLLM_SYNC_THRESHOLD_LABEL}
+            if (DEFAULTS | group)["rollout_engine"] == "vllm" else {})
+
+
+def sampler_sync_threshold(protocol: dict) -> float:
+    """Threshold for the separate vLLM-sampler<->HF-policy report (the bound 0.04); never for HF<->HF reports."""
+    if options(protocol)["rollout_engine"] != "vllm":
+        raise ValueError("scale: only a vLLM-sampling protocol binds a sampler sync threshold")
+    return protocol["engine"][VLLM_SYNC_THRESHOLD_KEY]
 
 
 def options(protocol: dict) -> dict:
@@ -261,11 +284,13 @@ def synchronize(bundle, sampler, preparation, probes, protocol: dict, step: int,
     reports = trainer.synchronize(bundle, preparation, preparation, probes, protocol, step, push=push, **counts)
     if sampler is preparation:
         return reports, None
-    # After the HF report certifies the live policy: score the policy's own continuation, same threshold.
+    # After the HF report (0.02) certifies the live policy: score the policy's own continuation against the
+    # bound vLLM-only calibrated threshold (0.04, user decision 2026-10-31).
     sampled = policy_sampled_probes(preparation, probes)
-    # Evidence only: the sampler is still on the previous version here; the post-push 0.02 gate is unchanged.
+    # Evidence only: the sampler is still on the previous version here; the post-push gate is unchanged by it.
     before = pre_push_discrimination(bundle, sampler, preparation, sampled, protocol) if push else {}
-    rows = trainer.synchronize(bundle, preparation, sampler, sampled, protocol, step, push=push, **counts)
+    rows = trainer.synchronize(bundle, preparation, sampler, sampled, protocol, step, push=push,
+                               threshold=sampler_sync_threshold(protocol), **counts)
     ids = {probe.request.request_id: probe.completion_ids for probe in sampled}
     return reports, [row | {"probe_source": VLLM_SYNC_PROBE, "completion_ids": ids[row["request_id"]]}
                      | before.get(row["request_id"], {}) for row in rows]

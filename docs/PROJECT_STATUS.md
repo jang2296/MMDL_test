@@ -130,7 +130,25 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
   **BF16+vLLM 최소시험 452초 완료**(갱신 0: 2문항 모두 신호 없음 — gvlqa는 4표본 동일 보상, ChEBI 169는 T1 4개·재시도 모두 8,192 상한 잘림 → 노트 CONTEXT_BLOCKED,
   답 보상 분산 0), peak alloc 29.2GB. 진단·stage1-a 기록 회수: `hf-pool-v3/pod-stage1-diag/`(sha 일치). 수정 4건 + stage1이 자체 통과율 선택을 쓰도록 chain 변경을
   구현 중. **Pod는 06:20Z 정지(stop)**: GPU 과금 중단, /workspace(venv·모델) 보존, 가동 1.62시간 ≈ $0.96(추정).
-  로컬 v16 체인의 마지막 GPU 통과율 단계도 같은 ③④ 결함을 가진 코드다(결과 해석 시 주의). 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
+  로컬 v16 체인의 마지막 GPU 통과율 단계도 같은 ③④ 결함을 가진 코드다(결과 해석 시 주의).
+- **v18 수정·동결·게시(2026-10-31)**: 결함 4건 수정 + stage1이 자체 통과율 선택 사용 + vLLM push 직전 차이 기록(증거용, 판정 불변). CPU 관련 398시험 OK,
+  Opus 독립 심층검토 PASS(남은 증거 공백: push 후 일치검사의 구별력은 실제 GPU 갱신에서 확인). 동결 `proof-freeze-v18`(482파일, manifest `b2162b36…`),
+  approval export `39265f5d…`(export 중 소유 로컬 학습 PID 3659247만 일시정지 후 재개), 번들 `proof-data-v18`(archive `8d9883fb…`, manifest `b2aac70d…`, verify 0).
+  MMDL_test `9d0a534129fa1c143f5ebfd80423262dd78cf73f` push(동결본과 차이: 시험 메서드 이름 1개 — 자격증명 오탐 회피, 승인 코드 해시 범위 밖).
+- **Pod 교체**: 정지했던 `xovwg3gjy0brai`는 재시작 시 "host GPU 부족"(400) → 진단 기록은 이미 로컬 회수(sha 일치)했으므로 삭제(delete 204, list-pods 0 확인).
+  새 Pod `7at4kyab0hnold`(A40 Secure EU-SE-1, $0.59/h, 08:24:32Z 생성).
+- **1단계 재실행 stage1-b(v18, Pod 7at4kyab0hnold)**: preflight·GPU smoke PASS(모델 로드 43.5초), 통과율 32문항×k4 **1,717초**(평가 정렬 T1 정상:
+  0/4 10·1/4 4·2/4 2·3/4 2·4/4 14 → 신호 문항 8/32 = 25%, 정답 70/128, 평균 1,421토큰, 8192 상한 6/128), 선택 8 → propose·prepare 통과 →
+  **minimal 304초 exit 1: F0 vLLM 일치검사 실패**. 진단(같은 명령, /tmp 감싸기): 실패 probe는 ScienceQA 001890(원본 579×93 → 처리 1280×224, 이미지 토큰 1,120)
+  32토큰 평균 |Δ| 0.0245(최대 0.186); 4문장×128토큰 합계 평균 0.0208(문장별 0.0191–0.0228, 중앙값 0.0002, 0.05 초과 토큰 13%) — 일관된 엔진 간 차이(같은 F0 가중치),
+  그래프 probe(0.0066)의 3배. 가중치 전달 문제 아님(F0, push 전). 기준 0.02는 vLLM↔HF 조합에서 측정 없이 정한 값 → 사용자 결정 필요.
+  속도 실측: 문항 순차·4표본씩 생성이라 통과율 ≈ 48초/문항(3,417문항이면 ≈46시간) → `passrate --item-batch` 구현(CPU 시험 57 OK),
+  학습 쪽 묶음 생성(lockstep) 설계 검토 완료(추정 1.5–1.9배, 미구현), raw 기록 9,999 초과 시 replay 실패 결함 수정(92+53 시험 OK).
+  기록 회수 `hf-pool-v3/pod-stage1b/`(sha 일치) 후 **Pod 삭제**(delete 204, list-pods 0). 오늘 RunPod 누적 ≈ $1.8(billing $1.03 + 이 Pod ≈1.27h 추정), 잔액 추정 ≈ $48.6.
+- **사용자 결정(2026-10-31)**: vLLM↔HF 일치검사 기준 — "vLLM 전용 기준 0.04로 보정 (권장)". HF↔HF 0.02는 유지, vLLM 표본기 보고에만 0.04(실측 최대 0.0228의
+  약 1.75배)를 새 protocol 표지로 기록, 갱신마다 push 전후 차이 기록, 학습 손실의 표본별 불일치 제거(delta_seq 0.05)는 유지. 구현 중(+ 사전 거르기 전용 vLLM 예산 `prefilter_vllm`).
+- 로컬 v16 체인: control-reload가 1,800초 한도 초과(exit 124, 같은 시간대 CPU 시험·에이전트 작업과 경합; v15에서도 ≈1,740초) → 한도 3,600초로
+  `chain-v16-cont.sh`(control-reload2 → physical → 평가12×3 → compare) 재개. v16 코드의 GPU 통과율 단계는 v18에서 고친 결함이 있어 제외. 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후
