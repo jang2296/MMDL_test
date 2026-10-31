@@ -7,6 +7,7 @@ GPU evidence: the "bf16" runs load a tiny CPU model through the bf16 code path o
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import math
 import tempfile
@@ -21,10 +22,11 @@ import torch
 
 from fine_tuning.notebook_rl import checkpoint, local_train as training, scale
 from fine_tuning.notebook_rl.compact_note import VERSION as COMPACT
-from fine_tuning.notebook_rl.engines import ROW_SEEDED_BATCH_SAMPLER
+from fine_tuning.notebook_rl.engines import ROW_SEEDED_BATCH_SAMPLER, Completion, RolloutRequest, RolloutResult
 from fine_tuning.notebook_rl.local_profile import build_protocol, restore_protocol
 from fine_tuning.notebook_rl.policy import assert_base_unchanged, configure_policy
 from fine_tuning.notebook_rl.schema import ProblemTree
+from fine_tuning.notebook_rl.trainer import SyncProbe
 from fine_tuning.tests.test_notebook_rl_policy import config
 from fine_tuning.tests.test_notebook_rl_repair_replay import probe_fixture
 from fine_tuning.tests.test_training import tiny_model
@@ -74,7 +76,8 @@ class ProtocolTests(unittest.TestCase):
         for options in cases:
             with self.subTest(options=options):
                 protocol = repair(**options)
-                self.assertEqual(protocol["scale"], {"version": scale.VERSION, **options})
+                label = ({"vllm_sync_probe": scale.VLLM_SYNC_PROBE} if options.get("rollout_engine") == "vllm" else {})
+                self.assertEqual(protocol["scale"], {"version": scale.VERSION, **options, **label})
                 self.assertEqual(restore_protocol(json.loads(json.dumps(protocol)))["sha256"], protocol["sha256"])
                 hashes.add(protocol["sha256"])
                 self.assertEqual(protocol["batch"]["problems_per_step"], scale.options(protocol)["problems_per_update"])
@@ -86,6 +89,18 @@ class ProtocolTests(unittest.TestCase):
         forged["scale"]["rollout_batch_rows"] = 8
         with self.assertRaises(ValueError):
             restore_protocol(forged)
+        # The vLLM sync probe source is part of a vLLM protocol only; it cannot be dropped, changed or added to HF.
+        vllm = repair(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
+        self.assertEqual(scale.sampler_label(vllm)["sync_probe"], scale.VLLM_SYNC_PROBE)
+        self.assertNotIn("sync_probe", scale.sampler_label(repair(rollout_batch_rows=4)))
+        for forged, value in ((vllm, None), (vllm, "final-answer-forced-v0"), (repair(rollout_batch_rows=4),
+                                                                              scale.VLLM_SYNC_PROBE)):
+            forged = copy.deepcopy(forged)
+            forged["scale"].pop("vllm_sync_probe", None)
+            if value is not None:
+                forged["scale"]["vllm_sync_probe"] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                scale.options(forged)
 
     def test_invalid_groups_fail_closed(self):
         for options in ({}, {"unknown": 1}, {"rollout_batch_rows": 0}, {"rollout_batch_rows": True},
@@ -349,6 +364,7 @@ class TinyEngineTests(unittest.TestCase):
 
             def validate_sync(self, probes, threshold):
                 events.append(("sampler-probes", self.policy_version, [p[0].request_id for p in probes]))
+                seen.append((threshold, [(p[0], p[1]) for p in probes]))
                 return sync_rows(self.policy_version)
 
         original = shared.validate_sync
@@ -358,19 +374,164 @@ class TinyEngineTests(unittest.TestCase):
             return original(probes, threshold)
 
         shared.validate_sync = hf_sync
-        sampler = FakeVLLM()
-        hf, vllm = scale.synchronize(bundle, sampler, shared, self.probes(shared), protocol, 0, push=False)
-        self.assertEqual(vllm, sync_rows(0))
+        sampler, seen = FakeVLLM(), []
+
+        def probes(seed=32):
+            # Tiny 32-token vocabulary: seed 32 samples no image placeholder token (id 3) in either continuation.
+            return [SyncProbe(dataclasses.replace(p.request, seeds=[seed]), p.completion_ids)
+                    for p in self.probes(shared)]
+
+        rng = torch.get_rng_state()
+        hf, vllm = scale.synchronize(bundle, sampler, shared, probes(), protocol, 0, push=False)
+        self.assertTrue(torch.equal(torch.get_rng_state(), rng))
+        # The sampler is probed on the live HF policy's own continuation (probe seed, 32 tokens), same threshold.
+        threshold, probed = seen[0]
+        self.assertEqual(threshold, protocol["engine"]["probe_max_mean_abs_logprob_diff"])
+        self.assertEqual(threshold, .02)
+        own = shared.sample([dataclasses.replace(p.request, max_new_tokens=32) for p in probes()])
+        self.assertEqual([ids for _, ids in probed], [result.completions[0].token_ids for result in own])
+        self.assertTrue(all(0 < len(ids) <= 32 and ids != [7, 8] for _, ids in probed))
+        self.assertEqual([request.max_new_tokens for request, _ in probed], [32, 32])
+        self.assertEqual(vllm, [row | {"probe_source": scale.VLLM_SYNC_PROBE, "completion_ids": ids}
+                                for row, (_, ids) in zip(sync_rows(0), probed)])
         self.assertEqual(len(hf), 2)
         with torch.no_grad():
             bundle.params["L"][0].add_(.01)
-        scale.synchronize(bundle, sampler, shared, self.probes(shared), protocol, 1, push=True)
+        scale.synchronize(bundle, sampler, shared, probes(), protocol, 1, push=True)
         self.assertEqual(events, [("hf-probes", 0), ("sampler-probes", 0, ["local-sync:0", "local-sync:1"]),
                                   ("hf-probes", 1), ("push", 1, True, True),
                                   ("sampler-probes", 1, ["local-sync:0", "local-sync:1"])])
         self.assertEqual((shared.policy_version, sampler.policy_version), (1, 1))
-        hf, vllm = scale.synchronize(bundle, shared, shared, self.probes(shared), protocol, 1, push=False)
+        hf, vllm = scale.synchronize(bundle, shared, shared, probes(), protocol, 1, push=False)
         self.assertIsNone(vllm)
+        # The live policy ends at once for seed 44 (one EOS token): refused, nothing is certified.
+        with self.assertRaisesRegex(RuntimeError, "at once"):
+            scale.synchronize(bundle, sampler, shared, probes(44), protocol, 1, push=False)
+
+    def test_push_rows_record_pre_push_discrimination(self):
+        from fine_tuning.notebook_rl.engines import InputPreparation
+
+        bundle = self.bundle()
+        protocol = self.protocol(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
+        shared = scale.shared_engine(bundle, protocol, context_limit=64)
+        events: list[str] = []
+
+        class Sampler:
+            """Real validate_sync; the previous (old) weights read `old` away from the live HF policy."""
+            validate_sync = InputPreparation.validate_sync
+
+            def __init__(self, version, old, new=0.):
+                self.policy_version, self.old, self.new, self.pushed = version, old, new, False
+                self._initialization_open = self._synchronized = self._push_complete = True
+
+            def probe_logprobs(self, request, ids):
+                events.append("probe-new" if self.pushed else "probe-old")
+                offset = self.new if self.pushed else self.old
+                return [value + offset for value in shared.probe_logprobs(request, ids)]
+
+            def push_weights(self, named, version):
+                events.append("push")
+                self.pushed, self.policy_version = True, version
+
+        def probes():
+            return [SyncProbe(dataclasses.replace(p.request, seeds=[32]), p.completion_ids) for p in self.probes(shared)]
+
+        def push(sampler, step):
+            with torch.no_grad():
+                bundle.params["L"][0].add_(.01)
+            return scale.synchronize(bundle, sampler, shared, probes(), protocol, step, push=True)[1]
+
+        # push=False (initial F0 sync): rows carry no pre-push fields and the sampler is probed once per row.
+        rows = scale.synchronize(bundle, Sampler(0, 0.), shared, probes(), protocol, 0, push=False)[1]
+        self.assertEqual(events, ["probe-old", "probe-old"])
+        self.assertTrue(all(not any(key.startswith("pre_push") for key in row) for row in rows))
+        events.clear()
+        rows = push(Sampler(0, .05), 1)
+        self.assertEqual(events[:2], ["probe-old", "probe-old"])  # measured before the push, sampler on old weights
+        self.assertEqual(events[2:], ["push", "probe-new", "probe-new"])
+        for row in rows:
+            self.assertIs(row["pre_push_measured"], True)
+            self.assertAlmostEqual(row["pre_push_mean_abs_delta"], .05, places=3)
+            self.assertLess(row["mean_abs_delta"], 1e-3)  # post-push certification is unchanged
+            self.assertEqual(row["probe_source"], scale.VLLM_SYNC_PROBE)
+        # The 0.02 post-push threshold still fails at 0.03 even though the pre-push measurement succeeded.
+        with self.assertRaisesRegex(RuntimeError, "disagree"):
+            push(Sampler(1, .05, .03), 2)
+        # A sampler that cannot be probed before the push is recorded as unmeasured, not failed.
+        refusing = Sampler(2, 0.)
+        original = refusing.probe_logprobs
+
+        def refuse(request, ids):
+            if not refusing.pushed:
+                raise RuntimeError("unsynchronized sampler refuses probes")
+            return original(request, ids)
+
+        refusing.probe_logprobs = refuse
+        rows = push(refusing, 3)
+        self.assertTrue(all(row["pre_push_measured"] is False and "refuses probes" in row["pre_push_reason"]
+                            and "pre_push_mean_abs_delta" not in row for row in rows))
+
+    def test_vllm_sync_threshold_is_unchanged_and_an_immediate_eos_is_refused(self):
+        from fine_tuning.notebook_rl.engines import InputPreparation
+
+        protocol = self.protocol(policy_precision="bf16", rollout_engine="vllm", vllm=VLLM)
+        reference = [-27.781, -5.629, -.5, -1.25]
+
+        class Sampler:
+            """The real InputPreparation.validate_sync over scripted vLLM logprobs (reference + delta)."""
+            validate_sync = InputPreparation.validate_sync
+
+            def __init__(self, delta):
+                self.delta, self.policy_version = delta, 0
+                self._initialization_open = self._synchronized = self._push_complete = True
+
+            def probe_logprobs(self, request, ids):
+                return [value + self.delta for value in reference[:len(ids)]]
+
+        class Policy:
+            policy_version = 0
+
+            def __init__(self, ids, finish):
+                self.ids, self.finish, self.requests = ids, finish, []
+
+            def sample(self, requests):
+                self.requests += requests
+                torch.rand(3)  # consumes global RNG: synchronize must restore it
+                return [RolloutResult(r.request_id, [1], [Completion(list(self.ids), [-.1] * len(self.ids),
+                                                                     self.finish, "")]) for r in requests]
+
+        def run(delta, ids=(3, 4, 5, 6), finish="length"):
+            probes = [SyncProbe(replace_id(request(count), "local-sync:" + pid), [7, 8])
+                      for pid, count in (("0", 1), ("1", 2))]
+            policy, sampler = Policy(ids, finish), Sampler(delta)
+
+            def hf(bundle, preparation, engine, probes, protocol, step, *, push, **kwargs):
+                if engine is preparation:
+                    return sync_rows(step)
+                values = [(p.request, p.completion_ids, reference[:len(p.completion_ids)]) for p in probes]
+                return engine.validate_sync(values, protocol["engine"]["probe_max_mean_abs_logprob_diff"])
+
+            rng = torch.get_rng_state()
+            try:
+                with patch("fine_tuning.notebook_rl.trainer.synchronize", side_effect=hf):
+                    return scale.synchronize(None, sampler, policy, probes, protocol, 0, push=False)[1]
+            finally:
+                self.assertTrue(torch.equal(torch.get_rng_state(), rng))
+                self.assertEqual([(r.max_new_tokens, r.seeds) for r in policy.requests], [(32, [31]), (32, [31])][
+                                 :len(policy.requests)])
+
+        from fine_tuning.tests.test_notebook_rl_shared_policy_engine import request
+
+        rows = run(.0066)
+        self.assertEqual([(row["probe_source"], row["completion_ids"]) for row in rows],
+                         [(scale.VLLM_SYNC_PROBE, [3, 4, 5, 6])] * 2)
+        self.assertAlmostEqual(rows[0]["mean_abs_delta"], .0066)
+        with self.assertRaisesRegex(RuntimeError, "disagree"):
+            run(.03)
+        for ids, finish in (((), "length"), ((9,), "stop")):
+            with self.subTest(ids=ids), self.assertRaisesRegex(RuntimeError, "at once"):
+                run(.0, ids, finish)
+        self.assertEqual(run(.0, (9, 2), "stop")[0]["completion_ids"], [9, 2])
 
     def test_bf16_guard_detects_frozen_base_changes_and_nf4_guard_is_unchanged(self):
         bundle = self.bundle()
@@ -601,7 +762,7 @@ class ScaledTrainFixture:
 
         def engine(bundle, image, limit, **kwargs):
             value = SimpleNamespace(kind="shared", policy_version=kwargs.get("policy_version", 0), tokenizer=object(),
-                                    kwargs=kwargs)
+                                    kwargs=kwargs, sample=self.policy_sample)
             self.engines.append(value)
             return value
 
@@ -612,7 +773,7 @@ class ScaledTrainFixture:
                 return_value={"original_model_root": str(self.root / "original")})
         patched("fine_tuning.notebook_rl.local_train.read_preparation", return_value=(self.prepared, {}, self.actors))
         patched("fine_tuning.notebook_rl.local_train.local_prompts", return_value={})
-        patched("fine_tuning.notebook_rl.local_train._install_actor_guards", return_value=[])
+        self.guards = patched("fine_tuning.notebook_rl.local_train._install_actor_guards", return_value=[])
         patched("fine_tuning.notebook_rl.policy.enable_deterministic_execution", return_value={"fixture_only": True})
         self.original_access = patched("fine_tuning.notebook_rl.quantized_cache.block_original_access",
                                        return_value={"denied_original_access_attempts": 0})
@@ -625,7 +786,8 @@ class ScaledTrainFixture:
         patched("fine_tuning.notebook_rl.local_train.load_images", side_effect=lambda *_: [MagicMock()])
         service = patched("fine_tuning.notebook_rl.verifier_service.VerifierService")
         service.return_value.__enter__.return_value.metadata = {"vault_manifest_sha256": "fixture-vault"}
-        patched("fine_tuning.notebook_rl.local_train.make_probes", return_value=[])
+        patched("fine_tuning.notebook_rl.local_train.make_probes", side_effect=lambda *a, **k: [
+            SyncProbe(RolloutRequest("local-sync:" + pid, [1], None, [], 1, 8, [3407]), [7, 8]) for pid in ("0", "1")])
         patched("fine_tuning.notebook_rl.rollout.RolloutConfig.from_protocol", return_value=object())
         patched("fine_tuning.notebook_rl.rollout.build_tree", side_effect=self.build)
         patched("fine_tuning.notebook_rl.notebook_learning.append_rewarded_notebooks")
@@ -645,6 +807,9 @@ class ScaledTrainFixture:
         if not self.bf16:
             bundle.inventory["quantization"] = {"fixture_only": True}
         return bundle
+
+    def policy_sample(self, requests):
+        return [RolloutResult(r.request_id, [1], [Completion([5, 6], [-.1, -.2], "length", "")]) for r in requests]
 
     def vllm(self, model_path, image, kv, seqs, limit, **kwargs):
         value = SimpleNamespace(kind="vllm", policy_version=0, init=(kv, seqs, limit, kwargs))
@@ -763,6 +928,7 @@ class BatchedTrainTests(ScaledTrainFixture, unittest.TestCase):
         result = self.train(capture)
         self.assertEqual((result["status"], result["optimizer_updates"]), ("LOCAL_TEN_TRAINING_SAVED_PENDING_FRESH_RELOAD", 5))
         self.assertTrue(self.engines and all(e.kwargs["batch_rows"] == 4 for e in self.engines))
+        self.assertIsNone(self.guards.call_args.kwargs["vllm_schema"])  # HF sampler: no OpenAI schema import
         self.assertFalse(any(call["audit_kwarg"] for call in self.update_calls))  # no rule: default call shape
         label = {"engine": "hf", "sampler_version": ROW_SEEDED_BATCH_SAMPLER, "batch_rows": 4}
         launch = self.close(capture)
@@ -1013,12 +1179,16 @@ class VllmTrainTests(ScaledTrainFixture, unittest.TestCase):
         self.assertEqual((kv, seqs, limit, kwargs), (VLLM["kv_cache_memory_bytes"], 16, 24576,
             {"enable_prefix_caching": True, "gpu_memory_utilization": .55}))
         self.assertTrue(all(engine == "vllm" for _, _, engine in self.built))
+        self.assertEqual(self.guards.call_args.kwargs["vllm_schema"], {})  # filled by the real guard installer
         self.assertTrue(all(call["preparation"] == "shared" for call in self.update_calls))
         expected = [("shared", "shared", 0, False), ("shared", "vllm", 0, False)]
         for step in range(1, 6):
             expected += [("shared", "shared", step, True), ("shared", "vllm", step, True)]
         self.assertEqual(self.sync_calls, expected)
         self.assertTrue(all((capture / f"sampler-sync-{i:02d}.json").is_file() for i in range(5)))
+        self.assertEqual({(row["probe_source"], tuple(row["completion_ids"]))
+                          for row in json.loads((capture / "sampler-sync-04.json").read_text())},
+                         {(scale.VLLM_SYNC_PROBE, (5, 6))})
         self.close(capture)
         self.assertEqual(self.replay(capture)["optimizer_updates"], 5)
         (capture / "sampler-sync-02.json").unlink()

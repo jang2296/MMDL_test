@@ -55,7 +55,10 @@ def expected_scale(items, per_update, checkpoint=()):
             "--train-problems", str(items), *checkpoint, *VLLM_TAIL]
 
 
-TRAIN_SCALE = {"stage1": expected_scale(8, 4, ["--checkpoint-every-updates", "1"]),
+# stage1 sizes N/M at run time from its own selection (chain with-train-size fills the tokens).
+STAGE1_SCALE = ["--problems-per-update", "4", "--max-updates", chain.SIZE_TOKENS[1], "--train-problems",
+                chain.SIZE_TOKENS[0], "--checkpoint-every-updates", "1", *VLLM_TAIL]
+TRAIN_SCALE = {"stage1": STAGE1_SCALE,
                "pilot-300": expected_scale(300, 4, ["--checkpoint-every-updates", "25",
                                                     "--evidence-audit-rule", RULE_25]),
                "main-selection": expected_scale(12, 4, ["--checkpoint-every-updates", "50",
@@ -186,6 +189,11 @@ def parse_with_real_parser(test, argv):
         test.assertEqual(inner, command[1:] if command[:1] == ["--"] else command)
         test.assertIn(chain.PREP_TOKEN, inner)
         parse_with_real_parser(test, [token.replace(chain.PREP_TOKEN, "0" * 64) for token in inner])
+    if (name, argv[4]) == (CHAIN_MODULE, "with-train-size"):
+        test.assertIsNotNone(inner, argv)
+        command = parsed.namespace.cmd
+        test.assertEqual(inner, command[1:] if command[:1] == ["--"] else command)
+        parse_with_real_parser(test, chain.sized_argv({"selected_ids": ["a"] * 8}, 8, 4, inner))
 
 
 # ---------------------------------------------------------------- A. plan
@@ -302,10 +310,15 @@ class PlanTests(unittest.TestCase):
                 self.assertEqual(case == "main-resume", meta["resume"])
                 self.assertEqual(sum(item["timeout_seconds"] for item in spec["steps"]),
                                  meta["total_timeout_seconds"])
-                if case == "stage1":
-                    self.assertNotIn("--passrate-selection", steps["propose"])
-                    self.assertNotIn("--passrate-report", steps["propose"])
-                elif case == "pilot-300":
+                if case == "stage1":  # its own selection, sized at run time for propose/prepare/minimal only
+                    self.assertEqual(f"{run_dir}/out/passrate-selection.json",
+                                     value(steps["propose"], "--passrate-selection"))
+                    self.assertEqual(f"{run_dir}/out/passrate", value(steps["propose"], "--passrate-report"))
+                    size = [py, "-B", "-m", CHAIN_MODULE, "with-train-size", "--selection",
+                            f"{run_dir}/out/passrate-selection.json", "--max-items", "8", "--per-update", "4", "--"]
+                    for name in names:
+                        self.assertIs(steps[name][:len(size)] == size, name in ("propose", "prepare", "minimal"), name)
+                if case == "pilot-300":
                     self.assertEqual(f"{run_dir}/out/passrate-selection.json",
                                      value(steps["propose"], "--passrate-selection"))
                     self.assertEqual(f"{run_dir}/out/passrate", value(steps["propose"], "--passrate-report"))
@@ -679,6 +692,35 @@ class HelperTests(unittest.TestCase):
         target.write_text('{"a": 1}')
         self.assertEqual(0, quiet(chain.main, ["pin", "--file", str(target), "--sha256", sha256_of(target)]))
         self.assertEqual(1, quiet(chain.main, ["pin", "--file", str(target), "--sha256", "0" * 64]))
+
+    def test_with_train_size_takes_min_selected_and_cap_rounded_to_k_and_refuses_below_k(self):
+        cmd = ["x", "--max-updates", chain.SIZE_TOKENS[1], "--train-problems", chain.SIZE_TOKENS[0]]
+        for selected, items in ((9, 8), (8, 8), (7, 4), (4, 4)):
+            with self.subTest(selected=selected):
+                self.assertEqual(["x", "--max-updates", str(items // 4), "--train-problems", str(items)],
+                                 chain.sized_argv({"selected_ids": ["p"] * selected}, 8, 4, cmd))
+        for selection in ({"selected_ids": ["p"] * 3}, {"selected_ids": []}, {}, []):
+            with self.subTest(selection=selection), self.assertRaisesRegex(chain.ChainError, "selection"):
+                chain.sized_argv(selection, 8, 4, cmd)
+        with self.assertRaisesRegex(chain.ChainError, "tokens"):
+            chain.sized_argv({"selected_ids": ["p"] * 8}, 8, 4, cmd[:3])
+        target, out = self.tmp / "selection.json", self.tmp / "out.json"
+        target.write_text(json.dumps({"selected_ids": ["p"] * 5}))
+        code = f"import sys, json; json.dump(sys.argv[1:], open({str(out)!r}, 'w'))"
+        base = [sys.executable, "-B", "-m", CHAIN_MODULE, "with-train-size", "--selection", str(target),
+                "--max-items", "8", "--per-update", "4", "--"]
+        env = child_env(self.tmp)
+        done = subprocess.run([*base, sys.executable, "-c", code, *chain.SIZE_TOKENS], cwd=REPO, env=env,
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual(["4", "1"], json.loads(out.read_text()))
+        out.unlink()
+        target.write_text(json.dumps({"selected_ids": ["p"] * 3}))
+        refused = subprocess.run([*base, sys.executable, "-c", code, *chain.SIZE_TOKENS], cwd=REPO, env=env,
+                                 capture_output=True, text=True, timeout=120)
+        self.assertEqual(2, refused.returncode)
+        self.assertIn("fewer than one update of K=4", refused.stderr)
+        self.assertFalse(out.exists())
 
     def test_with_sha256_replaces_the_token_by_the_file_hash_and_execs(self):
         target, out = self.tmp / "prep.json", self.tmp / "out.json"

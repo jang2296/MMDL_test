@@ -506,13 +506,18 @@ def retained_update_signal(update: dict, protocol: dict) -> dict:
     return signal
 
 
-def _install_actor_guards(prepared: dict, request: dict, *, extra_vault_files=()) -> list[Path]:
+def _install_actor_guards(prepared: dict, request: dict, *, extra_vault_files=(),
+                          vllm_schema: dict | None = None) -> list[Path]:
+    """`vllm_schema`: the run record of a bound vLLM sampler; it receives `schema_dependency_guard` from
+    guards.prepare_vllm_schema_dependency(), run before any guard/model import. None (HF): openai stays unimported."""
     from . import pool_freeze
-    from .guards import install_guards
+    from .guards import install_guards, prepare_vllm_schema_dependency
     from .quantized_policy import _versions
     from .shared_smoke import _prepare_hf_dependencies
 
     _versions()
+    if vllm_schema is not None:
+        vllm_schema["schema_dependency_guard"] = prepare_vllm_schema_dependency()
     _prepare_hf_dependencies()
     # bnb imports Torch compiler/stdlib sources lazily; prepare trusted code before the file guard.
     import_module("bitsandbytes")
@@ -988,7 +993,8 @@ def capture(preparation: Path, model_path: Path, output: Path, *, standalone: bo
         **({"sampler": scale_options.sampler_label(protocol)} if scale_options.scaled(protocol) else {}),
         **({"data_verification": verification} if verification is not None else {}),
     })
-    forbidden = _install_actor_guards(prepared, request)
+    schema = {} if scale_options.options(protocol)["rollout_engine"] == "vllm" else None
+    forbidden = _install_actor_guards(prepared, request, vllm_schema=schema)
     original_access = (block_original_access(Path(readiness["original_model_root"]))
                        if readiness else None)
     random.seed(3407)
@@ -999,7 +1005,7 @@ def capture(preparation: Path, model_path: Path, output: Path, *, standalone: bo
     deadline = began + protocol["local_budget"]["max_seconds_per_run"]
     result: dict = {"status": "INCOMPLETE", "optimizer_updates": 0, "fresh_reload_verified": False,
               "self_improvement_verified": False, "both_routes_verified": False,
-              "notebook_signal_groups": 0, "notebook_gradient_contribution_verified": False}
+              "notebook_signal_groups": 0, "notebook_gradient_contribution_verified": False, **(schema or {})}
     if repair_selected:
         result.update(repair_functional_verified=False, repair_learning_verified=False, S_gradient_verified=False)
     if answer_route:

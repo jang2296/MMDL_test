@@ -63,9 +63,15 @@ def first_attempt_request(actor, images: list, prompts: dict, *, policy_version:
 
 def _measure_item(actor, images: list, prompts: dict, engine: Any, verifier: Any, split: str, *,
                   policy_version: int, k: int, cfg: RolloutConfig, seed_namespace: str) -> dict:
+    from .notebook_synthesis import grade_options
+
     began = time.monotonic()
+    # The collector's T1 (rollout.build_tree): a bound eval-aligned contract sets its own cap and V8 grading.
+    turn1 = prompt_builders.turn1_contract(actor, prompts)
     request = first_attempt_request(actor, images, prompts, policy_version=policy_version, k=k,
-                                    max_new_tokens=cfg.max_new_tokens[1], seed_namespace=seed_namespace)
+        max_new_tokens=cfg.max_new_tokens[1] if turn1 is None else turn1["max_new_tokens"],
+        seed_namespace=seed_namespace)
+    grading = grade_options(1, None if turn1 is None else turn1["version"])
     statuses: list[str] = []
     finishes: list[str] = []
     tokens: list[int] = []
@@ -83,7 +89,7 @@ def _measure_item(actor, images: list, prompts: dict, engine: Any, verifier: Any
             _completion(completion.token_ids, completion.logprobs, completion.finish_reason, completion.text)
             # Same call the collector's native audit makes for a T1 sample.
             statuses.append(verifier.grade(actor.problem_id, completion.text, completion.finish_reason,
-                                           actor.mode).status)
+                                           actor.mode, **grading).status)
             finishes.append(completion.finish_reason)
             tokens.append(len(completion.token_ids))
             raw.append(hashlib.sha256(completion.text.encode("utf-8")).hexdigest())
@@ -123,11 +129,12 @@ def _outside_build(build_root: Path, output: Path) -> None:
 
 def measure(build_root: Path, split: str, ids: list[str] | None, *, protocol: dict, engine: Any, k: int,
             seed_namespace: str, output: Path, on_record: Callable[[dict], None] | None = None,
-            verifier: Any = None, weights: dict | None = None) -> dict:
+            verifier: Any = None, weights: dict | None = None, lineage: dict | None = None) -> dict:
     """k first attempts per item; records.jsonl is fsynced per item, summary.json closes the run.
 
     `verifier` defaults to the in-process vault Verifier; the CLI passes the isolated service.
     `weights`: what was loaded (F0_WEIGHTS by default); recorded in summary.json.
+    `lineage`: the split's lineage read before the actor guards (the CLI); None reads it here (unguarded callers).
     """
     build_root, output = Path(build_root), Path(output)
     weights = dict(F0_WEIGHTS) if weights is None else weights
@@ -141,7 +148,7 @@ def measure(build_root: Path, split: str, ids: list[str] | None, *, protocol: di
     chosen = list(actors) if ids is None else list(ids)
     if not chosen or len(set(chosen)) != len(chosen) or not set(chosen) <= actors.keys():
         raise ValueError("passrate: nonempty unique ids from the vault split required")
-    lineage = read_lineage(build_root / split)
+    lineage = read_lineage(build_root / split) if lineage is None else lineage
     if any(lineage[pid].split != split for pid in chosen):
         raise ValueError("passrate: lineage split differs from the requested split")
     prompts = local_prompts(protocol)
@@ -265,17 +272,21 @@ def hard_negatives(report_dir: Path, *, max_pass: int = 1, output: Path) -> dict
 
 # ---------------------------------------------------------------- CLI (real model; GPU)
 
-def _install_guards(build_root: Path, prepared: dict | None, request: dict | None) -> list[Path]:
+def _install_guards(build_root: Path, prepared: dict | None, request: dict | None, *,
+                    vllm_schema: dict | None = None) -> list[Path]:
+    """`vllm_schema`: see local_run._install_actor_guards (None: HF sampler, openai never imported)."""
     from .local_run import _install_actor_guards
 
     if prepared is not None and request is not None:
-        return _install_actor_guards(prepared, request)
+        return _install_actor_guards(prepared, request, vllm_schema=vllm_schema)
     # Build-root mode has no request descriptors: same benchmark roots and every split's private files.
-    from .guards import install_guards
+    from .guards import install_guards, prepare_vllm_schema_dependency
     from .quantized_policy import _versions
     from .shared_smoke import _prepare_hf_dependencies
 
     _versions()
+    if vllm_schema is not None:
+        vllm_schema["schema_dependency_guard"] = prepare_vllm_schema_dependency()
     _prepare_hf_dependencies()
     import_module("bitsandbytes")
     hubs = {Path.home() / "mmdl-cache/huggingface/hub",
@@ -350,7 +361,10 @@ def _cli_measure(args: argparse.Namespace) -> dict:
     else:
         build_root, split = args.build_root, args.split
     readiness = cache_readiness(args.cache_check, args.model_path, protocol) if args.standalone_base else None
-    forbidden = _install_guards(build_root, prepared, request)
+    schema = {} if scale_options.options(protocol)["rollout_engine"] == "vllm" else None
+    # The guards deny lineage.jsonl: read it now, never after installation.
+    lineage = read_lineage(build_root / split)
+    forbidden = _install_guards(build_root, prepared, request, vllm_schema=schema)
     # A vLLM sampler is probe-synchronized with the HF policy before sampling: refuse first without both probe kinds.
     probe_actors = (_probe_actors(build_root, split, ids, protocol, prepared)
                     if scale_options.options(protocol)["rollout_engine"] == "vllm" else None)
@@ -382,6 +396,7 @@ def _cli_measure(args: argparse.Namespace) -> dict:
             raise ValueError("passrate: verifier dataset changed")
         summary = measure(build_root, split, ids, protocol=protocol, engine=engine, k=args.k,
                           seed_namespace=args.seed_namespace, output=args.output, verifier=service, weights=weights,
+                          lineage=lineage,
                           on_record=lambda row: print(json.dumps({"event": "ITEM", "problem_id": row["problem_id"],
                                                                   "passes": row["passes"], "k": row["k"]}), flush=True))
     if original_access and original_access["denied_original_access_attempts"]:
@@ -389,7 +404,7 @@ def _cli_measure(args: argparse.Namespace) -> dict:
     scale_options.write_receipt(Path(args.output), items=summary["items"],
         completion_tokens=summary["completion_tokens_total"], wall_seconds=time.monotonic() - began, updates=0,
         update_seconds=0., n_samples=summary["k"], retries_per_item=0., startup_seconds=startup,
-        extra={"run": "passrate", "sampler": scale_options.sampler_label(protocol),
+        extra={"run": "passrate", "sampler": scale_options.sampler_label(protocol), **(schema or {}),
                "completion_scope": "first_attempt_records",
                **({"data_verification": verification} if verification is not None else {})})
     return summary

@@ -24,6 +24,9 @@ DEFAULTS: dict[str, Any] = {"rollout_batch_rows": None, "problems_per_update": 2
 _VLLM_KEYS = {"gpu_memory_utilization", "max_num_seqs", "enable_prefix_caching", "kv_cache_memory_bytes"}
 _RULE_KEYS = {"first", "last", "every"}
 RECEIPT_NAME = "throughput_receipt.json"
+# vLLM sync probes: a continuation the current HF policy itself sampled, not forced tail tokens.
+VLLM_SYNC_PROBE = "hf-policy-sampled-32-v1"
+VLLM_SYNC_PROBE_TOKENS = 32
 
 
 def _count(value: Any, low: int, high: int | None = None) -> bool:
@@ -62,7 +65,8 @@ def validate(explicit: dict) -> dict:
 
 def bind(protocol: dict, explicit: dict) -> None:
     """Bind the group into an unhashed repair protocol and keep its batch/budget fields consistent."""
-    protocol["scale"] = {"version": VERSION, **validate(explicit)}
+    group = validate(explicit)
+    protocol["scale"] = {"version": VERSION, **group, **_probe_label(group)}
     opts = options(protocol)
     protocol["batch"].update(problems_per_step=opts["problems_per_update"],
                              max_attempted_problems_per_step=opts["problems_per_update"])
@@ -79,7 +83,15 @@ def explicit(protocol: dict) -> dict | None:
         return None
     if type(bound) is not dict or bound.get("version") != VERSION:
         raise ValueError("scale: unknown bound option group version")
-    return validate({key: value for key, value in bound.items() if key != "version"})
+    group = validate({key: value for key, value in bound.items() if key not in ("version", "vllm_sync_probe")})
+    if {key: value for key, value in bound.items() if key == "vllm_sync_probe"} != _probe_label(group):
+        raise ValueError("scale: a vLLM group binds exactly its sampler sync probe source")
+    return group
+
+
+def _probe_label(group: dict) -> dict:
+    """Bound only for vLLM sampling, so every HF/NF4 protocol hash is unchanged."""
+    return {"vllm_sync_probe": VLLM_SYNC_PROBE} if (DEFAULTS | group)["rollout_engine"] == "vllm" else {}
 
 
 def options(protocol: dict) -> dict:
@@ -249,7 +261,68 @@ def synchronize(bundle, sampler, preparation, probes, protocol: dict, step: int,
     reports = trainer.synchronize(bundle, preparation, preparation, probes, protocol, step, push=push, **counts)
     if sampler is preparation:
         return reports, None
-    return reports, trainer.synchronize(bundle, preparation, sampler, probes, protocol, step, push=push, **counts)
+    # After the HF report certifies the live policy: score the policy's own continuation, same threshold.
+    sampled = policy_sampled_probes(preparation, probes)
+    # Evidence only: the sampler is still on the previous version here; the post-push 0.02 gate is unchanged.
+    before = pre_push_discrimination(bundle, sampler, preparation, sampled, protocol) if push else {}
+    rows = trainer.synchronize(bundle, preparation, sampler, sampled, protocol, step, push=push, **counts)
+    ids = {probe.request.request_id: probe.completion_ids for probe in sampled}
+    return reports, [row | {"probe_source": VLLM_SYNC_PROBE, "completion_ids": ids[row["request_id"]]}
+                     | before.get(row["request_id"], {}) for row in rows]
+
+
+def pre_push_discrimination(bundle, sampler, preparation, sampled: list, protocol: dict) -> dict[str, dict]:
+    """Per request: mean |old sampler - current HF policy| logprob over the sampled probe tokens, measured BEFORE the push.
+
+    Proves the post-push probe can tell old from new weights. Never raises and never gates: a failed
+    measurement is recorded as `pre_push_measured: false` with its reason."""
+    import torch
+
+    from .policy import completion_logprobs
+
+    try:
+        out = {}
+        device = next(bundle.model.parameters()).device
+        with torch.no_grad():  # same reference as trainer.synchronize: completion_logprobs on model_inputs
+            for probe in sampled:
+                old = sampler.probe_logprobs(probe.request, probe.completion_ids)
+                inputs = preparation.model_inputs(probe.request, probe.completion_ids, device)
+                ref = completion_logprobs(bundle, inputs, len(probe.completion_ids),
+                                          chunk=protocol["model"]["logprob_chunk"])[0].cpu().tolist()
+                if len(old) != len(ref) or not ref:
+                    raise RuntimeError("old sampler and HF probe lengths differ")
+                delta = sum(abs(a - b) for a, b in zip(old, ref, strict=True)) / len(ref)
+                if not math.isfinite(delta):
+                    raise RuntimeError("nonfinite pre-push delta")
+                out[probe.request.request_id] = {"pre_push_measured": True, "pre_push_mean_abs_delta": delta}
+        return out
+    except Exception as error:  # evidence must not change pass/fail
+        reason = f"{type(error).__name__}: {error}"[:200]
+        return {probe.request.request_id: {"pre_push_measured": False, "pre_push_reason": reason} for probe in sampled}
+
+
+def policy_sampled_probes(preparation, probes: list) -> list:
+    """Each probe request's 32-token continuation sampled by the current HF policy with the probe's own seed.
+
+    Global torch CPU/CUDA RNG states are restored, so training sampling is unaffected. An immediate EOS
+    leaves nothing to compare and is refused rather than passed."""
+    import dataclasses
+
+    import torch
+
+    from .trainer import SyncProbe
+
+    sampled = []
+    with torch.random.fork_rng(devices=range(torch.cuda.device_count()) if torch.cuda.is_initialized() else []):
+        for probe in probes:
+            request = dataclasses.replace(probe.request, max_new_tokens=VLLM_SYNC_PROBE_TOKENS)
+            [result] = preparation.sample([request])
+            [completion] = result.completions
+            ids = list(completion.token_ids)
+            if len(ids) - (completion.finish_reason == "stop") < 1:
+                raise RuntimeError("scale: HF policy ended a vLLM sync probe at once; no continuation to compare")
+            sampled.append(SyncProbe(request, ids))
+    return sampled
 
 
 def sampler_label(protocol: dict) -> dict:
@@ -257,7 +330,8 @@ def sampler_label(protocol: dict) -> dict:
 
     opts = options(protocol)
     if opts["rollout_engine"] == "vllm":
-        return {"engine": "vllm", "sampler_version": "vllm-0.11.0-per-seed-v1", "batch_rows": None}
+        return {"engine": "vllm", "sampler_version": "vllm-0.11.0-per-seed-v1", "batch_rows": None,
+                "sync_probe": VLLM_SYNC_PROBE}
     rows = opts["rollout_batch_rows"]
     return {"engine": "hf", "sampler_version": ROW_SEEDED_BATCH_SAMPLER if rows else "hf-serial-v1", "batch_rows": rows}
 

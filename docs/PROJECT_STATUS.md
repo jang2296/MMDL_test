@@ -108,7 +108,29 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
   과제 protocol 900 실행은 이번 증명에서 제외, 기존 정답 558문항의 하락은 측정하지 않음).
   잔액 50.42달러(사용자 제공, 2026-10-31 기준). 이후 잔액 = 50.42 − 이 시점 이후 billing 합.
   오답 ID 목록 `hf-pool-v3/proof-eval-subset-v1/b2_v8_wrong_ids.json`(342개, sha `edc16a9d…`, 원천 V8 predictions sha 기록, 평가 전용).
-  오염 제외는 이미 로컬 고정(eligible 3,418 → 증명 규칙 후보 3,417, approval export에 결속) — Pod는 해시만 확인. 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
+  오염 제외는 이미 로컬 고정(eligible 3,418 → 증명 규칙 후보 3,417, approval export에 결속) — Pod는 해시만 확인.
+- **코드 v17 동결·게시(2026-10-31)**: `proof-freeze-v17/package-root-v17`(482파일, manifest `b9ed6751…`), approval export sha `2aa843f2…`
+  (첫 두 번은 로컬 NF4 학습과 동시 실행으로 승인 판정 600초 제한 초과 `PREFLIGHT_TIMEOUT` → 소유 학습 프로세스 PID 2880999를 SIGSTOP한 386초 동안
+  export 성공 후 SIGCONT; 기준·제한 불변), frozen 시험 통과, 번들 `proof-data-v17`(4,054파일, archive `4a5fbb5f…`, manifest `eae0fadd…`, verify 0 오류).
+  MMDL_test `feat/workspace-repro`: `ce188dd`(v16 동기화) → `c360faf30762d2d873164a7fae7233e17cc111b9`(v17), 사용자 승인으로 정상 push(원격 HEAD 일치).
+- **RunPod 1단계 Pod 생성(2026-10-31 04:43:11Z)**: `xovwg3gjy0brai`, A40 Secure EU-SE-1, $0.59/h, CUDA 13.2, 9 vCPU, RAM 50GB, container 40GB +
+  pod volume 120GB(`/workspace`, MooseFS — statvfs가 공유 FS 전체 286TB를 보고하므로 DISK_LOW 가드는 무효, 감사 R1 실측 확인).
+  코드: 120초 SSH agent forwarding으로 GitHub에서 `c360faf…` 직접 clone(개인키 업로드 없음, clean). 재무 고정: 잔액 50.42, 여유 5.00, cutoff 10:43:11Z.
+  volume 준비(`environment proof`, `eval_data false`) tmux 실행 중, 데이터 번들 scp 업로드 중.
+  → volume 준비 924초 `VOLUME_READY`(venv-78cb73de10bb90d2, 모델 hash 검증), 번들 133초 업로드·Pod 재해시 일치·`STAGED` 4,054파일·verify 0 오류,
+  평가 데이터 격리 링크 설정. 1단계 job(spec `7d3cd669…` 16단계, 최대 31,200초, cutoff 14:43:11Z, 승인 sha `bdc712fd…`) 05:01:40Z PREFLIGHT_OK,
+  **GPU smoke PASS**(41초: BF16 matmul rel err 0.0031, 모델 BF16 로드 18.7초, 생성 4.1초, peak 8.44GiB) → 본 chain 실행 중(MAIN_RUNNING).
+- **1단계 공식 실행 실패와 실제 GPU에서 찾은 결함 4건(2026-10-31, Pod A40)**: stage1-a는 3번째 단계 `passrate-measure`에서 exit 1(MAIN_EXIT 1).
+  ① vLLM import가 OpenAI 타입을 끌어와 guard가 `teacher import blocked` — 기존 신뢰 단계 `guards.prepare_vllm_schema_dependency()`(client 생성·요청 차단)를
+  새 vLLM 경로가 호출하지 않음. ② sampler/HF 일치 검사 실패: probe가 고정 "Final answer" 2토큰(꼬리 토큰, HF −27.781/−5.629 vs vLLM −27.906/−5.504,
+  평균 |Δ| 0.125 > 0.02). 같은 요청에서 HF 정책이 직접 샘플한 32토큰은 평균 |Δ| 0.0066·p90 0.0138(기준 0.02 그대로 통과) → probe 설계 결함, 기준 완화 없음.
+  ③ passrate `measure`가 guard 설치 뒤 lineage.jsonl을 읽음(풀 평가 cohort와 같은 부류; 다른 단계에서는 진단상 0회).
+  ④ **passrate가 학습 첫 풀이와 다른 옛 T1(“Final answer:” 형식·1024 상한)을 사용** → 진단에서 16문항 전부 0/4(INVALID_NO_FINAL·1024 잘림) — 사전 거르기가 무의미해지는 결함.
+  진단 방법: 저장소 코드는 바꾸지 않고 /tmp 감싸기 스크립트로 ①②③을 적용해 같은 명령을 실행(공식 기록 아님). 결과: passrate 16×4 371초, propose/prepare 통과,
+  **BF16+vLLM 최소시험 452초 완료**(갱신 0: 2문항 모두 신호 없음 — gvlqa는 4표본 동일 보상, ChEBI 169는 T1 4개·재시도 모두 8,192 상한 잘림 → 노트 CONTEXT_BLOCKED,
+  답 보상 분산 0), peak alloc 29.2GB. 진단·stage1-a 기록 회수: `hf-pool-v3/pod-stage1-diag/`(sha 일치). 수정 4건 + stage1이 자체 통과율 선택을 쓰도록 chain 변경을
+  구현 중. **Pod는 06:20Z 정지(stop)**: GPU 과금 중단, /workspace(venv·모델) 보존, 가동 1.62시간 ≈ $0.96(추정).
+  로컬 v16 체인의 마지막 GPU 통과율 단계도 같은 ③④ 결함을 가진 코드다(결과 해석 시 주의). 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후

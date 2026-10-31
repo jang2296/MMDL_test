@@ -199,7 +199,7 @@ class ProofChainTests(ProofFixture):
         engine = PassrateEngine(script)
         with ExitStack() as stack:
             for target, value in (("fine_tuning.notebook_rl.hf_pool_exclusion.gpu_guard", lambda *_: None),
-                                  ("fine_tuning.notebook_rl.passrate._install_guards", lambda *_: []),
+                                  ("fine_tuning.notebook_rl.passrate._install_guards", lambda *_, **__: []),
                                   ("fine_tuning.notebook_rl.verifier_service.VerifierService", Service),
                                   ("fine_tuning.notebook_rl.quantized_policy.build_quantized_policy", lambda *_, **__: object()),
                                   ("fine_tuning.notebook_rl.scale.make_engines", lambda *_: (engine, engine))):

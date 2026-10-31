@@ -1762,7 +1762,8 @@ def train(preparation: Path, model_path: Path, cache_check: Path | None, minimal
     write_json(output / "launch.json", launch)
     if bf16:
         write_json(output / "original_files.json", original_files)
-    forbidden = _install_actor_guards(prepared, request)
+    schema = {} if opts["rollout_engine"] == "vllm" else None
+    forbidden = _install_actor_guards(prepared, request, vllm_schema=schema)
     original_access = None if bf16 else block_original_access(Path(readiness["original_model_root"]))
     seed = protocol["local_budget"]["seed"]
     random.seed(seed)
@@ -1777,7 +1778,7 @@ def train(preparation: Path, model_path: Path, cache_check: Path | None, minimal
         "self_improvement_verified": False, "both_routes_verified": False,
         "notebook_generated_groups": 0, "notebook_signal_groups": 0,
         "notebook_gradient_contribution_verified": False,
-        "notebook_combined_objective_gradient_observed": False}
+        "notebook_combined_objective_gradient_observed": False, **(schema or {})}
     if paged:
         result["notebook_physical_signal_groups"] = 0
     if collection:

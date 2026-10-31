@@ -1,7 +1,7 @@
 {
   "version": "pod-chain-params-v1",
   "notes": [
-    "stage1 (job stage bf16-smoke-throughput): BF16 two-problem minimal update/save/fresh reload, then a 2-update (K=4, N=8) training run bounded to 30 min as the throughput measurement.",
+    "stage1 (job stage bf16-smoke-throughput): BF16 two-problem minimal update/save/fresh reload, then a training run on the stage's own pass-rate selection (K=4, N = min(selected, 8) rounded down to K, set at run time by chain with-train-size; fewer than 4 selected refuses) bounded to 30 min as the throughput measurement.",
     "Every '<...>' value is filled on the Pod before `chain plan`; plan refuses a placeholder. The vllm block, train block and protocol flags are bound into the protocol hash of every command of the training preparation.",
     "prefilter k=4, keep 1..3 passes (user decision 2026-10-31, speed/cost); T1 cap 8192 (chain.PROOF_FLAGS).",
     "vllm values are UNMEASURED proposals for an A40 48 GB (BF16 HF policy + vLLM sampler on one GPU); change them only before planning, never between commands of one preparation."

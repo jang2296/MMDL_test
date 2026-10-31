@@ -311,5 +311,63 @@ class HostScopedLivenessTests(unittest.TestCase):
             self.assertEqual(disk_low(Path("/out"), 1.5), {"path": "/out", "free_bytes": gib, "min_free_bytes": int(1.5 * gib)})
 
 
+VLLM_SCHEMA_DRIVER = """
+import json, sys
+from importlib import import_module
+from pathlib import Path
+from fine_tuning.notebook_rl.local_run import _install_actor_guards
+root = Path(sys.argv[1])
+prepared = {"build_root": str(root / "build")}
+request = {key: {"path": str(root / "private" / key)} for key in ("index", "source_registry", "evidence", "data_report")}
+schema = {} if sys.argv[2] == "vllm" else None
+_install_actor_guards(prepared, request, vllm_schema=schema)
+out = {"schema": schema, "openai_loaded": "openai" in sys.modules}
+try:
+    out["schema_types"] = import_module("openai.types.chat").ChatCompletionMessageParam is not None
+except PermissionError as exc:
+    out["schema_error"] = str(exc)
+if sys.argv[2] == "vllm":
+    import openai
+    try:
+        openai.OpenAI(api_key="fixture")
+    except PermissionError as exc:
+        out["client_error"] = str(exc)
+(root / "out.json").write_text(json.dumps(out))
+"""
+
+
+class VllmSchemaGuardTests(unittest.TestCase):
+    """REAL actor guards in a fresh process (guards are process-wide audit hooks); CPU import only, no model.
+
+    `import vllm` itself cannot be exercised here: under the guards this venv's vLLM files fail the guard's
+    hard-link check ("hard-linked open path cannot be checked"), a local install layout. The OpenAI schema
+    types vLLM imports (openai.types.chat) stand in; the Pod run showed vLLM loading under the guards."""
+
+    def run_driver(self, engine: str) -> dict:
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as directory:
+            done = subprocess.run([sys.executable, "-B", "-c", VLLM_SCHEMA_DRIVER, directory, engine],
+                                  capture_output=True, text=True, timeout=600, check=False,
+                                  env=os.environ | {"CUDA_VISIBLE_DEVICES": ""})
+            self.assertEqual(done.returncode, 0, done.stdout[-2000:] + done.stderr[-4000:])
+            return json.loads((Path(directory) / "out.json").read_text())
+
+    def test_schema_types_load_under_guards_only_after_the_dependency_and_api_clients_stay_blocked(self):
+        out = self.run_driver("vllm")
+        self.assertEqual(out["schema"], {"schema_dependency_guard": {
+            "dependency": "openai", "version": "3.16.2", "purpose": "VLLM_SCHEMA_TYPES_ONLY",
+            "client_construction_and_requests_blocked": True, "os_network_sandbox": False}})
+        self.assertIs(out.get("schema_types"), True, out)
+        self.assertIn("API client use blocked", out["client_error"])
+
+    def test_transformers_guards_never_import_openai_and_still_block_the_schema_import(self):
+        out = self.run_driver("hf")
+        self.assertIsNone(out["schema"])
+        self.assertFalse(out["openai_loaded"])  # nothing before the vLLM attempt imported the SDK
+        self.assertEqual(out.get("schema_error"), "teacher import blocked", out)
+
+
 if __name__ == "__main__":
     unittest.main()

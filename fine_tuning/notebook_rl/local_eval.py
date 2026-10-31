@@ -941,7 +941,8 @@ def _evaluate(capture: Path, external_preparation: Path, output: Path, *, condit
     vault_files = ([] if pool else
                    [cohort / "records/verifier_private.jsonl", cohort / "records/lineage.jsonl"] if native else
                    [cohort / "gold.jsonl", cohort / "canonical.jsonl"])
-    _install_actor_guards(prepared, request, extra_vault_files=vault_files)
+    schema = {} if scale["rollout_engine"] == "vllm" else None
+    _install_actor_guards(prepared, request, extra_vault_files=vault_files, vllm_schema=schema)
     original_guard = None if bf16 else block_original_access(Path(readiness["original_model_root"]))
     random.seed(3407)
     np.random.seed(3407)
@@ -949,7 +950,7 @@ def _evaluate(capture: Path, external_preparation: Path, output: Path, *, condit
     torch.cuda.reset_peak_memory_stats()
     began = time.monotonic()
     result = {"status": "INCOMPLETE", "condition": condition, "improvement_claimed": False,
-              "execution_conditions_verified": False, "training_updates": 0, **EVIDENCE_LIMITS}
+              "execution_conditions_verified": False, "training_updates": 0, **EVIDENCE_LIMITS, **(schema or {})}
     if native:
         result.update(evaluation_protocol=(local_pool_eval.VERSION if pool else repair_version if repair
                                            else native_core.VERSION), arm=arm, accuracy=None,

@@ -1759,7 +1759,11 @@ class SyncCoverageGuardTests(unittest.TestCase):
         reports = engines.InputPreparation.validate_sync(fake, reference, .02, image_counts=(1,))
         self.assertEqual([(r["request_id"], r["policy_version"]) for r in reports], [(one[0].request.request_id, 3)])
         seen: list[dict] = []
-        hf, vllm = object(), object()
+        # The HF policy samples each sampler probe's continuation (scale.policy_sampled_probes) before vLLM is probed.
+        hf = SimpleNamespace(sample=lambda requests: [RolloutResult(r.request_id, [1], [Completion([5, 6], [-.1, -.2],
+                                                                                                "length", "")])
+                                                      for r in requests])
+        vllm = object()
         with patch.object(trainer, "synchronize", side_effect=lambda *args, **kwargs: seen.append(kwargs) or []):
             scale.synchronize(None, hf, hf, one, {}, 0, push=False, image_counts=(1,))
             scale.synchronize(None, vllm, hf, both, {}, 1, push=True)

@@ -12,6 +12,9 @@ CLI:
   step helpers used inside planned argv:
   chain pin --file F --sha256 HEX                        exit 1 unless the file has that sha256
   chain with-sha256 --file F --token TOKEN -- CMD...     replace TOKEN by the file's sha256, exec CMD
+  chain with-train-size --selection S --max-items N --per-update K -- CMD...
+                                                         stage1: replace the size tokens by min(selected, N)
+                                                         rounded down to K (and its update count), exec CMD
   chain receipt --source R --output O --step NAME        copy a throughput receipt as the stage receipt
 
 Spec `pod-chain-spec-v1` (shared with the eval stages): {"version", "steps": [{"name", "argv",
@@ -72,6 +75,8 @@ ADMISSION = "verified-functional-repair-exploration-v1"
 MAIN_MAX_ITEMS = 3000
 MAX_TRAIN_SECONDS = 86400  # local_train's own cap on --max-seconds
 PREP_TOKEN = "@PREPARATION_SHA256@"
+# stage1 trains on its own pass-rate selection (all-eligible items can carry no reward variance), sized at run time.
+SIZE_TOKENS = ("@TRAIN_PROBLEMS@", "@MAX_UPDATES@")
 COMMON_KEYS = {"version", "python", "run_dir", "model_path", "vault", "approval_request", "frozen_approval",
                "seed", "sentinels_per_subject", "min_free_gib", "vllm", "train", "timeouts"}  # + optional "notes"
 STAGE_KEYS = {"stage1": ({"prefilter"}, set()), "pilot-300": ({"prefilter"}, set()),
@@ -165,11 +170,13 @@ def check_params(stage: str, params: Any) -> dict:
     return params
 
 
-def _scale(params: dict, items: int, per_update: int, *, training: bool) -> list[str]:
-    """Scale flags; bound into the protocol hash, so identical for every command of one preparation."""
+def _scale(params: dict, items: int, per_update: int, *, training: bool, sized: bool = False) -> list[str]:
+    """Scale flags; bound into the protocol hash, so identical for every command of one preparation.
+
+    `sized`: N and M are the run-time SIZE_TOKENS that `with-train-size` fills from the selection."""
     vllm, train = params["vllm"], params["train"]
-    flags = ["--problems-per-update", str(per_update), "--max-updates", str(items // per_update),
-             "--train-problems", str(items)]
+    flags = ["--problems-per-update", str(per_update), "--max-updates", SIZE_TOKENS[1] if sized else str(items // per_update),
+             "--train-problems", SIZE_TOKENS[0] if sized else str(items)]
     if training:
         flags += ["--checkpoint-every-updates", str(train["checkpoint_every"])]
         if train["evidence_audit_rule"] is not None:
@@ -189,7 +196,8 @@ def plan(stage: str, params: dict, params_sha256: str) -> dict:
     frozen = ["--frozen-approval", params["frozen_approval"]["path"],
               "--frozen-approval-sha256", params["frozen_approval"]["sha256"]]
     train = params["train"]
-    scale = _scale(params, train["problems"], train["per_update"], training=True)
+    sized = stage == "stage1"
+    scale = _scale(params, train["problems"], train["per_update"], training=True, sized=sized)
     steps: list[dict] = []
 
     def step(name: str, argv: list[str], expect: list[str], timeout: int) -> None:
@@ -198,19 +206,21 @@ def plan(stage: str, params: dict, params_sha256: str) -> dict:
     def module(name: str, *args: str) -> list[str]:
         return [py, "-B", "-m", f"fine_tuning.notebook_rl.{name}", *args]
 
-    def proof_rule(name: str, rule: str, prep: str, flags: list[str], selection: list[str]) -> None:
-        step(f"{name}propose", module("local_run", "propose-proof", "--build", params["vault"], *PROOF_FLAGS,
+    def proof_rule(name: str, rule: str, prep: str, flags: list[str], selection: list[str],
+                   size: list[str]) -> None:
+        step(f"{name}propose", size + module("local_run", "propose-proof", "--build", params["vault"], *PROOF_FLAGS,
              *flags, "--sentinels-per-subject", str(params["sentinels_per_subject"]), "--seed", str(params["seed"]),
              *selection, *frozen, "--output", rule), [rule], t["cpu"])
-        step(f"{name}prepare", module("local_run", "prepare-pool", "--build", params["vault"], "--approval",
+        step(f"{name}prepare", size + module("local_run", "prepare-pool", "--build", params["vault"], "--approval",
              params["approval_request"], "--rule", rule, *PROOF_FLAGS, *flags, *frozen, "--output", prep),
              [prep + "/preparation.json"], t["cpu"])
 
     selection: list[str] = []
+    size: list[str] = []
     if "prefilter" in params:  # F0 pass-rate measurement on its own label-blind preparation (K=1)
         pre = params["prefilter"]
         prefilter_scale = _scale(params, pre["items"], 1, training=False)
-        proof_rule("prefilter-", f"{out}/prefilter-rule.json", f"{out}/prefilter-prep", prefilter_scale, [])
+        proof_rule("prefilter-", f"{out}/prefilter-rule.json", f"{out}/prefilter-prep", prefilter_scale, [], [])
         step("passrate-measure", module("passrate", "measure", "--preparation",
              f"{out}/prefilter-prep/preparation.json", "--model-path", params["model_path"], "--k", str(pre["k"]),
              "--seed-namespace", pre["seed_namespace"], *PROOF_FLAGS, *prefilter_scale, *frozen,
@@ -219,8 +229,10 @@ def plan(stage: str, params: dict, params_sha256: str) -> dict:
         step("passrate-select", module("passrate", "select", "--report", f"{out}/passrate", "--min-pass",
              str(pre["min_pass"]), "--max-pass", str(pre["max_pass"]), "--max-blocking", str(pre["max_blocking"]),
              "--output", f"{out}/passrate-selection.json"), [f"{out}/passrate-selection.json"], t["cpu"])
-        if stage == "pilot-300":  # stage1 only rehearses the selection; its training items are all-eligible
-            selection = ["--passrate-selection", f"{out}/passrate-selection.json", "--passrate-report", f"{out}/passrate"]
+        selection = ["--passrate-selection", f"{out}/passrate-selection.json", "--passrate-report", f"{out}/passrate"]
+        if sized:  # N = min(selected, train.problems) rounded down to K; fewer than K selected refuses at run time
+            size = module("pod.chain", "with-train-size", "--selection", f"{out}/passrate-selection.json",
+                          "--max-items", str(train["problems"]), "--per-update", str(train["per_update"]), "--")
     if "selection" in params:  # main: the pilot's selection, pinned by sha256
         chosen = params["selection"]
         step("selection-pin", module("pod.chain", "pin", "--file", chosen["path"], "--sha256", chosen["sha256"]),
@@ -233,8 +245,8 @@ def plan(stage: str, params: dict, params_sha256: str) -> dict:
     else:
         prep, minimal, minimal_reload, resume_flags = (f"{out}/prep/preparation.json", f"{out}/minimal",
                                                        f"{out}/minimal-reload", [])
-        proof_rule("", f"{out}/rule.json", f"{out}/prep", scale, selection)
-        step("minimal", module("local_run", "minimal", "--preparation", prep, "--model-path", params["model_path"],
+        proof_rule("", f"{out}/rule.json", f"{out}/prep", scale, selection, size)
+        step("minimal", size + module("local_run", "minimal", "--preparation", prep, "--model-path", params["model_path"],
              "--repair-notebook", "--context-limit", "24576", *PROOF_FLAGS, *scale, *frozen,
              "--min-free-gib", repr(float(params["min_free_gib"])), "--output", minimal),
              [f"{minimal}/result.json", f"{minimal}/reload_expected.json"], t["minimal"])
@@ -424,6 +436,21 @@ def stage_receipt(source: str | Path, output: str | Path, step: str) -> dict:
     return value
 
 
+def sized_argv(selection: Any, max_items: int, per_update: int, cmd: list[str]) -> list[str]:
+    """stage1's run-time training size: N = min(selected, max_items) rounded down to K, M = N / K."""
+    selected = selection.get("selected_ids") if isinstance(selection, dict) else None
+    if not isinstance(selected, list) or type(max_items) is not int or type(per_update) is not int or per_update < 1:
+        raise ChainError("a pass-rate selection with selected_ids and positive integer sizes required")
+    items = min(len(selected), max_items) // per_update * per_update
+    if items < per_update:
+        raise ChainError(f"the pass-rate selection keeps {len(selected)} items, fewer than one update of "
+                         f"K={per_update}; refusing to train stage1 without a reward-variance selection")
+    if not all(token in cmd for token in SIZE_TOKENS):
+        raise ChainError("the command does not contain the size tokens")
+    values = {SIZE_TOKENS[0]: str(items), SIZE_TOKENS[1]: str(items // per_update)}
+    return [values.get(item, item) for item in cmd]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -444,6 +471,11 @@ def main(argv: list[str] | None = None) -> int:
     with_sha.add_argument("--file", required=True)
     with_sha.add_argument("--token", required=True)
     with_sha.add_argument("cmd", nargs=argparse.REMAINDER)
+    with_size = sub.add_parser("with-train-size")
+    with_size.add_argument("--selection", required=True)
+    with_size.add_argument("--max-items", type=int, required=True)
+    with_size.add_argument("--per-update", type=int, required=True)
+    with_size.add_argument("cmd", nargs=argparse.REMAINDER)
     receipt = sub.add_parser("receipt")
     receipt.add_argument("--source", required=True)
     receipt.add_argument("--output", required=True)
@@ -474,6 +506,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise ChainError("the command does not contain the token")
             resolved = [sha256_file(args.file) if item == args.token else item for item in cmd]
             print(json.dumps({"with_sha256": args.file, "argv": resolved}), flush=True)
+            os.execvp(resolved[0], resolved)
+        if args.command == "with-train-size":
+            cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
+            resolved = sized_argv(read_json(args.selection), args.max_items, args.per_update, cmd)
+            print(json.dumps({"with_train_size": args.selection, "argv": resolved}), flush=True)
             os.execvp(resolved[0], resolved)
         value = stage_receipt(args.source, args.output, args.step)
         print(json.dumps({"stage_receipt": args.output, "source_sha256": value["stage_receipt_source_sha256"]}))

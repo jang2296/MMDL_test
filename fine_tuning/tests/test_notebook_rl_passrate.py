@@ -10,6 +10,7 @@ from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 from fine_tuning.notebook_rl import passrate
@@ -567,6 +568,131 @@ class VllmSamplerSynchronizationTests(unittest.TestCase):
         self.sync.assert_not_called()
         self.assertEqual(sorted(path.name for path in out.iterdir()),
                          ["records.jsonl", "summary.json", "throughput_receipt.json"])
+
+
+class EvalAlignedFirstAttemptTests(unittest.TestCase):
+    """Under p0-eval-aligned-v1 passrate measures the collector's own T1 (rollout.build_tree), graded by V8."""
+
+    def measure(self, protocol: dict, reply: str) -> tuple[dict, Any, Any]:
+        from PIL import Image
+
+        from fine_tuning.tests.test_notebook_rl_eval_aligned import MCQ, eval_verifier
+        from fine_tuning.tests.test_notebook_rl_repair_training import OriginalEngine
+
+        prompts = local_prompts(protocol)
+        cfg = RolloutConfig.from_protocol(protocol, "ALG-NB3", master_seed=passrate.MASTER_SEED)
+        images = [Image.new("RGB", (16, 16), "white")]
+        self.addCleanup(images[0].close)
+        class Stop(Exception):
+            pass
+
+        class FirstAttemptOnly(OriginalEngine):
+            def sample(self, requests, *, on_completion=None):
+                if self.requests:  # the T1 request is recorded; later turns are not this check
+                    raise Stop
+                return super().sample(requests, on_completion=on_completion)
+
+        training = FirstAttemptOnly([[reply] * cfg.n[1]])
+        try:
+            build_tree(MCQ, images, training, eval_verifier(), prompts, cfg, 0, "verified-any-visual-v1",
+                       on_raw=lambda event: None)
+        except Stop:
+            pass
+        measuring = ScriptedEngine(lambda request: [reply] * request.n)
+        row = passrate._measure_item(MCQ, images, prompts, measuring, eval_verifier(), "train", policy_version=0,
+                                     k=4, cfg=cfg, seed_namespace="x")
+        return row, training.requests[0], measuring.requests[0]
+
+    def test_passrate_t1_is_the_collector_t1_and_a_bare_correct_letter_is_correct(self):
+        from fine_tuning.tests.test_notebook_rl_eval_aligned import MCQ, eval_flagged
+
+        row, t1, measured = self.measure(eval_flagged(turn1_max_new_tokens=8192), "B")
+        self.assertEqual(t1.request_id.split(":")[-2], "T1")
+        # Same P0 messages and images, so the same prompt token ids; the same bound T1 cap and sampling call.
+        self.assertEqual((measured.messages, measured.images), (t1.messages, t1.images))
+        self.assertEqual(row["prompt_sha256"], _hash(message_ids(t1)))
+        self.assertEqual((measured.max_new_tokens, t1.max_new_tokens), (8192, 8192))
+        self.assertEqual((measured.prompt_token_ids, measured.n), (t1.prompt_token_ids, t1.n))
+        # The same seed rule; passrate keeps its own namespaced branch, disjoint from training seeds by design.
+        self.assertEqual(t1.seeds, seeds(MCQ.problem_id, 0, 1, "T1:root", 4, master_seed=passrate.MASTER_SEED))
+        self.assertEqual(measured.seeds, seeds(MCQ.problem_id, 0, 1, "PASSRATE:x", 4, master_seed=passrate.MASTER_SEED))
+        self.assertEqual((row["passes"], row["statuses"]), (4, {"CORRECT": 4}))
+
+    def test_without_the_contract_the_old_t1_cap_and_final_answer_grading_are_unchanged(self):
+        from fine_tuning.tests.test_notebook_rl_eval_aligned import flagged
+
+        row, t1, measured = self.measure(flagged(), "B")
+        self.assertEqual((measured.messages, measured.max_new_tokens), (t1.messages, 1024))
+        self.assertIn("Final answer", measured.messages[0]["content"][-1]["text"])
+        self.assertEqual((row["passes"], row["statuses"]), (0, {"INVALID_NO_FINAL": 4}))
+
+
+def drive_guarded(config_path: str) -> None:
+    """Fresh process: `passrate measure` with the REAL guards (build-root mode), a scripted engine and the real
+    isolated VerifierService; `legacy` restores the pre-fix measure that read lineage.jsonl after the guards."""
+    import sys
+
+    config = json.loads(Path(config_path).read_text())
+    build, out = Path(config["build"]), {}
+    real = passrate.measure
+
+    def legacy(*args, lineage=None, **kwargs):
+        return real(*args, **kwargs)
+
+    def record():
+        kind, value = sys.exc_info()[:2]
+        out["error"] = f"{kind.__name__}: {value}"
+
+    engine = ScriptedEngine(lambda request: [WRONG] * request.n)
+    with patch("fine_tuning.notebook_rl.hf_pool_exclusion.gpu_guard"), \
+            patch("fine_tuning.notebook_rl.quantized_policy.build_quantized_policy", return_value=object()), \
+            patch("fine_tuning.notebook_rl.scale.make_engines", return_value=(engine, engine)), \
+            patch("fine_tuning.notebook_rl.scale.write_receipt"), \
+            patch.object(passrate, "measure", legacy if config["legacy"] else real), \
+            patch("traceback.print_exc", side_effect=record), patch("builtins.print"):
+        out["code"] = passrate.main(["measure", "--build-root", str(build), "--model-path", "/m", "--k", "4",
+                                     "--seed-namespace", "guarded", "--output", config["output"]])
+    try:
+        (build / "train" / "lineage.jsonl").read_bytes()
+        out["lineage_blocked"] = False
+    except PermissionError:
+        out["lineage_blocked"] = True
+    summary = Path(config["output"]) / "summary.json"
+    out["items"] = json.loads(summary.read_text())["items"] if summary.is_file() else None
+    Path(config["out"]).write_text(json.dumps(out))
+
+
+class GuardedMeasureTests(unittest.TestCase):
+    """The CLI measure path under the real guards: lineage is read before installation and passed in."""
+
+    def run_guarded(self, legacy: bool) -> dict:
+        import os
+        import subprocess
+        import sys
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_splits(root / "build", {s: generate_pool("graph", 3 if s == "train" else 1, 3407, s, 1.0)
+                                          for s in ("train", "dev", "sealed", "style_sealed")})
+            config = {"build": str(root / "build"), "output": str(root / "measured"), "out": str(root / "out.json"),
+                      "legacy": legacy}
+            (root / "config.json").write_text(json.dumps(config))
+            done = subprocess.run([sys.executable, "-B", "-c", "import sys; from fine_tuning.tests."
+                                   "test_notebook_rl_passrate import drive_guarded; drive_guarded(sys.argv[1])",
+                                   str(root / "config.json")], capture_output=True, text=True, timeout=600,
+                                  check=False, env=os.environ | {"CUDA_VISIBLE_DEVICES": ""})
+            self.assertEqual(done.returncode, 0, done.stdout[-3000:] + done.stderr[-6000:])
+            return json.loads((root / "out.json").read_text())
+
+    def test_measure_completes_under_the_real_guards_with_pre_guard_lineage(self):
+        out = self.run_guarded(False)
+        self.assertEqual((out.get("error"), out["code"], out["lineage_blocked"], out["items"]), (None, 0, True, 3), out)
+
+    def test_a_measure_that_reads_lineage_after_the_guards_is_refused(self):
+        # The Pod symptom: the guard's PermissionError surfaces from vault.read_lineage as this ValueError.
+        out = self.run_guarded(True)
+        self.assertEqual((out.get("error"), out["code"], out["items"]),
+                         ("ValueError: vault: missing or unreadable split file", 1, None), out)
 
 
 class PreparationProbeTests(unittest.TestCase):
