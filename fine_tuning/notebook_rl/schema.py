@@ -77,6 +77,8 @@ class SlotReport:
     all_correct: int
     all_total: int
     conflicting: tuple[str, ...]
+    false_relations: tuple[str, ...] = ()
+    unverified_relations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -174,6 +176,9 @@ def _decode(hint: Any, value: Any, at: str) -> Any:
         names = {f.name for f in fields(hint)}
         if value.keys() - names:
             raise ValueError(f"{at}: unknown keys {sorted(value.keys() - names)}")
+        if hint is SlotReport and names - value.keys() not in (
+                set(), {"false_relations", "unverified_relations"}):
+            raise ValueError(f"{at}: missing record fields")
         types = get_type_hints(hint)
         try:
             obj = hint(**{k: _decode(types[k], v, f"{at}.{k}") for k, v in value.items()})
@@ -234,11 +239,20 @@ def _validate_record(obj: Any) -> None:
         if not set(obj.slot_types.values()) <= {"number", "pitch", "text", "relation"}:
             raise ValueError("verifier: invalid slot type")
     elif isinstance(obj, SlotReport):
+        from .observations import slot_id
+
         if not (0 <= obj.required_correct <= obj.required <= obj.all_total
                 and 0 <= obj.all_correct <= obj.parsed <= obj.all_total
                 and obj.required_correct <= obj.all_correct
                 and len(obj.wrong_required) <= obj.required - obj.required_correct):
             raise ValueError("slots: inconsistent counts")
+        groups = (obj.wrong_required, obj.conflicting, obj.false_relations, obj.unverified_relations)
+        if any(len(set(group)) != len(group)
+               or any(not key or slot_id(key) != key for key in group) for group in groups):
+            raise ValueError("slots: IDs must be unique and normalized")
+        if (set(obj.false_relations) & set(obj.unverified_relations)
+                or set(obj.wrong_required) & (set(obj.false_relations) | set(obj.unverified_relations))):
+            raise ValueError("slots: relation categories must be disjoint")
     elif isinstance(obj, VerifierResult):
         expected = 1.0 if obj.status == "CORRECT" else 0.0
         if obj.reward_answer != expected:

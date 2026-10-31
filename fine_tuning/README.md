@@ -1,6 +1,395 @@
 # Selective fine-tuning experiment — MMDL_test
 
-## Current 8K input-recovery and teacher-free A/B trial
+## 현재 구현과 실제 검증 범위 (2026-10-28)
+
+최신 로컬 경로는 실제 Qwen3-VL-4B의 동결 NF4 기저와 학습 가능한 어댑터·4개 Merger를
+사용한다. `ErrorCheck` → `RevisedSolution` → 전체 이력 최종노트 → 독립 검증 → 원래 생성
+토큰에 대한 RL로 연결한다. 정답은 검증기에만 있고, SFT·교사 풀이 모방은 사용하지 않는다.
+재시도 직전의 미검증 재관찰은 한 번만 생성해 재시도와 최종노트에 공유하며 학습 대상에서 제외한다.
+
+동결 소스10의 실제 최소2문항은 업데이트1회·624개 학습 텐서 저장과 새 프로세스 재로딩을
+통과했다. optimizer/step 및 단일·복수 이미지의 실제 forward·생성 일치, 동결 기저 보존과
+원본 가중치 접근0을 확인했다. 이는 기능 검증(F)이다. 해당 시험의 검증된 오류·수정 노트
+토큰 학습 신호는0이므로 노트 수정학습(S)이나 자기개선 효과(E)의 증거는 아니다.
+근거는 비공개 `verified-repair-notebook-v59/training-reload-closure-main-v10.json`
+(SHA256 `c30bfa2deda64327822af8c012c3aeb72c73bd47ae1b3fecafbc6387956e2464`)이다.
+
+같은 프로토콜의 고정10문항 탐색은 진행 중이며 전체 종료·새 재로딩은 아직 미완료다.
+정확한 최종노트 학습, 현재 프로토콜의 Vision 포함/동결 양 경로, 별도 문항 효과도 남아 있다.
+노트의 오류·수정 내용을 먼저 작성하는 비교 후보는 CPU 준비만 완료했으며 생산 정책에 적용하지
+않았다. 작은 기능시험에서 성능 상승을 필수로 요구하지 않지만 기능 통과를 효과로 해석하지 않는다.
+현재 명령·계약은 [notebook_rl/README.md](notebook_rl/README.md)를 따른다.
+아래는 과거 단계의 기록이며 옛 미완료 표기를 현재 상태로 읽지 않는다.
+
+## Historical redesign status (2026-10-27)
+
+The corrected actual fixed-two Qwen trial completed one answer-reward update,
+saved its checkpoint and passed a fresh-process reload of624 trainable tensors,
+optimizer/step/cursor and real single/paired-image forward/generation probes.
+The frozen NF4 base stayed unchanged and original-weight access was blocked.
+This establishes functional learning/storage/reload (F); verified native repair
+learning (S) and benefit (E) remain false. All four final notes omitted required
+success metadata and submitted no repair claims. Neither saved history contained
+a native violated-to-compliant descendant; answer completion is a separate event.
+
+The subsequent no-update original/clarified retry comparison reproduced the
+original outputs exactly. Asking for fresh complete observations recovered18
+submitted observations but only17 were correct; the wrong relation persisted.
+Another response exposed an ASCII blank-line parser defect. The narrow boundary
+fix preserves raw spans and semantic checks under a new explicit protocol pin;
+382 connected CPU tests, Ruff and scoped strong mypy on52 files passed. It has
+not yet had a new model run. The next two cases are fixed before generation for
+source-only diagnosis, without final-note generation or an optimizer. Fixed-ten
+training, current-route verification and independent benefit evaluation remain
+pending; these diagnostics do not establish notebook learning or MMMU improvement.
+
+An explicit `local_train train --admission verified-functional-repair-exploration-v1`
+now separates permission for the fixed-ten local learning experiment from proof
+that native repair learning already happened. It requires a current-source actual
+minimum update/save/fresh reload (F), carries the observed S value unchanged, and
+keeps strict admission/defaults, all optimizer signal checks and fixed-ten budgets.
+The four-file change passed focused CPU checks and independent review. Combined
+regression and a new current-source minimum are still required before execution;
+the older v6 F receipt cannot certify the new source/profile. S=false remains
+unverified repair learning, and this entry policy permits no large-scale run.
+
+The verified-repair redesign is being implemented in this standalone package.
+It separates a model-authored retry `ErrorCheck` from its actual `RevisedSolution`,
+then checks whether the proposed local correction was really performed. A final
+notebook will cover the complete recorded history while submitting at most three
+explicit, independently checked relationships. This is bounded claim verification,
+not a claim to understand every sentence or diagnose an internal module.
+
+The codec, explicit solution-only verifier projection, public source inventory,
+fresh native audits, complete-history retry/final collection and original-token
+group credit are implemented, CPU-tested and independently reviewed. Fresh physical
+input and semantic preparation now reaches the shared optimizer. Answer, online
+repair and final-note losses are clipped separately with one KL term; malformed
+siblings stay in the original group denominator with zero repair credit.
+The integrated 71-test CPU check passed, alongside an independent numerical
+loss/gradient oracle and an ON-to-OFF update that preserved Vision weights and
+existing Adam state. These are authored tiny-policy tests, not Qwen improvement.
+The canonical profile, cache binding, minimum/fixed-ten callers, answer-only
+control and reload gates are CPU-tested. Fresh replay connects original raw
+responses, physical inputs, native checks, saved gradient evidence and every
+checkpoint payload; a stale reload proof cannot certify replaced weights or
+optimizer state. The later combined caller suite passed85 CPU tests, followed by
+an independently checked runtime-file propagation change. The separate n1 native
+evaluator now shares the typed retry and final-note contracts, preserves missing
+notes in coverage denominators, and binds evaluation to current training/reload
+evidence. Its focused CPU tests and independent review passed. The connected
+825-test frozen-source run ended with20 failures,1 error and1 skip. All21 failure
+records were reproduced in the pre-redesign archive; the new repair modules had
+no failures. This is a no-new-failure comparison, not an all-green suite.
+
+Fresh CPU data preparation then preserved the170 bound inputs, fixed ten items
+and fifteen images. Actual processor measurements found that repeated public
+reference metadata made final inputs exceed the24K context. The repair-only
+input now uses shared source/schema dictionaries and a versioned, exactly
+reconstructible feedback representation. Raw attempts and literal collector
+feedback stay intact; output references remain full canonical IDs. The frozen input wire passed123 connected CPU tests, independent review and actual
+processor capacity checks; preserved legacy histories required8749/14971/15882
+input tokens with8192 output reserved within24576. A fresh source-bound preparation
+and actual base-cache generation/separate-process check also passed.
+
+The subsequent actual fixed-two Qwen trial was operator-stopped before optimizer
+commit. A complete malformed T2 sibling incorrectly suppressed a valid sibling's
+T3 and its final-note path. The other item's four actual final notebooks contained
+empty attempts/claims and failed validation. This is neither a successful update
+nor a notebook-learning result. The new repair-note-v2/full-history-v2 contract
+retains a complete syntax-invalid member with result=None and the separate public
+outcome INVALID_RESPONSE_CONTRACT/answer=null. Valid siblings retain existing
+retry eligibility; original n, zero malformed PG and full-action KL remain.
+Missing raw data, log probabilities or integrity evidence still block admission.
+The corrected collection, final audit, training and n1 evaluation require their
+own combined CPU checks, source preparation and actual model validation.
+
+The earlier V58 assessment-credit minimum did complete an actual pretrained NF4
+update and a separate-process reload. It established learning from some verified
+error/unknown classifications; all four complete notebooks still failed and their
+repair relationships were null. It does not establish the new repair objective.
+The base stays frozen NF4, with adapter/Merger training rather than full-parameter
+fine-tuning. `MMDL/`, V8 results, historical responses and shared model weights are
+preserved. See [`notebook_rl/README.md`](notebook_rl/README.md) for the interfaces,
+checks and remaining dependencies. The sections below retain historical protocol
+states and commands; an old “pending” statement is not the current status above.
+
+## Historical local error-notebook NF4 workflows
+
+The latest opt-in whole-note assessment objective keeps the complete model-authored
+notebook and adds original-token credit for independently checked error/unknown
+classifications. A commit now requires a finite, nonzero signed sum of all retained
+assessment-only parameter gradients; answer reward or KL cannot count as notebook
+learning. The explicit v3 normalization experiment multiplies only mapped assessment
+coefficients by8192 to cancel that channel's existing cap8192 loss division. Other
+reward/loss terms, n4, masks, group weights and routing stay unchanged; identically
+wrong classifications still have zero relative signal. A historical v1 trial completed one actual Qwen update and an independent
+reload, with a nonzero assessment-only contribution measured for one candidate.
+Its closed same-history comparison remained0/4→0/4 correct, with unchanged generated
+text/tokens and no recoveries or regressions despite changed log probabilities.
+V2 null-safe mapping and the aggregate-gradient check still require actual
+Qwen validation. V3 retains them and requires its own fresh source preparation,
+cache checks, minimum training and reload; historical evidence cannot certify it.
+Coefficient ratios do not establish total parameter-gradient ratios or improvement. Whole-note improvement is
+unverified. This is a step toward
+the complete solve/retry/notebook/RL pipeline, not its completion. The flags and
+limits are documented in [`notebook_rl/README.md`](notebook_rl/README.md).
+
+As of 2026-10-25, actual pretrained NF4 RL updates and separate-process reloads
+have been verified, but accurate complete notebooks and self-improvement remain
+unproven. The complete-reference trial produced692 null relationship decisions.
+The subsequent paged trial was stopped after all four headers failed and a page
+linked different items within the same attempt as corrections; it made zero updates.
+The historical trials below are preserved as separate contracts; they do not
+establish the latest full-history requirement. The `--pair-draft-synthesis` path
+uses its intermediate judgments only as unverified drafts; only the final model
+notebook can receive notebook credit. A separate explicit circuit evaluation path
+now checks full-history reference notebooks on CPU, including units, physical
+rules, unknown dependencies and singleton training rejection. Its actual model
+evaluation remains unverified. See
+[`notebook_rl/README.md`](notebook_rl/README.md) for the new protocol, commands and
+distinction from the historical contracts below.
+
+A separate paged full-history implementation now connects header/per-attempt
+model responses to the same independent verifier and original-token RL. It keeps
+all original history/images and the8192 total output budget, treats all pages as
+one logical notebook, and never fills missing model judgments. CPU input capacity
+has been measured; actual paged Qwen notebook correctness, update/reload and
+self-improvement are not yet established. This is local pipeline validation,
+not approval for large-scale training.
+
+The new explicit pair-action V2 stage asks the model to judge every public ancestor
+comparison, including unchanged observations, both retry branches and rule-application
+traces. These are **partial notebook judgments**, not a complete notebook. Collection
+may continue through the original fixed ten items without a successful first-two
+native update; every optimizer commit still requires positive original-token native
+relationship credit after MIS and a nonzero isolated native gradient. No signal means
+no forced update. The actual V53 minimum ended with zero updates: both verified
+native relationships were correct in all four candidates, giving zero centered
+native advantage. Only final-answer-output rewards varied. False relationship
+claims outside an actual earlier issue receive no local partial credit or penalty;
+this limitation must not be mistaken for comprehensive notebook learning.
+
+A separate `fact_context_probe --pair-to-whole baseline|trained` path now connects
+a verified native update/reload to newly generated full-reference notes with the
+same complete history, images, prompt and seeds. Its CPU checks pass; V53 has no
+eligible learned checkpoint, so this diagnostic has not run on Qwen. See the local
+guide for its commands. Accurate full-note learning and self-improvement remain
+unverified.
+
+The current **full-history notebook correctness and self-improvement remain unverified**;
+actual partial-fact RL updates and fresh-process reload have been verified separately.
+`local-nf4-full-history-notebook-v13` covers all attempted branches and the final
+successful retry, independently checks each note claim, then finalizes evidence-based
+adapter routing. Failed notebooks may receive verifier checks and submitted-fact
+error-location IDs, with up to two
+additional four-sample rounds, with exact earlier notebook tokens retained. No
+correct values or replacement claims are supplied. Binary rewards are unchanged;
+this additional verifier feedback and sampling budget are a distinct protocol.
+Context16384/note2048 are explicit new settings; the base remains
+frozen NF4, not full-parameter fine-tuning. Existing results below belong to the
+older first-attempt notebook contract and do not prove this new requirement.
+
+The latest source uses whole-history reward `local-all-attempt-notebook-v5`:
+equivalent error-location ID spellings are normalized before strict/partial
+scoring, without changing raw responses, fact values or evidence requirements.
+Canonical order and uniqueness remain mandatory after normalization. This changes
+the protocol hash; historical V4 runs keep their frozen source and original scores.
+It is a representation fix, not evidence of accurate notebooks or self-improvement.
+
+The current initial/repair instructions also clarify the native-tree fact contract:
+record the root and drawn child links, omit missing child positions, and keep JSON
+`null` for an attempt with no extracted answer. No new absence-verification rule is
+added. The prompt hashes change, while strict reward V5 remains unchanged; this
+clarification is for new source-bound runs, not the live fixed-ten trial.
+
+The closed V13 minimum generated14 solutions, one unverified image reread and12
+whole-history notebooks. All12 notes failed the existing verifier (11 content
+failures, one invalid JSON), so optimizer updates remained0. The successful
+retry's correct answer did not establish correct facts or diagnoses. A separate
+`fact_context_probe --notebook-layout` diagnostic compares lossless history layouts
+without changing the production prompt, rewards, routing or weights; see the local guide.
+The closed layout comparison had zero valid notes in both four-sample groups.
+The closed `--notebook-drafts` diagnostic generated six independent drafts and
+four final notes in817.318seconds. All four final notes failed strict verification
+(three content failures and one invalid attempt field). It supplied all original
+attempts and the successful retry; history was not omitted. It made no updates.
+
+The explicit opt-in `local-nf4-verified-note-atoms-v14` adds a separate host-verified
+training objective while preserving every strict reward and the whole-note success
+gate. It is not the default and is not a demonstrated repair: a CPU posthoc replay
+of the twelve V13 notes still gave twelve zero scores and zero group variance.
+No new GPU training was started for this candidate. See the guide for its contract,
+invocation and limits; old outputs and the V13 protocol remain unchanged.
+
+The separate opt-in V15 component objective preserves those strict gates but gives
+independent partial credit to verified facts and attempt-level history, cause and
+error-location checks. It does not certify a whole note or healthy Vision from an
+empty error list. See `notebook_rl/README.md` for the explicit four-fraction reward.
+CPU tests are not actual pretrained-model updates or evidence of self-improvement.
+
+The actual V15 minimum subsequently completed one partial-reward update and a
+fresh-process reload, but all12 whole-history notes failed strict verification.
+A paired diagnostic on the same history gave0/4 valid notes before and0/4 after
+that update. Both observed routes were Vision-enabled; neither Vision-frozen
+learning nor unseen-question improvement is established for this workflow.
+
+The separate opt-in V16 fact-token-credit objective keeps full-history notes and
+strict whole-note rewards/gates. Only the partial fact reward is assigned to its
+own original JSON value tokens; unrelated claims receive no such partial credit.
+This is a new objective, not a retrospective fix of V15 results. All-wrong facts
+still have zero relative reward signal. See the guide before using it; CPU checks
+do not establish that it fixes notebook quality or authorizes fixed-ten training.
+
+The current fact-token objective is `verified-note-fact-token-credit-v2`. It accepts
+supported equivalent fact-ID spellings and binds each canonical ID to the model's
+original JSON value tokens, rejecting alias collisions even when values agree.
+Values, strict notebook checks and unknown/null-relation guards are unchanged.
+Historical v1 evidence must use its frozen source; the new full contract/hash needs
+fresh preparation and actual validation. This representation fix is not notebook
+correctness or learning evidence.
+
+The actual V16 minimum completed one fact-token-reward update and fresh-process
+reload. Five notes had verified partial fact-token/isolated-gradient contributions,
+but all12 notes failed strict whole-note verification. The subsequent same-history
+comparison remained0/4→0/4; it is not a held-out evaluation. On2026-10-22 the separate
+explicit exploratory policy admitted a fresh-initialization fixed-ten trial after
+the actual parent-evidence gate passed. That trial was deliberately stopped after
+an explicit nonexistent tree-child claim exposed a verifier omission; its partial
+responses and committed checkpoint are preserved, not a completed ten-item result.
+The revised verifier requires fresh source-bound input checks and rejects historical
+reuse if any regraded outcome changes. Both learning routes, accurate whole notes,
+disjoint performance and the answer-only control remain to be checked. No
+full-parameter training or large-scale run is implied.
+
+After a real update and trained fresh reload, the existing probe's explicit
+`--trained-notebook-reload` option checks full notebooks on the exact original
+history/images/seeds. It separately records historical and trained policy versions
+and strict-note recoveries/regressions. This is a same-history diagnostic, not
+unseen-question evaluation or permission to bypass the fixed-ten learning gate.
+See `notebook_rl/README.md`; the completed same-history diagnostic did not show
+strict-note improvement. New-question performance remains unverified.
+
+V11 records explicit nonexistent edges separately from registered-slot coverage.
+Only validated complete native BFS/shortest worlds can prove such an edge false;
+unknown endpoints or unsupported values remain unverified. Wrong edges participate
+in full-history citations, notebook verification and Vision-enabled routing, even
+when the final answer is correct or truncated. Unverified edge claims prevent a
+Vision-frozen admission; missing evidence is not a clean bill of health. This
+changes the verification protocol, not the frozen V10 worker or its saved results.
+CPU counterexamples are not proof of actual notebook learning or module causality.
+The unchanged private data vault is read through an explicitly pinned historical
+schema-compatibility case, not by disabling manifest checks. Only runtime response
+fields changed; actor/verifier/lineage formats did not. Unknown source hashes,
+changed payloads and protocol mismatches remain blocked. The initial V11 data
+preparation failure and all original data are preserved.
+Scanner provenance has a separate exact six-file compatibility check: unchanged
+detectors/configuration, reviewed schema/reader bytes and unchanged guards only.
+Historical receipts stay intact and current hashes remain separately recorded;
+this does not claim a fresh contamination scan or change its thresholds.
+
+V5 additionally defers learning on unresolved visual evidence: Vision-frozen
+updates require complete correct required observations in every actual attempt;
+an independently observed wrong required slot enables the Vision-adapter route.
+Missing observations are not a healthy-Vision certificate. Unresolved fixed IDs
+are preserved and reported separately, never replaced. Forced/random routing and
+Vision-disable overrides are not part of this strict local protocol. The frozen
+V4 experiment is unchanged; the new admission path still needs actual-model validation.
+
+V6 location feedback contains no reference values, answers, expected causes or
+replacement prose. It is additional verifier supervision: rejecting a binary
+direction can imply its alternative. The model must still reinspect original images
+and independently assess all historical attempts. The minimal controller stops
+before any optimizer update when there is no usable notebook reward variance;
+all-invalid and all-valid constant groups do not establish notebook learning.
+The fixed-ten answer-only control is unchanged. This new path remains unverified
+on the actual pretrained model.
+
+V7 explicitly requests observations for all ten fixed training items. Original
+actors/vault/IDs/questions/images/answers remain intact; a separately bound
+execution copy changes only the actor mode to `obs`. Frozen V6 plain actors were
+never inspected for visual slots, so they could not enter either strict route.
+Capture, training/control, reload and synchronization probes now validate and use
+the same mode-only projection. This is an input-protocol correction, not evidence
+of accurate observations, valid notes or successful learning; all actual V7 gates
+remain to be run. Previous sources/results are not overwritten.
+
+The frozen full-history v2 minimum did complete one answer-reward update and fresh
+reload; its four notes contributed no reward gradient. All four actual v3 notes also
+failed validation: malformed range arrays and independently observed
+incorrect arrow facts. All twelve V4 notes also failed; the last repair repeated a
+wrong image fact and incorrect assessments despite verifier feedback. No valid-note learning, both-route completion, fixed-ten
+extension or improvement is established for this full-history workflow.
+
+The folder-only local entrypoint is the [notebook RL guide](notebook_rl/README.md#local-pretrained-nf4-workflow-2026-10-21).
+It documents the bundled two-stage pinned installation, fresh destination-bound
+data preparation, standalone NF4 cache, minimal update/reload, fixed-ten notebook
+and matched answer-only arms, and separate full-history circuit-evaluation v3 commands. Run
+from the copied folder's parent; model/data/provenance/artifact paths are explicit
+external private inputs, not code dependencies on this repository's siblings.
+
+Historical training rewardv3 used model-selected first-attempt line IDs and exact host-resolved
+raw spans, with strict independent answer/facts/cause checks; UNKNOWN is never
+healthy Vision. Actual frozen copied-source minimal-v6 update1, physical624 payload
+verification and fresh-process reload passed, with L252/M24/V48 changed. All four
+notes earned0 and had zero isolated reward-gradient contribution, so notebook
+benefit remains unproven. Reserved8,608,808,960bytes exceeds reported dedicated
+capacity8,546,942,976; fully VRAM-resident execution or paging causality is not proven.
+
+The fresh-F0 ten-notebook-v4 arm completed all ten problems, 90 sampled responses
+and two real updates. All624 saved tensors and a fresh-process optimizer/forward/
+generation reload were verified. Two of20 notes earned reward1; one note group
+contributed to the combined RL+KL backward pass, without isolating its reward-only
+gradient. Both independently routed training paths were exercised. The initialization-
+matched answer-only control completed ten problems, three real updates, physical
+checkpoint verification and fresh-process reload. Both arms were evaluated against
+the same untrained NF4 baseline on ten separate synthetic circuit development items:
+all three scored5/10 first attempt and8/10 after at most three attempts; each had
+zero of three generated notes pass the complete verifier. Paired first-attempt
+gains/losses were0/0 for both trained arms. No learning updates occurred in evaluation.
+Those ten circuit items are source/image-disjoint, not unconditionally structure-
+disjoint: a later audit found the same four-node/five-edge simple undirected topology
+in one training DFA when labels, directions and parallel edges are discarded.
+That is not an identical-question finding. A strict structural-generalization claim
+requires a separately frozen eligible cohort; do not replace the old results silently.
+The CPU-only `notebook_rl.local_ladder` preparer now provides a separate candidate
+with ten native circuit instances in three five/six-node topology families; it
+checks the original training bindings and complete-graph separation. It grants no
+training/evaluation permission and does not produce a model score. See the local
+guide for the command and remaining data/native-evaluation checks.
+The separate CPU `notebook_rl.local_ladder_score` can now replay ten saved native
+numeric/unit responses through the isolated verifier. Its output does not certify
+that a model generated those responses; native GPU inference remains pending.
+`notebook_rl.local_ladder_generation` now supplies the matching first-attempt
+generation core: ten native inputs, literal token/pixel records, and fixed F0/FT
+seeds. Its CPU tests and actual processor check are not model evaluations; the
+gated `local_eval evaluate-ladder` caller is implemented and CPU-tested. It requires
+actual full-history notebook learning/reload, a closed fixed-ten arm, matched
+initialization and a separately bound native data receipt. Its actual F0/FT GPU
+evaluation remains pending. Neither frozen runtime is changed.
+The closed full-history V8 trial produced12 solutions and24 notes; every note
+earned zero, so no optimizer update or trained reload occurred. V9 removes the
+conflicting solve-format instruction from the notebook request while preserving
+full solution history, images, rewards and strict routing. Its standalone cache
+save/reload checks passed, but its closed minimum also produced12 solutions and24
+zero-reward notes, with0 updates and no trained reload. Wrong/missing visual facts
+remain substantive failures, not just output-format errors.
+V10 gives an explicit JSON shape and public observation-slot syntax. It removes
+the redundant model-generated next-action field; the host derives that action only
+after the attempt diagnosis is verified. All historical attempts, corrected facts,
+answers, causes, evidence and strict routing remain required. Binary validity reward
+is retained with a new contract version; this is not retrospective rescue of old
+notes. Actual V10 notebook learning and generalization remain unverified.
+The older contract's local functional pipeline is verified; the current full-history
+pipeline and self-improvement are not yet demonstrated.
+Notebook/control update counts and token exposure differ, so this is not an isolated
+compute-matched estimate of note reward effects. Do not automatically scale training.
+Frozen execution copies retain their original documentation and hashes.
+Original BF16 cache must remain available for six dependent legacy checkpoints.
+No cloud/API/upload, weight/data bundling, publication or professor-facing MMDL/V8
+change is implied. Older BF16/cloud sections below are historical protocols.
+
+## Historical 8K input-recovery and teacher-free A/B trial
 
 `experiments.input_recovery.runpod` runs the frozen 48-item I/T/IT/IR/TR diagnosis
 and the preselected 12-item I/T checkpoint comparison: 336 calls in total, including
@@ -45,7 +434,7 @@ Use a new clean exact-SHA MMDL_test clone and the normally verified setup for a
 new stage. Do not hot-patch a running clone, extend its original financial deadline,
 or modify the professor-facing MMDL checkout and historical V8 result.
 
-## Current deployment policy — 2026-10-04
+## Historical deployment policy — 2026-10-04
 
 Final original10K state, 2026-10-05 14:57 UTC (supersedes the running snapshots
 below): all four arms completed10,000 records/625 updates, fresh-process reload,

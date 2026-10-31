@@ -19,6 +19,12 @@ from .schema import ActorItem, Lineage, VerifierItem, from_json, load_protocol, 
 ACTOR_KEYS = frozenset(f.name for f in fields(ActorItem))
 _FILES = ("actor_inputs.jsonl", "verifier_private.jsonl", "lineage.jsonl")
 _CODE = ("vault.py", "schema.py", "guards.py")
+_LEGACY_CODE = {
+    "vault.py": "45b2e61e8eb98fe0e392a201dc9fad8382c61546b4312d40db1c81cbc243d1ce",
+    "schema.py": "0605c5f1a1c0f00b08e2b0e5f7dee83e240573e7bdd1ad3b071964c173b44996",
+    "guards.py": "e37f158845012e11d22e46d8965d09e422b0e59103dbb68345a857426fe5638a",
+}
+_COMPATIBLE_SCHEMA = "4c12aea4d0c23792afdd37e57ad62697d3cbc7766bd2700079d45512fea08c93"
 _HERE = Path(__file__).resolve().parent
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 T = TypeVar("T", ActorItem, VerifierItem, Lineage)
@@ -102,7 +108,12 @@ def _manifest(root: Path) -> dict:
             raise ValueError("vault: invalid file metadata")
     if len({meta["rows"] for meta in data["files"].values()}) != 1:
         raise ValueError("vault: split row count mismatch")
-    if (data["code_sha256"] != _code_hashes()
+    current_code = _code_hashes()
+    # Only SlotReport changed; these pinned actor/verifier/lineage readers are unchanged.
+    legacy_reader = (data["code_sha256"] == _LEGACY_CODE
+                     and current_code["schema.py"] == _COMPATIBLE_SCHEMA
+                     and current_code["guards.py"] == _LEGACY_CODE["guards.py"])
+    if ((data["code_sha256"] != current_code and not legacy_reader)
             or data["protocol_sha256"] != load_protocol(_HERE / "protocol_v1.yaml")["sha256"]):
         raise ValueError("vault: code or protocol hash mismatch")
     if type(data["leak_review"]) is not list:

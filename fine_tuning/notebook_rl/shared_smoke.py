@@ -113,7 +113,13 @@ def _final_notes(batch, actors, image_root, engine, prompts, cfg, should_stop):
 def _prepare_hf_dependencies() -> dict:
     # HF probes optional SDK availability on import; actual SDK imports stay blocked.
     from peft import LoraConfig, get_peft_model
+    from peft.import_utils import is_bnb_available
     from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+
+    # PEFT lazily imports optional bnb compiler dependencies during adapter construction.
+    if is_bnb_available():
+        from importlib import import_module
+        import_module("bitsandbytes")
 
     return {value.__name__: value.__module__ for value in (
         LoraConfig, get_peft_model, AutoProcessor, Qwen3VLForConditionalGeneration)}

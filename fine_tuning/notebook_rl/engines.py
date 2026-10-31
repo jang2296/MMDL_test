@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import torch
 
@@ -69,6 +69,21 @@ class RolloutResult:
     request_id: str
     prompt_token_ids: list[int]
     completions: list[Completion]
+
+
+ROW_SEEDED_BATCH_SAMPLER = "hf-row-seeded-batch-v1"
+
+
+@dataclass(frozen=True)
+class BatchedRolloutResult(RolloutResult):
+    """Opt-in HF output: the n seeds of one request in chunks of `batch_rows` rows per generate.
+
+    For more than one row it is reproducible only for the same seeds, chunking and kernels, and
+    is not token-equal to the serial sampler on GPU. A distinct type, so it never compares equal
+    to a serial `RolloutResult`, and `asdict()` carries both labels into receipts.
+    """
+    batch_rows: int
+    sampler_version: str = ROW_SEEDED_BATCH_SAMPLER
 
 
 @dataclass
@@ -125,12 +140,14 @@ class InputPreparation:
         engine._load_weights(named_weights, policy_version)
         self._push_complete = True
 
-    def validate_sync(self, probes: list[tuple[RolloutRequest, list[int], list[float]]], threshold: float) -> list[dict]:
+    def validate_sync(self, probes: list[tuple[RolloutRequest, list[int], list[float]]], threshold: float,
+                      image_counts: tuple[int, ...] = (1, 2)) -> list[dict]:
+        """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage."""
         self._initialization_open = False
         self._synchronized = False
         if not self._push_complete:
             raise RuntimeError("engine: a failed/partial push cannot be certified by probes")
-        if (len(probes) != 2 or sorted(len(p[0].images) for p in probes) != [1, 2]
+        if (image_counts not in ((1,), (1, 2)) or sorted(len(p[0].images) for p in probes) != list(image_counts)
                 or type(threshold) not in (int, float) or not 0 < threshold <= 0.02):
             raise ValueError("engine: fixed single/multi-image HF probes and strict threshold required")
         reports = []
@@ -210,19 +227,137 @@ class InputPreparation:
                 **{k: v.to(device) for k, v in prepared.pixels.items()}}
 
 
+class _SelectedTokenLogprobs:
+    """Keep one score vector; the next prefix reveals its actual sampled token."""
+
+    def __init__(self, prompt_length: int):
+        self.prompt_length = prompt_length
+        self.scores: torch.Tensor | None = None
+        self.input_ids: torch.Tensor | None = None
+        self.logprobs: list[torch.Tensor] = []
+
+    def _append(self, token: torch.Tensor) -> None:
+        if self.scores is None:
+            raise RuntimeError("engine: missing streamed generation scores")
+        # gather owns a scalar allocation; indexing would retain the vocabulary tensor.
+        self.logprobs.append(self.scores[0].float().log_softmax(-1).gather(0, token))
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        expected = self.prompt_length + len(self.logprobs) + int(self.scores is not None)
+        if (input_ids.ndim != 2 or input_ids.shape != (1, expected)
+                or scores.ndim != 2 or scores.shape[0] != 1):
+            raise RuntimeError("engine: streamed generation prefix/score mismatch")
+        if self.scores is not None:
+            self._append(input_ids[0, -1:])
+        self.scores, self.input_ids = scores, input_ids
+        return scores
+
+    def finish(self, sequences: torch.Tensor) -> list[float]:
+        if (self.input_ids is None or sequences.ndim != 2
+                or sequences.shape != (1, self.prompt_length + len(self.logprobs) + 1)
+                or not torch.equal(self.input_ids, sequences[:, :-1])):
+            raise RuntimeError("engine: missing or mismatched streamed generation scores")
+        self._append(sequences[0, -1:])
+        self.scores = self.input_ids = None
+        return torch.cat(self.logprobs).tolist()
+
+    def clear(self) -> None:
+        self.scores = self.input_ids = None
+        self.logprobs.clear()
+
+
+def _batch_rows(value: int | None) -> int | None:
+    if value is not None and (type(value) is not int or value < 1):
+        raise ValueError("engine: batch_rows must be None (serial sampler) or a positive int")
+    return value
+
+
+class _RowSeededSampler:
+    """Temperature-one draw for every live row from that row's own seeded generator.
+
+    Placed directly after LogitNormalization, so each row sees the serial path's scores: the draw
+    is softmax -> multinomial on that (1, V) row and the recorded log probability is
+    float().log_softmax().gather() of it, the same operations as HF sampling and
+    `_SelectedTokenLogprobs`. The drawn token is forced (0 vs -inf) so greedy decoding emits it.
+    A row stops at its first EOS id or at `cap` tokens; HF pads finished rows afterwards.
+    """
+
+    def __init__(self, seeds: list[int], prompt_length: int, cap: int, eos_ids: frozenset[int],
+                 pad_id: int, device: torch.device):
+        self.generators = [torch.Generator(device=device).manual_seed(seed) for seed in seeds]
+        self.prompt_length, self.cap, self.eos_ids, self.pad_id = prompt_length, cap, eos_ids, pad_id
+        self.tokens: list[list[int]] = [[] for _ in seeds]
+        self.logprobs: list[list[torch.Tensor]] = [[] for _ in seeds]
+        self.done = [False] * len(seeds)
+        self.steps = 0
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        rows = len(self.generators)
+        if (input_ids.ndim != 2 or input_ids.shape != (rows, self.prompt_length + self.steps)
+                or scores.ndim != 2 or scores.shape[0] != rows):
+            raise RuntimeError("engine: batched generation prefix/score mismatch")
+        if self.steps:
+            emitted = input_ids[:, -1].tolist()
+            if any(len(row) == self.steps and row[-1] != emitted[i] for i, row in enumerate(self.tokens)):
+                raise RuntimeError("engine: generate did not emit the row-seeded token")
+        live = [i for i, done in enumerate(self.done) if not done]
+        picks = []
+        for i in live:
+            row = scores[i:i + 1]
+            token = torch.multinomial(torch.softmax(row, -1), 1, generator=self.generators[i])[0]
+            # gather owns a scalar allocation; indexing would retain the vocabulary tensor.
+            self.logprobs[i].append(row[0].float().log_softmax(-1).gather(0, token))
+            picks.append(token)
+        forced = torch.full_like(scores, float("-inf"))
+        for i, token in zip(live, torch.cat(picks).tolist() if picks else [], strict=True):
+            self.tokens[i].append(token)
+            forced[i, token] = 0.
+            self.done[i] = token in self.eos_ids or len(self.tokens[i]) >= self.cap
+        for i in set(range(rows)) - set(live):
+            forced[i, self.pad_id] = 0.  # HF overwrites finished rows with its pad id anyway.
+        self.steps += 1
+        return forced
+
+    def rows_done(self, input_ids: torch.Tensor, scores: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+        return torch.tensor(self.done, dtype=torch.bool, device=input_ids.device)
+
+    def finish(self, sequences: torch.Tensor, prompts: torch.Tensor) -> list[tuple[list[int], list[float]]]:
+        rows = len(self.generators)
+        if (not all(self.done) or sequences.ndim != 2
+                or sequences.shape != (rows, self.prompt_length + self.steps)
+                or not torch.equal(sequences[:, :self.prompt_length], prompts)
+                or any(sequences[i, self.prompt_length:self.prompt_length + len(row)].tolist() != row
+                       for i, row in enumerate(self.tokens))):
+            raise RuntimeError("engine: batched sequences differ from the row-seeded draws")
+        return [(list(row), torch.cat(lps).tolist()) for row, lps in zip(self.tokens, self.logprobs, strict=True)]
+
+
 class HFRolloutEngine(InputPreparation):
-    """Actual HF generation for smoke; output_scores makes it unsuitable for long rollouts."""
+    """Actual sequential HF generation with bounded vocabulary-score retention.
+
+    `batch_rows=None` (default) is the serial one-seed-per-generate sampler. An int opts into
+    `_RowSeededSampler`: the n seeds of one request in chunks of at most `batch_rows` rows,
+    returned as `BatchedRolloutResult`.
+    """
     supported_sampling = frozenset(("temperature_1",))
-    def __init__(self, model: Any, processor: Any, image_cfg: dict, max_model_len: int):
+    batch_rows: int | None = None
+
+    def __init__(self, model: Any, processor: Any, image_cfg: dict, max_model_len: int, *,
+                 batch_rows: int | None = None):
         super().__init__(processor, model.config, image_cfg, max_model_len)
         self.model = model
         self._weight_shapes = _weight_inventory(model.config)
+        self.batch_rows = _batch_rows(batch_rows)
 
-    def sample(self, requests: list[RolloutRequest]) -> list[RolloutResult]:
-        return self.sample_with_settings(requests, SamplingSettings())
+    def sample(self, requests: list[RolloutRequest], *,
+               on_completion: Callable[[str, int, int, Completion], None] | None = None) -> list[RolloutResult]:
+        if on_completion is None:
+            return self.sample_with_settings(requests, SamplingSettings())
+        return self.sample_with_settings(requests, SamplingSettings(), on_completion=on_completion)
 
-    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings) -> list[RolloutResult]:
-        from transformers import GenerationConfig
+    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings, *,
+            on_completion: Callable[[str, int, int, Completion], None] | None = None) -> list[RolloutResult]:
+        from transformers import GenerationConfig, LogitNormalization, LogitsProcessorList
 
         self._initialization_open = False
         if not self._synchronized:
@@ -232,37 +367,101 @@ class HFRolloutEngine(InputPreparation):
             raise NotImplementedError("engine: HF official evaluation needs a reviewed generated-only presence penalty adapter")
         if len({r.request_id for r in requests}) != len(requests):
             raise ValueError("engine: duplicate request ID")
-        results = []
+        results: list[RolloutResult] = []
         device, was_training = next(self.model.parameters()).device, self.model.training
         self.model.eval()
         try:
             for request in requests:
                 prepared = self.prepare(request)
                 batch = self.model_inputs(request, [], device)
+                if self.batch_rows is not None:
+                    results.append(BatchedRolloutResult(request.request_id, prepared.token_ids,
+                        self._sample_rows(request, prepared, batch, device, on_completion), self.batch_rows))
+                    continue
                 completions = []
                 eos = self.model.generation_config.eos_token_id
                 eos_ids = eos if isinstance(eos, list) else [eos]
                 cfg = GenerationConfig(do_sample=True, temperature=1.0, top_p=1.0, top_k=0,
                     repetition_penalty=1.0, max_new_tokens=request.max_new_tokens,
                     eos_token_id=eos, pad_token_id=self.model.generation_config.pad_token_id,
-                    return_dict_in_generate=True, output_scores=True, use_cache=True,
-                    renormalize_logits=True)
-                for seed in request.seeds:
+                    return_dict_in_generate=True, output_scores=False, use_cache=True,
+                    renormalize_logits=False)
+                for index, seed in enumerate(request.seeds):
                     devices = [device.index or 0] if device.type == "cuda" else []
-                    with torch.random.fork_rng(devices=devices), torch.no_grad():
-                        torch.manual_seed(seed)
-                        output = self.model.generate(**batch, generation_config=cfg, use_model_defaults=False)
-                    ids = output.sequences[0, len(prepared.token_ids):].tolist()
-                    lps = [float(score[0].float().log_softmax(-1)[token])
-                           for token, score in zip(ids, output.scores, strict=True)]
-                    del output
+                    collector = _SelectedTokenLogprobs(len(prepared.token_ids))
+                    output = None
+                    try:
+                        with torch.random.fork_rng(devices=devices), torch.no_grad():
+                            torch.manual_seed(seed)
+                            # T1 has no warpers: this is HF's original final normalizer,
+                            # followed only by an observer that returns the same scores.
+                            output = self.model.generate(**batch, generation_config=cfg,
+                                use_model_defaults=False,
+                                logits_processor=LogitsProcessorList([LogitNormalization(), collector]))
+                        # ModelOutput attribute assignment leaves the mapping's cache alive.
+                        output["past_key_values"] = None
+                        ids = output.sequences[0, len(prepared.token_ids):].tolist()
+                        lps = collector.finish(output.sequences)
+                    finally:
+                        collector.clear()
+                        if output is not None:
+                            output["past_key_values"] = None
+                        del output
                     finish = "stop" if ids and ids[-1] in eos_ids else "length"
                     completions.append(_completion(ids, lps, finish,
                         self.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)))
+                    if on_completion is not None:
+                        completion = completions[-1]
+                        on_completion(request.request_id, index, seed,
+                            Completion(list(completion.token_ids), list(completion.logprobs),
+                                       completion.finish_reason, completion.text))
                 results.append(RolloutResult(request.request_id, prepared.token_ids, completions))
         finally:
             self.model.train(was_training)
         return results
+
+    def _sample_rows(self, request: RolloutRequest, prepared: Prepared, batch: dict, device: torch.device,
+                     on_completion: Callable[[str, int, int, Completion], None] | None) -> list[Completion]:
+        """One generate per chunk of seeds over the same unpadded prompt; callbacks after each chunk."""
+        from transformers import GenerationConfig, LogitNormalization, LogitsProcessorList, StoppingCriteriaList
+
+        if self.batch_rows is None:
+            raise RuntimeError("engine: row-seeded sampling requires batch_rows")
+        eos = self.model.generation_config.eos_token_id
+        eos_ids = frozenset(eos if isinstance(eos, list) else () if eos is None else (eos,))
+        pad = self.model.generation_config.pad_token_id
+        # Greedy over the forced row draws; warpers stay off, so no sampling knob reaches HF.
+        cfg = GenerationConfig(do_sample=False, repetition_penalty=1.0, max_new_tokens=request.max_new_tokens,
+            eos_token_id=eos, pad_token_id=pad, return_dict_in_generate=True, output_scores=False,
+            use_cache=True, renormalize_logits=False)
+        devices = [device.index or 0] if device.type == "cuda" else []
+        completions: list[Completion] = []
+        for start in range(0, request.n, self.batch_rows):
+            seeds = request.seeds[start:start + self.batch_rows]
+            rows = {key: value.repeat(len(seeds), 1) for key, value in batch.items()}
+            sampler = _RowSeededSampler(seeds, len(prepared.token_ids), request.max_new_tokens, eos_ids,
+                                        0 if pad is None else pad, device)
+            output = None
+            try:
+                with torch.random.fork_rng(devices=devices), torch.no_grad():
+                    output = self.model.generate(**rows, generation_config=cfg, use_model_defaults=False,
+                        logits_processor=LogitsProcessorList([LogitNormalization(), sampler]),
+                        stopping_criteria=StoppingCriteriaList([sampler.rows_done]))
+                output["past_key_values"] = None
+                drawn = sampler.finish(output.sequences, rows["input_ids"])
+            finally:
+                if output is not None:
+                    output["past_key_values"] = None
+                del output
+            for offset, (seed, (ids, lps)) in enumerate(zip(seeds, drawn, strict=True)):
+                completions.append(_completion(ids, lps, "stop" if ids[-1] in eos_ids else "length",
+                    self.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)))
+                if on_completion is not None:
+                    completion = completions[-1]
+                    on_completion(request.request_id, start + offset, seed,
+                        Completion(list(completion.token_ids), list(completion.logprobs),
+                                   completion.finish_reason, completion.text))
+        return completions
 
     def probe_logprobs(self, request: RolloutRequest, completion_ids: list[int]) -> list[float]:
         self._initialization_open = False
@@ -306,15 +505,18 @@ class HFRolloutEngine(InputPreparation):
 
 
 def vllm_kwargs(model_path: Path, image_cfg: dict, kv_cache_memory_bytes: int,
-                 max_num_seqs: int, max_model_len: int) -> dict:
+                 max_num_seqs: int, max_model_len: int, *, enable_prefix_caching: bool = False,
+                 gpu_memory_utilization: float = 0.7) -> dict:
     if (any(type(v) is not int or v <= 0 for v in (kv_cache_memory_bytes, max_num_seqs, max_model_len))
-            or image_cfg.get("preprocessing") != "qwen_vl_utils_0_0_14"):
+            or image_cfg.get("preprocessing") != "qwen_vl_utils_0_0_14"
+            or type(enable_prefix_caching) is not bool
+            or type(gpu_memory_utilization) is not float or not 0 < gpu_memory_utilization <= 1):
         raise ValueError("engine: explicit positive budgets and pinned image preprocessing required")
     return dict(model=str(model_path), tokenizer=str(model_path), dtype="bfloat16", quantization=None,
         # v0.11 startup checks this fraction before honoring the explicit KV bytes.
         # Leave room for the colocated HF policy; this does not shrink the 10GiB KV.
-        gpu_memory_utilization=0.7,
-        enforce_eager=False, enable_prefix_caching=False, mm_processor_cache_gb=0,
+        gpu_memory_utilization=gpu_memory_utilization,
+        enforce_eager=False, enable_prefix_caching=enable_prefix_caching, mm_processor_cache_gb=0,
         limit_mm_per_prompt={"image": 2, "video": 0}, generation_config="vllm", tensor_parallel_size=1,
         mm_processor_kwargs={"size": {"shortest_edge": image_cfg["min_pixels"],
             "longest_edge": image_cfg["max_pixels"]}, "do_resize": False},
@@ -344,7 +546,8 @@ def _clear_encoder_cache(worker: Any) -> bool:
 class VLLMRolloutEngine(InputPreparation):
     supported_sampling = frozenset(("temperature_1", "qwen_official"))
     def __init__(self, model_path: Path, image_cfg: dict, kv_cache_memory_bytes: int,
-                 max_num_seqs: int, max_model_len: int):
+                 max_num_seqs: int, max_model_len: int, *, enable_prefix_caching: bool = False,
+                 gpu_memory_utilization: float = 0.7):
         if version("vllm") != "0.11.0":
             raise RuntimeError("engine: vllm==0.11.0 required")
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
@@ -359,7 +562,9 @@ class VLLMRolloutEngine(InputPreparation):
                          image_cfg, max_model_len)
         self._weight_shapes = _weight_inventory(self.model_config)
         self.model_dir = Path(model_path).resolve()
-        self.llm = LLM(**vllm_kwargs(model_path, image_cfg, kv_cache_memory_bytes, max_num_seqs, max_model_len))
+        self.llm = LLM(**vllm_kwargs(model_path, image_cfg, kv_cache_memory_bytes, max_num_seqs, max_model_len,
+                                     enable_prefix_caching=enable_prefix_caching,
+                                     gpu_memory_utilization=gpu_memory_utilization))
         self._call = 0
         self._synchronized = True
         self._push_complete = True
@@ -388,10 +593,15 @@ class VLLMRolloutEngine(InputPreparation):
                                             for i in range(len(prepared.images))]})
         return prompt
 
-    def sample(self, requests: list[RolloutRequest]) -> list[RolloutResult]:
-        return self.sample_with_settings(requests, SamplingSettings())
+    def sample(self, requests: list[RolloutRequest], *,
+               on_completion: Callable[[str, int, int, Completion], None] | None = None) -> list[RolloutResult]:
+        if on_completion is None:
+            return self.sample_with_settings(requests, SamplingSettings())
+        return self.sample_with_settings(requests, SamplingSettings(), on_completion=on_completion)
 
-    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings) -> list[RolloutResult]:
+    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings, *,
+            on_completion: Callable[[str, int, int, Completion], None] | None = None) -> list[RolloutResult]:
+        """One vLLM call; `on_completion` then sees each validated output in request, index order."""
         self._initialization_open = False
         SamplingParams = import_module("vllm").SamplingParams
 
@@ -413,7 +623,7 @@ class VLLMRolloutEngine(InputPreparation):
         results = []
         for request, item in zip(requests, prepared, strict=True):
             completions = []
-            for _ in request.seeds:
+            for index, seed in enumerate(request.seeds):
                 output = next(outputs)
                 if list(output.prompt_token_ids) != item.token_ids or len(output.outputs) != 1:
                     raise RuntimeError("engine: actual vLLM input IDs/count differ")
@@ -424,6 +634,11 @@ class VLLMRolloutEngine(InputPreparation):
                 lps = [float(row[t].logprob) for t, row in zip(ids, c.logprobs, strict=True)]
                 completions.append(_completion(ids, lps, c.finish_reason,
                     self.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)))
+                if on_completion is not None:
+                    completion = completions[-1]
+                    on_completion(request.request_id, index, seed,
+                        Completion(list(completion.token_ids), list(completion.logprobs),
+                                   completion.finish_reason, completion.text))
             results.append(RolloutResult(request.request_id, item.token_ids, completions))
         if next(outputs, None) is not None:
             raise RuntimeError("engine: unexpected extra vLLM outputs")

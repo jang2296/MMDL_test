@@ -1,0 +1,23 @@
+{
+  "version": "pod-chain-params-v1",
+  "notes": [
+    "stage1 (job stage bf16-smoke-throughput): BF16 two-problem minimal update/save/fresh reload, then a 2-update (K=4, N=8) training run bounded to 30 min as the throughput measurement.",
+    "Every '<...>' value is filled on the Pod before `chain plan`; plan refuses a placeholder. The vllm block, train block and protocol flags are bound into the protocol hash of every command of the training preparation.",
+    "vllm values are UNMEASURED proposals for an A40 48 GB (BF16 HF policy + vLLM sampler on one GPU); change them only before planning, never between commands of one preparation."
+  ],
+  "python": "<volume venv python: <volume_root>/venv-<LOCK16>/bin/python from volume_manifest.json>",
+  "run_dir": "<job.run_dir, e.g. /workspace/runs/<RUN>>",
+  "model_path": "/workspace/mmdl-volume/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "vault": "/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/vault-v1",
+  "approval_request": "<data_request.json the frozen approval was exported from (absolute, inside the data bundle)>",
+  "frozen_approval": {"path": "<APPROVAL_EXPORT.json from local_run export-approval (inside the data bundle)>",
+                      "sha256": "<file_sha256 printed by export-approval>"},
+  "seed": 3407,
+  "sentinels_per_subject": 1,
+  "min_free_gib": 12,
+  "vllm": {"gpu_memory_utilization": 0.45, "max_num_seqs": 8, "kv_cache_memory_bytes": 8589934592,
+           "enable_prefix_caching": false},
+  "train": {"problems": 8, "per_update": 4, "checkpoint_every": 1, "evidence_audit_rule": null, "max_seconds": 1800},
+  "timeouts": {"cpu": 1800, "passrate": 2400, "minimal": 2400, "reload": 1200, "train_close": 1200, "evaluate": 2400},
+  "prefilter": {"items": 16, "k": 8, "seed_namespace": "proof-stage1-f0", "min_pass": 1, "max_pass": 7, "max_blocking": 0}
+}

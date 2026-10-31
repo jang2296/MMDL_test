@@ -1,6 +1,8 @@
 """Program-authored notated music; independent theory checks, no teacher solutions."""
 from __future__ import annotations
 
+import re
+
 import io
 import random
 import xml.etree.ElementTree as ET
@@ -84,15 +86,17 @@ def _manual_interval(first, second) -> str:
 def _answers(world: dict, task: str, target: int) -> tuple[str, str]:
     pitches = world["pitches"]
     names = [_pitch(*p) for p in pitches]
+    # music21 spells flats '-' ('bb' is not a valid music21 accidental); display names keep 'b'.
+    m21 = [re.sub(r"^([A-G])(b+)", lambda m: m[1] + "-" * len(m[2]), name) for name in names]
     if task == "interval":
-        return interval.Interval(note.Note(names[0]), note.Note(names[1])).name, _manual_interval(*pitches[:2])
+        return interval.Interval(note.Note(m21[0]), note.Note(m21[1])).name, _manual_interval(*pitches[:2])
     if task == "chord":
         distances = tuple(_midi(p) - _midi(pitches[0]) for p in pitches[1:3])
         qualities: dict[tuple[int, ...], str] = {(4, 7): "major", (3, 7): "minor", (3, 6): "diminished", (4, 8): "augmented"}
         manual = qualities.get(distances)
         if manual is None:
             raise ValueError("music: invalid authored triad")
-        return chord.Chord(names[:3]).quality, manual
+        return chord.Chord(m21[:3]).quality, manual
     if task == "major_key":
         return key.KeySignature(world["sharps"]).asKey("major").tonic.name.replace("-", "b") + " major", _MAJOR_KEYS[world["sharps"]] + " major"
     if task == "time_signature":
@@ -101,7 +105,7 @@ def _answers(world: dict, task: str, target: int) -> tuple[str, str]:
         return meter.TimeSignature(written).ratioString, written
     if task == "pitch":
         # Library spelling and pitch height both checked against independent arithmetic.
-        parsed = note.Note(names[target])
+        parsed = note.Note(m21[target])
         if parsed.pitch.midi != _midi(pitches[target]):
             raise ValueError("music: pitch height disagrees with independent arithmetic")
         return parsed.nameWithOctave.replace("-", "b"), names[target]

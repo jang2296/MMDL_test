@@ -1,0 +1,24 @@
+{
+  "version": "pod-chain-params-v1",
+  "notes": [
+    "pilot-300: F0 pass rate (k=8) on ALL eligible train items -> keep 1..7 passes -> N=300, K=4 training from F0 -> reload -> sentinel F0/FT.",
+    "prefilter.items = number of eligible distinct-structure train items. Get it on CPU with the same flags: `local_run propose-proof ... --train-problems 1 --problems-per-update 1 --max-updates 1 --output /tmp/count.json`, then items = len(fixed) + len(selection_source.dropped_ids). A larger value is refused by propose-proof, a smaller one measures only the first items in the rule's hash order.",
+    "vllm values must equal the ones stage1 measured with (or be re-decided before the pilot; they are protocol-bound). train.max_seconds and the timeouts are set from the stage1 receipt via pod/cost.py before G4."
+  ],
+  "python": "<volume venv python>",
+  "run_dir": "<job.run_dir>",
+  "model_path": "/workspace/mmdl-volume/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "vault": "/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/vault-v1",
+  "approval_request": "<data_request.json>",
+  "frozen_approval": {"path": "<APPROVAL_EXPORT.json>", "sha256": "<export-approval file_sha256>"},
+  "seed": 3407,
+  "sentinels_per_subject": 2,
+  "min_free_gib": 12,
+  "vllm": {"gpu_memory_utilization": 0.45, "max_num_seqs": 8, "kv_cache_memory_bytes": 8589934592,
+           "enable_prefix_caching": false},
+  "train": {"problems": 300, "per_update": 4, "checkpoint_every": 25,
+            "evidence_audit_rule": {"first": true, "last": true, "every": 25}, "max_seconds": 43200},
+  "timeouts": {"cpu": 1800, "passrate": 86400, "minimal": 2400, "reload": 1800, "train_close": 3600, "evaluate": 7200},
+  "prefilter": {"items": "<eligible distinct-structure train items>", "k": 8, "seed_namespace": "proof-pilot-f0",
+                "min_pass": 1, "max_pass": 7, "max_blocking": 0}
+}

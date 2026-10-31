@@ -20,7 +20,7 @@ from typing import Any, Callable
 import torch
 
 from . import checkpoint, metrics
-from .batches import CollectedBatch, collect_batch, family_order
+from .batches import CollectedBatch, _repair_protocol, collect_batch, family_order
 from .engines import RolloutRequest
 from .policy import PolicyBundle, assert_base_unchanged, completion_logprobs, merged_named_tensors
 from .schema import ActorItem, ProblemTree, from_json, to_json
@@ -43,9 +43,10 @@ class SyncProbe:
 
 
 def synchronize(bundle: PolicyBundle, preparation: Any, engine: Any, probes: list[SyncProbe],
-                protocol: dict, step: int, *, push: bool) -> list[dict]:
-    if (len(probes) != 2 or sorted(len(p.request.images) for p in probes) != [1, 2]
-            or len({p.request.request_id for p in probes}) != 2):
+                protocol: dict, step: int, *, push: bool, image_counts: tuple[int, ...] = (1, 2)) -> list[dict]:
+    """`image_counts` (1,) only for a preparation that binds single-image-only probe coverage."""
+    if (image_counts not in ((1,), (1, 2)) or sorted(len(p.request.images) for p in probes) != list(image_counts)
+            or len({p.request.request_id for p in probes}) != len(probes)):
         raise ValueError("trainer: fixed single/multi-image synchronization probes required")
     if push:
         from .shared_policy_engine import SharedPolicyRolloutEngine
@@ -63,7 +64,8 @@ def synchronize(bundle: PolicyBundle, preparation: Any, engine: Any, probes: lis
             values = completion_logprobs(bundle, inputs, len(probe.completion_ids),
                                         chunk=protocol["model"]["logprob_chunk"])[0].cpu().tolist()
             reference.append((probe.request, probe.completion_ids, values))
-    reports = engine.validate_sync(reference, protocol["engine"]["probe_max_mean_abs_logprob_diff"])
+    reports = engine.validate_sync(reference, protocol["engine"]["probe_max_mean_abs_logprob_diff"],
+                                   **({} if image_counts == (1, 2) else {"image_counts": image_counts}))
     # Only after actual engine probe validation may the separate preparer advance.
     preparation.policy_version = step
     return reports
@@ -84,20 +86,32 @@ def grounding_disabled(history: list[dict], f0: dict) -> bool:
 def batch_statistics(batch: CollectedBatch) -> dict:
     trees = batch.trees + [from_json(ProblemTree, r["tree"]) for r in batch.discarded if "tree" in r]
     solutions = [s for t in trees for g in t.groups if g.kind != "DIAG" for s in g.samples]
+    repair = ({"missing_result_fraction": sum(s.result is None for s in solutions)/len(solutions) if solutions else None}
+              if any("repair_collector" in tree.notebook for tree in trees) else {})
     return {"n_observed_solutions": len(solutions),
         "len_median": statistics.median(len(s.completion_token_ids) for s in solutions) if solutions else None,
         "truncation_rate": sum(s.finish_reason == "length" for s in solutions)/len(solutions) if solutions else None,
         "short_fraction_le32": sum(len(s.completion_token_ids) <= 32 for s in solutions)/len(solutions) if solutions else None,
         "unverifiable_fraction": sum(s.result is not None and s.result.status == "UNVERIFIABLE"
-                                    for s in solutions)/len(solutions) if solutions else None}
+                                    for s in solutions)/len(solutions) if solutions else None, **repair}
 
 
 def _record(batch: CollectedBatch, update: dict, algorithm: str, seed: int, step: int,
             push_seconds: float, dev: dict | None) -> dict:
-    groups = [g for t in batch.trees for g in t.groups if g.usable]
-    rewards = effective_rewards(groups, algorithm, seed, step-1)
+    repair = update.get("repair_preparation")
+    groups = [g for t in batch.trees for g in t.groups if g.usable or repair is not None]
+    rewards = update["effective_rewards"] if repair is not None else effective_rewards(groups, algorithm, seed, step-1)
     by_kind = {kind: [v for g in groups if g.kind == kind for v in rewards[g.group_id]]
                for kind in ("T1", "T2", "T3", "DIAG")}
+    fields = ({"reward_basis": "answer_only_DIAG_zero", "degenerate_fraction_scope": "answer_rewards_only",
+        "answer_degeneracy_does_not_imply_zero_repair_signal": True,
+        "repair_signal_components": {name: any(row["signal_components"][name] for row in repair.values())
+                                     for name in ("answer", "online", "final") + (("finalization",) if any(
+                                         "finalization" in row["signal_components"] for row in repair.values()) else ())},
+        "retained_repair_signal": update["retained_repair_signal"],
+        "repair_preparation_sha256": checkpoint.digest(repair),
+        "repair_aggregate_gradient_sha256": checkpoint.digest(update["repair_aggregate_gradient"])}
+        if repair is not None else {})
     return metrics.step_record(step=step, policy_version=step, n_problems=len(batch.trees),
         n_discarded=len(batch.discarded), n_groups_by_kind=update["n_groups_by_kind"],
         reward_mean_by_kind={k: statistics.mean(v) if v else None for k, v in by_kind.items()},
@@ -108,7 +122,7 @@ def _record(batch: CollectedBatch, update: dict, algorithm: str, seed: int, step
         **batch_statistics(batch),
         dev_first_attempt_acc=None if dev is None else dev["dev_first_attempt_acc"],
         grounding_probe=None if dev is None else dev.get("grounding_probe"),
-        seconds={"rollout": batch.seconds, **update["seconds"], "push": push_seconds})
+        seconds={"rollout": batch.seconds, **update["seconds"], "push": push_seconds}, **fields)
 
 
 def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: Any,
@@ -124,6 +138,12 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
     checkpoint but blocks automatic resume. Valid checkpoints carry the full health
     history and consumed-ID cursor; resumes use a NEW output directory.
     """
+    repair = _repair_protocol(protocol, prompts, algorithm, seed)
+    if repair is not None:
+        protocol = repair
+        if (bundle.inventory["arm"] != "MOD-RV" or verifier is None
+                or type(max_steps) is not int or not 1 <= max_steps <= 5):
+            raise ValueError("trainer: repair requires its verifier, MOD-RV and at most five steps")
     if (algorithm not in protocol["algorithms"] or type(seed) is not int or seed not in protocol["seeds"]
             or type(max_steps) is not int or max_steps < 1 or protocol["batch"]["epochs"] != 1
             or not math.isfinite(deadline_timestamp) or not actors):
@@ -166,6 +186,8 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
             raise ValueError("trainer: uncommitted, stale or incompatible resume cursor")
     if engine.policy_version != step or preparation.policy_version != step:
         raise ValueError("trainer: reconstruct and verify the resumed engine before continuation")
+    if repair is not None and (state["vision_health_disabled"] or grounding_disabled(state["history"], f0_reference)):
+        raise ValueError("trainer: repair cannot resume with disabled Vision or a Vision health override")
     # Validate actual Phase-A health references before allocating any output artifacts.
     reference_length = f0_reference.get("len_median")
     if (not isinstance(reference_length, (float, int)) or isinstance(reference_length, bool)
@@ -182,11 +204,19 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
     (output / "closed_trees").mkdir()
     (output / "closed_groups").mkdir()
     (output / "checkpoints").mkdir()
+    if repair is not None:
+        (output / "raw").mkdir()
     _write(output / "run.json", run_contract | {"contract_sha256": contract_sha,
         "start_step": step, "start_cursor": state, "deadline_timestamp": deadline_timestamp,
         "max_steps": max_steps, "status": "STARTED_NOT_COMPLETED"})
     status, stop_reasons, failure = "STEP_LIMIT", [], None
     latest_checkpoint = None
+    raw_sequence = 0
+    def preserve_raw(event):
+        nonlocal raw_sequence
+        _write(output / "raw" / f"{raw_sequence:06d}.json", {"event": "REPAIR_RAW", "step": step,
+            "batch_sequence": state["batch_sequence"] + 1, "record": event})
+        raw_sequence += 1
     def should_stop():
         return clock() >= deadline_timestamp-120
     def persist(label):
@@ -213,7 +243,7 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
                        json.loads(to_json(group)))
             batch = collect_batch(actor_by_id, structures, order, state["position"], image_loader,
                 engine, verifier, prompts, protocol, algorithm, should_stop=should_stop, seed=seed,
-                on_tree=preserve_tree, on_group=preserve_group)
+                on_tree=preserve_tree, on_group=preserve_group, **({"on_raw": preserve_raw} if repair is not None else {}))
             state["batch_sequence"] += 1
             batch_id = f"{state['batch_sequence']:06d}"
             try:
@@ -241,13 +271,16 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
                     continue
                 update = optimizer_step(bundle, optimizer, scheduler, batch.trees, batch.images,
                     preparation, protocol, algorithm, step=step, seed=seed,
-                    vision_disabled=state["vision_health_disabled"])
+                    vision_disabled=state["vision_health_disabled"], **({"objective_verifier": verifier,
+                        "observation_actors": {tree.problem_id: actor_by_id[tree.problem_id] for tree in batch.trees}}
+                        if repair is not None else {}))
                 _write(output / "batches" / f"{batch_id}.update.json", update)
                 if update["status"] == "NO_MATCHED_ACTIONS":
                     state["untrained_problem_ids"].extend(t.problem_id for t in batch.trees)
                     status, stop_reasons = "HEALTH_STOP", ["NO_MATCHED_ACTIONS"]
                     break
-                if update["status"] == "NO_ACTIONS":
+                if update["status"] == "NO_ACTIONS" or repair is not None and update["status"] in (
+                        "NO_ADMITTED_REPAIR_TREES", "NO_LEARNING_SIGNAL"):
                     state["untrained_problem_ids"].extend(t.problem_id for t in batch.trees)
                     continue
                 if update["status"] != "UPDATED_UNSYNCHRONIZED":
@@ -279,6 +312,9 @@ def run_loop(*, bundle: PolicyBundle, optimizer: Any, scheduler: Any, engine: An
                 state["history"].append(record)
                 state["sync_pending"] = bool(stop_reasons == ["DEV_CHECK_PENDING"])
                 if grounding_disabled(state["history"], f0_reference):
+                    if repair is not None:
+                        status, stop_reasons = "HEALTH_STOP", ["VISION_HEALTH_REVIEW_REQUIRED"]
+                        break
                     state["vision_health_disabled"] = True
                 health = metrics.health_check(state["history"], protocol, f0_reference)
                 if health:

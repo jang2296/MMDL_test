@@ -12,6 +12,10 @@ from typing import Literal
 from .schema import VerifierItem
 
 VERSION = "strict-final-v1"
+# Opt-in first-attempt contract: MMMU P0 prompt bytes and team-final-answer-v8 extraction (v8_parser.py).
+TURN1_EVAL_CONTRACT = "p0-eval-aligned-v1"
+# Opt-in retry rule bound only with that T1 contract: a committed MCQ retry answer naming no option is INCORRECT.
+RETRY_OUT_OF_CHOICE = "incorrect-v1"
 _FINAL = re.compile(r"^[ \t]*final answer[ \t]*:[ \t]*(.*?)[ \t]*$", re.I | re.M)
 _INT = r"[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)"
 _NUM = r"[+-]?(?:(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"
@@ -73,6 +77,25 @@ def extract_final(text: str, finish_reason: str) -> Extraction:
     return Extraction("OK", answer)
 
 
+def extract_eval_aligned(text: str, finish_reason: str, question: str, choices: tuple[str, ...],
+                         answer_type: str) -> Extraction:
+    """Gold-blind V8 extraction of the whole response, as MMMU evaluation scores it.
+
+    Length stops stay TRUNCATED (training-only cap). V8 itself rejects conflicting, revoked or
+    alternative answers (NO_PARSE), so nothing here chooses among several answers."""
+    if not isinstance(text, str) or finish_reason not in ("stop", "length") or not isinstance(question, str):
+        raise ValueError("answer: text, question and stop/length finish reason required")
+    if finish_reason == "length":
+        return Extraction("TRUNCATED", None)
+    from . import v8_parser
+
+    found = (v8_parser.extract_mcq(text, choices, finish_reason, question=question) if answer_type == "mcq"
+             else v8_parser.extract_open(text, finish_reason, question=question))
+    if found["status"] != v8_parser.PARSED:
+        return Extraction("INVALID_NO_FINAL", None)
+    return Extraction("OK", found["answer"])
+
+
 def number(value: str) -> Fraction | None:
     """Parse one exact decimal/rational; reject malformed commas and non-finite values."""
     value = value.strip()
@@ -103,6 +126,17 @@ def mcq_choice(answer: str, choices: tuple[str, ...]) -> tuple[str | None, bool]
         return None, False
     conflict = match[3] is not None and normalize_text(match[3]) != normalize_text(choices[index])
     return label, conflict
+
+
+def mcq_out_of_choice(answer: str, choices: tuple[str, ...]) -> bool:
+    """True only for an answer that names no option: no standalone in-range label letter (any case) and no
+    option text inside it or containing it. It cannot select the gold option and V8 evaluation scores it
+    wrong; anything that may refer to an option stays undecided (False)."""
+    key = normalize_text(answer)
+    labels = "abcdefghijklmnopqrstuvwxyz"[:len(choices)]
+    if not key or not labels or re.search(rf"(?<![a-z])[{labels}](?![a-z])", key):
+        return False
+    return not any(option and (option in key or key in option) for option in map(normalize_text, choices))
 
 
 def is_ambiguous(answer: str, item: VerifierItem) -> bool:

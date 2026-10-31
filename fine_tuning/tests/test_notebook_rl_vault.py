@@ -8,13 +8,22 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
+from fine_tuning.notebook_rl import vault
 from fine_tuning.notebook_rl.schema import ActorItem, Lineage, VerifierItem, to_json
 from fine_tuning.notebook_rl.vault import (
     ACTOR_KEYS, read_actors, read_lineage, read_verifier, write_split,
 )
+from fine_tuning.notebook_rl.verifier_service import VerifierService
+
+LEGACY_CODE = {
+    "vault.py": "45b2e61e8eb98fe0e392a201dc9fad8382c61546b4312d40db1c81cbc243d1ce",
+    "schema.py": "0605c5f1a1c0f00b08e2b0e5f7dee83e240573e7bdd1ad3b071964c173b44996",
+    "guards.py": "e37f158845012e11d22e46d8965d09e422b0e59103dbb68345a857426fe5638a",
+}
 
 
 def records():
@@ -43,6 +52,12 @@ class VaultTests(unittest.TestCase):
         if rows is not None:
             data["files"][name]["rows"] = rows
         path.write_text(json.dumps(data), encoding="utf-8")
+
+    def legacy_manifest(self):
+        data = self.write()
+        data["code_sha256"] = dict(LEGACY_CODE)
+        (self.root / "manifest.yaml").write_text(json.dumps(data), encoding="utf-8")
+        return data
 
     def test_roundtrip_manifest_hashes_and_private_permissions(self):
         actors, verifiers, lineages = records()
@@ -226,6 +241,77 @@ assert not any(str(p) in opened for p in private)
         self.assertEqual(read_actors(empty), [])
         self.assertEqual(read_verifier(empty), {})
         self.assertEqual(read_lineage(empty), {})
+
+    def test_pinned_legacy_vault_loaders_and_fresh_service_preserve_payloads(self):
+        self.legacy_manifest()
+        before = {p.name: p.read_bytes() for p in self.root.iterdir()}
+        actors, verifiers, lineages = records()
+        self.assertEqual(read_actors(self.root), actors)
+        self.assertEqual(read_verifier(self.root), {verifiers[0].problem_id: verifiers[0]})
+        self.assertEqual(read_lineage(self.root), {lineages[0].problem_id: lineages[0]})
+        with VerifierService(self.root, forbidden_roots=[]) as service:
+            self.assertNotEqual(service.metadata["pid"], os.getpid())
+            self.assertTrue(service.metadata["python_guards_installed"])
+            self.assertEqual(service.metadata["vault_manifest_sha256"],
+                             hashlib.sha256(before["manifest.yaml"]).hexdigest())
+            result = service.grade(actors[0].problem_id, "Final answer: 53", "stop", "plain")
+            self.assertEqual(result.status, "CORRECT")
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
+
+    def test_legacy_source_exception_requires_exact_complete_old_triple(self):
+        data = self.legacy_manifest()
+        current = vault._code_hashes()
+        candidates = [{}, LEGACY_CODE | {"unknown.py": "0" * 64}]
+        for name in LEGACY_CODE:
+            candidates.extend((LEGACY_CODE | {name: "0" * 64},
+                               {key: value for key, value in LEGACY_CODE.items() if key != name}))
+            if current[name] != LEGACY_CODE[name]:
+                candidates.append(LEGACY_CODE | {name: current[name]})
+        for code in candidates:
+            (self.root / "manifest.yaml").write_text(json.dumps(data | {"code_sha256": code}))
+            for loader in (read_actors, read_verifier, read_lineage):
+                with self.subTest(code=code, loader=loader.__name__), self.assertRaisesRegex(
+                        ValueError, "code or protocol hash mismatch"):
+                    loader(self.root)
+
+    def test_legacy_source_exception_rejects_changed_current_schema_or_guards(self):
+        self.legacy_manifest()
+        current = vault._code_hashes()
+        for name in ("schema.py", "guards.py"):
+            for digest in ("0" * 64, LEGACY_CODE[name]):
+                if digest == current[name]:
+                    continue
+                with self.subTest(name=name, digest=digest), patch.object(
+                        vault, "_code_hashes", return_value=current | {name: digest}):
+                    for loader in (read_actors, read_verifier, read_lineage):
+                        with self.assertRaisesRegex(ValueError, "code or protocol hash mismatch"):
+                            loader(self.root)
+
+    def test_legacy_reader_keeps_protocol_payload_counts_and_lineage_checks(self):
+        data = self.legacy_manifest()
+        path = self.root / "manifest.yaml"
+        path.write_text(json.dumps(data | {"protocol_sha256": "0" * 64}))
+        for loader in (read_actors, read_verifier, read_lineage):
+            with self.assertRaisesRegex(ValueError, "code or protocol hash mismatch"):
+                loader(self.root)
+        path.write_text(json.dumps(data))
+        for name, loader in (("actor_inputs.jsonl", read_actors),
+                             ("verifier_private.jsonl", read_verifier), ("lineage.jsonl", read_lineage)):
+            payload = self.root / name
+            raw = payload.read_bytes()
+            payload.write_bytes(raw + b" ")
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "payload hash mismatch"):
+                loader(self.root)
+            payload.write_bytes(raw)
+        bad_counts = dict(data["files"])
+        bad_counts["actor_inputs.jsonl"] = bad_counts["actor_inputs.jsonl"] | {"rows": 0}
+        path.write_text(json.dumps(data | {"files": bad_counts}))
+        with self.assertRaisesRegex(ValueError, "row count mismatch"):
+            read_actors(self.root)
+        path.write_text(json.dumps(data))
+        self.rehash("lineage.jsonl", to_json(replace(records()[2][0], model_touched=True)).encode() + b"\n")
+        with self.assertRaisesRegex(ValueError, "forbidden benchmark or model lineage"):
+            read_lineage(self.root)
 
 
 if __name__ == "__main__":

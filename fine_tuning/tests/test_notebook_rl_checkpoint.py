@@ -132,7 +132,8 @@ class CheckpointTests(unittest.TestCase):
         loss = action_step(self.bundle, self.optimizer, self.scheduler)
         expected_state = snapshot(self.bundle)
         (self.root / "worker.json").write_text(json.dumps({"binding": self.binding}))
-        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--worker", str(self.root)],
+        result = subprocess.run([sys.executable, "-m", "fine_tuning.tests.test_notebook_rl_checkpoint",
+                                "--worker", str(self.root)],
             cwd=Path(__file__).resolve().parents[2], env=os.environ.copy(), capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr[-4000:])
         actual = torch.load(self.root / "worker_result.pt", weights_only=True)

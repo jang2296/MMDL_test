@@ -1,6 +1,7 @@
 """Real tiny-Qwen RL gradients on controlled action/reward fixtures, not 4B results."""
 import copy
 import hashlib
+import json
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import torch
 
 from fine_tuning.modules import tensor_sha256
 from fine_tuning.notebook_rl.checkpoint import make_optimizer
+from fine_tuning.notebook_rl.notebook_learning import NOTEBOOK_REWARD_VERSION
 from fine_tuning.notebook_rl.policy import assert_base_unchanged, completion_logprobs, reference_logprobs
 from fine_tuning.notebook_rl.schema import Group, ProblemTree, Sample, VerifierResult
 from fine_tuning.notebook_rl.updates import (action_mask, effective_rewards, has_learning_signal,
@@ -126,14 +128,76 @@ class UpdateTests(unittest.TestCase):
         for sample in row.groups[0].samples:
             sample.sampler_logprobs = [p-.1 for p in sample.sampler_logprobs]
         before = {n: tensor_sha256(p) for n, p in b.model.named_parameters()}
+        events = []
         result = optimizer_step(b, opt, scheduler, [row], {"p": [object()]}, Preparation(), config(),
-                                "ALG-T1", step=0, seed=3407)
+                                "ALG-T1", step=0, seed=3407, on_progress=events.append)
         self.assertEqual(result["status"], "NO_MATCHED_ACTIONS")
         self.assertEqual(result["masked_fraction"], 1)
         self.assertFalse(result["engine_sync_required"])
         self.assertEqual(scheduler.last_epoch, 0)
         self.assertFalse(opt.state)
         self.assertEqual(before, {n: tensor_sha256(p) for n, p in b.model.named_parameters()})
+        self.assertEqual([(e["stage"], e["state"]) for e in events],
+                         [("old", state) for _ in range(2) for state in ("START", "RETURN")])
+
+    def test_progress_preserves_exact_update_and_adds_no_stage_synchronization(self):
+        from fine_tuning.notebook_rl.updates import _stage_time
+        source = bundle()
+        row, events, results = tree(source), [], []
+        for observer in (None, events.append):
+            b = copy.deepcopy(source)
+            opt, scheduler = make_optimizer(b, config())
+            with patch("fine_tuning.notebook_rl.updates._stage_time", wraps=_stage_time) as timer:
+                result = optimizer_step(b, opt, scheduler, [row], {"p": [object()]}, Preparation(),
+                                        config(), "ALG-T1", step=0, seed=3407, on_progress=observer)
+            result.pop("seconds")
+            results.append((result, {n: tensor_sha256(p) for n, p in b.model.named_parameters()},
+                            scheduler.state_dict(), timer.call_count, torch.get_rng_state().clone()))
+        self.assertEqual(results[0][:-1], results[1][:-1])
+        self.assertTrue(torch.equal(results[0][-1], results[1][-1]))
+        expected = [(stage, state, index) for stage in ("old", "reference", "backward")
+                    for index in (1, 2) for state in ("START", "RETURN")]
+        self.assertEqual([(e["stage"], e["state"], e["action_index"]) for e in events],
+                         expected + [("optimizer", "START", 0)])
+        self.assertEqual(len({id(e) for e in events}), len(events))
+        self.assertEqual(events, json.loads(json.dumps(events, allow_nan=False)))
+        for event in events:
+            self.assertEqual(event["event"], "UPDATE_PROGRESS")
+            self.assertEqual(event["step"], 0)
+            self.assertEqual(event["action_count"], 2)
+            self.assertGreaterEqual(event["host_elapsed_seconds"], 0)
+            self.assertTrue(all(type(value) in (str, int, float, bool) for value in event.values()))
+            if event["stage"] != "optimizer":
+                self.assertEqual(event["sample_id"], f"p:{event['action_index']-1}")
+                self.assertEqual((event["kind"], event["prompt_tokens"], event["completion_tokens"]),
+                                 ("T1", 7, 3))
+                self.assertTrue(event["vision_on"])
+
+    def test_observer_failure_never_commits_and_clears_backward_gradients(self):
+        for stage, state in (("old", "START"), ("reference", "RETURN"),
+                             ("backward", "RETURN"), ("optimizer", "START")):
+            with self.subTest(stage=stage):
+                b = bundle()
+                opt, scheduler = make_optimizer(b, config())
+                row = tree(b)
+                before = {n: tensor_sha256(p) for n, p in b.model.named_parameters()}
+                def observe(event):
+                    if (event["stage"], event["state"]) == (stage, state):
+                        if stage in ("backward", "optimizer"):
+                            self.assertTrue(any(p.grad is not None for p in b.model.parameters()))
+                        raise RuntimeError("observer failed")
+                with self.assertRaisesRegex(RuntimeError, "observer failed"):
+                    optimizer_step(b, opt, scheduler, [row], {"p": [object()]}, Preparation(),
+                                   config(), "ALG-T1", step=0, seed=3407, on_progress=observe)
+                self.assertEqual(scheduler.last_epoch, 0)
+                self.assertFalse(opt.state)
+                self.assertTrue(all(p.grad is None for p in b.model.parameters()))
+                self.assertEqual(before, {n: tensor_sha256(p) for n, p in b.model.named_parameters()})
+
+    def test_noncallable_progress_is_rejected_before_training(self):
+        with self.assertRaisesRegex(ValueError, "observer must be callable"):
+            optimizer_step(None, None, None, [], {}, None, {}, "ALG-T1", step=0, seed=3407,
+                           on_progress=False)
 
     def test_preupdate_difference_aborts_and_clears_partial_gradients(self):
         b, protocol, prep = bundle(), config(), Preparation()
@@ -184,6 +248,73 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse(action_mask(no_note, "ALG-NB-noteonly", Characters()).any())
         with self.assertRaisesRegex(ValueError, "text differ"):
             action_mask(replace(note, text="wrong text"), "ALG-NB-noteonly", Characters())
+
+    def test_only_verified_local_notebook_variance_can_admit_an_update(self):
+        b, protocol = bundle(), config()
+        row = tree(b, route="VISION_OFF")
+        note = copy.deepcopy(row.groups[0])
+        note.kind, note.group_id = "DIAG", "p:NOTEBOOK"
+        for sample in note.samples:
+            sample.kind, sample.group_id = "DIAG", note.group_id
+            sample.sample_id += ":note"
+            sample.diag_reward, sample.result = sample.reward, None
+        for sample in row.groups[0].samples:
+            sample.reward = 0
+        row.groups.append(note)
+        self.assertFalse(has_learning_signal(row, include_notebooks=True))
+        row.notebook["rewarded_notebook"] = {
+            "group_id": note.group_id, "status": "GENERATED",
+            "reward_version": NOTEBOOK_REWARD_VERSION,
+        }
+        self.assertFalse(has_learning_signal(row))
+        self.assertTrue(has_learning_signal(row, include_notebooks=True))
+        opt, sched = make_optimizer(b, protocol)
+        with self.assertRaisesRegex(ValueError, "signal-free"):
+            optimizer_step(b, opt, sched, [row], {"p": [object()]}, Preparation(),
+                           protocol, "ALG-T1", step=0, seed=3407)
+        protocol.update(profile="local-nf4-notebook-rl-v1",
+                        notebook_reward=NOTEBOOK_REWARD_VERSION)
+        before = [tensor_sha256(p) for p in b.params["L"]]
+        result = optimizer_step(b, opt, sched, [row], {"p": [object()]}, Preparation(),
+                                protocol, "ALG-T1", step=0, seed=3407)
+        self.assertEqual(result["status"], "UPDATED_UNSYNCHRONIZED")
+        self.assertEqual(result["n_groups_by_kind"]["DIAG"], 1)
+        self.assertNotEqual(before, [tensor_sha256(p) for p in b.params["L"]])
+        self.assertEqual(len(result["notebook_backward"]), 2)
+        self.assertTrue(any(row["advantage"] != 0 and "L" in row["changed_groups"]
+                            for row in result["notebook_backward"]))
+        self.assertTrue(all("V" not in row["changed_groups"] for row in result["notebook_backward"]))
+        self.assertTrue(all(row["reward_gradient_isolated"] for row in result["notebook_backward"]))
+        changed_reference = bundle()
+        opt, sched = make_optimizer(changed_reference, protocol)
+        with patch("fine_tuning.notebook_rl.updates.reference_logprobs",
+                   side_effect=lambda *args, **kwargs: reference_logprobs(*args, **kwargs) - .1):
+            uncertain = optimizer_step(changed_reference, opt, sched, [row], {"p": [object()]},
+                Preparation(), protocol, "ALG-T1", step=0, seed=3407)
+        self.assertTrue(any(r["changed_groups"] for r in uncertain["notebook_backward"]))
+        self.assertFalse(any(r["reward_gradient_isolated"] for r in uncertain["notebook_backward"]))
+
+    def test_kl_only_gradient_cannot_certify_notebook_reward_contribution(self):
+        from fine_tuning.notebook_rl.losses import group_loss
+        x = torch.tensor(0., requires_grad=True)
+        current = torch.stack((-1 + x, -1 - x)).unsqueeze(0)
+        old, reference = current.detach().clone(), torch.tensor([[-.8, -1.]])
+        args = (current, old, reference, torch.tensor([.5]), torch.ones_like(current, dtype=torch.bool),
+                torch.tensor([True]))
+        plain = group_loss(*args, eps_low=.2, eps_high=.2, beta=0., norm_const=2)
+        combined = group_loss(*args, eps_low=.2, eps_high=.2, beta=.01, norm_const=2)
+        self.assertEqual(float(torch.autograd.grad(plain, x, retain_graph=True)[0]), 0.)
+        self.assertNotEqual(float(torch.autograd.grad(combined, x)[0]), 0.)
+        self.assertFalse(torch.equal(current.detach(), reference))
+
+    def test_zero_gradient_allocation_is_not_a_notebook_contribution(self):
+        from fine_tuning.notebook_rl.updates import _gradient_identity
+        p = torch.nn.Parameter(torch.ones(2))
+        before = _gradient_identity({"L": [p]})
+        p.grad = torch.zeros_like(p)
+        self.assertEqual(_gradient_identity({"L": [p]}), before)
+        p.grad[0] = 1
+        self.assertNotEqual(_gradient_identity({"L": [p]}), before)
 
     def test_control_rewards_and_exact_random_route_count_reproducible(self):
         b = bundle()

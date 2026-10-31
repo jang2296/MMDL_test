@@ -133,6 +133,37 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             to_json(replace(records()[8], cause3="NON_VISUAL"))
 
+    def test_slot_report_legacy_wire_allows_only_the_two_new_fields_to_be_absent(self):
+        report = records()[3]
+        legacy = asdict(report)
+        del legacy["false_relations"], legacy["unverified_relations"]
+        self.assertEqual(from_json(SlotReport, json.dumps(legacy)), report)
+        nested = asdict(records()[4]) | {"slots": legacy}
+        self.assertEqual(from_json(VerifierResult, json.dumps(nested)), records()[4])
+        for missing in ("false_relations", "unverified_relations", "conflicting", "parsed"):
+            wire = asdict(report)
+            del wire[missing]
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                from_json(SlotReport, json.dumps(wire))
+        with self.assertRaisesRegex(ValueError, "unknown keys"):
+            from_json(SlotReport, json.dumps(legacy | {"extra": []}))
+
+    def test_relation_fields_are_unique_normalized_disjoint_and_separate_from_counts(self):
+        report = replace(records()[3], false_relations=("edge[h,d]",),
+                         unverified_relations=("edge[z,d]",), conflicting=("edge[h,d]",))
+        self.assertEqual(from_json(SlotReport, to_json(report)), report)
+        for change in ({"false_relations": ("edge[h,d]",) * 2},
+                       {"unverified_relations": ("edge[z,d]",) * 2},
+                       {"false_relations": ("edge[H,D]",)},
+                       {"unverified_relations": (" edge[z,d] ",)},
+                       {"false_relations": ("",)},
+                       {"unverified_relations": report.false_relations},
+                       {"false_relations": report.wrong_required},
+                       {"unverified_relations": report.wrong_required},
+                       {"parsed": 2}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                to_json(replace(report, **change))
+
     def test_protocol_and_prompt_hashes(self):
         path = ROOT / "protocol_v1.yaml"
         p = load_protocol(path)

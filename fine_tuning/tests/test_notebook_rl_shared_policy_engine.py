@@ -12,7 +12,7 @@ from tokenizers.pre_tokenizers import WhitespaceSplit
 from transformers import (Qwen2TokenizerFast, Qwen2VLImageProcessor, Qwen3VLProcessor,
                           Qwen3VLVideoProcessor)
 
-from fine_tuning.notebook_rl.engines import RolloutRequest
+from fine_tuning.notebook_rl.engines import RolloutRequest, _SelectedTokenLogprobs
 from fine_tuning.notebook_rl.policy import (assert_base_unchanged, completion_logprobs,
                                            configure_policy, reference_logprobs)
 from fine_tuning.notebook_rl.shared_policy_engine import SharedPolicyRolloutEngine
@@ -45,6 +45,8 @@ def request(count=1, *, key=None, n=1):
 
 
 class SharedPolicyEngineTests(unittest.TestCase):
+    threads: int
+
     @classmethod
     def setUpClass(cls):
         cls.threads = torch.get_num_threads()
@@ -85,17 +87,35 @@ class SharedPolicyEngineTests(unittest.TestCase):
         bundle.model.generation_config.temperature = .7
         bundle.model.generation_config.top_p = .8
         bundle.model.generation_config.transformers_version = "4.57.1"
-        score_refs = []
+        score_refs: list[weakref.ReferenceType[torch.Tensor]] = []
+        cache_refs: list[weakref.ReferenceType] = []
         original = bundle.model.generate
+        observe = _SelectedTokenLogprobs.__call__
+        finish = _SelectedTokenLogprobs.finish
+
+        def streamed_scores(collector, ids, scores):
+            self.assertTrue(all(reference() is None for reference in score_refs[:-1]))
+            score_refs.append(weakref.ref(scores))
+            return observe(collector, ids, scores)
 
         def generate(*args, **kwargs):
             self.assertTrue(all(reference() is None for reference in score_refs))
             output = original(*args, **kwargs)
-            score_refs.extend(weakref.ref(score) for score in output.scores)
+            self.assertIsNone(output.scores)
+            cache_refs[:] = [weakref.ref(output.past_key_values)] + [
+                weakref.ref(tensor) for layer in output.past_key_values.layers
+                for tensor in (layer.keys, layer.values)]
+
             return output
 
+        def streamed_finish(collector, sequences):
+            self.assertTrue(all(reference() is None for reference in cache_refs))
+            return finish(collector, sequences)
+
         state = torch.get_rng_state().clone()
-        with patch.object(bundle.model, "generate", side_effect=generate):
+        with patch.object(bundle.model, "generate", side_effect=generate), patch.object(
+                _SelectedTokenLogprobs, "__call__", streamed_scores), patch.object(
+                _SelectedTokenLogprobs, "finish", streamed_finish):
             result = engine.sample([request(n=2)])[0]
         self.assertTrue(torch.equal(state, torch.get_rng_state()))
         self.assertEqual(len(result.completions), 2)

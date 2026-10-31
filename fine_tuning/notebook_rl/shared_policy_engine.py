@@ -2,23 +2,24 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from typing import Iterable
+from typing import Callable, Iterable
 
 import torch
 
-from .engines import HFRolloutEngine, InputPreparation, RolloutRequest, RolloutResult, SamplingSettings
+from .engines import (Completion, HFRolloutEngine, InputPreparation, RolloutRequest, RolloutResult,
+                      SamplingSettings, _batch_rows)
 from .policy import PolicyBundle, completion_logprobs
 
 
 class SharedPolicyRolloutEngine(HFRolloutEngine):
     """One live model; fresh generation caches and actual probes after every update.
 
-    HF retains one completion's generation scores until extraction. This path is
-    for bounded sequential smoke runs; real GPU memory/time still need calibration.
+    Only one vocabulary vector and selected-token log probabilities are retained.
+    This path is for bounded sequential runs; real GPU memory/time need calibration.
     """
 
     def __init__(self, bundle: PolicyBundle, image_cfg: dict, max_model_len: int, *,
-                 logprob_chunk: int = 1024, policy_version: int = 0):
+                 logprob_chunk: int = 1024, policy_version: int = 0, batch_rows: int | None = None):
         if (not isinstance(bundle, PolicyBundle) or not hasattr(bundle.model, "peft_config")
                 or bundle.processor is None or type(logprob_chunk) is not int or logprob_chunk < 1
                 or type(policy_version) is not int or policy_version < 0):
@@ -27,6 +28,7 @@ class SharedPolicyRolloutEngine(HFRolloutEngine):
         InputPreparation.__init__(self, bundle.processor, bundle.model.config, image_cfg, max_model_len)
         self.bundle, self.model, self.logprob_chunk = bundle, bundle.model, logprob_chunk
         self.policy_version = policy_version
+        self.batch_rows = _batch_rows(batch_rows)
         self._parameters = {name: (id(p), tuple(p.shape), p.dtype, p.device)
                             for name, p in self.model.named_parameters()}
         self._partitions = {group: tuple(id(p) for p in params) for group, params in bundle.params.items()}
@@ -69,14 +71,17 @@ class SharedPolicyRolloutEngine(HFRolloutEngine):
     def _load_weights(self, named: Iterable[tuple[str, torch.Tensor]], version: int) -> None:
         raise RuntimeError("shared engine: raw or merged weight loading forbidden")
 
-    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings) -> list[RolloutResult]:
+    def sample_with_settings(self, requests: list[RolloutRequest], sampling: SamplingSettings, *,
+            on_completion: Callable[[str, int, int, Completion], None] | None = None) -> list[RolloutResult]:
         self._assert_owner(self.bundle)
         vision_on = self.bundle.route.vision_on
         device = next(self.model.parameters()).device
         autocast = torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" else nullcontext()
         try:
             with autocast:
-                return super().sample_with_settings(requests, sampling)
+                if on_completion is None:
+                    return super().sample_with_settings(requests, sampling)
+                return super().sample_with_settings(requests, sampling, on_completion=on_completion)
         finally:
             self.bundle.route.apply(vision_on)
 

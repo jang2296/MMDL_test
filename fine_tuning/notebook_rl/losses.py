@@ -88,7 +88,7 @@ def k3(ref_lp: torch.Tensor, cur_lp: torch.Tensor) -> torch.Tensor:
 def group_loss(cur_lp: torch.Tensor, old_lp: torch.Tensor, ref_lp: torch.Tensor,
                adv: torch.Tensor, action_mask: torch.Tensor, seq_keep: torch.Tensor, *,
                eps_low: float, eps_high: float, beta: float,
-               norm_const: float) -> torch.Tensor:
+               norm_const: float, partial_adv: torch.Tensor | None = None) -> torch.Tensor:
     """Return a group (or sample-slice) sum divided by the full n_g * L_cap."""
     _matrix(cur_lp, "cur_lp")
     _matching(cur_lp, old_lp, "old_lp")
@@ -105,6 +105,10 @@ def group_loss(cur_lp: torch.Tensor, old_lp: torch.Tensor, ref_lp: torch.Tensor,
     if eps_low >= 1.0:
         raise ValueError("eps_low: must be less than 1")
     _scalar(norm_const, "norm_const", positive=True)
+    if partial_adv is not None:
+        if not isinstance(partial_adv, torch.Tensor) or partial_adv.shape != cur_lp.shape or partial_adv.device != cur_lp.device:
+            raise ValueError("partial_adv: shape/device mismatch")
+        _matching(cur_lp, partial_adv, "partial_adv")
     active = _actions(action_mask, cur_lp) & seq_keep.detach().unsqueeze(1)
     cur = _work(cur_lp)
     # Mask before exp: excluded padding/sequences cannot overflow or contribute gradients.
@@ -115,6 +119,11 @@ def group_loss(cur_lp: torch.Tensor, old_lp: torch.Tensor, ref_lp: torch.Tensor,
     surrogate = torch.minimum(ratio * advantage,
                               ratio.clamp(1.0 - eps_low, 1.0 + eps_high) * advantage)
     token_loss = -surrogate
+    if partial_adv is not None:
+        # Clip the two objectives separately; opposing advantages must not cancel first.
+        partial = _work(partial_adv.detach())
+        token_loss = token_loss - torch.minimum(ratio * partial,
+            ratio.clamp(1.0 - eps_low, 1.0 + eps_high) * partial)
     if beta:
         ref = torch.where(active, _work(ref_lp.detach()), 0.0)
         current = torch.where(active, cur, 0.0)
@@ -140,3 +149,47 @@ def combine(group_losses: list[torch.Tensor], lambdas: list[float]) -> torch.Ten
     result = result / denominator
     _finite_tensor(result, "combined loss")
     return result
+
+
+def repair_component_losses(cur_lp: torch.Tensor, old_lp: torch.Tensor, ref_lp: torch.Tensor,
+                            action_mask: torch.Tensor, seq_keep: torch.Tensor, *,
+                            answer: torch.Tensor, online: torch.Tensor, final: torch.Tensor,
+                            kind: str, original_group_size: int, completion_cap: int,
+                            finalization: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
+    """Separate fixed repair objectives on one forward; caller applies group weight once.
+
+    The opt-in finalization channel exists only when passed and never carries a DIAG coefficient."""
+    expected = {"T1": (4, 1024), "T2": (2, 1024), "T3": (2, 1024), "DIAG": (4, 8192)}
+    if kind == "T1" and type(completion_cap) is int and 0 < completion_cap < 24576:
+        # An opt-in eval-aligned T1 binds its own cap; this function has no protocol, so the bound value
+        # is checked where the receipt is built (repair_training) and re-checked by repair_evidence.
+        expected["T1"] = (4, completion_cap)
+    if (type(kind) is not str or kind not in expected or type(original_group_size) is not int
+            or type(completion_cap) is not int
+            or (original_group_size, completion_cap) != expected[kind]):
+        raise ValueError("repair loss: fixed original group size/cap differs")
+    _matrix(cur_lp, "cur_lp")
+    if cur_lp.shape[0] > original_group_size or cur_lp.shape[1] > completion_cap:
+        raise ValueError("repair loss: action slice exceeds original group/cap")
+    mask = _actions(action_mask, cur_lp)
+    components = {"answer": answer, "online": online, "final": final,
+                  **({"finalization": finalization} if finalization is not None else {})}
+    for name, coefficients in components.items():
+        _matching(cur_lp, coefficients, name)
+        if bool((coefficients.detach()[~mask] != 0).any()):
+            raise ValueError("repair loss: coefficient outside original action mask")
+    forbidden: tuple[str, ...] = (("online", "final") if kind == "T1" else ("answer", "online") if kind == "DIAG"
+                                  else ("final",))
+    if kind == "DIAG" and finalization is not None:
+        forbidden += ("finalization",)
+    if any(bool((components[name].detach() != 0).any()) for name in forbidden):
+        raise ValueError("repair loss: coefficient on an inapplicable channel")
+    zeros = torch.zeros(cur_lp.shape[0], device=cur_lp.device, dtype=cur_lp.dtype)
+    values = {name: group_loss(cur_lp, old_lp, ref_lp, zeros, mask, seq_keep,
+        eps_low=.2, eps_high=.28, beta=0, norm_const=original_group_size * completion_cap,
+        partial_adv=coefficients) for name, coefficients in components.items()}
+    values["kl"] = group_loss(cur_lp, old_lp, ref_lp, zeros, mask, seq_keep,
+        eps_low=.2, eps_high=.28, beta=.01, norm_const=original_group_size * completion_cap)
+    values["total"] = sum(values.values(), torch.zeros((), device=cur_lp.device, dtype=values["kl"].dtype))
+    _finite_tensor(values["total"], "repair loss")
+    return values

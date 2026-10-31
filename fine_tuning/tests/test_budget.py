@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from fine_tuning.budget import effective_deadline, terminate_group, utc
+from fine_tuning.budget import check_billing_start, effective_deadline, terminate_group, utc
 
 
 WORKER = "import os,signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print(os.getpid(),flush=True); time.sleep(60)"
@@ -210,6 +210,76 @@ finally:
                         os.waitpid(owned['worker'], 0)
                     except ChildProcessError:
                         pass
+
+    def budget(self, command, *extra, billing=None, maximum="30"):
+        now = dt.datetime.now(dt.timezone.utc)
+        return [sys.executable, '-S', '-m', 'fine_tuning.budget', '--owned-pod-id', 'fixture-owned-pod',
+                '--gpu-cutoff-utc', (now+dt.timedelta(seconds=600)).isoformat(),
+                '--billing-start-utc', (billing or now).isoformat(), '--balance-usd', '1',
+                '--reserve-usd', '0', '--hourly-usd', '1', '--max-seconds', maximum, *extra,
+                '--', *command]
+
+    def test_future_billing_start_is_refused_beyond_a_small_skew(self):
+        environment = {**os.environ, "RUNPOD_POD_ID": "fixture-owned-pod"}
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory)/'ran'
+            touch = [sys.executable, '-c', f'import pathlib;pathlib.Path({str(marker)!r}).touch()']
+            now = dt.datetime.now(dt.timezone.utc)
+            refused = subprocess.run(self.budget(touch, billing=now+dt.timedelta(hours=1)),
+                                     env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(2, refused.returncode, refused.stderr)
+            result = json.loads(refused.stdout.splitlines()[-1])
+            self.assertEqual('BLOCKED', result['status'])
+            self.assertIn('future', result['reason'])
+            self.assertFalse(marker.exists())
+            skewed = subprocess.run(self.budget(touch, billing=now+dt.timedelta(seconds=60)),
+                                    env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, skewed.returncode, skewed.stderr)
+            self.assertTrue(marker.exists())
+        check_billing_start(utc('2026-10-04T00:00:00Z'))  # past starts stay valid
+        with self.assertRaises(ValueError):
+            check_billing_start(dt.datetime.now(dt.timezone.utc)+dt.timedelta(seconds=301))
+
+    def test_sighup_is_ignored_the_child_keeps_default_hup_and_the_result_is_persisted(self):
+        environment = {**os.environ, "RUNPOD_POD_ID": "fixture-owned-pod"}
+        child = ("import signal,sys,time;print(signal.getsignal(signal.SIGHUP) is signal.SIG_DFL,"
+                 "flush=True);time.sleep(1.5)")
+        with tempfile.TemporaryDirectory() as directory:
+            result_file = Path(directory)/'budget_result.json'
+            process = subprocess.Popen(self.budget([sys.executable, '-c', child], '--result-file',
+                                                   str(result_file)),
+                                       env=environment, stdout=subprocess.PIPE, text=True,
+                                       start_new_session=True)
+            try:
+                self.assertEqual('True', process.stdout.readline().strip())
+                os.kill(process.pid, signal.SIGHUP)  # what a dropped SSH session delivers
+                output, _ = process.communicate(timeout=30)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+            self.assertEqual(0, process.returncode)
+            printed = json.loads(output.splitlines()[-1])
+            self.assertEqual(('EXITED', 0, 1), (printed['status'], printed['returncode'],
+                                                printed['sighup_ignored']))
+            self.assertEqual(printed, json.loads(result_file.read_text()))
+            missing = subprocess.run(self.budget([sys.executable, '-c', 'pass'], '--result-file',
+                                                 str(Path(directory)/'no-dir/result.json')),
+                                     env=environment, capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, missing.returncode)  # an unwritable result file is reported only
+            self.assertIn('result_file_error', json.loads(missing.stdout.splitlines()[-1]))
+
+    def test_budget_stop_is_persisted_before_the_group_is_stopped(self):
+        environment = {**os.environ, "RUNPOD_POD_ID": "fixture-owned-pod"}
+        with tempfile.TemporaryDirectory() as directory:
+            result_file, seen = Path(directory)/'budget_result.json', Path(directory)/'seen.json'
+            child = ['bash', '-c', f'trap "cp {result_file} {seen}; exit 143" TERM; sleep 30 & wait']
+            done = subprocess.run(self.budget(child, '--result-file', str(result_file), maximum='1'),
+                                  env=environment, capture_output=True, text=True, timeout=60)
+            self.assertEqual(124, done.returncode, done.stderr)
+            self.assertEqual('BUDGET_STOP', json.loads(seen.read_text())['status'])  # child saw it
+            final = json.loads(result_file.read_text())
+            self.assertEqual('BUDGET_STOP', final['status'])
+            self.assertIn('seconds', final)
 
     def test_deadline_helpers_retain_financial_and_timezone_behavior(self):
         start = utc('2026-10-04T00:00:00Z')

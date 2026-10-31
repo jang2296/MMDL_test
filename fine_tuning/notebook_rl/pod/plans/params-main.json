@@ -1,0 +1,24 @@
+{
+  "version": "pod-chain-params-v1",
+  "notes": [
+    "main, first segment: the pilot's pass-rate selection (pinned by sha256) -> N=min(selected, 3000) rounded down to K -> training from fresh F0 (main cannot resume the completed pilot: different N/K protocol, contract and preparation) -> reload -> sentinel F0/FT.",
+    "train.problems = min(len(fixed) + len(selection_source.dropped_ids) of the pilot's out/rule.json, 3000) // 4 * 4 (the distinct-structure selected items).",
+    "local_train caps --max-seconds at 86400. If the segment ends with BUDGET_STOP (train exit 2, chain exit 2), its committed checkpoints (every 50 updates) are continued by a NEW approved main job planned from params-main-resume.json."
+  ],
+  "python": "<volume venv python>",
+  "run_dir": "<job.run_dir>",
+  "model_path": "/workspace/mmdl-volume/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "vault": "/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/vault-v1",
+  "approval_request": "<data_request.json>",
+  "frozen_approval": {"path": "<APPROVAL_EXPORT.json>", "sha256": "<export-approval file_sha256>"},
+  "seed": 3407,
+  "sentinels_per_subject": 2,
+  "min_free_gib": 12,
+  "vllm": {"gpu_memory_utilization": 0.45, "max_num_seqs": 8, "kv_cache_memory_bytes": 8589934592,
+           "enable_prefix_caching": false},
+  "train": {"problems": "<min(selected distinct, 3000) // 4 * 4>", "per_update": 4, "checkpoint_every": 50,
+            "evidence_audit_rule": {"first": true, "last": true, "every": 50}, "max_seconds": 86400},
+  "timeouts": {"cpu": 1800, "passrate": 1, "minimal": 2400, "reload": 1800, "train_close": 3600, "evaluate": 7200},
+  "selection": {"path": "<pilot run_dir>/out/passrate-selection.json", "sha256": "<sha256 of that file>",
+                "report": "<pilot run_dir>/out/passrate"}
+}

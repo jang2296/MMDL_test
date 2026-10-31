@@ -21,7 +21,11 @@ AUTHORED_JSON = {
     "mixture_policy_v1.json", "protocol.json", "source_inventory_20261004.json",
     "source_registry_bridge_v2.json", "source_registry_v1.json",
 }
-AUTHORED_JSON_PATHS = {"fine_tuning/notebook_rl/benchmark_inventory_v1.json"}
+AUTHORED_JSON_PATHS = {"fine_tuning/notebook_rl/benchmark_inventory_v1.json",
+                       *(f"fine_tuning/notebook_rl/pod/plans/{name}.json" for name in (
+                           "cost-plan-prefilter-v1", "cost-plan-v1", "params-main-resume", "params-main",
+                           "params-pilot-300", "params-stage1"))}
+AUTHORED_TEXT_PATHS = {"fine_tuning/notebook_rl/requirements-local-nf4.txt"}
 PINNED_RESOURCES = {
     "baseline.json": "manifests/models/baseline.json",
     "requirements-vllm.lock": "env/requirements-vllm.lock",
@@ -61,7 +65,7 @@ def selected_files(root: Path) -> dict[str, Path]:
                 (folder in {"manifests", "configs"} or relative.as_posix() in EXPERIMENT_JSON
                  or relative.as_posix() in AUTHORED_JSON_PATHS
                  or folder in {"fine_tuning", HISTORICAL} and path.name in AUTHORED_JSON))
-            plain_text = path.suffix == ".txt" and folder in {"env", "prompts"}
+            plain_text = path.suffix == ".txt" and (folder in {"env", "prompts"} or relative.as_posix() in AUTHORED_TEXT_PATHS)
             if path.is_file() and (path.suffix in SUFFIXES or authored_data or plain_text
                                   or path.name in {"LICENSE", "test-repo.gitignore"}):
                 files[relative.as_posix()] = path

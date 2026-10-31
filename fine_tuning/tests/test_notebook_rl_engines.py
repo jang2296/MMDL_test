@@ -1,6 +1,7 @@
 """Tiny actual HF inference and mocked vLLM boundary checks, not GPU certification."""
 import sys
 import unittest
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -8,9 +9,9 @@ from unittest.mock import patch
 import torch
 from PIL import Image
 
-from fine_tuning.notebook_rl.engines import (HFRolloutEngine, RolloutRequest,
+from fine_tuning.notebook_rl.engines import (Completion, HFRolloutEngine, RolloutRequest,
     VLLMRolloutEngine, InputPreparation, Prepared, SamplingSettings, QWEN_OFFICIAL,
-    _weight_inventory, vllm_kwargs)
+    _SelectedTokenLogprobs, _weight_inventory, vllm_kwargs)
 from fine_tuning.tests.test_training import tiny_model
 
 
@@ -133,6 +134,64 @@ class EnginesTests(unittest.TestCase):
             self.assertIn(c.finish_reason, ("stop", "length"))
             expected = engine.probe_logprobs(request(), c.token_ids)
             torch.testing.assert_close(torch.tensor(c.logprobs), torch.tensor(expected), atol=1e-5, rtol=1e-5)
+
+    def test_actual_cache_released_before_scores_without_changing_completions(self):
+        from transformers import GenerationConfig
+
+        engine = self.engine()
+        generate = engine.model.generate
+        finish = _SelectedTokenLogprobs.finish
+        for training in (False, True):
+            for count in (0, 1, 2):
+                item = request(count)
+                expected, extracted, finish_checks = [], [], []
+                engine.model.train(training)
+
+                def observed_generate(*args, **kwargs):
+                    legacy_cfg = GenerationConfig.from_dict(kwargs["generation_config"].to_dict())
+                    legacy_cfg.output_scores, legacy_cfg.renormalize_logits = True, True
+                    with torch.random.fork_rng():
+                        legacy = generate(*args, **{**kwargs, "generation_config": legacy_cfg,
+                                                   "logits_processor": None})
+                    ids = legacy.sequences[0, kwargs["input_ids"].shape[1]:].tolist()
+                    lps = [float(score[0].float().log_softmax(-1)[token])
+                           for token, score in zip(ids, legacy.scores, strict=True)]
+                    legacy["past_key_values"] = None
+                    del legacy
+                    output = generate(*args, **kwargs)
+                    self.assertIsNone(output.scores)
+                    self.assertIs(output["past_key_values"], output.past_key_values)
+                    refs = [weakref.ref(output.past_key_values)] + [
+                        weakref.ref(tensor) for layer in output.past_key_values.layers
+                        for tensor in (layer.keys, layer.values)]
+                    self.assertTrue(all(reference() is not None for reference in refs))
+                    self.assertEqual(output.sequences[0, kwargs["input_ids"].shape[1]:].tolist(), ids)
+                    eos = engine.model.generation_config.eos_token_id
+                    eos_ids = eos if isinstance(eos, list) else [eos]
+                    expected.append(Completion(ids, lps, "stop" if ids[-1] in eos_ids else "length",
+                        engine.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)))
+                    finish_checks.append((weakref.ref(output), refs))
+                    return output
+
+                def streamed_finish(collector, sequences):
+                    output_ref, refs = finish_checks.pop(0)
+                    live_output = output_ref()
+                    assert live_output is not None
+                    self.assertIsNone(live_output.past_key_values)
+                    self.assertIsNone(live_output["past_key_values"])
+                    self.assertTrue(all(reference() is None for reference in refs))
+                    extracted.append(True)
+                    return finish(collector, sequences)
+
+                state = torch.get_rng_state().clone()
+                with self.subTest(training=training, images=count), patch.object(
+                        engine.model, "generate", side_effect=observed_generate), patch.object(
+                        _SelectedTokenLogprobs, "finish", streamed_finish):
+                    result = engine.sample([item])[0]
+                    self.assertEqual(result.completions, expected)
+                    self.assertEqual(len(extracted), item.n)
+                    self.assertEqual(engine.model.training, training)
+                    self.assertTrue(torch.equal(state, torch.get_rng_state()))
 
     def test_model_defaults_cannot_override_explicit_rollout_recipe(self):
         engine = self.engine()

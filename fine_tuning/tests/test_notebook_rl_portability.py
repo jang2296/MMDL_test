@@ -77,6 +77,15 @@ suite = unittest.defaultTestLoader.loadTestsFromNames([
     "fine_tuning.tests.test_notebook_rl_prompts",
     "fine_tuning.tests.test_notebook_rl_checkpoint",
     "fine_tuning.tests.test_notebook_rl_local_pipeline",
+    "fine_tuning.tests.test_notebook_rl_local_profile",
+    "fine_tuning.tests.test_notebook_rl_local_run",
+    "fine_tuning.tests.test_notebook_rl_local_train",
+    "fine_tuning.tests.test_notebook_rl_local_control",
+    "fine_tuning.tests.test_notebook_rl_local_eval",
+    "fine_tuning.tests.test_notebook_rl_notebook_learning",
+    "fine_tuning.tests.test_notebook_rl_episode_notebook",
+    "fine_tuning.tests.test_notebook_rl_episode_retry",
+    "fine_tuning.tests.test_notebook_rl_source_observation",
 ])
 result = unittest.TextTestRunner().run(suite)
 assert result.testsRun > 40
@@ -85,6 +94,7 @@ sys.exit(not result.wasSuccessful())
             env = os.environ | {"PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1",
                                 "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"}
             env.pop("MMDL_LOCAL_CONTRACT_EVIDENCE", None)
+            env.pop("CIRCUIT_COHORT", None)
             result = subprocess.run([sys.executable, "-c", script], cwd=root, env=env,
                                     text=True, capture_output=True, timeout=180)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

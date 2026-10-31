@@ -8,16 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import copy
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable
 
 from . import prompts as prompt_builders
-from .engines import RolloutRequest, RolloutResult
+from .engines import Completion, RolloutRequest, RolloutResult
 from .schema import ActorItem, Cause, DiagTarget, Group, GroupKind, ProblemTree, Sample, from_json, to_json
 from .verifier import answer_reward
 
 RETRYABLE = frozenset(("INCORRECT", "INVALID_NO_FINAL", "INVALID_MULTIPLE", "TRUNCATED"))
 BLOCKING = frozenset(("UNVERIFIABLE", "CONTEXT_BLOCKED", "SYSTEM_ERROR"))
+REPAIR_COLLECTOR_VERSION = "repair-retry-collector-v3"
+REPAIR_SELECTION_POLICY = "native-first-completed-grammar-fallback-v1"
 
 
 @dataclass(frozen=True)
@@ -35,17 +38,21 @@ class RolloutConfig:
     visual_lambda: float = 0.0
     master_seed: int = 3407
     final_notebook: bool = False
+    retry_contract: str | None = None
 
     @classmethod
     def from_protocol(cls, protocol: dict, algorithm: str, *, master_seed: int = 3407):
         if algorithm not in protocol["algorithms"]:
             raise ValueError("rollout: unknown algorithm")
         r = protocol["rollout"]
-        return cls(r["n"], r["branch"], 1 if algorithm == "ALG-T1" else 3 if algorithm == "ALG-NB3" else 2,
+        cfg = cls(r["n"], r["branch"], 1 if algorithm == "ALG-T1" else 3 if algorithm == "ALG-NB3" else 2,
             r["max_new_tokens"], protocol["context_limit"], algorithm in r["diag"]["enabled_in"],
             r["diag"]["n"], r["oracle_counterfactual"], r["self_perception_probe"],
             r["diag"]["max_new_tokens"], protocol["reward"]["visual_lambda"] if algorithm == "ALG-NB+D+V" else 0,
-            master_seed, r.get("final_notebook", False))
+            master_seed, r.get("final_notebook", False), r.get("retry_contract"))
+        if cfg.retry_contract is not None:
+            cfg.validate()
+        return cfg
 
     def validate(self) -> None:
         if (self.max_attempts not in (1, 2, 3) or type(self.context_limit) is not int or self.context_limit < 1
@@ -59,6 +66,18 @@ class RolloutConfig:
             raise ValueError("rollout: invalid explicit budgets")
         if self.oracle_counterfactual or self.self_perception_probe:
             raise ValueError("rollout: optional diagnostic probes require a separate probe runner; never use loss groups")
+        if self.retry_contract is not None:
+            if (type(self.retry_contract) is not str or self.retry_contract != "repair-check-v1"
+                    or self.n != {1: 4, 2: 2, 3: 2} or self.branch != {1: 1, 2: 1}
+                    or self.max_new_tokens != {1: 1024, 2: 1024, 3: 1024}
+                    or any(type(key) is not int or type(value) is not int
+                           for mapping in (self.n, self.branch, self.max_new_tokens) for key, value in mapping.items())
+                    or type(self.max_attempts) is not int or self.max_attempts != 3 or self.context_limit != 24576
+                    or self.diag is not False or self.final_notebook is not False
+                    or type(self.n_diag) is not int or self.n_diag != 4
+                    or type(self.diag_max_new_tokens) is not int or self.diag_max_new_tokens != 8192
+                    or type(self.visual_lambda) not in (int, float) or self.visual_lambda != 0):
+                raise ValueError("rollout: invalid explicit repair collector contract or fixed budgets")
 
 
 def seeds(problem_id: str, policy_version: int, turn: int, branch: str, n: int,
@@ -74,10 +93,21 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def select_failures(samples: list[Sample], k: int, key: str) -> list[Sample]:
+def select_failures(samples: list[Sample], k: int, key: str, *,
+                    process_contradictions: set[str] | None = None) -> list[Sample]:
     if type(k) is not int or k < 0:
         raise ValueError("rollout: nonnegative branch count required")
-    candidates = sorted((s for s in samples if s.result is not None and s.result.status in RETRYABLE),
+    if process_contradictions is not None:
+        ids = [sample.sample_id for sample in samples]
+        if (type(process_contradictions) is not set or any(type(sid) is not str or not sid for sid in ids)
+                or len(set(ids)) != len(ids) or any(type(sid) is not str for sid in process_contradictions)
+                or not process_contradictions <= set(ids)
+                or any(sample.sample_id in process_contradictions and (
+                    sample.result is None or sample.result.status != "CORRECT") for sample in samples)):
+            raise ValueError("rollout: invalid process contradiction candidate IDs or statuses")
+    candidates = sorted((s for s in samples if s.result is not None and (
+                        s.result.status in RETRYABLE or process_contradictions is not None
+                        and s.sample_id in process_contradictions)),
                         key=lambda s: hashlib.sha256(f"{key}:{s.sample_id}".encode()).digest())
     distinct, repeated, seen = [], [], set()
     for sample in candidates:
@@ -101,14 +131,89 @@ def continuation_ids(sample: Sample, feedback: str, tokenizer: Any) -> list[int]
     return sample.prompt_token_ids + sample.completion_token_ids + closure + suffix
 
 
+def malformed_retry_receipt(sample: Sample, response_contract: str | None) -> dict:
+    """Recheck saved raw syntax; an absent native grade alone never permits a retry."""
+    from .engines import _completion
+    from .repair_contract import GRAMMAR_ERRORS, VERSION, RepairContractError, parse_retry_sections
+
+    if response_contract != VERSION or sample.result is not None or sample.reward != 0:
+        raise ValueError("rollout: malformed retry requires its original ungraded repair response")
+    _completion(sample.completion_token_ids, sample.sampler_logprobs, sample.finish_reason, sample.text)
+    try:
+        parse_retry_sections(sample.text, contract_version=response_contract)
+    except RepairContractError as exc:
+        if exc.code not in GRAMMAR_ERRORS:
+            raise
+        return {"sample_id": sample.sample_id, "code": exc.code,
+                "raw_sha256": hashlib.sha256(sample.text.encode("utf-8")).hexdigest()}
+    raise ValueError("rollout: valid repair response is missing its actual native grade")
+
+
+def _bound_malformed_retry(sample: Sample, response_contracts: dict, invalid_responses: list[dict]) -> dict:
+    receipt = malformed_retry_receipt(sample, response_contracts.get(sample.sample_id))
+    matches = [row for row in invalid_responses if row.get("sample_id") == sample.sample_id]
+    if matches != [receipt]:
+        raise ValueError("rollout: malformed retry raw hash or grammar error binding differs")
+    return receipt
+
+
+def select_repair_parents(samples: list[Sample], k: int, key: str, *, native_audits: dict,
+                          invalid_responses: list[dict], response_contracts: dict) -> tuple[list[Sample], dict]:
+    """Keep native selection unchanged; retry completed malformed raw only if that pool is empty."""
+    if type(k) is not int or k < 0:
+        raise ValueError("rollout: nonnegative branch count required")
+    malformed = [_bound_malformed_retry(sample, response_contracts, invalid_responses)
+                 for sample in samples if sample.result is None]
+    contradicted = {sample.sample_id for sample in samples if sample.result is not None
+        and sample.result.status == "CORRECT" and any(row["kind"] in ("OBSERVATION", "TRACE")
+            and row["identity"] is not None and row["refs"] for row in native_audits[sample.sample_id]["issues"])}
+    ordered = select_failures(samples, len(samples), key, process_contradictions=contradicted)
+    eligible = [sample for sample in samples if sample.result is not None
+                and (sample.result.status in RETRYABLE or sample.sample_id in contradicted)]
+    if not ordered:
+        eligible = [sample for sample in samples if sample.result is None]
+        ordered = sorted(eligible, key=lambda sample: hashlib.sha256(f"{key}:{sample.sample_id}".encode()).digest())
+        k = min(k, 1)
+    chosen = ordered[:k]
+    return chosen, {"key": key, "frontier_ids": [sample.sample_id for sample in samples],
+        "selection_policy": REPAIR_SELECTION_POLICY, "malformed_candidates": malformed,
+        "candidate_original_order": [sample.sample_id for sample in eligible],
+        "candidate_hash_order": [sample.sample_id for sample in sorted(eligible,
+            key=lambda sample: hashlib.sha256(f"{key}:{sample.sample_id}".encode()).digest())],
+        "candidate_final_order": [sample.sample_id for sample in ordered],
+        "process_contradictions": [sample.sample_id for sample in samples if sample.sample_id in contradicted],
+        "selected_ids": [sample.sample_id for sample in chosen]}
+
+
+def repair_parent_feedback(parent: Sample, actor: ActorItem, prompts: dict, inventory: Any, *,
+                           native_audits: dict, invalid_responses: list[dict], response_contracts: dict) -> str:
+    if parent.result is None:
+        invalid = _bound_malformed_retry(parent, response_contracts, invalid_responses)
+        return prompt_builders.repair_retry_text(None, None, actor, prompts, inventory,
+            malformed_code=invalid["code"], malformed_finish_reason=parent.finish_reason)
+    return prompt_builders.repair_retry_text(parent.result.status, parent.result.extracted, actor, prompts,
+        inventory, process_contradicted=parent.result.status == "CORRECT"
+        and bool(native_audits[parent.sample_id]["issues"]))
+
+
 def _sample_request(request: RolloutRequest, engine: Any, policy_version: int,
-                    context_limit: int) -> RolloutResult:
+                    context_limit: int, *,
+                    on_completion: Callable[[str, int, int, Completion], None] | None = None,
+                    validate_request: Callable[[], None] | None = None,
+                    validate_prepared: Callable[[Any], None] | None = None) -> RolloutResult:
     prepared = engine.prepare(request)
+    if validate_request is not None:
+        validate_request()
+    if validate_prepared is not None:
+        validate_prepared(prepared)
     if len(prepared.token_ids)+request.max_new_tokens > context_limit:
         raise ValueError("CONTEXT_BLOCKED: prompt plus completion reservation")
     if engine.policy_version != policy_version:
         raise RuntimeError("rollout: policy changed during a tree")
-    outputs = engine.sample([request])
+    outputs = (engine.sample([request]) if on_completion is None else
+               engine.sample([request], on_completion=on_completion))
+    if validate_request is not None:
+        validate_request()
     if (len(outputs) != 1 or outputs[0].request_id != request.request_id
             or len(outputs[0].completions) != request.n
             or outputs[0].prompt_token_ids != prepared.token_ids
@@ -118,13 +223,271 @@ def _sample_request(request: RolloutRequest, engine: Any, policy_version: int,
     return outputs[0]
 
 
+def _build_repair_tree(actor: ActorItem, images: list, engine: Any, verifier: Any, prompts: dict,
+                       cfg: RolloutConfig, policy_version: int, route_rule: str, *,
+                       on_group, should_stop, on_raw) -> ProblemTree:
+    """Collect bounded raw retries; full-history admission/loss wiring is deliberately pending."""
+    from . import fresh_observation as fresh, notebook_synthesis as synthesis
+    from .engines import _completion
+    from .notebook_layout_probe import _image_identity
+    from .repair_contract import (GRAMMAR_ERRORS, ORIGIN_VERSION, VERSION, RepairContractError,
+                                  parse_retry_sections, public_origin_inventory)
+    from PIL.Image import Image
+
+    cfg = replace(cfg, n=dict(cfg.n), branch=dict(cfg.branch), max_new_tokens=dict(cfg.max_new_tokens))
+    cfg.validate()
+    actor = from_json(ActorItem, to_json(actor))
+    prompts = copy.deepcopy(prompt_builders.for_actor(actor, prompts))
+    images = list(images)
+    # A bound answer-verified (slotless) source may also be a plain-mode actor; every other source stays obs.
+    if (not callable(on_raw) or actor.mode != "obs" and "_slotless_source" not in prompts
+            or "solution_trace_contract" not in prompts
+            or len(images) != len(actor.image_paths) or engine.policy_version != policy_version):
+        raise ValueError("rollout: native repair collector requires raw persistence and matching inputs")
+    # Opt-in eval-aligned T1 (answer-verified actors only): exact P0 prompt, its own T1 cap, V8 grading.
+    turn1 = prompts.get("_turn1_contract")
+    # Opt-in retry rule: bound only with the eval-aligned T1 and applied to the same actors' retries.
+    retry_rule = prompts.get("repair_retry_out_of_choice") if turn1 is not None else None
+    groups: list[Group] = []
+    causes: dict[str, Cause] = {}
+    audits: dict[str, dict] = {}
+    contracts: dict[str, str | None] = {}
+    skipped: list[dict] = []
+    record: dict[str, Any] = {"version": REPAIR_COLLECTOR_VERSION, "retry_contract": VERSION,
+        "retry_prompt_contract_sha256": _hash(prompt_builders.repair_retry_prompt_contract()),
+        "calls": [], "fresh_observation": None, "fresh_observation_images": None, "fresh_observation_calls": 0,
+        "fresh_observation_events": [], "selections": [], "response_contracts": contracts, "native_audits": audits,
+        "invalid_responses": [], "full_history_admission": "UNRESOLVED",
+        "loss_integration_ready": False, "binary_route_provisional": True}
+
+    def image_values(values: list) -> list:
+        return [(id(image), image.mode, image.size, hashlib.sha256(image.tobytes()).hexdigest())
+                if isinstance(image, Image) else (id(image),) for image in values]
+
+    original_images = image_values(images)
+
+    def select(frontier: list[Sample], turn: int) -> list[Sample]:
+        key = f"{actor.problem_id}:{policy_version}" + (f":{turn}" if turn > 1 else "")
+        chosen, selection = select_repair_parents(frontier, cfg.branch.get(turn, 0), key,
+            native_audits=audits, invalid_responses=record["invalid_responses"], response_contracts=contracts)
+        record["selections"].append({"turn": turn, **selection})
+        return chosen
+
+    def generate(turn: int, parent: Sample | None) -> Group | None:
+        if image_values(images) != original_images:
+            raise ValueError("rollout: repair input image values changed")
+        kinds: dict[int, GroupKind] = {1: "T1", 2: "T2", 3: "T3"}
+        kind, branch = kinds[turn], "root" if parent is None else parent.sample_id
+        if should_stop is not None and should_stop():
+            skipped.append({"kind": kind, "parent_sample_id": branch, "status": "BUDGET_STOP"})
+            return None
+        if parent is not None and record["fresh_observation"] is None:
+            schema = prompts["observation_instruction"][actor.family]
+
+            try:
+                observation_input = engine.prepare(fresh.request_for(actor, schema, images, policy_version, cfg.master_seed))
+                if len(observation_input.token_ids) + fresh.MAX_NEW_TOKENS > cfg.context_limit:
+                    raise ValueError("CONTEXT_BLOCKED: fresh observation reservation")
+            except ValueError as exc:
+                if not str(exc).startswith("CONTEXT_BLOCKED:"):
+                    raise
+                skipped.append({"kind": kind, "parent_sample_id": branch, "status": "CONTEXT_BLOCKED"})
+                return None
+            observation_images = json.loads(json.dumps(_image_identity(actor, observation_input)))
+
+            def observation_event(event: dict) -> None:
+                before = _hash(event)
+                payload = copy.deepcopy({"version": record["version"], "purpose": "RETRY_FRESH_OBSERVATION",
+                    "problem_id": actor.problem_id, "policy_version": policy_version, "event": event})
+                payload_sha = _hash(payload)
+                on_raw(payload)
+                if _hash(payload) != payload_sha:
+                    raise ValueError("rollout: fresh observation persistence payload changed")
+                if _hash(event) != before or image_values(images) != original_images:
+                    raise ValueError("rollout: fresh observation callback changed original input")
+                record["fresh_observation_events"].append(copy.deepcopy(event))
+
+            record["fresh_observation"] = fresh.generate(actor, schema, images, engine,
+                master_seed=cfg.master_seed, context_limit=cfg.context_limit, on_event=observation_event)
+            record["fresh_observation_calls"] = 1
+            record["fresh_observation_images"] = observation_images
+            if should_stop is not None and should_stop():
+                skipped.append({"kind": kind, "parent_sample_id": branch, "status": "BUDGET_STOP"})
+                return None
+        inventory, feedback, ids = None, None, None
+        contract = None if turn == 1 else VERSION
+        if parent is not None:
+            history = [sample for group in groups for sample in group.samples]
+            inventory = public_origin_inventory(history, contract_version=ORIGIN_VERSION,
+                response_contracts=contracts, parent_sample_id=parent.sample_id)
+            feedback = repair_parent_feedback(parent, actor, prompts, inventory, native_audits=audits,
+                invalid_responses=record["invalid_responses"], response_contracts=contracts)
+            feedback += "\n" + fresh.quoted_retry_context(record["fresh_observation"])
+            ids = continuation_ids(parent, feedback, engine.tokenizer)
+        cap = turn1["max_new_tokens"] if turn == 1 and turn1 is not None else cfg.max_new_tokens[turn]
+        n = cfg.n[turn]
+        if ids is not None and len(ids) + cap > cfg.context_limit:
+            skipped.append({"kind": kind, "parent_sample_id": branch, "status": "CONTEXT_BLOCKED",
+                            "input_tokens": len(ids), "reserved_output": cap})
+            return None
+        group_id = f"{actor.problem_id}:v{policy_version}:{kind}:{_hash(branch)[:16]}"
+        request = RolloutRequest(group_id, ids, None if ids is not None else [prompt_builders.user_message(
+            prompt_builders.turn1_text(actor, prompts), len(images))], images, n, cap,
+            seeds(actor.problem_id, policy_version, turn, kind + ":" + branch, n, master_seed=cfg.master_seed))
+        bound_seeds = tuple(request.seeds)
+
+        def request_values() -> str:
+            try:
+                return json.dumps({"request_id": request.request_id, "prompt_token_ids": request.prompt_token_ids,
+                    "messages": request.messages, "images": image_values(request.images), "n": request.n,
+                    "max_new_tokens": request.max_new_tokens, "seeds": request.seeds,
+                    "policy_version": engine.policy_version},
+                    sort_keys=True, separators=(",", ":"), allow_nan=False)
+            except (AttributeError, TypeError, ValueError):
+                raise ValueError("rollout: repair request value contract changed") from None
+
+        bound_request = request_values()
+
+        def check_request() -> None:
+            if (request_values() != bound_request or engine.policy_version != policy_version
+                    or image_values(images) != original_images):
+                raise ValueError("rollout: repair request state or policy changed")
+
+        try:
+            prepared = engine.prepare(request)
+            check_request()
+            if len(prepared.token_ids) + cap > cfg.context_limit:
+                raise ValueError("CONTEXT_BLOCKED: full repair reservation")
+        except ValueError as exc:
+            if not str(exc).startswith("CONTEXT_BLOCKED:"):
+                raise
+            skipped.append({"kind": kind, "parent_sample_id": branch, "status": "CONTEXT_BLOCKED"})
+            return None
+        call = {"group_id": group_id, "turn": turn, "parent_sample_id": parent.sample_id if parent else None,
+            "response_contract": contract, "prompt_token_ids": list(prepared.token_ids),
+            "retry_prompt_contract_sha256": record["retry_prompt_contract_sha256"],
+            "prompt_sha256": _hash(prepared.token_ids), "messages": copy.deepcopy(request.messages),
+            "images": json.loads(json.dumps(_image_identity(actor, prepared))),
+            "n": n, "max_new_tokens": cap, "seeds": list(bound_seeds),
+            "feedback": feedback, "feedback_sha256": _hash(feedback),
+            "ancestor_inventory": json.loads(json.dumps(asdict(inventory), allow_nan=False)) if inventory is not None else None,
+            "ancestor_inventory_sha256": inventory.sha256 if inventory is not None else None,
+            "completions": []}
+        bound_prepared = (call["prompt_sha256"], _hash(call["images"]))
+
+        def check_prepared(current: Any) -> None:
+            check_request()
+            if (_hash(current.token_ids), _hash(_image_identity(actor, current))) != bound_prepared:
+                raise ValueError("rollout: prepared repair token or image values changed")
+
+        captured: list[dict] = []
+
+        def completed(request_id: str, index: int, seed: int, completion: Completion) -> None:
+            if (request_id != group_id or type(index) is not int or index != len(captured)
+                    or index >= n or type(seed) is not int or not 0 <= seed < 2**31
+                    or type(completion) is not Completion or type(completion.text) is not str):
+                raise ValueError("rollout: completed repair response identity changed")
+            _completion(completion.token_ids, completion.logprobs, completion.finish_reason, completion.text)
+            if (len(completion.token_ids) > cap or engine.tokenizer.decode(completion.token_ids,
+                    skip_special_tokens=True, clean_up_tokenization_spaces=False) != completion.text):
+                raise ValueError("rollout: completed repair budget or decode changed")
+            captured.append(copy.deepcopy(asdict(completion)))
+            on_raw(copy.deepcopy({"version": record["version"], "purpose": "NATIVE_SOLUTION_COMPLETION",
+                "problem_id": actor.problem_id, "policy_version": policy_version,
+                **call, "index": index, "seed": seed, "completion": captured[-1]}))
+            check_request()
+            if seed != bound_seeds[index]:
+                raise ValueError("rollout: completed repair response seed changed")
+
+        output = _sample_request(request, engine, policy_version, cfg.context_limit,
+                                 on_completion=completed, validate_request=check_request,
+                                 validate_prepared=check_prepared)
+        if (captured != [asdict(completion) for completion in output.completions]
+                or output.prompt_token_ids != call["prompt_token_ids"]):
+            raise ValueError("rollout: streamed and final repair state or raw responses differ")
+        call["completions"] = copy.deepcopy(captured)
+        record["calls"].append(call)
+        samples: list[Sample] = []
+        for index, payload in enumerate(captured):
+            sample = Sample(f"{group_id}:{index}", actor.problem_id, group_id, kind, turn,
+                parent.sample_id if parent else None, list(output.prompt_token_ids),
+                payload["token_ids"], payload["logprobs"], payload["finish_reason"], payload["text"],
+                bound_seeds[index], policy_version)
+            contracts[sample.sample_id] = contract
+            invalid = None
+            if contract is not None:
+                try:
+                    parse_retry_sections(sample.text, contract_version=VERSION)
+                except RepairContractError as exc:
+                    if exc.code not in GRAMMAR_ERRORS:
+                        raise
+                    invalid = exc.code
+            if invalid is not None:
+                record["invalid_responses"].append({"sample_id": sample.sample_id, "code": invalid,
+                    "raw_sha256": hashlib.sha256(sample.text.encode("utf-8")).hexdigest()})
+            else:
+                audit = synthesis.audit_native_sample(sample, actor, verifier, response_contract=contract,
+                    **synthesis.grade_options(turn, None if turn1 is None else turn1["version"], retry_rule))
+                sample.result = from_json(type_result, json.dumps(audit["result"], allow_nan=False))
+                if sample.result.status not in BLOCKING:
+                    sample.reward = answer_reward(sample.result)
+                cause = verifier.cause(actor.problem_id, sample.result)
+                if cause is not None:
+                    causes[sample.sample_id] = cause
+                audits[sample.sample_id] = audit
+                record.setdefault("sample_bindings", []).append({"sample_id": sample.sample_id,
+                    "raw_sha256": audit["raw_sha256"], "native_audit_sha256": _hash(audit),
+                    "process_assessment": "ANSWER_CORRECT_PROCESS_CONTRADICTED" if sample.result.status == "CORRECT"
+                    and any(row["identity"] is not None and row["refs"] for row in audit["issues"]) else None})
+            to_json(sample)
+            samples.append(sample)
+        bad = sorted({sample.result.status for sample in samples if sample.result is not None
+                      and sample.result.status in BLOCKING})
+        group = Group(group_id, kind, actor.problem_id, _hash(output.prompt_token_ids), samples,
+                      not bad, ",".join(bad) if bad else None)
+        check_request()
+        to_json(group)
+        groups.append(group)
+        if on_group is not None:
+            on_group(from_json(Group, to_json(group)))
+            check_request()
+        return group
+
+    from .schema import VerifierResult as type_result
+
+    first = generate(1, None)
+    frontier = select(first.samples, 1) if first is not None and first.usable else []
+    for turn in (2, 3):
+        next_samples: list[Sample] = []
+        for parent in frontier:
+            group = generate(turn, parent)
+            if group is not None and group.usable:
+                next_samples.extend(group.samples)
+        frontier = select(next_samples, turn) if turn == 2 else []
+    results = [sample.result for group in groups for sample in group.samples if sample.result is not None]
+    route, evidence = verifier.route(actor.problem_id, results, route_rule)
+    record["missing_result_ids"] = [sample.sample_id for group in groups for sample in group.samples if sample.result is None]
+    record["quarantined_groups"] = [group.group_id for group in groups if group.reason == "INVALID_RESPONSE_CONTRACT"]
+    record["source_contracts_sha256"] = _hash(contracts)
+    notebook = {"repair_collector": record, "routing": evidence, "skipped_branches": skipped,
+                "model_notes": [], "verified_internal_module_responsibility": False}
+    tree = ProblemTree(actor.problem_id, policy_version, groups, route, causes, notebook)
+    to_json(tree)
+    return tree
+
+
 def build_tree(actor: ActorItem, images: list, engine: Any, verifier: Any, prompts: dict,
                cfg: RolloutConfig, policy_version: int, route_rule: str, *,
                on_group: Callable[[Group], None] | None = None,
-               should_stop: Callable[[], bool] | None = None) -> ProblemTree:
+               should_stop: Callable[[], bool] | None = None,
+               on_raw: Callable[[dict], None] | None = None) -> ProblemTree:
     """Solution tree first; DIAG is deferred to a class-balanced batch operation."""
     cfg.validate()
+    if cfg.retry_contract is not None:
+        return _build_repair_tree(actor, images, engine, verifier, prompts, cfg, policy_version,
+                                  route_rule, on_group=on_group, should_stop=should_stop, on_raw=on_raw)
     to_json(actor)
+    prompts = prompt_builders.for_actor(actor, prompts)
     if len(images) != len(actor.image_paths) or engine.policy_version != policy_version:
         raise ValueError("rollout: image coverage or policy version mismatch")
     groups: list[Group] = []

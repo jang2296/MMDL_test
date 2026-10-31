@@ -6,9 +6,10 @@ import json
 import math
 import random
 import re
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 import numpy as np
 import torch
@@ -18,6 +19,7 @@ from fine_tuning.modules import BASE_ID, BASE_REVISION, tensor_sha256
 from fine_tuning.notebook_rl.policy import PolicyBundle, assert_base_unchanged, build_policy
 
 FORMAT = "notebook-rl-checkpoint-v2"
+OPTIMIZER_PARKING_POLICY = "adamw-moments-cpu-during-collection-v1"
 _FILES = {"adapter.safetensors", "mergers.safetensors", "runtime.pt"}
 _BINDING = {"protocol_sha256", "prompts_sha256", "data_sha256", "code_sha256"}
 PolicyFactory = Callable[[Path, str, dict], PolicyBundle]
@@ -183,6 +185,54 @@ def _validate_optimizer(bundle: PolicyBundle, optimizer: torch.optim.AdamW,
             raise ValueError("checkpoint: invalid AdamW moment state")
 
 
+@contextmanager
+def park_adam_moments(bundle: PolicyBundle, optimizer: torch.optim.AdamW,
+                      scheduler: torch.optim.lr_scheduler.LambdaLR,
+                      protocol: dict, step: int) -> Iterator[Callable[[], None]]:
+    """Park only CUDA AdamW moments during collection; yielded restore() may move them back early."""
+    _validate_optimizer(bundle, optimizer, scheduler, protocol, step)
+    storages = {(p.device, p.untyped_storage().data_ptr())
+                for p in bundle.model.parameters() if p.numel()}
+    for parameter, state in optimizer.state.items():
+        if (state["step"].device.type != "cpu" or state["step"].ndim != 0
+                or any(state[key].device != parameter.device for key in ("exp_avg", "exp_avg_sq"))):
+            raise ValueError("checkpoint: parking requires CPU scalar steps and colocated moments")
+        for value in state.values():
+            if value.layout != torch.strided or value.device.type not in ("cpu", "cuda"):
+                raise ValueError("checkpoint: unsupported AdamW parking tensor")
+            storage = (value.device, value.untyped_storage().data_ptr())
+            if value.numel() and storage in storages:
+                raise ValueError("checkpoint: aliased AdamW state cannot be parked")
+            if value.numel():
+                storages.add(storage)
+        del value  # Retaining this reference would keep a CUDA moment alive while parked.
+    parked: list[tuple[dict, str, torch.device]] = []
+    restored_early = False
+
+    def unpark() -> None:
+        for state, key, device in parked:
+            state[key] = state[key].to(device)
+        parked.clear()
+
+    def restore() -> None:
+        nonlocal restored_early
+        restored_early = True
+        unpark()
+
+    try:
+        for state in optimizer.state.values():
+            for key in ("exp_avg", "exp_avg_sq"):
+                device = state[key].device
+                if device.type == "cuda":
+                    parked.append((state, key, device))
+                    state[key] = state[key].to("cpu")
+        yield restore
+    finally:
+        unpark()
+        committed = restored_early and scheduler.last_epoch == step + 1
+        _validate_optimizer(bundle, optimizer, scheduler, protocol, step + 1 if committed else step)
+
+
 def save(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler: torch.optim.lr_scheduler.LambdaLR,
          step: int, cursor: dict, rng: dict, out: Path, *, protocol: dict, binding: dict) -> dict:
     _binding(protocol, binding)
@@ -276,21 +326,27 @@ def _load(model_path: Path, ckpt: Path, binding: dict,
 
 
 def load_eval(model_path: Path, ckpt: Path, *, binding: dict,
+              policy_factory: PolicyFactory | None = None,
               _test_policy_factory: PolicyFactory | None = None) -> PolicyBundle:
-    bundle, _ = _load(model_path, Path(ckpt), binding, _test_policy_factory)
+    if policy_factory is not None and _test_policy_factory is not None:
+        raise ValueError("checkpoint: choose exactly one policy factory")
+    bundle, _ = _load(model_path, Path(ckpt), binding, policy_factory or _test_policy_factory)
     bundle.model.eval()
     return bundle
 
 
 def load_resume(model_path: Path, ckpt: Path, protocol: dict, *, binding: dict,
                 device: str | torch.device = "cpu",
+                policy_factory: PolicyFactory | None = None,
                 _test_policy_factory: PolicyFactory | None = None
                 ) -> tuple[PolicyBundle, torch.optim.AdamW, torch.optim.lr_scheduler.LambdaLR, int, dict]:
     _binding(protocol, binding)
     metadata = read_metadata(ckpt, binding=binding)
     if metadata["protocol"] != json.loads(json.dumps(protocol)):
         raise ValueError("checkpoint: protocol differs")
-    bundle, metadata = _load(model_path, Path(ckpt), binding, _test_policy_factory)
+    if policy_factory is not None and _test_policy_factory is not None:
+        raise ValueError("checkpoint: choose exactly one policy factory")
+    bundle, metadata = _load(model_path, Path(ckpt), binding, policy_factory or _test_policy_factory)
     # Move before reconstructing/loading AdamW: load_state_dict casts moments to
     # parameter devices. Moving only the model afterward leaves stale CPU moments.
     bundle.model.to(torch.device(device))

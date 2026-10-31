@@ -1,0 +1,23 @@
+{
+  "version": "pod-chain-params-v1",
+  "notes": [
+    "main, later segment: local_train train --resume-from the stopped segment (closed, BUDGET_STOP or DISK_LOW, not completed) from its last committed cadence checkpoint. Everything that is bound must equal the stopped segment: python, model_path, frozen_approval, vllm, train (incl. max_seconds, which is in the execution contract), and the preparation/minimal paths below.",
+    "resume.* point at the FIRST segment's run dir (preparation and minimum) and at the stopped segment's out/train."
+  ],
+  "python": "<volume venv python>",
+  "run_dir": "<job.run_dir of this new segment>",
+  "model_path": "/workspace/mmdl-volume/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17",
+  "vault": "/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/vault-v1",
+  "approval_request": "<data_request.json>",
+  "frozen_approval": {"path": "<APPROVAL_EXPORT.json>", "sha256": "<export-approval file_sha256>"},
+  "seed": 3407,
+  "sentinels_per_subject": 2,
+  "min_free_gib": 12,
+  "vllm": {"gpu_memory_utilization": 0.45, "max_num_seqs": 8, "kv_cache_memory_bytes": 8589934592,
+           "enable_prefix_caching": false},
+  "train": {"problems": "<same as the first segment>", "per_update": 4, "checkpoint_every": 50,
+            "evidence_audit_rule": {"first": true, "last": true, "every": 50}, "max_seconds": 86400},
+  "timeouts": {"cpu": 1800, "passrate": 1, "minimal": 1, "reload": 1800, "train_close": 3600, "evaluate": 7200},
+  "resume": {"from": "<stopped segment run_dir>/out/train", "preparation": "<first segment run_dir>/out/prep/preparation.json",
+             "minimal": "<first segment run_dir>/out/minimal", "minimal_reload": "<first segment run_dir>/out/minimal-reload"}
+}

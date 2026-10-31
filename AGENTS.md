@@ -1,1587 +1,118 @@
-# AGENTS.md — MMDL: Qwen3-VL-4B 평가·개선·재현
-
-## 2026-10-18 21:01 KST — 3090 재시도 부분회수·삭제 완료, 실제 RL 미완료
-
-새a48505c는795 CPU검사304.774초/환경skip1·입력24/52.351초·44집중검사/Ruff/mypy2/
-게시3검사·독립delta검토를 통과했다. Pod는GitHub에서직접 clean clone했고16개새입력/68code
-SHA 및 정상lock/pipcheck·44원격검사6.004초/CUDA BF16/13모델 재해시를18.749초에 통과했다.
-11:36:33UTC watchdog4022/capture4024의 실제실행은 sampler override없이4B 적재·두이미지
-probe delta0·T1/T2/T3를 진행했다. 닫힌GROUP4개/고유20응답/10101생성token·완료TREE1개다.
-고정8문항 학습batch를 모으기 전 한도에 도달해 actual optimizer update0이며 batch/checkpoint/
-result.json/reload/최종추가audit note는 없다. 진행중 생성은 완료·보존됐다고 세지 않는다.
-TREE의VISION_OFF는 한 사례의 검증 기반 경로이지 내부모듈 유일책임·학습성공이 아니다.
-
-outer는1239.431초 BUDGET_STOP으로 종료했다. 원래 GPU11:59:13.359/job11:57:13.359UTC
-한도는 유지했고 연장은 승인되지 않았다. GPU0%/1MiB·소유프로세스 부재를 확인한 뒤8payload+
-4control의 모든원격/로컬SHA·20token decode/유한logprob·12개재시도 부모feedback/verifier/
-route를 주검증·독립Sol검증했다. 실패v1/v2·설치/재검증·원래입력도 보존했다.
-소유Pod2uiqg6ym30ou3y는12:00:47UTC delete204→get404·cluster포함 Pod0/NetworkVolume0/
-전체페이지 완료로 삭제했다. container30GB/workspace120GB·모델cache는 폐기·원격복구불가지만
-로컬입력/원문/로그는 보존됐다. 새학습가중치는 생성되지 않았다.12:00:52UTC 실제잔액
-0.4343583743USD/현재과금0USDh는 snapshot이며 최종청구서와 구분한다. 새유료작업은 없다.
-근거 private notebook-rl-3090-20261018/retry-v1/runtime의 final_capture_local_verification_v3.json,
-closed_capture_v3_remote_inventory.json·owned_pod_cleanup_final_v1.json이다. 교수님MMDL clean
-HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8 558/900은 불변이다. 이 종료는10문항
-실제RL/reload 또는 대규모학습pipeline 완료가 아니며 새실행에는 새시간/비용 확인이 필요하다.
-
-## 2026-10-18 20:34 KST — 실제4B 적재·동기검사 통과, sampling 기본값 충돌 중단·수정
-
-363d09d clean clone의 정상lock/pipcheck·변경부24검사5.113초·실제CUDA/BF16·13모델 재해시를
-16.649초/exit0으로 통과했다. v2 실제4B는3090 약10.2GiB/GPU35%에서 적재됐고 단일/복수
-이미지 초기logprob probe의 maxdelta0을 확인했다. 그러나 pinned Transformers4.57.1이
-명시한 학습용temperature1/top_p1을 모델기본0.7/0.8로 덮어쓰는 실제warning을 관측했다.
-11:27:57UTC 소유watchdog를 중단해GPU0%/1MiB를 확인했다. 완료GROUP1개/8응답은 보존하되
-학습·재개에 쓰지 않는다. update0/checkpoint0이며 초기동기검사를 sampler인증으로 쓰지 않는다.
-유일한production 수정은 HF generate의 use_model_defaults=False다. 실제작은Qwen에서
-수정전0.7/0.8 실패를 재현했고 수정후44집중검사9.978초/Ruff/범위mypy2·독립delta 검토가
-PASS다. guards.py/10문항/ALG-NB3/n8-4-4/이미지/BF16/batch8/기한은 불변이며 전체CPU와
-새code결합 입력검증은 완료했다. 전체795검사304.774초/환경skip1·새입력120.671초/차단0·
-10distinct 및 원래76입력/10source SHA를 확인했다. 게시·새clean clone/원격변경부검증 뒤에만
-다음실행을 제출한다. 중단된5파일의 원격/로컬SHA도 검증했다. 기존원문·교수님MMDL/V8는
-불변이고 실제RL/reload 성공이 아니다.
-
-## 2026-10-18 20:14 KST — HF import 수정 전체CPU·입력검증 통과, 게시 준비
-
-같은68code SHA의 Linux 복사본 전체794검사296.668초/환경별1skip·입력24검사42.116초·
-19집중검사/최종명 cold회귀1개4.168초·Ruff·bounded mypy1·게시안전3검사가 PASS다.
-Windows마운트 전체검사는 느린I/O로 소유process만 중단했으며 PASS로 세지 않는다.
-최종test명은 hf_문자열의 게시secret검출 오탐을 피한 identifier-only 변경이고 본문은 동일하다.
-외부의존성까지 좇은 mypy는 기존psutil stub부재1건이며 범위검사와 구분한다. 새117.343초
-입력검증은16적격/차단0·10distinct/단일5복수5로 통과했고 원본76입력/10source/protocol은
-불변이다. 독립 코드·입력delta 검토 PASS다. 기존 승인된 로컬전체/원격변경부 방식으로
-새 clean SHA의 변경부·정상lock/pipcheck·CUDA/BF16·13모델 재해시 뒤 같은소유Pod에서만
-재실행한다. 실제4B update/reload는 여전히0/미검증이며 원래GPU/금융기한·MMDL/V8는 불변이다.
-
-## 2026-10-18 20:05 KST — shared HF cold import 차단 원인 재현·최소수정 검사 중
-
-첫 capture3236은247.452초/exit2였다. 실제 AutoProcessor 최초import에서 Transformers가
-openai의 존재를find_spec으로 탐지하다 기존teacher guard에 차단됐다. 모델load_base 이전이며
-응답0/update0/checkpoint0이다. peak33,554,432bytes는 runtime BF16 probe이지 모델 적합성
-실측이 아니다. 실패3파일 원격/로컬SHA를 검증해 private failed_capture_v1에 보존했다.
-guards.py는 수정하지 않는다. shared_smoke의 정확runtime검사 후/guard설치 전 신뢰HF·PEFT
-심볼4개를 초기화하며 model/processor 생성과 actor/vault 작업은 계속guard 뒤에 둔다.
-실제cold subprocess/tiny정책/teacher3진입·vault·benchmark차단 포함19집중검사8.520초 및
-독립 delta검토 PASS다. 최초test-only 초안은 stateless GELU까지 모델로 오인해 실패했으며
-파라미터 등록 차단으로 구분해 수정했다. 전체CPU/새code결합 입력/정상게시·새clean clone을
-거치기 전 재실행하지 않는다. GPU/금융기한은 원래값 유지이며 교수님MMDL/V8는 불변이다.
-근거 private retry-v1/runtime/failed_capture_local_verification_v1.json 및 새 검사로그다.
-
-## 2026-10-18 19:56 KST — 새3090 정상setup·793+24검사 통과, 제한실행 제출
-
-소유Pod2uiqg6ym30ou3y의 정상setup491은2786.392초/exit0·793+24 CPU tests/pipcheck/
-실제CUDA BF16/지정13모델hash를 통과했다. 원격/로컬4환경파일SHA와 입력414파일/
-2,065,615,841bytes·68codehash도 일치한다. 실제 cgroup RAM은약30GB이며 doctor의 host RAM과
-구분한다. clean MMDL_test8e9a8ee…/정상lock·원래10distinct 구조를 유지하고10:55:45UTC
-watchdog3234/capture3236의 기존 --execute→별도 --reload-check를 제출했다. 현재 입력검증이며
-실제4B update0확인/reload미검증이다. 고정10문항/최대2update 범위이며 새900/대규모학습은 아니다.
-최초과금09:59:13.359/GPU11:59:13.359/job11:57:13.359/recovery12:14:13.359UTC·0.30USDh/
-reserve0.20은 불변이다.10:51UTC 잔액0.7152243244USD/현재과금0.241USDh다. 폐기 전에 결과를
-로컬 회수·검증하며 교수님MMDL/V8는 불변이다. 증거 private retry-v1/runtime/
-setup_local_verification_v1.json·remote_input_sha_verification_v1.json을 따른다.
-
-## 2026-10-18 19:10 KST — 사용자3090 재시도·새 호스트 CUDA/BF16 통과, 설치 중
-
-사용자 재시도 승인 후 소유Pod `2uiqg6ym30ou3y`를09:59:13.359UTC/3090 0.22USDh로
-생성했다. CUDA조건 인자충돌400은 Pod생성 전 거부됐고 조건 하나만 제거한 요청이 성공했다.
-새 실제GPU UUID0481210a…/driver570.211.01/24576MiB·RAM약30GB이며 이전580/UVM장애
-GPU와 다르다. UVM open/cuInit0/실제CUDA BF16 PASS다. cgroup v2만 읽던 첫 메타데이터
-조회는 실패로 보존했고 실제v1 RAM limit을 별도로 확인했다. GitHub MMDL_test clean
-`8e9a8ee83ca7dc7aded0141d6dbb461a92fbbeb2`를 직접clone했다. 개인키/코드overlay는 없다.
-원래68code/414비공개입력·10distinct구조를 재사용하며 실제GPU fit/RL/reload는 아직 아니다.
-
-정상setup259의 NVIDIA 다운로드 지연을 실제 계측했다. 소유watchdog/pip만 종료하고 닫힌
-로그 SHAaf4ae5a0…를 보존한 뒤, 같은lock의14개 공식PyPI wheel을 전체SHA/크기/metadata
-검증해 선설치하는491 watchdog으로 재개했다. 이후변경없는setup을exec하므로 부모관계,
-전체CPU/pipcheck/doctor/13모델hash를 유지한다. 원래setup1시간은 보수적11:01UTC로
-묶었으며 최초과금은 재설정하지 않는다. 전체GPU cutoff11:59:13.359UTC/job11:57:13.359UTC,
-회수12:14:13.359UTC·운영상한0.30USDh/reserve0.20은 고정이다. 10:09:15UTC 실제잔액
-0.8760048299USD/현재과금0.241USDh·Pod RUNNING/설치중이다. 10분 자동조회cell218이 있다.
-입력은 byte보존 rsync압축 전송중이며 SHA검증 전 완료로 쓰지 않는다. 증거는 private
-`notebook-rl-3090-20261018/retry-v1/`다. 교수님MMDL/V8는 불변이고 성공주장/새900은 없다.
-
-## 2026-10-18 18:42 KST — 3090 실기기 CUDA/UVM 접근 실패·회수 후 삭제
-
-24GB 공유정책 코드와 필요한 동봉 resource를 MMDL_test feature branch의
-`ce2bc35edaf80f539641d4ae64c7fa7d1b0b1f4c`에 정상 게시했다. 게시 checkout64검사,
-EOF 공백 delta14검사·게시3검사/Ruff/범위mypy6·30경로 byte/mode 독립 검토를 통과했다.
-기존 전체570검사는 생산172항목 중171항목이 동일하고 input_preparation.py의 추가 EOF
-한 줄만 제거된 이전 증거다. 새68code·10distinct structure/단일5·복수5 입력 승인도 실제
-112.168초/차단0으로 통과했다. 이는 실제4B GPU 학습 성공이 아니다.
-
-승인된 단일3090 Pod `kxxt6w3fpsb7ur`를09:37:00.141UTC/0.22USDh로 생성했으나,
-공식PyTorch CUDA12.8.1 이미지의 최초 장치검사부터 Torch CUDA 불가·직접cuInit999였다.
-실제3090/24576MiB·driver와libcuda580.178.04는 일치했고 nvidia1/ctl은 열리지만
-`/dev/nvidia-uvm`은 errno5 EIO였다. 환경변수를 제거해도999다. GPU메모리 부족이나
-학습 코드 실패가 아니라 호스트/컨테이너 UVM 접근 단계 장애이며 정확한 kernel 원인은
-미확정이다. shared host driver/reset/검증완화·무근거 재시도는 하지 않았다.
-
-GitHub clone·입력414파일 전송·설치·모델다운로드·원문생성·실제RL update·새checkpoint는
-모두0이다. 로컬 진단2로그의SHA·실Pod identity·boot41줄과 삭제 전 원장을 보존·검증했다.
-소유Pod만 delete204→get404·cluster포함 계정Pod0/NetworkVolume0/전체페이지 완료로
-확인했다. container30GB/Podvolume120GB는 폐기됐으며 실험자료는 보내기 전이었다.
-09:42:09UTC 잔액0.9107895021USD/과금0.241USDh는 삭제 직후 지연 가능한 snapshot이지
-최종청구/현재0과금 인증이 아니다. 새 대체Pod는 만들지 않았고 실제4B RL/reload는 미검증이다.
-09:43:04UTC 후속조회는 잔액0.9107895021USD/현재과금0USDh이며 삭제 후 지연이 해소됐다.
-원본은 private `notebook-rl-3090-20261018/runtime/{predelete_local_verification_v1,
-owned_pod_cleanup_final_v1}.json`이다. 교수님MMDL·V8 558/900은 불변이다.
-
-## 2026-10-18 18:20 KST — 사용자3090 제한 시험·계속 추적 승인
-
-사용자가 새3090 RunPod 시험과 계속 추적을 명시 승인했다. 이번 범위는 새공유HF profile의
-고정10문항/최대2update/별도process reload이며 대규모학습·새900·다른GPU 승인이 아니다.
-09:15:17UTC 실제GraphQL 잔액0.9286258243USD/현재과금0을 확인했다. Community3090
-GPU catalog0.22USDh를 기준으로 저장비 포함 운영상한0.30USDh·회수예약0.20USD·최초과금부터
-GPU최대2시간/추가회수15분을 적용한다. 실제가격이 초과하거나 잔액·회수 여유가 부족하면 생성하지 않는다.
-별도NetworkVolume/자동충전/결제변경은 없다. 새원문/전사/정답/가중치를 GitHub에 올리지 않는다.
-검증된코드만 MMDL_test feature branch 게시→exactSHA clean clone→고정설치/입력·실GPU
-검증 후 실행한다. 기본값/정밀도/이미지/출력을 몰래 줄이지 않고 actual4B 성공을 미리 주장하지 않는다.
-10분마다 재고 또는 실행상태/진행·오류·예산을 확인하고 실패 원인을 바꾸지 않은 반복은 하지 않는다.
-완료/중단 결과를 로컬회수·검증한 뒤 이번전용Pod를 삭제한다. 최종 성공 후 새시험weights만 제거하며
-기존모델cache/과거결과·checkpoint는 보존한다. 현재 재고가 변동 중이며 아직새Pod/과금/4Bupdate0이다.
-
-## 2026-10-18 16:10 KST — 3090/4090 대상 공유모델 순차 경로 구현, 실제4B 미실행
-
-사용자 요청으로 `fine_tuning/notebook_rl/shared_smoke.py`와 공유 PEFT HF sampler를 추가했다.
-동일한 살아 있는 BF16 모델이 생성과 기존 RL 업데이트를 번갈아 수행하며 vLLM의 두 번째
-가중치/고정10GiB KV/매업데이트 merged export를 만들지 않는다. 기존 protocol SHA·모델/
-이미지·문맥·출력·샘플 수·보상·라우팅/optimizer와 native vLLM 경로는 보존한다.
-새 profile `hf_shared_policy_24gb_v1`은 명시적10문항/최대2update의 제한 시험이며 일반 학습
-승인이 아니다. ALG-NB3와 기존 ALG-NB+D를 몰래 합치지 않고 추가 사후 감사 노트는 loss/
-라우팅 권한이 아님을 명시했다. 폐기 tree의 노트/원문도 보존한다. 초기/업데이트 후 실제
-단일·복수이미지 probe, capture 프로세스 종료, 새 프로세스의 전체 weight/step/cursor 검사를 요구한다.
-
-정상 PYTHONPATH 전체570 CPU tests/253.714초·Ruff·범위 mypy5·독립 Sol 검토를 통과했다.
-초기 전체검사의 기존 subprocess import 실패1건은 명령의 PYTHONPATH 누락이며 실패 로그를
-보존하고 동일 소스의 해당1검사/전체570을 정상 환경에서 재실행했다. 로컬5060에서 별도 작은
-무작위 Qwen의 BF16 생성4개/직접기울기 업데이트1개/probe 전후 delta0도 실제 통과했다.
-이는 pretrained4B RL/자기수정 학습 성공이나 24GB 적합성 인증이 아니다. 상주 추정10.42GiB는
-동적KV·activation·workspace·generation scores를 제외하므로 실제3090/4090 peak/속도는 미검증이다.
-
-증거는 private `/home/jang2/mmdl-artifacts/notebook-rl-shared24-20261018/`이며172항목 source
-해시를 실행 전후 대조했다. 새 Pod/다운로드/실제4B update/게시/새4B checkpoint는0이다.
-후속 GPU 시험은 MMDL_test 게시·새 source 결합 데이터 승인/10개 입력·실제 GPU/재정 watchdog을
-다시 검증해야 한다. 구 승인이나 tiny 증거로 이를 우회하지 않는다. 모델을 양자화/offload하거나
-이미지·토큰을 자동 축소하지 않는다. 현재 약0.93USD가 충분하다고 보장하지 않으며 새 유료
-실행/종료시각 승인을 추정하지 않는다. MMDL197838c1/MMDL_test8595d2ce clean·V8은 불변이다.
-
-## 2026-10-18 15:35 KST — 실제4B·10문항 시험의 로컬 자원 사전점검
-
-사용자가 실제 원본4B로 약10문항의 오답노트 RL 흐름 확인과 성공 후 이번 변형 가중치만
-삭제하도록 요청했다. 원본 모델13파일의 크기·SHA를 로컬 캐시에서 전수 재확인했고 새
-다운로드는 없다. 실제5060 VRAM8,546,484,224bytes보다 BF16 shard8,875,719,344bytes가
-크다. 현재 native HF+vLLM 두 가중치+고정10GiB KV 하한은28,488,856,928bytes/26.532GiB로
-activation/optimizer 이전부터 불가능하다. 작은CUDA BF16 probe는 통과했으며 모델 할당·생성·
-학습 update는0이다. 양자화/해상도·토큰/KV 축소·학습 offload를 자동 적용하지 않는다.
-
-CPU 자체가 불가능하다고 판정한 것은 아니다. 현재 공유PEFT CPU sampler·BF16/FP32
-산술·동기화·실측 메모리/시간 경로는 미구현·미검증이며 다른 backend로 자동 대체하지 않는다.
-동일 native 파이프라인을 큰GPU에서 시험하려면 새 cloud 비용 상한·최대시간 확인이 필요하다.
-시험 성공/변형 checkpoint 생성/삭제를 주장하지 않으며 기존 캐시·과거weights·결과는 보존한다.
-정답은 verifier 전용·SFT/teacher 금지·검증 보상으로 풀이/진단 학습 원칙을 유지한다.
-새RunPod/게시0이며 MMDL197838c1·MMDL_test8595d2ce clean/불변이다. 증거는 private
-`/home/jang2/mmdl-artifacts/notebook-rl-real10-20261018/local_preflight_v1.json`이다.
-
-## 2026-10-18 02:23 KST — 오답노트 RL 로컬 구조·폴더 독립 검증
-
-새 사용자 목표는 최신 설계의 로컬 소규모 구현·검증이며 이전 유료4B 목표와 구분한다.
-`fine_tuning/notebook_rl/`에 재시도 성공 후 최종 노트의 선택적 생성을 연결했다. 성공 경로의
-실제 토큰 이력을 유지하며 예산/문맥/빈답/잘림/미회복을 기록한다. 감사용 최종 노트는
-loss·라우팅 근거가 아니고 기존 class-balanced DIAG 보상 학습과 분리된다. 기존 protocol은
-불변이며 추가 노트 활성화에는 새 protocol/hash·호출 예산 결합이 필요하다.
-
-실제 작은 Qwen 이미지 forward/logprob/RL로3회 optimizer update와 별도Python프로세스
-checkpoint 재로딩·전체 parameter hash/step/cursor 일치를 확인했다. Vision ON에서V/M/L,
-이후OFF에서M/L만 변하며 이전Adam momentum도V를 바꾸지 않았다. 잘못 작성한 모델 진단은
-검증 원인의 라우팅을 덮어쓰지 못하고 F0 reference/동결기저는 불변이다. 성공 분기 문장은
-명시적 시험 fixture이지 모델 추론이 아니다. 별도 실제 무작위 tiny 생성6개는 실패로 남긴다.
-SFT/teacher/정답의 actor 전달은 사용하지 않았다. 직접 update의 sampler 동기화 상태는
-UNSYNCHRONIZED이며 native vLLM 성공으로 바꾸지 않는다.
-
-필수 processor helper·고정 manifest/lock/P0를 폴더 안에 두고 `mmdl`/`experiments` 및
-형제src/env/manifests/prompts 없이 복사본의 연결 시험을 통과했다. 현재 고정 소스167파일의
-SHA 검증, notebook CPU559검사315.178초·생성기/adapter90검사627.343초·Ruff 및 독립검토
-PASS다. 변경부8파일 mypy도 기존 scripts/test_reference.sh의 외부import 제외 정책으로
-통과했다. 더 엄격한 호출의 qwen_vl_utils 미제공 type stub1건은 별도 한계로 기록한다.
-이전 두 전체검사의 child module명 오류는 보존하고 canonical 경로 수정 뒤 v3로
-전체 재검증했다. 증거 정본은 `/home/jang2/mmdl-artifacts/notebook-rl-local-20261018/`의
-`contract-final-v4/verification.json`, `full_cpu_final_v3.log`, `data_cpu_v1.log`,
-`final_sources_v3.sha256`와 `local_completion_verification_v1.json`이며 재현 명령·의미 범위는
-notebook_rl/README.md에 있다.
-
-실제4B RL/GPU동기화·재로딩/Phase A/150평가/성능개선 및 다분야 본학습 데이터 승인은
-미완료다. 기존 graph40문항(train16)의 제한 AI/program smoke 증거를 새 본학습 승인으로
-확대하지 않는다. 원문·데이터·가중치·실패 기록은 비공개이며 이번 cloud/추가취득/게시0이다.
-MMDL clean HEAD197838c1·V8 558/900 및 MMDL_test clean HEAD8595d2ce는 불변이다.
-
-## 2026-10-17 15:35 KST — 로컬 보존 독립검증·소유 Pod 삭제 완료, 실제 RL 미완료
-
-실패 native 두 실행 각7파일과 setup/revalidation8파일, job2개, 복구400파일을 독립
-재해시·원격 receipt와 대조했다. 학습은 첫 sampling/update 이전에 중단되어 실제 optimizer
-update0·학습 checkpoint/reload 미검증·150평가 미실행이다. vLLM 시작 비율 수정4185db7은
-CPU검증/게시만 완료했으며 GPU 성공으로 보고하지 않는다. MMDL_test clean HEAD8595d2ce다.
-소유Pod e10034q5chqqcr를06:32:36UTC 삭제204→get404로 확인했고 최종 cluster포함
-계정Pod0/NetworkVolume0·모든 페이지 완료를 확인했다. container30GB/workspace120GB와
-설치환경/모델cache는 폐기·원격 복구 불가이며 로컬 원본·실패기록·복구 입력은 보존됐다.
-06:34:37UTC 공식 GraphQL 직접조회 잔액0.9286258243USD/현재과금0USDh다. 최종 청구서와
-구분한다. 16:10 연장은 승인되지 않았고 새 유료 실행은 없다. 재개에는 새 GPU 실행과
-종료시각 승인이 필요하다. 교수님MMDL HEAD197838c1·V8 558/900은 clean/불변이다.
-정리 증거는 private runtime/owned_pod_cleanup_final_v1.json이며 같은 권한 차단이3연속
-goal turn에서 반복됐다. goal 미달성이고 GPU 검증 전 독립 작업은 닫혔다. 원래 지침과
-이전 receipt는 보존하며 중지 상태 기록을 삭제 완료로 소급 수정하지 않는다.
-
-## 2026-10-17 15:24 KST — 수정4185db7 게시·유휴 GPU 중지·잔액 직접 조회 확보
-
-vLLM 시작 비율0.7 수정은 로컬771 CPU검사(1skip)/325.963초·입력24/23.344초·
-집중19/Ruff/mypy1·독립검토를 통과했고 MMDL_test4185db75ec502b50990a6c09734dfe96b0772153에
-정상 게시·원격HEAD/clean을 확인했다. 새 v4 입력의 실제 preflight도16개/차단0으로 통과했다.
-이 수정의 새 GPU 성공/실제 RL update/reload/150은 미검증이다. 이전 actual G9/G10은 통과,
-모든 실패실행의 원격/로컬 원문 SHA는 검증됐다. 교수님MMDL/V8는 불변이다.
-사용자는 잔액 조회 가능 여부를 물었으며 시간 연장 승인은 아니다. 기존15:40 한도를 유지한다.
-공식 GraphQL myself의 clientBalance/currentSpendPerHr를 기존 인증으로 읽기 전용 조회할 수
-있음을 확인했다. MCP REST v2에 balance가 없다는 사실을 전체 조회 불가로 확대하지 않는다.
-키는 출력·전송·파일 저장하지 않으며 실제 잔액은 private runtime/live_account_balance*에 둔다.
-유휴 비용 절감을 위해 소유Pod e10034q5chqqcr를06:22:31UTC 중지했고 EXITED를 재확인했다.
-GPU는 중지됐지만120GB 작업 볼륨과 저장 과금은 남는다. 재개는 새 시간 승인/실제 잔액/
-접속·GPU identity/clean clone/기존 환경·모델/컨테이너 입력 재전송 검증 후에만 한다.
-컨테이너 임시 복사본은 중지 시 폐기되므로 로컬 원본과 GitHub를 사용한다. goal 완료가 아니다.
-
-## 2026-10-17 15:17 KST — 실제 G9/G10 통과·vLLM 공존 시작 설정 오류
-
-새76cfc4e는 로컬771검사(1skip)/24입력검사와 원격32변경부/lock/pip/CUDA BF16/
-13모델파일 재검증을 통과했다. 새 native 실행의 G9/G10은 실제 통과했으나 HF 학습
-모델 공존 상태에서 vLLM 기본 gpu_memory_utilization0.9의 시작 검사(필요42.66GiB/
-가용38.06GiB)가 실패했다. 실제 OOM이나 optimizer update가 아니며 업데이트는0이다.
-vLLM0.11 공식 코드상 명시KV가 있으면 KV는10GiB를 그대로 사용한다. 시작 비율만
-0.7로 명시하는 최소 수정을 준비했고 동시16/문맥16K/BF16/이미지/캐시는 줄이지 않는다.
-수정19검사/Ruff/mypy1/독립검토 PASS이며 전체 CPU검사는 진행 중이다. 이전 실행은 보존한다.
-16:10/reserve0.20 연장을 질문했으나 승인 전에는 기존15:40/총2.30/reserve0.50을 유지한다.
-실제 RL/reload/150은 미완료이며 교수님MMDL/V8는 불변이다.
-
-## 2026-10-17 14:53 KST — native G9 중단·로컬 전체/원격 변경부 검증 승인
-
-75c46dc의 실제 A40 native 실행은 G1 BF16/FP32 master 및 G3 초기 logprob 차이0을
-관측했으나 G9 OFF/직접동결 기울기 비교에서 실패해05:41UTC exit2로 종료했다.
-optimizer update0이며 학습 checkpoint/reload/150평가는 미완료다. CUDA backward
-비결정성이 원인 후보이나 이전 원문에 오차 크기가 없어 확정하지 않는다. 허용오차
-rtol1e-6/atol0은 유지하고 strict deterministic 설정/동일 OFF 재계산/오차 원장을 추가했다.
-수정32 CPU tests/Ruff/mypy3와 독립 검토 PASS이며 실제 GPU 재검증은 아직이다.
-사용자는 로컬 전체 CPU검사+원격 변경부/기존 환경·13모델파일 재검증을 승인했다.
-새 GitHub SHA clean clone을 유지하고 이전 원격765+24 PASS 증거를 소급 변경하지 않는다.
-원래 총2.30USD·GPU15:40/job15:38KST·reserve0.50·소유Pod는 불변이다.
-근거 private runtime/failed-native-g9-v1/ 및 새 v3 입력 승인/전체검사 원장이다.
-
-## 2026-10-17 14:28 KST — setup exit0·새 native RL controller 제출
-
-정상75c46dc setup은962.941995초/exit0,765+24 CPU검사·실제 A40 CUDA/BF16·지정
-13모델파일 hash를 통과했다. 닫힌 setup4파일의 원격/로컬 SHA를 검증해 보존했다.
-05:28:12UTC 소유Pod e10034q5chqqcr의 watchdog2919/coordinator2920으로 실제
-native gate job을 제출했다. job SHA c9c73cef…는 실제모델/device/새 clean SHA와 결합됐다.
-현재 preflight이며 실제 학습 update/reload 성공이 아니다. 최신 승인 compute06:40UTC/
-job06:38UTC/reserve0.50USD·원래 최초과금/총2.30USD를 유지한다. 교수님MMDL/V8는 불변이다.
-근거 private runtime/setup-75c46dc-local-verification-v1.json 및 native-launch-v1.json이다.
-
-## 2026-10-17 — 동일2.30USD·15:40 KST 연장 명시 승인
-
-사용자가 `동일 2.30 USD 안에서 15:40까지 연장`을 승인했다. 새 native watchdog의
-GPU cutoff06:40UTC·내부job06:38UTC·회수예약0.50USD로 조정한다. 최초과금04:01:36.102UTC,
-총2.30USD/운영상한0.65USDh/소유Pod e10034q5chqqcr 및 최대2unique update는 유지한다.
-이미 실행 중인 setup1934/기존 watchdog·코드는 바꾸지 않고 정상 종료 뒤 새 native 실행에만
-결합한다. 새 Pod/추가 실험 승인이 아니며 실제 RL/reload/150은 아직 미실행이다.
-이 절이 이전 cutoff/reserve보다 우선한다. 교수님MMDL/V8는 불변이다.
-근거 private runtime/user-budget-extension-v1.json과 사용자의 실제 답변이다.
-
-## 2026-10-17 14:10 KST — test-only FP32 경계 수정·새 clean setup 실행
-
-두 번째 setup은765 CPU tests 중1실패/1424.810초로05:02:07UTC 종료했다. guard10은
-통과했고 작은 Qwen CPU chunk1의 GEMV/GEMM projection 차이1 FP32 ULP를 독립 재현했다.
-reference/full exact 검사는 유지하고 chunk1만 rtol0/atol5e-7로 검사한다. data-only 시험
-worker의 Torch/PEFT import도 분리했다. policy6/guard10/Ruff PASS·기존 mypy33진단 동일/
-추가0이며 production64파일과 G3/G7·데이터·보상 기준은 불변이다. test-only 두 파일을
-MMDL_test75c46dc44cfd076fc0b20344d09fc7fa1cea195d에 정상 게시하고 Pod에서 직접
-clean clone했다. 이전 checkout/실패 로그를 보존한 뒤05:10:18UTC setup1934로 재시작했다.
-정상 lock/pip/전체CPU/CUDA BF16/모델13파일 검증은 생략하지 않는다. 실제4B RL/reload/
-150은 아직 미실행이다. 원래 소유Pod e10034q5chqqcr·2.30USD/reserve1USD·최초과금과
-compute06:01:36.102UTC/job05:59:36.102UTC를 재설정하지 않는다. 교수님MMDL/V8는 불변이다.
-별도 evaluation150-v1 입력 고정은 CPU 준비일 뿐 점수/실험 완료가 아니다. T2/T3의 실제
-생성 오답노트·보상/advantage·학습 기여를 확인하지 않고 자기수정 RL 성공을 주장하지 않는다.
-근거 private runtime/policy-reference-failure-v1.json·setup-failed-5d99dd8.log와 새 정상 setup이다.
-
-## 2026-10-17 13:38 KST — CPU timeout 원인 재현·새 clean setup 재개
-
-원격 단일 guard 시험은91.134초에 outer actor90초 TimeoutExpired로 실패했다.
-세 차례 독립 data validation과 import의 합을 고려하지 않은 시험 상한이 원인이며,
-이를 guard 통과나 GPU 장애로 해석하지 않는다. test-only outer300/inner60 유지 수정의
-전체10검사148.606초/Ruff/범위mypy가 PASS다. 실패 setup205와 소유child를 종료하고
-닫힌 로그의 원격/로컬 SHA9a38c616… 일치를 확인했다. 기존 checkout은 삭제하지 않고
-Pod의 `multimodel-code-2b754a8`에 이동했다. MMDL_test 정상 게시/직접 clean clone
-`5d99dd8247ac06e31062f33f51fb66104167bf12`의 새 setup1147를04:37:16UTC 시작했다.
-정확한 lock/pip check/전체764 CPU검사/CUDA BF16/모델13파일 hash를 생략하지 않고
-기존 canonical venv만 명시적으로 재사용한다. 현재 실제4B RL/reload/150은 미실행이다.
-
-같은 Pod의 실제 전체 data preflight177.291초로 확인한 기본120초 부족은 별도 production
-dispatcher 수정c03aa92로 해결했다(제한 smoke만300, 일반/명시값/금융 watchdog 불변).
-원래 components10source/600intervention은 바꾸지 않고 새64code scope/D1–D8 v2를
-실제115.062초 CPU 검증했다. 새13파일89,275bytes도 Pod 전송 후 모두SHA 확인했다.
-train16/heldout24 분리·단일/복수이미지 probe·64codehash·고정 budget은 독립 검토 PASS다.
-원래40문항/60PNG·전체 제외 검사/모든 경고/AI 판정은 보존하며 사람 인증으로 쓰지 않는다.
-
-최초과금04:01:36.102UTC·2.30USD·reserve1USD·0.65USDh·compute06:01:36.102UTC/
-job05:59:36.102UTC는 재설정하지 않는다. 실제 native 업데이트/새 프로세스 reload를
-우선하며 150평가는 동일8K F0/FT 비용을 보고 판단한다. 교수님MMDL/V8는 불변이다.
-근거 private `notebook-rl-smoke-20261017/runtime/remote-guard-timeout-{diagnostic,fix-local-verification}-v1.json`,
-`setup-failed-2b754a8.log`, `remote-scope-transfer-verification-v2.json` 및
-`candidates-v1/smoke-data-reviewed-v2/`다. private job 준비를 실제 GPU 성공으로 보고하지 않는다.
-
-## 2026-10-17 13:15 KST — 소유 A40 생성·GitHub clean clone·전송 검증, 설치 중
-
-승인된 A40 대체/총2.30USD/회수예약1USD로 소유Pod `e10034q5chqqcr`를 생성했다.
-최초과금04:01:36.102UTC, 실제GPU0.59USD/h·운영상한0.65USD/h, compute cutoff06:01:36.102UTC/
-job deadline05:59:36.102UTC를 고정한다. 별도 Network Volume0이며 Pod volume120GB이다.
-직접SSH로 A40/49140MiB·driver580.178.04·Python3.12.3·cgroup RAM49,999,998,976bytes 및
-실제/workspace mount를 확인했다. Pod는 GitHub에서2b754a849e0abbb004ce984c40d49350918a2b83을
-`/mnt/c/projects/multimodel`에 clean clone했다. 개인키/모델/venv/코드 overlay는 전송하지 않았다.
-비공개385payload/2,064,900,296bytes(transport387파일)는 전송 후 모든SHA·크기·nlink1·경로와
-Git clean을 Pod에서 검증했다. source clone과 data proof의16개 source byte도 일치한다.
-현재 정상 setup watchdog205/pip240가 살아 있으며 NFS에 의존성을 쓰고 있다. 13:14KST 조회에서
-설치 중이며 실제4B RL/reload/150이나 성능 개선은 아직 없다. setup의 추가1시간 상한과
-최초 금융기한은 유지하며 다음 계정조회는04:20:49UTC까지다. 교수님MMDL/V8는 불변이다.
-근거 비공개 `notebook-rl-smoke-20261017/runtime/`의 `owned-pod-launch-v1.json`,
-`owned-setup-observation-v1.json`, `remote-private-transfer-verification-v1.json`,
-`pod-monitor-20261017T041049Z.json`이다. 설치 미완료를 완료/실험 성공으로 쓰지 않는다.
-
-## 2026-10-17 12:59 KST — 전체 제외 검사·직접 검토·제한 smoke 데이터 검증
-
-아래 진행 중 기록보다 우선한다. 실제 native100파일/16,740행 인덱스에 대해12검사 단계가
-모두 COMPLETE이며 full receipt SHAafcc0579…/evidence SHAba8beec2…다. 경고1953행/
-고유1303개는 별도 직접 AI 검토에서 모두 DISTINCT였고 duplicate/unresolved0이다.
-이는 human_verified=false이며 미검출 전체 쌍의 무오염 보장이 아니다. 기존 원장/입력은 보존한다.
-`build-reviewed-v1`은 원본76개 입력 byte를 유지한 별도 metadata 결합본이며, D1–D8와 실제
-격리 preflight106.934초/0blocker로16train의 제한 smoke 적격성을 확인했다. 나머지24개는
-학습 actor/probe에 넣지 않는다. 결과는 CPU_DATA_VALIDATED_NOT_GPU_SUCCESS이며
-일반 학습/Phase A/사람 인증/성능 개선 승인이 아니다. 로컬 ActorItem 저장 오류는 기록하고
-기존 증거를 보존한 채 출력 직렬화만 정정하여 실제 검증을 다시 수행했다.
-MMDL_test 최신 게시2b754a849e0abbb004ce984c40d49350918a2b83은 subprocess 시험의
-package 경로 수정이며 production guard는 불변이다. 전체764 CPU tests/318.928초가
-통과했다(환경별 제외1). test harness 추가 mypy의 기존31진단은 미해결로 구분한다.
-교수님MMDL clean HEAD197838c…/V8은 불변, 새 Pod/유료 실행/실제4B RL·GPU reload·150은
-아직 미실행이다. 근거 정본은 비공개 notebook-rl-smoke-20261017의
-`candidates-v1/smoke-data-reviewed-v1/` 및 `runtime/independent-final-review-v1.json`이다.
-
-## 2026-10-17 12:25 KST — 직접 유사도 검토·blacklist 코드 게시
-
-MMDL_test feature branch에 `f774e9397c118bb9511b8bf9253b2da3ac365041`을 정상 게시했다.
-28개 명시 파일의 상위/게시 byte·실행권한, 원격/로컬 HEAD 및 clean 상태를 확인했다.
-검토된 DISTINCT만 해제하고 실제 중복·미해결 family의 ID를 actor/probe에서 제외하는
-제한 smoke 경로다. 원래 경고와 일반 학습의 승인 조건은 보존한다. 연결58 CPU 검사,
-게시본42 집중 검사 및 독립 delta 검토는 실제4B CUDA 학습의 성공 증거가 아니다.
-초기1858 경고(고유1208)의 직접 AI 대조는 모두 DISTINCT였으나 human_verified=false이며,
-새 OCR/SSCD/SigLIP 후보는 검토 범위 밖이다. 전체 검사를 완료하거나 학습 승인했다고 쓰지 않는다.
-SigLIP의 구두점 전용11필드가 토큰0개인 실제 입력 경계는 native tokenizer와 대조하여
-EOS/padding 처리로 수정했고, 현재 source SHA578c3fda…로 세 검출기를 새로 실행 중이다.
-과거 캐시 identity를 새 결과로 바꾸지 않는다. 새 Pod/유료 실행은 없고 조회 Pod0이다.
-교수님 MMDL clean HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8은 불변이다.
-증거는 비공개 `notebook-rl-smoke-20261017/runtime/code_copy_reviewed_overlap_v1.json`과
-`candidates-v1/overlap_review_v2/main_verification_v1.json`이다. 실제 GPU RL/reload/150평가는 미완료다.
-
-## 2026-10-17 12:06 KST — 재개 승인: 유사 경고 직접 대조·동일 문제 blacklist 후 RL
-
-사용자가 목표를 active로 재개했고 **유사 경고는 실제 문제·이미지로 대조하여 동일 문제인지
-확인하고, 동일 문제만 blacklist에 넣어 해당 ID를 건너뛰며 진행**하도록 변경했다. 이 절이
-아래 중복 후보면 즉시 중단 지시보다 우선한다. 검출 원장과 임계값은 보존하며 별도 SHA 결합
-검토 원장에서 DISTINCT/DUPLICATE/UNRESOLVED를 기록한다. 미검토·불확실 항목은 계속 차단한다.
-AI 직접 대조는 human_verified=false이며 학습 정답 생성이 아니다. benchmark 원문/이미지/
-검토 자료는 비공개 검사용이며 학습 payload로 넘기지 않는다. 실제 중복은 같은 family도 제외한다.
-기존 USD2.30 범위·A40 대체·제한 program/AI 검토 smoke를 적용하며 CPU 증거와 실제 GPU RL/
-checkpoint reload/성능 개선을 구별한다. 교수님 MMDL은 수정하지 않고 실행 코드는 검증 후
-MMDL_test feature branch에 게시한 exact SHA를 Pod가 clone한다. 비용 여유가 없으면150평가는
-후속으로 남기되 실제 학습 pipeline 검증을 우선한다. 현재 새 GPU 실행은 아직 시작하지 않았다.
-
-## 2026-10-17 11:53 KST — 오답노트 RL: 중복 후보 검출 시 중단 지시 적용
-
-최신 사용자 지시는 **검출기를 유지하고 중복 후보면 중단**이다. 실제 native100파일/
-16,740행/12,168고유 이미지 인덱스를 구축했고 기존 검출기로40후보문항을 대조한 결과
-텍스트1,165·perceptual693개의 후보 기록이40문항 전체에 걸쳐 발생했다. 후보는 실제
-복제 확정이 아니지만 이 지시에 따라 학습을 중단한다. 임계값 완화·후보 구제·자동
-표본 교체·새 유료 Pod를 하지 않는다. 실제4B RL/GPU reload/MMMU150은 미실행이다.
-원장 상태는 BLOCKED_NOT_CHECKED/quarantine40/allowlist0이며 전체 OCR/embedding/
-calibration 완료가 아니다. 닫힌 캐시·실패/중단 증거·원래40개 입력은 보존한다.
-증거 `/home/jang2/mmdl-artifacts/notebook-rl-smoke-20261017/`의
-`exclusion-v2/index.json` SHA82b1084d… 및
-`candidates-v1/stop_on_candidates_native100_v1.json` SHAd20b8373…다.
-제한 AI/program smoke용 로컬 코드/검증은 준비됐으나 게시하지 않았다. MMDL_test
-HEAD89271c277bbe45177e62396377a0084b1dde49b5·교수님MMDL
-HEAD197838c11557911a14a46d87b7f52fda0cac5b3c 및 V8 558/900은 불변이다.
-새 cloud 지출0·Pod0이며 현재 실행은 종료했다. 상세 및 전체 SHA는
-`docs/PROJECT_STATUS.md` 최신 절을 따른다. 사용자 조건 변경 없이 자동 재개하지 않는다.
-
-## 2026-10-12 04:25 KST — 고정8K 진단336·A/B2000·외부396 회수·Pod 삭제 완료
-
-이 절이 아래 진행 중 스냅샷보다 우선한다. c551 고정48문항 F0 I/T/IT/IR/TR240 및
-기존 FL/FM/FV/FML 동일12 I/T96을 실제 완료했다. F0 정답22/24/26/20/22 of48,
-동일12 I/T는 F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 작은 선정 표본·한 seed이며
-MMMU900 성적이나 유일한 모듈 책임을 확정하지 않는다. 전사48개는 메타데이터상
-COMPLETE/VISUALLY_INSPECTED지만 human_verified=false48이다. 규칙 적합성의
-PARTIAL33/UNRELATED15·충분성 인증0을 전사의 분류로 혼동하지 않는다.
-
-실행5093dc86536c68cc352cb34a0f2dd53db99c6519의 새 정상 setup223+24 CPU tests/
-lock/pip check/CUDA·BF16/지정13파일 검증 후, freshF0·고정FM의 A(답)와 B(원본 표facts+답)를
-각2000행(native1600+동일retention400)/125update로 학습·fresh-process reload·export했다.
-네 Merger의 전체24 FP32 tensor/109105152 parameter를 각 로컬 checkpoint에 보존했다.
-동일 행·순서·학습률·update지만 감독token A22061/B127665와 retention loss 가중치는
-같지 않다. 상위모델 풀이·benchmark 파생 학습·자동 양자화/해상도 축소는 사용하지 않았다.
-
-같은8K/vLLM0.11.0/동시4·입력/seed로 F0/A/B 외부132씩396 원문을 완료·고정 CPU채점했다.
-QA48 정답35/30/28, 전체표24 exact19/11/17, 행 exact19/16/23,
-셀310 중268/253/299다. 세조건 모두 facts JSON/schema24 유효다. B는 행·셀 추출 개선을
-보였지만 QA·표전체의 사전 확대gate는 A/B 모두false다. 따라서50K/새 모듈 sweep/최종900은
-자동 진행하지 않는다. B의 title/header 손실·facts-only 반복과 최종답 미완성을 분리한다.
-
-정답을 보지 않은 별도 AI 원문 추출 감사144개를 고정한 후 host에서만 비교한 민감도는
-F0/A/B39/41/30 of48이다. 기존 고정35/30/28·확대gate를 변경하지 않는다. AI 감사는
-사람 의미 인증이나 새 제출 점수가 아니다. B39 CLEAR/1 AMBIGUOUS/8 NO_FINAL이며
-세 length 응답은 답 없는 facts 반복/출력이다. 이후 새 실험에서는 답 형식·채점 규칙을
-먼저 동결하고 사실 추출과 답 완성을 분리해야 한다. 현 결과로 전체 모델 개선을 주장하지 않는다.
-
-주 검증과 독립 delta PASS 후834 닫힌 payload·2103 private 입력·원문732개·두 전체 학습
-checkpoint·설정/환경/로그를 로컬 결합했다. 최종closure SHA935ed744…,
-독립 delta SHA0ba1a3c6…이다. 소유A40 Pod z2sa5xt3b93er9를19:24:54UTC 삭제204,
-19:25:01UTC get404·계정 Pod0·Network Volume0으로 확인했다. container30GB/workspace120GB는
-폐기·원격 복구 불가이고 로컬 결과/가중치는 보존됐다. cleanup receipt SHA86f0f5a9…이다.
-전체 과금 구간 약4시간38분, GPU 실가격0.59USDh 기준 추정2.73USD·운영상한 기준3.01USD다.
-API snapshot2.1842USD는 최종 청구서/잔액이 아니다. 최초5.20USD·reserve1·원기한을 유지했다.
-
-증거 정본은 `analysis_exports/input_recovery_20261011/`의 `full336_scores_v1/`,
-`F0_A_B_external396_scores_v1/`, `F0_A_B_QA144_semantic_audit_sensitivity_v1.json`,
-`external396_fact_field_controls_v1.json`, `final_scientific_decision_v3.json`,
-`final_local_closure_v1.json`, `owned_pod_cleanup_final_v1.json`, `final_cost_report_v1.json`이다.
-해석 v1/v2의 규칙/전사 축약 오류는 보존하고 v3에서 정정했다. 원문·수치·입력·gate는 불변이다.
-학습 가중치는 `/home/jang2/mmdl-artifacts/recovered/tabmwp-{A,B}-2000-20261012-z2s/`다.
-교수님MMDL HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8/558/900은 clean/불변이다.
-결과·이미지·전사·가중치는 게시하지 않고 MMDL_test에 코드/이번 종료 기록만 반영한다.
-이 완료는 범위가 고정된 진단·A/B 실험의 종료이며50K/독립 전문전이/최종900 완료가 아니다.
-
-## 2026-10-12 03:18 KST — 진단336 독립검증·외부 F0 완료, A 실제 학습
-
-아래 진행 중 스냅샷보다 우선한다. 최종96/10단계/full336 결합 독립검토도 PASS다.
-새5093 정상 setup은223+24 CPU tests/lock/pip check/실제CUDA·BF16/지정13파일 검증을
-exit0으로 완료했다. 동일Pod·닫힌336·현재입력·새setup을 결합한 별도 authority 후
-17:59:58UTC A/B controller6275를 시작했다. 실행 checkout5093은 문서 게시와 별개로 고정한다.
-
-외부F0 132개(별도QA48/facts24/retention60)를 완료·138 payload 전후SHA/요청/원문 decode/
-native8K·동시4/input-ID·CPU-reference tensor 결합과 로컬 채점/독립검토 PASS로 회수했다.
-QA35/48, 표전체19/24, 셀268/310, retention QA4/12·TRACE8/24·structure0/12·grounded3/12다.
-이는 외부 기준값이지 MMMU900 성적이 아니다. engine pixel tensor/사람 의미 인증은 하지 않았다.
-A는18:11:34UTC freshF0의 고정FM 학습에 진입했고18:16:33UTC 실제432/2000행·27/125update를
-관측했다. 아직 A/B 학습·새396·학습 개선·확장/최종900 완료가 아니다. B는 아직 미시작이다.
-
-첫5.20USD/회수예약1USD/상한0.65USDh·원과금시각은 유지한다. GPU cutoff21:12:32UTC,
-금융 deadline21:14:32.577UTC이며 실제 충전 답변 없는 약속을 잔액으로 더하지 않는다.
-교수님MMDL/원래V8·558/900은 불변이다. 근거는 `analysis_exports/input_recovery_20261011/`의
-`checkpoint96_independent_v1.json`, `tabmwp_setup_closed_v1/`, `tabmwp_ab_launch_v1.json`,
-`F0_external132_closed_v1/`, `F0_external132_independent_v1.json`(60f03f32…),
-`F0_external132_scores_v1/`, `tabmwp_A_training_actual_start_v1.json`이다.
-
-## 2026-10-12 02:51 KST — 진단336 종료·로컬 채점, 다음 환경 검사 중
-
-이 절이 아래 진행 중 스냅샷보다 우선한다. 소유A40/c551 진단의10단계가 모두 exit0으로
-종료했고336원문·실행기록을 로컬 회수했다. 378 payload 파일 SHA·전체 요청/record·
-원문 V8 CPU채점/분모/동일12 전이 산술을 검증했다. F0 48문항 I22/T24/IT26/IR20/TR22다.
-동일12의 I/T 정답은 F0 4/3, FL5/5, FM3/4, FV2/4, FML5/3이다. 이 값은 진단 표본이며
-MMMU900 정확도·유일 모듈 책임·학습 개선 확정이 아니다. F0/FL/FM/FV 독립검토는 통과,
-FML 및 최종96 독립검토는 아직 진행 중이다. CPU-reference 입력 검증을 engine pixel
-tensor 인증으로 쓰지 않으며 FP32-fused BF16 export는 과거 master 추론과 bit 동일하지 않다.
-
-기존 controller/GPU child 종료를 실제 확인한 뒤17:44:31UTC 새 clean5093 GitHub clone의
-정상 setup을 PID5595로 시작했다. 기존 venv만 명시적으로 재사용하며 exact lock/전체 CPU
-검사/doctor/pinned model 취득을 생략하지 않는다. 아직 model-ready/새 학습/외부396 완료는
-아니다. 마지막 회수의 읽기전용 SSH 한 연결 지연은 소유 연결만 종료·재접속해 해소했다.
-원격 원문과 GPU는 건드리지 않았고 실패 기록/옛 receipt를 보존했다.
-
-TabMWP 실제 CPU 데이터·controller 독립검토는 PASS이며 teacher 풀이 없이 native1600+
-동일retention400/조건·freshF0/고정FM/125update A(답)와 B(표facts+답)를 준비했다.
-감독 token A22061/B127665와 token-normalized loss의 retention 상대가중치는 같지 않다.
-QA/facts/retention gate를 모두 검증하기 전 자동50K/900이나 모듈 승자 선정은 하지 않는다.
-새 실행 authority는 실제336/독립검토/새 model-ready/동일입력 결합 후에만 만든다.
-금융기한21:12:32UTC·확인된 최초5.20USD는 그대로이며 약속 충전을 실제 잔액으로 세지 않는다.
-교수님MMDL HEAD197838c11557911a14a46d87b7f52fda0cac5b3c·V8/558점은 불변이다.
-근거 `analysis_exports/input_recovery_20261011/`의 `full336_scores_v1/`,
-`full336_main_verification_v1.json`(81490d27…), `diagnosis_controller_closed_v1/`,
-`tabmwp_setup_launch_v1.json` 및 `phase_decision_after_full336_v1.json`이다.
-
-## 2026-10-12 01:23 KST — 새 A/B 입력 CPU검증·Git 게시·전송 완료
-
-이 절이 아래 준비 중 기록보다 우선한다. 소유 A40 `z2sa5xt3b93er9`의 원래c551 진단은
-16:20UTC F0 full110/240·GPU91%/40543MiB로 실행 중이다. 전체336 완료는 아직 아니다.
-새 코드5093dc86536c68cc352cb34a0f2dd53db99c6519는 MMDL_test feature branch에
-정상 게시·원격HEAD/clean 일치를 확인하고 별도Pod GitHub clone으로 받았다.
-223 학습 CPU tests(532.436초)·27 진단/게시 tests(81.207초)·Ruff/mypy5/Bash PASS다.
-실행 중 c551 checkout/venv를 바꾸지 않으며 새 setup/학습은 진단 종료 후에만 시작한다.
-
-새 native1600+동일TRACE360/NVW40 trial은35e547a564693edd4547745937a363037c3f77da8da2ff7811f26acf824c0f7e다.
-실제 processor A/B 각각2000개·모든 이미지/마스크/EOS/입력 parity·전체 fingerprint 제외를
-통과했고 quarantine0이다. CPU approval SHA13830bc23872a6021a46574de55fe72d62abaad9e564e04d19ea07389c95b008.
-native1600 사전scan 후보0이며 과거3후보 family/기존준비/dev/sealed는 보존했다.
-실제 감독 token은 A22061/B127665로 같지 않다. 행/업데이트125/순서만 맞춘 비교다.
-native source 신뢰 승인이지 사람·전체 픽셀/풀이 인증은 아니다. 상위모델풀이를 사용하지 않는다.
-
-외부132개(별도native QA48/facts24/기존retention60)를 동일F0/A/B로 고정했다.
-cohort hash58d5cc946063146b179c06b7261f5c85f072bb56813c5d8d89bb90100c76570a.
-정답은 로컬 `tabmwp_external_gold_v1/`에만 두고 Pod에는 전송하지 않았다.
-private 입력2103파일/105685580bytes의 전후 로컬/원격SHA를 검증했으며 transfer receipt
-SHAfbe3d1726a88fa14695a4b7018ae7edec0cdac61512ba62d26a497c909d00874다.
-CPU 승인·전송은 GPU 학습 승인 파일/실제 학습 완료가 아니다. 독립 입력 검토는 진행 중이다.
-새 GPU authority는 실제336 종료·입력/코드/Pod 결합 후에만 만든다. 금융 cutoff는 확인된
-5.20USD 기준21:12:32UTC를 유지하며 실제 충전 잔액을 비차단 질문으로 확인 중이다.
-교수님MMDL/원래V8/558점은 불변이며 새900/50K를 자동 실행하지 않는다.
-현재 evidence는 `analysis_exports/input_recovery_20261011/`의
-`tabmwp_cpu_preparation_main_v1.json`, `tabmwp_code_publication_v1.json`,
-`tabmwp_private_transfer_v1.json`, `monitor_20261011T1620Z.json`이다.
-
-## 2026-10-12 01:00 KST — 60호출 smoke 완료·사전 제외 구현 검증
-
-01:03KST 추가: 새 private prepared_benchmark_filtered_v2 및 이미지2000개26,280,638bytes를
-실제 생성·검증했다. 준비 hash1bedde703282d0332c74187f7845ce095f425d9017446cb5c47f0502913e3ad0,
-이미지 receipt ff2df1438fa9beb35c9f07fcbfc938cd06ef082e52287136800a5ce1a0f68e74.
-원래 dev/sealed·모든 원본 byte를 보존했다. 같은 전체 fingerprint index에 대한 새1600 scan은
-후보0이며 SHA4e2adfd591d06521255d09086f00bc09b9f33b467c002d827dd8e0a4f8075f85다.
-이는 새 processor/학습 승인이나 benchmark 전체 픽셀 재검사의 완료가 아니다.
-연결58 검사와 별도14 검사/Ruff/mypy5 PASS 후 새 게시본을 준비한다.
-
-소유 A40/c551의 F0 smoke는15:54:47UTC 60/60·1761.693초·exit0으로 닫혔다.
-같은 manifest/seed/원문60개를 재사용하여 F0 full240으로 계속한다. smoke60 원격/로컬
-SHA와 요청·record hash를 검증했으며 `F0_smoke60_closed_v1/local_receipt.json` SHA는
-0ad69d98d83e6df8edf0a09a72e7c775af6654bb71bd3ef57f511150d638112d다.
-별도 CPU 채점은 아직 전체336 INCOMPLETE이며 새900점수/삭제 gate가 아니다.
-
-학습 전 후보3개 table family 제외는 `tabmwp --exclusion-receipt`로 구현·검증했다.
-옛 scan/source/index와 생산자 hash를 보존하고 새 native1600만 동일 seed로 동결한다.
-dev/sealed 및 기존 준비 hash e61547fc…는 불변이다. 연결58 CPU검사67.422초·Ruff PASS,
-독립 구현 범위31검사11.402초·bounded mypy4 PASS다. 새 실제 준비/CPU4000승인/
-새 게시 commit/A-B학습/외부396 응답은 아직 미완료다. 실행 중 c551을 hot patch하지 않는다.
-포괄 실행 승인은 기록하되 새 실제 잔액이 확인되지 않은 약속 충전으로 금융기한을 늘리지 않는다.
-교수님MMDL/V8·558/900은 불변이며 최종 회수·검증 뒤 정확한 소유Pod를 삭제한다.
-
-## 2026-10-12 00:50 KST — 진단 중간 회수·학습 후보 중복 검사
-
-소유 A40/c551 실행은15:45:41UTC F0 smoke45/60·GPU94%/40269MiB로 진행 중이었다.
-닫힌 응답48개를 별도 `F0_prefix_20261011T1548Z/`에 회수하고 원격/로컬 모든
-manifest/backend/응답 SHA를 대조했다. local_prefix_receipt SHA
-`1c4bc2561456374d5430df9e57be601c1f10f9f484be87fbf74ca42872ec7cb2`는
-중간 응답 인증이지 full336/새MMMU점수/삭제 gate가 아니다. V8 CPU prefix score는
-INCOMPLETE·48실호출이며 미완료 조건의 정확도는null로 유지한다.
-
-TabMWP 순서 결합 v2는2000행/71,312,932 이미지bytes·native1600/TRACE360/NVW40으로
-검증됐고 trainer 실제 소비 SHA는49ae68d9cb38e350006a9b48666908d2eedd42340fd332d014eeb003d8ceae12다.
-Source-trust/비상업 연구권리만 CPU감사 대상으로 승인했으며 사람/전체 픽셀 인증이 아니다.
-기존100파일/16740행 index로 native1600을 검사한 결과 3개(14424/1148/29175)가
-NEAR_IMAGE_REVIEW_REQUIRED이고 exact/near text 및 exact image 후보는0이었다.
-scan SHA293e7d8c1b53398ab81893da7379f89d47cd11d6a6ac7d0d91632a31ace6d672.
-실제 PNG 대조에 접근 가능한32/100 Parquet·2630행만 새로 읽었으므로 전수 이미지
-의미감사라고 하지 않는다. 찾은1148의 나사 가격표와 Pro Physics161의 전기장 도식은
-서로 다르지만 미확인 match가 남아 세 후보를 임의로 통과시키지 않는다.
-
-기존 준비본/scan/권리review는 보존한다. 학습 전 새 selection revision에서 세 후보의
-table family를 보수적으로 제외하고 같은 seed 정렬로 native1600을 다시 동결하도록
-구현 중이다. 이는 학습 결과에 따른 표본 교체가 아니며 진단48/12/기존V8는 불변이다.
-승인기의 quarantine/2000행 gate를 약화하거나 기존 후보를 승인완료로 바꾸지 않는다.
-새 실제 processor4000/전체 제외/동일A-B 승인·freshF0 학습/외부396은 아직 미완료다.
-새 controller 합성3·전체 신규28 CPU검사(9.508초)/Ruff/mypy3 PASS이며 진단의
-원래Pod/commit/output을 실행 승인에 결합했다. 새 코드는 아직 게시/Pod 적용하지 않았다.
-
-## 2026-10-12 00:30 KST — 새8K 진단 실제 GPU 실행 시작
-
-소유 A40 `z2sa5xt3b93er9`의 exact `c5513aef6c6994f15a37301c5b2a0f8e8bde74aa`
-setup은1944.236초/exit0으로 완료했다. 실제192+24 CPU검사·CUDA/BF16 및 지정 모델
-13파일 hash를 통과했고 닫힌 setup4파일을 로컬 회수/검증했다.
-`analysis_exports/input_recovery_20261011/setup_closed_v1/local_setup_verification.json`은
-설치 검증이지 진단 완료/새점수/최종 회수/Pod 삭제 인증이 아니다.
-
-15:25:26UTC controller1178/child1182의 F0 smoke60을 시작했고15:30UTC 첫2응답의
-stop 종료와 A40 GPU95%/40269MiB를 관측했다. vLLM0.11.0·BF16·동시4개·8192출력,
-원래 이미지/seed/P0/V8 및 GPU cutoff21:12:32UTC를 유지한다. 아직 full336 미완료다.
-watchdog의600초 poll과10분 계정 확인을 유지하며 새학습/900을 완료로 쓰지 않는다.
-네 checkpoint의 HF BF16 export는 원래 FP32-master 비병합 실행과 bit동일하다고 하지 않는다.
-
-teacher-free A/B controller는 기존 train/reload/export/continuous evaluator를 재사용한다.
-TabMWP native1600+동일400 retention·freshF0·FM·125update를 고정하고, 외부132개/모델의
-QA48·tablefacts24·retention60을 비교한다. 확대 gate의 retention primary는 QA12/TRACE24의
-동일가중 평균(36문항)이며 나머지24개 지표와 구분한다. 새 공개 commit 전에는 Pod에
-적용하지 않는다. 현재 CPU자료 승인/실제 A/B학습/외부 응답은 미완료다.
-문항 순서 hash를 실제 train.order_hash로 연결한 새 준비본을 만들고 과거 후보는 보존한다.
-사람/전체 픽셀 의미 인증 없이 upstream SOURCE_GOLD 신뢰 범위를 명시한다.
-
-## 2026-10-12 KST — 8K 입력 회복 Pod 환경 준비 중
-
-MMDL_test에 `c5513aef6c6994f15a37301c5b2a0f8e8bde74aa`를 정상 게시하고,
-소유 A40 Pod `z2sa5xt3b93er9`에서 같은 SHA의 clean GitHub SSH clone을 확인했다.
-개인키는 전송하지 않고 120초 임시 agent forwarding으로 비공개 저장소를 받았다.
-실측 A40 46068MiB/CPU RAM 약50GB/Python3.12.3이다. actual0.59USD/h,
-운영 ceiling0.65USD/h·기보고5.20USD·회수예약1USD를 사용하며 최초과금
-2026-10-11T14:46:51.039Z와 금융종료21:14:32.577Z를 고정한다.
-GPU cutoff21:12:32Z·설치1시간 watchdog 및10분 확인을 유지한다.
-현재는 exact lock 설치 단계이며 GPU 진단/새학습/새점수 완료가 아니다.
-
-비공개54파일 및 FL4/FM2/FV4/FML5파일의 로컬/원격 SHA256·목록 일치를 확인했다.
-정답표·코드 overlay·개인키는 전송하지 않았고 교수님 MMDL은 불변이다.
-증거 `analysis_exports/input_recovery_20261011/private_transfer_verified_v1.json`.
-규칙의 gold-blind AI 감사48개는 PARTIAL33/UNRELATED15이며 충분한 규칙 커버리지를
-인증한 사례는 없다. IR/TR은 비완전한 힌트 개입으로 해석하고 TR 오답을
-규칙 적용/지식 부족의 인증으로 쓰지 않는다. 이미지 진실/사람 검토는 미확인이다.
-원본 규칙과 입력은 변경하지 않았으며 I/T/IT 회복과 구분해 보고한다.
-
-teacher-free TabMWP 원래 주석 기반 A/B1600train/200dev/200sealed를 CPU 구현·
-7검사 및 독립2000쌍 재현했다. 모든38,431행의 exact table family를 대조하여
-cross-split60family/813행을 제외했다. source solution/teacher 출력은 사용하지 않는다.
-이미지·오염·실제 processor·학습 프로토콜 gate 전에는 PREPARED_PENDING_GATES이며
-데이터가 준비됐다고 GPU 학습 성공/성능 개선으로 표시하지 않는다.
-
-선정 PNG2000개(26,298,935bytes)는 고정 Git tree/blob·SHA256·decode·크기·pixel hash와
-1600/200/200 역할을 전수 대조했다. 신규11 CPU tests/Ruff/mypy2 및 독립 이미지 검토
-PASS다. 취득 receipt SHA `be49f6891d8376e7d72832ae91a3ac147f08022757613123936caeca3c29f8bb`.
-이는 원래 주석의 픽셀 의미/정답·권리·학습 승인 인증이 아니며 원래 false 플래그를 보존한다.
-후속 A/B는 같은1600native+같은400외부 retention을 제안하되 새 CPU processor/오염 gate와
-새 GitHub commit을 거친다. 현재 실행 중인 c5513ae 코드는 hotpatch하지 않는다.
-
-## 최신 승인 — 입력 회복 진단·teacher-free 학습 비교 (2026-10-11)
-
-사용자는 첨부 계획의 구현·MMDL_test 게시·RunPod 실행을 승인했다. 교수님용
-`MMDL/` 및 `jang2296/MMDL`은 절대 수정하지 않는다. 새 코드는 상위 원본에서
-검사한 뒤 `MMDL_test` feature branch에 정상 게시하고, Pod는 exact SHA의 clean
-clone으로 실행한다. 원문 이미지·전사·정답·checkpoint·전체 응답은 비공개다.
-
-`experiments/input_recovery/`는 별도 8K 진단 protocol이다. A/B/C/D 각12개,
-과거 정답6/오답6의48개를 고정하고 I/T/IT/IR/TR 및 네 기존 checkpoint의
-별도12개 I/T를 실행한다(최대336호출). 12개 smoke는 full에서 재사용한다.
-기존 모델/revision/BF16/이미지/P0/sampling/문항 seed/V8은 유지한다.
-동시4개 continuous refill을 기본으로 하고 해상도·정밀도·문맥을 자동 축소하지 않는다.
-기존 V8 558/900·원문·4K G6 결과는 불변이며 새 진단 평균은 전체 MMMU 점수가 아니다.
-
-고정 입력은 `analysis_exports/input_recovery_20261011/prepared_gold_bound_v2/`다.
-48개 선택과 별도12개·이미지51개 및 sample/oracle/gold hash를 결합했다.
-정답표는 Pod에 전송하지 않고 로컬 채점에서만 사용한다. 전사는 AI 검토이지
-사람 인증이 아니며 일반 과목 규칙은 비완전한 보조 정보다. 회복을 내부 모듈의
-유일한 책임으로 해석하지 않는다. 기존 keep/loss 표본의 지원 범위도 기록한다.
-
-후속 학습은 상위 모델 teacher/distillation 없이 원래 출처 주석 또는 프로그램
-검증 supervision으로 answer-only와 시각 사실/관계+answer를 비교한다.
-MMMU/Pro 및 모든 파생물은 training_allowed=false다. 학습범위·학습률·행 순서·
-update와 외부 retention을 고정하고 외부 dev gate 후 확장·새 F0/FT 8K900을 검토한다.
-초기 코드·CPU 검사와 실제 GPU/학습 완료를 구분하며 최신 상태는 PROJECT_STATUS에 둔다.
-현재 보고 잔액은 약5.20USD다. 추가 충전 예정은 실제 가용 잔액으로 간주하지 않고
-최초 과금시각·회수 예약1USD·실제 가격의 금융 watchdog을 유지한다. 자동 충전 설정은
-바꾸지 않는다. 10분 점검·로컬 회수/검증 후 정확한 소유Pod 삭제 원칙도 유지한다.
-
-## 최신 종료 기록 — original10K 네 조건 회수·삭제 완료 (2026-10-06 KST)
-
-이 기록은 아래 진행 중 스냅샷보다 우선한다. 10/5 14:14:21UTC 네 조건 모두
-10000행/625update·train/reload/MMMU/external16단계EXITED0·입력gate8PASS로 종료했다.
-FML까지 모든 checkpoint tensor와 원문 CPU검증·전체 closure gate PASS 후
-소유Pod22u0uqi171v0cn를14:57:07UTC delete204→14:57:20UTC get404/listpods0/
-networkvolumes0으로 삭제했다. 원격container/Podvolume는 폐기했고 전 결과·네 전체checkpoint는
-`/home/jang2/mmdl-artifacts/recovered/g6-full-*`의 실제 arm root에 보존했다.
-Windows 비가중치 증거는 `analysis_exports/g6_runtime_20261005/`다. 최종 local receipt
-SHA2ec35018f169710eb17ae7a4d093109d1a06ae31aa41cdc395698263b969d51c,
-`final_closed_controller/local_receipt.json` 및 `pod_cleanup_receipt.json`으로 회수→삭제를 연결한다.
-과거 개별receipt의 pending 표시는 생성 당시 상태이며 소급 수정하지 않는다.
-
-동일4K/P0/V8 MMMU60은 F036/FL22/FM27/FV21/FML23; 네 학습 조건 모두 하락이다.
-외부 사전지표는 FM25/48>FML21/48>FL18/48=FV18/48, F015/48이다.
-MMMU 유지위험은 선택과 분리, 전체structure exact0/12·실제rule-present0/2 모두 유지다.
-정본 분석 `claudedocs/g6_full10k_final_analysis_20261005.md`. 독립전문전이/봉인holdout/
-G7/50K/최종900/8K새평가와 전체모델개선은 미완료이며 자동 유료 실행하지 않는다.
-교수님MMDL/V8/원문/실행447c0fb는 불변이며 새 Git 게시도 하지 않았다.
-
-PPT 최종7장 반영도10/5 16:16UTC 검증 PASS로 완료했다. 이전 Saved=0 차단은 사용자
-저장 후 해소됐으며 저장본08702d…와38번 자막 위치 변경을 먼저 대조·보존했다.
-현재42장 SHAbedf8028ac43fc6604b43f95ec33942fd52a06bbdc0ad919d5a3cbd4e58ff008,
-수정19/27/31/33/34/41/42 외35장 slide/notes XML·원래1–18장78part·P1캡처10hash는 보존됐다.
-수정7장 실제native렌더/overflow0·주 에이전트와독립Sol 시각검토 PASS다. 증거는
-`analysis_exports/ppt_updates_20261005/verification_closed10k.json` 및
-`final_closed10k/{native_verification,visual_review}.json`, 사용자 대조는
-`user_saved_source_review.json`이다. 백업·실패 시도·과거 receipt는 보존했다.
-실험·회수·삭제·이번 PPT 완료를 후속 G7/독립전이/전체모델개선 완료로 혼동하지 않는다.
-
-## 2026-10-05 재승인 — 본학습 후 MMMU 평가
-
-09:29UTC PPT42의31/33/42만 갱신·native렌더3장/overflow0/원래18 및그외slide byte/
-내장캡처10 SHA/HTML불변/native42검사 PASS다. PPT현재SHA
-57ff8e303c18dba1716f9034ec3a032625c542a6f616d9356c2b071d51161f96;
-검증 analysis_exports/ppt_updates_20261005/verification_final.json. FM27/60 로컬검증을 반영했다.
-독립Sol CPU 재현에서 grounded12 중 실제rules target2개·F0/FL/FM 모두0/2다.
-과거rule-exact10→6/10은 absent/null 일치를 포함하므로 규칙학습 성공률로 부르지 않는다.
-grounded 회복 FL2/FM2는 숫자문자열→숫자형만 바꿔도 회수되므로 구조학습성과와 구분한다.
-MMMU answer-only JSON 세조건0, 단독LETTER.보기2→FL51/FM25다. 원문/채점/점수불변;
-근거13SHA와36grounded재현은 analysis_exports/g6_runtime_20261005/partial_FL_FM_metric_audit.json.
-09:25:11UTC FV GPU100%/18264MiB·최근09:17:07poll PID6111생존. 다음조회09:35UTC.
-FV/FML 미완료로 Pod유지하며 네arm완료→모든회수·검증→소유Pod삭제→분석을 계속한다.
-비용마감·원래GPU447c0fb·교수님MMDL/V8불변이며 G7/50K/새900 자동실행없음.
-
-09:14UTC FM로컬회수·검증 완료: original10K/625updates·4Merger24tensor/109105152 FP32파라미터,
-학습6197.683초·fresh-process reload exit0·원격SHA/journal/실제Pod/실행GitHEAD/모든tensor
-key/shape/dtype/finite/hash·동일입력/노출/원문CPU채점이 PASS다. processor증거는 검증된동일FL
-records/order/metadata/consumed SHA를 재사용했고 새이미지처리/로컬가중치추론은 하지않았다.
-MMMU60 동일4K F036→FM27(45%,+2/−11), 외부qa4→7/12·trace7→11/24·whole exact0→0/12·
-grounded0→5/12이다. grounded state exact0→0/12, rule10→10/12로 질문성공과구분한다.
-structure F1은0.19548/관측6·미관측6이며F0 0.20152/관측12와누락없이동급비교하지않는다.
-네arm전체/모듈선택/대규모학습/최종900완료가 아니다. 체크포인트는Linux외부root
-/home/jang2/mmdl-artifacts/recovered/g6-full-FM-20261005-22u/에, Windows회수원문/receipt는
-analysis_exports/g6_runtime_20261005/closed_full10k_FM/에 보관한다. 도구는동명20261005의
-recover_g6_closed_arm 파일이며Sol guard검토/Ruff/3파일mypy/잘못된arm거부검사 PASS다.
-FV/FML미완료라Pod유지·기한/예산reset없음. 모든회수후삭제정책과교수님MMDL/V8불변이다.
-
-09:03UTC 최신: 사용자요청 PPT19–42를 추가했고 기존1–18 slide/notes/media byte를 보존했다.
-P1 실제HTML 전체/오답 첫화면 및 CS16/Accounting9/Manage20/Music3의 원본이미지·응답말미
-10개 캡처를 내장했다. 캡처는 표시 발췌이며 원문/모델입력/파서/558점은 불변이다.
-초기 긴페이지 Chrome캡처의 흰화면은 사용하지 않고 bounded 원문DOM발췌로 재촬영해
-Sol 독립시각확인과 부모 native렌더8장·overflow0·임베드SHA10/원래18byte검사를 PASS했다.
-관련연구3개/Qwen·CLEVR·LoRA 1차출처, 실제 HW·예산/gate/마일스톤·평가기준 연결을 기록했다.
-파일 qwen3_mmmu_problem_improvement.pptx SHA91314b3d5ac3e007e054cb4e6ee663eb1f8baf2ffd571b1b6c2b54b2ebc8e679;
-검증 analysis_exports/ppt_updates_20261005/verification_final.json. 내부 발표자료이며 GitHub 미게시다.
-모듈 선택은 외부dev만 사용/MMMU 유지 위험 별도보고로33장을 정정했고 실제사전등록경로는
-analysis_exports/g6_runtime_20261005/module_selection_preregistration.json이다.
-09:00:06UTC Pod22u0uqi171v0cn RUNNING·3090 GPU95%/15402MiB, FV2456/10000 진행을 확인했다.
-FL10K/625 및 두60개 평가 로컬검증 완료: MMMU F036→FL22, 외부 지표는 별도집계다.
-FMtrain/reload/MMMU/external exit0·08:27:07UTC gate통과지만 로컬회수 검증은 아직 미완료다.
-FV학습/FML대기·본4arm은 변경없이 유지하며 10분 점검과 기존비용기한을 유지한다.
-최신 사용자지시: 모두종료 후 모든결과 로컬회수·CPUreplay/SHA검증→정확한소유Pod삭제→분석.
-G7/50K/8K새paired/최종900은 자동시작하지 않는다. 교수님MMDL/V8·현재GPU447c0fb는 불변이다.
-
-05:08UTC checkpoint: 소유3090 RUNNING/0.22USDh,05:06:22UTC FL6733/10000·닫힌update420/소비6720,
-GPU99%/20800MiB·allocated peak12822514176bytes 및부모/학습/600초poll 생존을확인했다.
-다음계정점검05:16:19UTC다.본학습완료/FT점수는아직없고원예산·기한·예약·4arm/full10K는불변이다.
-후속비공개Circuit100root(97family): train77/75family, dev10/10family,sealed13/12family.
-actual1200 CPUprocessor PASS/maxsequence3194와일반승인각231행/quarantine0·gold-blind dev120을
-완료했다.독립Sol 실제6PNG 표본/dualexact solver검토는사람의전체픽셀인증이아니다.
-기존fingerprint경로투영을재사용했고새Parquet감사/weights/GPU실행은없다.원본pool/과거증거는불변이다.
-기존controller Circuit typed-gold 공유guard를학습전/채점후모두적용했고최종191tests(798.773초)/
-Ruff/mypy3/게시안전3검사/게시checkout표적2검사PASS다.최종소비v5는369.382초에실제1089파일/
-47개source·정확한입력경로/metadata/hash원장결합과before/after source freeze까지PASS했다.
-독립Sol이원장digest/21metadata/27비이미지/47source/v4결합을확인했다.이미지재검사/GPU실행은없다.
-v1–v3 실패와해시원장이없던v4도보존한다.원장은controller_consumer_v5_input_bound.json이다.
-근거 analysis_exports/g7_circuit_pool100_20261005/; 새풀/receipt/이미지는게시하지않는다.
-G6 외부결과전모듈선택규칙만비공개사전고정했다(qa/trace_qa 정확도동일가중치,기존task성공보조,
-실제학습parameter수/고정순서tie-break).네full10K 검증전선택금지·MMMU/봉인/전이선택금지다.
-F0 primary15/48보다나아지지않으면개선승자가아니며bounded probe만가능하고50K 자동확장은없다.
-grounded정오와state/rule평가는별도다.모듈승자/메모리적합성/회로학습/fullG7/전이완료는미확인이다.
-새코드는live447c0fb와교수님MMDL/V8에적용하지않는다.
-
-03:53UTC checkpoint: 새3090의네360행 계측은모두360소비/23updates/epoch완료와
-fresh-process reload exit0을충족했다(FL316.761s/FM249.491s/FV310.112s/FML321.722s).
-03:37:27UTC 기본2배예산gate는79942.903s 필요<82780.886s 잔여로통과했고,
-original10K FL 본학습PID3832가freshF0에서시작됐다.03:50:05UTC940/10000·update58,
-GPU98%/12590MiB와600초HEALTH_POLL을확인했다.다른본학습arm/후속평가는아직미완료다.
-네계측의체크포인트/27파일/8로그를로컬회수했고 실제입력·360행순서/token/grid·23updates·
-모든1152개tensor의key/shape/dtype/finite/hash와원격journal prefix·reload명령/기저모델/
-단계순서를CPU검증했다.원래processor증거를재사용했으며새전처리/로컬모델로드는없다.
-근거 analysis_exports/g6_runtime_20261005/closed_stages/four_arm_local_receipt_v2.json.
-현재447c0fb실행은불변이며새코드/회수도구를hotpatch하지않는다.교수님MMDL/V8도불변이다.
-금융기한/회수예약1USD/전체4arm10K/2배여유는유지하며다음계정점검04:00:02UTC다.
-예산gate는G6와paired60용이며후속G7/비합성전이/최종900을포함한완료보장이아니다.
-900/32768은아직시작하지않았고기존60/4096진단을전체MMMU성적으로표시하지않는다.
-
-03:18UTC 최신: 새3090 F0 MMMU60은36/60·2581.072초·length12,
-외부혼합60은11/60·607.039초·length2로 모두완료했다.두원문/summary/실제source를
-analysis_exports/g6_runtime_20261005/closed_stages/로회수하여SHA/coverage/source/
-입력관측/CPU 재채점 PASS를 확인했다.기존900/32K/V8 558/900와 직접 비교하지 않는다.
-현재첫FL 360 smoke 학습PID2476이실행중이며GPU51%·19202MiB를확인했다.
-이는본학습전네영역계측이며full10K 완료가아니다.다음계정점검03:28:16UTC,
-최초과금/2배gate/기한/회수예약/검증후정확한Pod삭제는불변이다.
-후속Circuit48 실제CPUprocessor는PASS이나4root의development0/승인없음으로개발cohort는
-BLOCKED다.봉인root를borrow하지않고출력도만들지않았다.기존builder/evaluator의
-Circuit typed경로·currentproof/child계약·완전학습checkpoint결합·입력폴더쓰기금지를
-구현했고새6 CPUtests/최종188전체tests(304.467초)/Ruff/mypy3/게시안전3검사/독립Sol재검토 PASS다.
-Graph24도새builder로별도고정한뒤실제440파일소비PASS이며과거cohort/proof는보존했다.
-이준비는fullG7/독립비합성전이완료가아니다.현재GPU447c0fb·교수님MMDL/V8는불변이다.
-
-02:48UTC 최신: 소유3090 Pod22u0uqi171v0cn는 RUNNING이며 F0 MMMU 기준 평가33/60,
-GPU73%·10096MiB 및 controller/evaluator 생존을 확인했다. 다음 계정 점검은02:58:46UTC다.
-독립적으로 로컬 CPU에서 현재 producer5fb37650…의 bridge 입력384행을 실제 전처리하고,
-A0–A3 각84개/같은28 train roots와 별도development24를 새 승인했다. 실제 소비 코드의
-440개 파일/hash·입력/역할·학습/검증 분리 검사와 transfer13 CPU tests를 통과했다.
-회수 제외 index는 snapshot symlink와 원래 blob 경로의 차이로 첫 승인에서 거부됐으며,
-100파일/16740행의 SHA·행수 일대일 대응을 독립Sol이 검토한 별도 비공개 경로 투영으로 해소했다.
-원본 index/18개 과거 proof·모든 fingerprint 배열은 불변이고 원본Parquet를 새로 읽었다고 하지 않는다.
-증거 analysis_exports/g7_cpu_refresh_20261005/{summary,consumer_receipt}.json.
-이 준비는 bounded synthetic Graph/CS용이며 full professional G7/비합성 전이 성공이 아니다.
-현재GPU 실행447c0fb·교수님MMDL·V8 558/900·본학습 조건/예산은 변경하지 않았다.
-G6 full10K 네조건→근거 있는 고정모듈 G7→독립 전이의 원래 목표와 미완료 상태를 유지한다.
-
-02:24UTC 최신: test-only 수정447c0fb6056d2e18618dd22f21ef80197cb57103를
-MMDL_test에 정상 게시하고 새 clean clone에서 전체182tests(103.130초)·pip check·
-CUDA/BF16·모델13파일hash를 통과했다. 로컬182tests(399.326초)/Ruff/mypy2/게시3검사/
-독립Sol 검토도 PASS다. runtime guard/기존 receipt/학습코드/고정protocol은 불변이다.
-소유3090의 controller는02:23:32UTC baseline_F0_mmmu PID1878로 GPU 추론을 시작했다.
-02:24:03UTC GPU66%·9260MiB를 관측했다. outer watchdog1812/inner1813,
-로그 /workspace/g6-control/g6_3090.log, 결과 /workspace/nvw-run-verified/runs/g6_3090_resume_20261005.
-같은3090의 새F0와4종360개 smoke로 계측하고 기본2배 full10K 예산 gate를 유지한다.
-한 arm이나 subset으로 자동 대체하지 않으며 모델/데이터/출력/정밀도를 축소하지 않는다.
-inner종료10/06 02:37:08.301UTC, outer금융종료02:39:08.301UTC와 원래과금시각은 고정이다.
-추론 시작은 본학습 완료가 아니며900평가 범위 질문·full10K/G7/독립 transfer는 아직 미완료다.
-
-02:07UTC 최신: 재승인은 기존4종/full10K/paired60를 유지한 유료 적합성 검증을 포함한다.
-답변 대기만으로 전체 작업을 BLOCKED 처리하지 않는다. 소유3090 Pod22u0uqi171v0cn를
-01:55:08.301UTC 생성했다. 실제RTX3090/24576MiB/driver580.65.06·PID1 ID·mount·
-clean MMDL_test38b3d230176a018062b74ddfb228937243e7ebda를 확인했다.
-GPU0.22USD/h, 저장비 포함 보수적 운영상한0.30USD/h·회수예약1USD를 적용하고
-최초 과금시각을 고정한다. 금융종료는10/06 02:39:08.301UTC다.
-비공개 승인 입력과 과거 닫힌 결과의 SSH 전송이 모두 exit0으로 완료됐다.
-설치 후182 CPU tests 중 과거 bridge fixture의 producer hash를 현재 source와 비교하는
-2개가 실패해 모델 다운로드/본학습 전에 중단됐다. runtime 검사를 약화하거나 과거 receipt를
-수정하지 않고 테스트의 역사적 증거와 현재 승인 검사를 구분해 수정·정상 게시·재검증한다.
-실제3090에서 학습/평가 성공은 아직 없고 full10K/G7/독립 transfer는 미완료다.
-900/32K 최종 평가 범위는 확인 중이며 자동 변경하지 않는다.10분마다 Pod를 점검하고
-닫힌 결과·실패 기록까지 로컬 회수/검증 후 정확한 소유Pod를 삭제한다.
-근거 analysis_exports/g6_cloud_deployment_20261005.json 및 원격setup.log.
-
-01:45UTC CPU 재검증에서 최종10K 전처리 증거 전수 연결 및 실제 복원 입력 소비가 PASS다.
-원본9951 receipt를 pilot_raw에서 찾아 이전 부재 한계를 해소했다. 실제 maxsequence1643,
-maxpatchcells4096이며24GB GPU 적합성/신규 속도를 검증한 것은 아니다.
-10000행/9773고유 이미지 hash·입력 계약·smoke root 중첩0·무축소를 확인했다.
-증거는 analysis_exports/g6_closed_results_20261004/processor_shape_recheck_20261005.json이다.
-사용자가 본학습·MMMU 평가를 재승인했고 현재 잔액8.42USD를 보고했다.
-이 승인은 아래 추가 지출 승인 대기의 역사 기록보다 우선하나 무제한 지출은 아니다.
-01:36UTC 당시 계정 Pod0개·새 Pod 미생성이었다. 기존10K 입력·F0/4종 smoke는 불변으로 보존한다.
-본학습 영역과 MMMU 범위(기존60/validation900·출력 조건)는 사용자 확인 중이며
-임의로4종을1종으로 선택하거나 학습량/BF16/평가 조건/예산 여유를 축소하지 않는다.
-현 잔액으로 전체 완료가 가능하다고 보장하지 않으며 실시간 가격·실행시간·회수 여유를
-확인한 뒤 승인 범위에서만 대여한다. 상세 상태는 docs/PROJECT_STATUS.md 최신 절을 따른다.
-
-## 최신 실험 저장소 정책 — 2026-10-04
-
-이 절은 아래 비공개 overlay/GitHub 게시 금지의 역사적 기록보다 우선한다.
-사용자가 A40 Pod를 삭제했고 RunPod 목록0개를 확인했다. 이후 사용자의 '계속 진행해'로
-실험 작업을 재개한다. 새 Pod는 현재 잔액·운영 시간·가격을 확인하고 승인 범위에서만 시작한다.
-실험 코드·설정·문서와 필수 자체 생성 CPU fixture는 `jang2296/MMDL_test`에 게시한다.
-상위 `C:\projects\multimodel`이 원본이며 `MMDL_test/`는 별도 저장소 checkout이다.
-교수님용 `MMDL/` 및 `jang2296/MMDL`은 기존 정책/내용을 유지한다. 상위 MMDL remote로 push하지 않는다.
-비밀키·가중치·체크포인트·HF/benchmark 원문·이미지·대형 결과·강의 원본은 제외한다.
-`scripts.sync_test_repo`로 복사/검사하고 MMDL_test feature branch만 정상 push한다.
-새 RunPod는 MMDL_test의 전체 commit SHA·clean checkout·고정 lock으로 코드를 받는다.
-수동 코드 overlay/hot patch를 하지 않는다. 승인 데이터/예산/GPU 조건 없이 자동 학습하지 않는다.
-자체 fixture의 과거 공개금지 플래그는 불변으로 두고 이번 별도 공개 승인을 적용한다.
-삭제 전 full10K 준비 완료를 관측했으나 controller의 `evaluate --help` 30초 timeout으로
-GPU 단계는 미실행이다. 최종 데이터 전체 회수가 아닌 일부 metadata만 로컬에 남았다.
-전체10K 학습 성공/새 점수로 보고하지 않는다. 기존 V8 558/900은 불변이다.
-초기 게시 전 MMDL_test checkout에서 실험166 CPU tests(309.096초), 게시 안전3 tests,
-Ruff·bounded mypy2·Bash 검사를 통과했다. 당시 새 bootstrap GPU 실행은 미검증이었다.
-최신 실제 실행은 아래 재개 기록을 기준으로 확인한다.
-
-### 2026-10-04 재개 — 새 저장소 G6 진입점
-
-- 최신17:37UTC: F0 두60개 평가와 FL/FM/FV/FML 각360개·23update·fresh reload를 실제
-  A40 GPU에서 완료했다. GPU94~100% 관측이 있으며 CUDA/GPU 미사용 장애가 아니다.
-  17:21:52UTC 기본2배 학습 여유의 예산 gate가 필요83,786.558초/남은48,418.661초로
-  `SMOKE_COMPLETE_PILOT_BUDGET_STOP`, `pilot_started=false`를 기록했다.
-  full10K/G7/독립 transfer는 미완료다. 안전 여유/조건을 임의 축소하거나 새 유료 실행을 시작하지 않는다.
-  닫힌 결과/4종 실제 tensor·노출/동결 source/import·fresh reload·예산 산술을 로컬 검증한 뒤
-  Pod `qg7krba8ebl10s`를17:37:48UTC 삭제204→조회404→계정 목록0으로 확인했다.
-  container30GB/workspace160GB는 폐기됐고 Network Volume은 없었다. 회수 결과는
-  `analysis_exports/g6_closed_results_20261004/`, 입력은 `g6_prepared_inputs_20261004/`에 보존한다.
-  추가 유료 실행은 새 예산/시간 확인이 필요하다. 교수님 MMDL/V8 및 게시된 실행 코드는 불변이다.
-- 15:52UTC 실제 GPU 진입: f3 고정 SHA의 F0 MMMU60 평가 PID3135가 실행 중이다.
-  15:52:30UTC4/60개 응답·GPU83%·10,039MiB를 확인했다. 추론이며 학습 완료는 아니다.
-  첫10K 전처리 후 near-image 후보25개를 제외했고 정상 전처리·오염검사를 통과한 TRACE25개로
-  보충했다. 부모9975개 원장/제외 목록/manifest는 byte 불변이며 complete_pilot은15:41:31,
-  smoke root 분리는15:46:50, 두60개 평가 cohort 준비는15:47:31까지 exit0으로 닫혔다.
-  학습 smoke4개→실측2배 예산 gate→동일 full10K4개 조건을 따르며 자동 축소하지 않는다.
-  G6 전체 학습/G7/transfer는 미완료이고 원래 과금 시작/금융 종료 한도는 불변이다.
-  닫힌 metadata와 실행 f3 코드667파일을 내부 보관·hash/mode 검증했다. metadata 회수는
-  최종 입력/이미지/학습/평가/체크포인트 전체 회수·검증이나 Pod 삭제 허가가 아니다.
-  이후 게시한 CPU 최적화 코드는 실행 Pod에 적용하지 않았으며 교수님 MMDL/V8은 불변이다.
-- 15:00UTC 실측: 같은 PID2456이 살아 있으며 GPU0MiB/0%다. TRACE 변환은14:41:46UTC,
-  10,000개 후보 원장은14:42:10UTC에 생성됐지만 processor 검증/승인 완료는 아직 미관측이다.
-  후보 행 수를 승인/학습 완료로 읽지 않는다. 다음 실행용 CPU 승인기는 기존 캐시가 있으면
-  fallback set을 만들지 않고, processor receipt의 최초 bytes와 같은 digest를 모든 행에 연결한다.
-  종료 전 receipt를 다시 hash하여 변경되면 출력 생성 전에 거부한다. producer/source/권리/오염/
-  coverage 검증은 유지한다. 관련40 CPU tests(29.762초)·Ruff·mypy1·독립 검토를 통과했다.
-  실행 중인 f3 code/receipt는 변경하지 않으며 새 코드에는 새 정상 processor 승인 자료가 필요하다.
-  GPU 속도 향상·full10K/G7/transfer 완료를 주장하지 않는다.
-- 14:31UTC 실측: 모델/CUDA/BF16은 정상이나 GPU0MiB/0%이며 학습 전이다.
-  benchmark 배제100파일/16,740행·index·TRACE 취득·360개 smoke CPU 승인을 통과했다.
-  `approve_pilot` PID2456은 TRACE 이미지 변환 중이며 생성 이미지5,569개를 관측했다.
-  이미지 수를 승인된 학습 행 수로 읽지 않는다. 전체 pilot 승인/완성/분리와 cohort 준비 뒤
-  F0 평가→학습 smoke 순서이므로 지금 지연은 CPU 준비의 직렬 실행이다.
-  다음 실행용 index는 동일 raw SHA 이미지만 decode/fingerprint를 재사용한다.
-  schema/전체 image count/raw SHA/파일·행 coverage는 유지하며 자체 Parquet 회귀를 검증한다.
-  실행 중인 f3 SHA에는 반영하지 않으며 실제 가속률/G6 완료를 주장하지 않는다.
-- 수정본 `f3f37ab624cfa6d35cc8a7cc85ba95cbac553ce1`로 같은 소유A40/새 runtime에 재개했다.
-  exact lock/pip check·180 CPU tests(591.522초)·실제 CUDA/BF16·지정 모델13파일 hash를 통과했고
-  setup749.724초/exit0을 확인했다.14:07UTC G6 자체 자료 준비 중이며 학습/전체10K 완료는 아니다.
-  실행 중인 exact SHA는 문서 게시로 변경하지 않는다. 원래 과금 시작/잔액/금융·시간 한도를 유지한다.
-- 새A40 setup177 CPU tests는176통과/1 timing fixture 오류로13:35UTC 종료했다.
-  중첩 Python이0.2초 안에 PID를 출력한다는 테스트 가정을 수정하며 실제 예산/종료 가드는 유지한다.
-  전체검사 통과 전에는 모델/GPU/G6를 시작하지 않는다. 로그/pip freeze는 내부 회수본에 보존한다.
-  재개는 새 GitHub exact SHA·새 runtime이며, 설치된 venv만 명시적으로 재사용할 수 있다.
-  정상 lock 설치/pip check/전체검사/doctor/pinned hash를 생략하지 않는다. 과금 시작/한도는 재설정하지 않는다.
-  사용자 요청대로10분마다 Pod/프로세스/오류/예산을 점검하고600초 HEALTH_POLL을 활용한다.
-  watchdog의 process 종료는 Pod 과금 중단이 아니므로 결과 회수·검증 뒤 실제 소유Pod를 삭제한다.
-- `9882aacde28cf27e4c35772ea9032acf7e3aedb9`를 MMDL_test에 게시·666파일/hash/mode 동기화했다.
-  새 소유A40 Pod `qg7krba8ebl10s`를 생성·read-back·직접 SSH 확인했고 설치를 재개했다.
-  30GB container/160GB workspace·network volume없음, 예산 all-in$0.55/h·잔액10.77·reserve1USD,
-  금융 한도2026-10-05 06:50:50.820909UTC. 학습/전체10K 완료는 아직 아니다.
-  SSH 비로그인 ENV 누락은 실제 PID1 ENV와 `/etc/rp_environment` source로 해결한다.
-  런타임 코드 hot patch/임의 Pod ID는 쓰지 않는다. 회수·검증 뒤 소유Pod만 삭제한다.
-- `fine_tuning.evaluate --help`는 argparse를 먼저 실행해 cold Torch/model import를 피한다.
-  기존 평가 함수/생성/채점 조건은 유지하며 runtime import를 차단한 실제 subprocess로 검사한다.
-- `fine_tuning.runpod_g6`는 MMDL_test exact SHA/clean origin을 검사하고 새 runtime의
-  자체 생성 pool·전체 benchmark 배제 원장·TRACE·현재 source 정상 승인을 거친다.
-  옛 approval hash/Pod ID/수동 overlay/checkpoint를 임의 재사용하지 않는다.
-- 설치와 준비에도 금융/시간 watchdog 적용(설치 추가 상한1시간),
-  내부 GPU controller는 외부 한도보다2분 먼저 닫는다. 공유 child 종료 로직은 leader가
-  먼저 끝나도 잔존 process group을 종료하고, 신호/기록 오류에서도 소유 child를 정리한다.
-  중첩 실행의 외부 grace45초/내부15초를 분리해 외부 종료가 내부 GPU cleanup을 앞서지 않게 한다.
-  full10K/FL/FM/FV/FML·이미지/출력/seed/V8 조건을 자동 축소하지 않는다.
-  G7·transfer·전체900 완료를 이 진입점의 구현만으로 주장하지 않는다.
-- 사용자가 현재 잔액10.77USD를 확인했다. reserve1USD를 남기고 실제 가격·과금 시작·
-  전체 한도를 지정한다. 설치/준비 비용도 포함하며 자동 충전이나 결제 설정은 바꾸지 않는다.
-  전체 실험177 CPU tests/406.510초·게시 안전3 tests/Ruff/bounded mypy2/Bash 검사 PASS.
-  새 GPU 성공은 아직 미검증이며 V8 558/900 및 제출 MMDL은 불변이다.
-
-## 최종 회수·삭제 — 2026-10-03 06:18 UTC /15:18 KST
-
-**아래 진행 중 기록보다 우선한다. 실행 종료와 유효한 전수 판정을 구분한다.**
-- Qwen30과목102문항 기능적 진단과15분야60호출 Knowledge 실험은 실제 완료·로컬 검증됐다.
-  I40/102, O0 42/85, O1 31/69; P참조지지1309/1877은 AI/O0조건부 항목 지표다.
-  K1/K2 각각30/30은 기초 시험이며 전문 추론 전체·내부 모듈 책임을 인증하지 않는다.
-- 추가 Gemma는 GPU한도06:07:38UTC에 종료했다. 원장900행 중 실제 추출749응답은
-  558RESOLVED/110REVIEW/81SYSTEM_ERROR이고151BUDGET_STOP(중단1/미시작150)이다.
-  558RESOLVED를 정답558개로 읽지 않는다. 부모729응답 불변·fresh20응답, 전체668판정과
-  81오류 및 실제 입력token-ID/usage·source/manifest/gate 동일성을 main/독립 검증했다.
-  새 정확도null, 기존 V8 558/900·62.00%·원문/파서/MMDL/GitHub는 불변이다.
-- 부모89payload·continuation19payload archive를 로컬 검증하고 해당 소유Pod
-  `re5qljwwyq7yui`만 삭제했다(API204→get404→목록부재, network volume0).
-  `owned_gemma_segments_cleanup_final_v1.json`에 소유권·회수·삭제·비용 snapshot을 보존한다.
-  최초Pod도 이전 삭제 receipt대로 부재다. 새Pod/추가 추론/학습/외부 API/게시 없음.
-- 최종 보고서는 `claudedocs/Qwen3_VL_4B_Bottleneck_Diagnostic_Report_20261003.md`이며,
-  결과는 `analysis_exports/bottleneck_20261003/`의 `export_all30_102_v2`,
-  `knowledge_scores_v1`, `gemma_segments_final_export_v1`에 있다.
-  미실행151·잔여160확장·추가seed·LEGACY와 사람 의미 인증을 완료로 표시하지 않는다.
-
-## 추가 Gemma 재개 실행 확인 — 2026-10-03 05:58 UTC
-
-- 최초 source-segment run은 729개 실제 응답(550RESOLVED/102REVIEW/77SYSTEM_ERROR)을
-  보존하고 원래 deadline에 종료했다. 소유 서버 cleanup·GPU process 부재를 확인했으며,
-  900개 완료 또는 유효한 전수 판정이라고 부르지 않는다.
-- 같은 소유Pod `re5qljwwyq7yui`의 별도 `gemma-segments-continuation-v1`을 시작했다.
-  원래48파일은 불변이며 최소추가8파일의 v3 archive와 실제Pod16회귀 검사를 통과했다.
-  로컬16검사/Ruff/mypy2·독립 Sol delta 검토도 PASS. 미응답 실패는 상속하지 않고 실제
-  반환된 응답만 재사용한다. 원래 입력·모델·sampling·guard는 변경하지 않았다.
-- parent 종료/manifest·source·gate 확인, 새 서버 실제 version/model/native sampler 확인 후
-  남은171개를 처리한다. 새GPU cutoff06:07:38UTC, 최종 로컬회수·삭제06:22:38UTC는 불변이다.
-  새 의미 점수는 미확정, 기존558/900과 공개 MMDL/GitHub는 변경하지 않는다.
-  증거: `private_continuation_code_v3.receipt.json`; 부모 닫힌결과89파일 archive
-  SHA256 `7cd9ce57e0ba8aa8fb77a536233025e52ab12ca7a8997d32548c98040c76fe9e`.
-
-## Gemma 추가 재검증 승인 — 2026-10-03
-
-- 사용자 명시 승인: 추가2시간·새RTX3090 1개. 최종 종료06:22:38UTC/15:22KST,
-  GPU 종료05:52:38UTC/14:52KST로30분 회수 여유를 둔다. 아래 이전 기한은 역사 기록이다.
-- 비원문 인용 실패를 해결하기 위해 전체 원문을 손실 없이 번호 달린 행으로 전달하고
-  Gemma가 근거 행ID를 선택하게 하는 별도 `gemma-frozen-final-audit-v7-source-segment-citations`
-  프로토콜을 구현했다. host가 해당 원문·정확한 위치를 복원하며 기존 철회/충돌/단위/추출 가드를 유지한다.
-- 로컬900입력 복원·gold/질문/보기/V8 독립성 검사 완료. 실제 tokenizer900·GPU smoke29 통과 전
-  전체 실행 금지. 과거900실패 결과와 Qwen baseline558/900은 불변이며 새 성공/점수는 미확정이다.
-- 이번 변경/전송/결과는 내부 실험에만 적용한다. MMDL/GitHub·Qwen 재추론·파인튜닝은 하지 않는다.
-- 새 소유Pod `re5qljwwyq7yui`, RTX3090 1개/USD0.22h,30GBcontainer/100GBworkspace,
-  network volume 없음. 고정base digest 부팅·실제3090/24GB/driver580.159.03/Python3.12.3 확인.
-  48개 비공개 파일 hash 확인 후03:41:44UTC 설치 시작(PID196/birth41493226).
-  `gemma_segments_launch_receipt_local_v1.json`, `segments_local_cpu_validation_v2.json` 참조.
-  새 프로토콜70 Gemma CPU검사(49base+14source+7controller 분할 실행)·24 exporter/controller·4 회수검사/Ruff/mypy/Bash PASS.
-- 실제 새CPU900·GPU29gate를 통과하고04:00UTC경 전수감사를 시작했다. 닫힌gate13파일을
-  로컬 byte/hash검증하고 CPU전체입력·문맥 검사를 재현했다. 최대122159+1024=123183이며
-  원문절단0. 입력은7,820,217token으로 이전대비약36% 증가, 기한 내900완료는 미확정이다.
-  04:22UTC81건은61RESOLVED/11REVIEW/9SYSTEM_ERROR. 행ID 및 답/근거 오류와 출력잘림을
-  가드로 거부하며 새점수는 미확정이다. `gemma_segments_gates_main_verification_v1.json` 참조.
-- 05:04UTC 추가 운영 설계: 최초run의05:52:38UTC deadline/manifest는 불변. 사용자 승인
-  최종06:22:38UTC 안에서, 닫힌원장/소유GPUcleanup과 입력/모델/코드/gate 동일성 검증 후에만
-  같은Pod에서 별도 continuation을 허용한다. 새GPU최대06:07:38UTC(회수15분), 새Pod/완료문항
-  재생성/추출·생성 조건 변경 없음. 현재는 준비 단계이며 완료라고 하지 않는다.
-- 05:19UTC 닫힌첫420건을 로컬 회수·입력/실제token-ID/판정·45실패를 재현했다.
-  330RESOLVED/45REVIEW/45SYSTEM_ERROR이며 실패는 답-원문불일치21/출력계약12/빈행8/중복ID4다.
-  입력5만token 이상32건은1RESOLVED/15REVIEW/16ERROR, 2만 미만371건은325/21/25다.
-  이는 선택된 prefix의 관측이며 입력길이의 인과효과나 실제 정답률로 해석하지 않는다.
-  `gemma_segments_prefix420_main_verification_v1.json` 참조. baseline558/900은 불변이다.
-- 별도 samePod continuation은 IMPLEMENTED/TESTED: 새13회귀 포함83 Gemma CPU tests/Ruff/mypy2 PASS,
-  독립 Sol검토 PASS. 원래48파일 불변·최소추가8파일의 격리 import 확인 및 비공개 전송 archive를
-  준비했다. 실제 parent 종료/cleanup/입력·모델·gate·freshserver 검증 전에는 재개하지 않는다.
-  source/gate/old controller attestation 재사용을 새server 증거로 허위 표기하지 않는다.
-
-## 비공개 진단 실행 종료 — 2026-10-03 03:03:58 UTC /12:03 KST
-
-**이 절이 아래 진행 중 체크포인트보다 우선한다. 실행 종료와 과학적 목표 완료를 구분한다.**
-
-- Qwen30과목102문항/816조건/749실호출·47BLOCKED/20EXCLUDED, Knowledge15분야60호출은
-  로컬 검증됐다. K1/K2 각30/30은 기초 문제의 최종답이며 복잡한 전문 추론·중간 풀이 인증이 아니다.
-- Gemma900추출+2동치 실제 응답을 완료·보존했다.607RESOLVED/117REVIEW/176SYSTEM_ERROR,
-  큐293, 입력5,749,823/출력84,499token. 유효900판정은 INCOMPLETE이며 새 정확도null이다.
-  176실패는 비원문 근거162/답이 근거에 없음8/출력1024 JSON잘림5/잘못된JSON1이다.
-  가드를 없애 구제하거나 Qwen오답/V8오류로 합산하지 않는다. 원래558/900·62.00%는 불변이다.
-- 닫힌 최종 archive42payload+manifest와 실패 controller이력23payload를 기존 Qwen/Knowledge/
-  환경 증거에 묶어18개 receipt로 LOCAL_VERIFIED했다.900입력·실제 token-ID/usage/hash,
-  모든 판정·176실패 경로와 frozen13소스를 재현했다. 독립 회수·후보 검토·최종 handoff도 보존했다.
-- 소유Pod `h447a4u6c0vq3k`는03:03:45 UTC 삭제204→get404→목록0, 별도 network volume0이다.
-  30GB container와200GB Podworkspace는 폐기·원격 복구 불가, 로컬 결과는 보존했다.
-  Gemma 전체 가중치는 RunPod에서만 취득·실행했으며 로컬에는 코드/결과/로그만 회수했다.
-- 삭제 직후 실제 청구10bucket USD2.2004748708568513은 반영 지연 가능한 snapshot이지 최종
-  청구서가 아니다. sampler 관측 최대22,768MiB도 초기 실행이 빠져 true peak가 아니다.
-- MMDL clean/HEAD197838c11557911a14a46d87b7f52fda0cac5b3c, 원래baseline/sourcehash 불변.
-  FT·GitHub게시 없음. 잔여160/추가seed/LEGACY/중요구조 완전성·모듈 인과 책임은 미측정이며
-  이를 완료라고 보고하지 않는다. 새 유료 실행·학습·현재 protocol의 소급 변경은 자동 시작하지 않는다.
-- 증거 루트 `analysis_exports/bottleneck_20261003/`: `owned_pod_cleanup_final_v1.json`,
-  `final_handoff_independent_v1.json`, `cloud_gemma_final_v8/local_receipt.json`,
-  `gemma_final_candidates_independent_v1.json`. 결과·한계는 `claudedocs/Qwen3_VL_4B_Bottleneck_Diagnostic_Report_20261003.md`와
-  `claudedocs/Qwen3_VL_4B_Knowledge_Oracle_20261003.md`에서 확인한다. 모든 benchmark파생물은
-  BENCHMARK_DERIVED/training_allowed=false/public_upload_allowed=false이며 내부용이다.
-
-## 비공개 진단 재개 체크포인트 — 2026-10-03 02:14:52 UTC /11:14 KST
-
-- 현재 same3090 Pod `h447a4u6c0vq3k` /controller7819 birth7298428에서 Gemma642/900,
-  451RESOLVED/70REVIEW/121SYSTEM_ERROR로 진행 중이다. 원문·가드·추론 코드 변경/재시작 없음.
-  실제 controller 종료 파일은 `/workspace/artifacts/private-finish-v8/summary.json`이다.
-  `controller_summary.json`을 찾은 초기 상태 조회는 잘못된 파일명이며 완료 판정에 사용하지 않는다.
-- Qwen102/30과목·Knowledge60/15분야의 닫힌 실험은 검증됐다. 계획서9질문의 현재 답,
-  O1-only회복6개·O1오답38(PARSED25/NO_PARSE13)·최종조건NO_PARSE136/647,
-  조건부F0→FL→분리된FV/FM→공동학습 보류를 내부 보고서§8에 기록했다.
-  11source hash·35모드 사례·4전이표 main 재현:
-  `analysis_exports/bottleneck_20261003/report_completion_main_verification_v1.json`.
-- 현재 전체 private CPU 검사49+59=108 및Ruff 통과, 로컬src를 쓰는4파일 mypy 통과.
-  초기 typecheck의installed mmdl import-untyped3건과 bookkeeping loader 실패2건은 기록했으며
-  코드를 바꾸거나 검사를 약화해 통과시킨 것이 아니다. `private_cpu_suite_completion_v1.json` 참조.
-- Gemma 전체감사/최종회수/자원삭제는 미완료다. 실제900 시도와900 유효 판정·새 확정점수를 구분한다.
-  GPU cutoff03:52:38 UTC·최종회수04:22:38 UTC를 유지한다. 모든 필요한 결과 LOCAL_VERIFIED 후에만
-  exact ownedPod를 삭제한다. FT/MMDL/GitHub 게시 없음; 원래558/900·62.00% 불변.
-
-## 2026-10-03 최신 사용자 승인 — 비공개 병목 진단
-
-- 01:50 UTC /10:50 KST: 닫힌Gemma128응답을 로컬 회수·모든payload/entry/실호출·실패 재현했다.
-  91RESOLVED/22REVIEW/15SYSTEM_ERROR:13문항18근거 인용 변형,2문항Gemma1024상한 JSON잘림이다.
-  질문/보기/gold/V8를 배제한 독립 원인 검토와main18인용·원문 offset/hash 재검증을 보존한다.
-  근거: `cloud_gemma_prefix128_v8/local_receipt.json`, `gemma_prefix128_failure_main_verification_v1.json`.
-  후속 exporter의 mapping 원장 재현/비용 누락과 반복 source해시를 수정했다.9 CPU tests/Ruff/mypy2,
-  실제128구·신 출력 byte동일 검증 PASS; frozen runtime/preflight/controller·원래558/900은 불변이다.
-  최신조회312/900실행 중·49SYSTEM_ERROR이며 전체 완료/대체 점수/Pod삭제는 아직 아니다.
-  재현 README도 현재 gate/개별 호출 단계를 명시했으며 MMDL/GitHub에 복사하지 않는다.
-
-- 01:30 UTC /10:30 KST: 실제 통과29 Gemma smoke의 닫힌6파일을 로컬 회수했다.
-  원본900/CPU/배포코드/모델 identity·모든29 payload/entry/실제 호출·Math_12의50454토큰
-  hash를 재검증했다(`cloud_gemma_passed_smoke_v8/local_receipt.json`). 이는29출력 계약의 통과이며
-  모든 의미 판단의 인증이 아니다. 일부 보기 witness의 범주 판단과 reason의 금지된 계산/환산이
-  부정확하지만 해당 시험의 최종 mapped_choice는 안전하게 null이다. live source는 수정하지 않는다.
-  실제900감사 중88개 확인:59RESOLVED/18REVIEW/11SYSTEM_ERROR(원문 근거 인용 불일치10,
-  미완료 응답 검사1). 검증 실패를 정답으로 구제하지 않고 기존558/900·공개본은 유지한다.
-
-- 01:21 UTC /10:21 KST: 새 Gemma protocol 실제29GPU smoke 전부PASS·full gate 승인.
-  저장900개 응답 감사가8/900 실제 진행 중이며 GPU100%/22304MiB를 확인했다.
-  `cloud_gemma_cpu900_v8/local_receipt.json`에서 전체900payload/entry/hash·gold변경독립성,
-  native17 검사와 v7 대비 input byte동일성을 실제 로컬 검증했다. 이전 실패는 보존한다.
-  전체900 완료/의미 정확도/새 점수는 아직 미확정이며 기존558/900·지식60·공개본 불변.
-
-- 01:17:29 UTC /10:17 KST: Gemma의 단일 best-fit 선택을 모든 보기의
-  SUPPORTED/POSSIBLE/EXCLUDED/UNCERTAIN 평가로 보강했다. 단일 SUPPORTED+나머지 모두EXCLUDED만
-  선택하며 native 분기와 host 비교로 모호성을 검사한다. 추출·gold 격리·REVIEW 정책은 불변이다.
-  runtime/preflight49+controller12 CPU tests/Ruff/mypy3, 독립64조합/64충돌/7잘못된원장,
-  실제 Pod XGrammar17 schema/host 검사 및 새CPU900v8(900COUNTED/overflow0/절단0) PASS.
-  원래27 GPU 계약은 유지하고 범주/세부범주2개 추가해29필수 gate로 고정했다.
-  controller7819/birth7298428 시작; 실제29smoke 통과 전900 금지, cutoff03:52:38 UTC 유지.
-  runtime50c0305c…/preflightb8d7f0b8…/controller12a41e34…; 원래V8/102/지식60/공개본 불변.
-
-- 01:02 UTC /10:02 KST: 다분야 Knowledge Oracle60 실제 Qwen 호출 완료·로컬 회수/독립 검증.
-  K1 30/30·K2 30/30, 누락/시스템 오류/NO_PARSE/length0;15분야마다 각2문항이다.
-  원래 이미지 I/O1과 다른 단순 문제로, 인과 비교·전문지식 전체·완전한 풀이 인증이 아니다.
-  CS DFA/Math 차수 등 중간 풀이 오류를 최종 정답과 구분했다. 정답키는 Pod에 전달하지 않았다.
-  `cloud_knowledge_v1/local_receipt.json`, `knowledge_actual_independent_review_v1.json`,
-  `claudedocs/Qwen3_VL_4B_Knowledge_Oracle_20261003.md`에 근거/한계를 보존한다.
-  Gemma 새 v7 실제27smoke는26PASS/1FAIL: 모호한 넓은 범주를 세부 보기로 선택해900감사는 금지다.
-  실패와 새CPU900v7를 별도 보존하며 GPU0%/1MiB·compute없음 확인; V8/공개본은 불변이다.
-
-- 00:40 UTC /09:40 KST: 사용자 요청으로 Knowledge Oracle K1(기초 지식)/K2(정확한 상태의 규칙 적용)
-  15분야×각2문항,60개 신규 텍스트 시험을 별도 비공개 프로토콜로 준비한다.
-  동일 pinned Qwen/BF16·sampling·최종4096·seed3407과 기존 runner/채점/owned cleanup을 재사용한다.
-  K3는 기존102문항의 실제 이미지 I 응답을 재사용하며 새 단순 지식 문제와 동일 난도/paired 실험으로 주장하지 않는다.
-  새 executor의3합성 CPU tests/Ruff/mypy 통과는 실제 GPU 완료가 아니다. 정답키는 모델 입력과 분리한다.
-  Gemma v6 실제17smoke는16PASS/1의미연결 FAIL이라900은 미시작이다.
-  실패33payload를 실제 회수·hash/17원장 검증해 `cloud_gemma_failed_smoke_v6/local_receipt.json`에 보존했다.
-  Pod00:30 GPU0%/1MiB·compute 없음; 새 지식 시험 우선이며 이전 결과/공개 MMDL/GitHub는 불변이다.
-
-- 00:18 UTC /09:18 KST: Gemma 추출에서 question/choices/gold/V8를 제거하고
-  native status/null/revision 분기·전체 답/공통 가정·인용·fence 검사를 구현했다.
-  runtime34+preflight12+controller12 CPU tests/Ruff/mypy3·독립 반례 검사 PASS;
-  실제 Pod XGrammar0.2.3 native11검사 및 새CPU900v6(900COUNTED/overflow0,max50454) PASS.
-  controller6363/birth6938159를 시작했으며 서버 로드 중이다. 실제17smoke 통과 전900감사 금지.
-  runtime221c8f2b…/preflight873e854f…/controllerfc2b0bb7…; cutoff03:52:38 UTC 유지.
-  P의80조건부 AI검토를 독립 표본검사 후4문항7판정 수정해 corrected_all30_v2에 보존했다.
-  main_check_v2로38hash/102결정/전체summary 재현 PASS, 사람·이미지 진실·중요관계 인증 아님.
-  이전 실패/원장 및 Qwen102/V8/공개 MMDL/GitHub는 불변이고 최종회수/Pod삭제는 미완료다.
-
-- 10-02 23:44 UTC /10-03 08:44 KST 실제조회: Pod `h447a4u6c0vq3k`는 켜져 있지만
-  GPU0%/1MiB·compute process 없음·controller5916종료다. Pod RUNNING과 추론 중을 혼동하지 않는다.
-  Gemma v4 실제smoke12/13, v5 11/13통과라900GPU 감사는 미시작이다. 복수답 null schema 실패와
-  Math_12의 raw에 없는 선택지 evidence 제출을 guard가 차단했다. 검증기 완화/같은 실패의 무근거 재시도 금지.
-  v5 CPU900 max50192/overflow0 및 닫힌archive 실제수신은 GPU 성공 인증이 아니다.
-  P의80문항 AI 의미검토는102원장으로 합쳤지만 O0 조건부·사후 항목단위·22비교불가와
-  사전중요관계 미측정·Energy_and_Power_20 question-derived uncertainty 노출을 유지한다.
-  근거 `p_structure_measurement_reviewed_all30_v1/`; Qwen102/V8/공개본 불변·최종회수/Pod삭제 미완료.
-
-- 23:23 UTC /08:23 KST: Gemma v3 실제smoke는10/13통과·3실패였고900감사를 시작하지 않았다.
-  실패원문/12completion은 `cloud_gemma_failed_smoke_v3/`에 회수·검증했다.
-  evidence 누락·표기동치 지시·CPU/vLLM 메시지형식 경계의1공백token 원인을 재현했다.
-  새v4는 judge prompt 의무를 명확히 하고 native `--chat-template-content-format string`을
-  고정한다. validator/통과기준/BF16/모델/context/sampling은 완화하지 않으며 별도protocol이다.
-  local52 tests/Ruff/mypy3/Bash·독립원인검토PASS, 실제CPU900v4는900COUNTED/overflow0,
-  max50061+1024=51085·절단0이다. 새13실제smoke 통과 전900감사는 금지한다.
-  P 의미측정102큐/80eligible/22비교불가 검증 및 disjoint40×2 AI검토는 진행중이며,
-  사전중요관계/실제이미지의 진실/사람검증을 인증하지 않는다. Qwen/V8/MMDL/GitHub불변.
-
-- 23:06 UTC /08:06 KST 갱신: 새 preflight는 BF16/exactwheel/publicruntime/HTTP 검증을 유지한다.
-  local11+controller12 CPU tests/Ruff/bounded mypy·독립 Sol 검토 PASS 후 CPU900v3 실제900입력 검사 완료.
-  전체 token 원장은 v2와 byte 동일하며 새 code hash에 연결했다. 닫힌24payload파일은
-  `cloud_gemma_cpu900_v3/`에 회수·로컬 검증했다. PID4853/birth6497401의 별도controller v3가
-  23:05:07 UTC Gemma READY 후 실제13smoke를 실행 중이다. 통과 전900감사 금지·cutoff03:52:38 유지.
-  Qwen102/기존558/900/MMDL/GitHub는 불변이며 P 의미 큐·전체감사·최종회수/삭제는 미완료다.
-
-- 22:50 UTC 이후 최신근거:42coverage는22:29:44 UTC EXIT0·336조건/305실호출/20차단/11제외·누락/오류0이다.
-  `cloud_coverage42_v1/` 닫힌23payload파일과305실입력/336원래채점/전체summary를 독립 CPU 검증했다.
-  `coverage42_closed_independent_check_v1.json`;pilot60+coverage42=102고유문항/30과목,
-  `export_all30_102_v2/`의816행·749실호출은 별도진단이지 과거558/900의 대체가 아니다.
-  Gemma v1 FlashInfer sampler의nvcc부재를 지원flag0의 명시적native sampler로 해결해v2서버READY를
-  관측했지만 smoke가 runtime0.24.0/휠0.24.0+cu129 동일성검사에서 호출전에 차단됐다.
-  기존launcher/v5CPU900v2/실패결과는 보존하고 새버전guard와 exactwheel hash의 CPU검사 후
-  별도새900 tokenizer gate→13실제smoke→900감사 순서를 지킨다. 실패뒤 EngineDead는 ownedSIGTERM정리 결과다.
-  P전체의미지표/LEGACY재호출/추가반복/잔여160/최종전체회수·Pod삭제는 아직 미완료이며GitHub/MMDL은 불변이다.
-
-- 현재 요청은 가중치 고정 진단과 Gemma 전수 감사 구현·실험이다. 기존 V8 558/900,
-  원응답·파서·공개 MMDL/GitHub는 보존한다. `experiments/` 코드 및
-  `analysis_exports/bottleneck_20261003/`의 전사·원장·결과는 모두 내부용이다.
-  GitHub push·MMDL 동기화는 금지하며 RunPod로 비공개 코드를 직접 전송하는 것은 승인됐다.
-- 사용자는 전사가 없으면 Sol로 생성하는 것을 승인했다. 별도 Sol 이미지 검토 뒤에도
-  `AI_REVIEWED_NOT_HUMAN_VERIFIED`로 기록하며 사람 검증으로 표시하지 않는다.
-  별도 `ALLOW_AI_REVIEWED_DIAGNOSTIC` 정책에서만 실행하며 원래 human-review 기본 gate는 유지한다.
-  모든 benchmark 파생본에 `BENCHMARK_DERIVED`, `training_allowed=false`를 전파한다.
-- 운영 목표는 12시간: 2026-10-03 13:22:38 KST까지. 파일럿 GPU 최대4시간은 유지한다.
-  12고정 사례→60파일럿→30과목 1차 점검→측정된 여유에 따른 최대262 확장 순서다.
-  반복·확장은 시간에 맞춰 제한하며 미실행을 완료로 표시하지 않는다.
-- RTX3090 확보 전 재고를10분 간격으로 읽기 전용 확인한다. 재고 대기 중 로컬 BF16 CPU-offload
-  소규모 추론은 승인됐지만 Gemma 실제 모델은 로컬에서 실행하지 않는다.
-- A Symbolic-Visual/B Diagram-Spatial/C Scientific Visual Diagnosis/D Multi-step quantitative
-  그룹은 사전 분석 가설이며 과목명만으로 실패 원인이나 학습 모듈을 확정하지 않는다.
-- 실제 입력 감사에서 기존 Agriculture_26/Materials_15/Pharmacy_4/Pharmacy_22의
-  해설 전용 이미지5장을 확인했다. 새 진단에서는 제외하고 원래 입력·V8 결과는 변경하지 않는다.
-  증거는 prepared/input_audit.jsonl이다. 이 사실을 숨기거나 전체 점수 기여도로 단정하지 않는다.
-- 18:34 UTC 점검: 소유 Pod `h447a4u6c0vq3k`의12stress는94실호출/1제외/1차단/오류0으로 완료·로컬 검증됐고
-  60pilot는32조건 완료·진행 중이다. Gemma는 실제 CPU tokenizer900개 검사 완료·최대49,979입력 token이며
-  GPU 감사는 아직 미실행이다. 진단의 별도 CPU 채점 v2는 원문·기존 V8·실행 중 추론 코드를 변경하지 않는다.
-  증거는 `analysis_exports/bottleneck_20261003/cloud_stress12_v1/`와 `cloud_gemma_cpu900_v2/`다.
-- 19:12:58 UTC 점검:파일럿119조건(108실호출/6차단/5제외),시스템 오류0·실행 중이다.
-  별도 비공개 `finish_runpod.py`는 독립 안전성 재검토 및 로컬/Pod11 CPU tests 후 PID2371로 시작했다.
-  SHA18127bd9077377604fdb8ba73f42f6d7f55a804d6115a8b039db694bcf80f142;
-  원래PID888·v1 inference·v5 Gemma gate를 변경하지 않고 `pilot_wait=WAITING`이다.
-  파일럿 원장 검증→실측 예산에 따른42coverage→실제Gemma13 smoke 통과 후900감사를 이어간다.
-  새 GPU 작업은03:52:38 UTC 전에 종료하고 회수30분을 남긴다. 전체 회수·Pod 삭제는 여전히 미완료이며
-  증거는 `analysis_exports/bottleneck_20261003/private_finish_v1_launch_receipt_local.json`이다.
-- 19:34:46 UTC 중간 조회:pilot231조건(214실호출/9차단/8제외),28문항의MI까지 종료·오류0이다.
-  기존PID888/2371/2505 birth일치,continuation은pilot_wait=WAITING이며 아직파일럿/Gemma전수감사 완료가 아니다.
-- 19:45:33 UTC 중간 조회:pilot279조건(259실호출/12차단/8제외),34문항의MI까지 종료·오류0이다.
-  비공개exporter·private신규5회귀+기존metrics2 집중검사/Ruff/mypy2파일/독립검토PASS,
-  닫힌stress12 export_v2의96채점행과9입력hash는불변이다. 중단 호출 수·예약 토큰의불확실성을분리했다.
-  실제pilot/Gemma완료·GPU새점수·최종회수/Pod삭제를완료로표시하지않는다.
-- 20:06:59 UTC 중간조회:pilot308조건(285실호출/15차단/8제외),38문항MI까지종료·오류0이다.
-  기존888/2371/2505 birth일치·continuation WAITING이며추론코드/예산은불변이다.
-  비공개recovery는독립경로범위검토·로컬/Pod각4 CPU tests·Ruff/mypy2파일및닫힌stress12실제
-  로컬5파일roundtrip/96원장무변조검증을통과했다. 도구는 `/workspace/private_recovery_v1`에따로배치했다.
-  설치환경10파일+회수코드5파일을실제Pod→로컬로회수했다(`cloud_environment_v1/recovery_receipt.json`).
-  이byte검증은실험완료/정답의미/전체회수/Pod삭제gate가아니다. 실행중원장·가중치/cache는미포함이며
-  기존v1/v5및공개MMDL불변을재검증했다. 개인실험코드/자료를GitHub에올리지않는다.
-- 20:26:43 UTC:pilot329조건/41문항MI종료·오류0·PID888/2371동일birth·WAITING이다.
-  외부학습후보의공식출처조사는 `claudedocs/research_diagnostic_external_candidates_20261003.md`에만둔다.
-  이는조건부후보/권리·중복gate조사이며학습실행·모듈책임확정·새점수·전체실험완료가아니다.
-- 20:42:36 UTC:pilot345조건(322실호출/15차단/8제외)/43문항MI종료·오류0·기존PID/birth일치·WAITING이다.
-  완료P42개를닫힌사본으로만회수하여record/raw/image byte를검증했다.
-  `pilot_p_shard_local_verification_v1.json`은full-pilot/의미검토/사람검증/삭제인증이아니다.
-  정답·질문·보기를제외한packet으로새Sol이이미지대조중이며최종원장prefix연결은미검증이다.
-- 20:51:43 UTC:pilot419조건/52문항MI종료·오류0·원래PID/birth·WAITING이다.
-  P42개/47이미지별도Sol감사와main의1,051인용offset/원문/image byte검증은완료했다.
-  관측31/미확정7/점검범위내오류미관측4는전체의미정답률이아니다. 무방향선분endpoint역순은오류로세지않는다.
-  `pilot_p_semantic_review_local_verification_v1.json`이근거이며전체파일럿/최종prefix연결/Gemma/삭제는미완료다.
-- 21:04:14 UTC:pilot471조건/58문항MI종료·오류0·원래PID/birth·WAITING이다.
-  P경계5사례별도검토는header/start/down의schema모호성과실제기기분류오류를분리했다.
-  `pilot_p_review_boundary_local_verification_v1.json`의35인용/5이미지검증PASS이며기존42감사집계는불변이다.
-  첫31개상태집계를확정시각실패수/실패율로사용하지않는다. 파일럿전체/Gemma/최종회수/삭제는미완료다.
-
-- 21:22:58 UTC 최신확인:60pilot480조건/444실호출/27차단/9제외·누락/시스템오류0으로완료됐다.
-  닫힌32payload파일을실제회수해source17/444payload/480원래strict-v1채점·summaryCPU정확재현,
-  별도독립검증및P42최종prefix연결을통과했다(`cloud_pilot60_v1/`,
-  `pilot60_local_experiment_verification_v1.json`, `pilot_closed_independent_check_v1.json`).
-  로컬CPU-v2의123추출변경/47정오증가/0감소는원문채점overlay이며원래558/900은불변이다.
-  42coverage는실측예산gate후21:14:51 UTC시작·조회20조건/19실호출/1제외/오류0으로진행중이다.
-  실제root는 `/workspace/artifacts/private-finish-v1/coverage`이며GemmaGPU/전체회수/Pod삭제는미완료다.
-  회수도구namespace가원래CLI를가린collector읽기실패는쓰기전진단·cwd/PYTHONPATH와modulealias로해결했다.
-  원래추론/controller설정·MMDL/GitHub는변경하지않는다.
-
-- 21:43:59 UTC:42coverage145조건/131실호출/9차단/5제외/18문항MI종료·오류0이며기존PID/birth일치다.
-  자연종료NO_PARSE23개는gold-blind감사후답변포기13/표현후보10으로구분하고53인용/source연결을검증했다.
-  `pilot60_stop_no_parse_contract_local_verification_v1.json`;추가정답으로구제하거나채점기를변경하지않았다.
-  P나머지18개/21이미지와117assertion/16누락/14경계인용도검증했다.
-  `pilot_p_remaining18_local_verification_v1.json`에서Music11의전수전사계약모호성과
-  Physics18의기기분류/실제연결오류를분리하며원래감사를별도보존한다.
-  P60모두AI검토가있지만의미정답률/특정모듈원인/사람검증은인증하지않는다. GemmaGPU/전체회수/삭제미완료다.
-
-- 22:03:43 UTC:42coverage184조건/170실호출/9차단/5제외/23문항MI종료·오류0이며동일PID/birth/hash를확인했다.
-  닫힌60pilot의214조건쌍의종료·추출연결원장을만들었다(`pilot60_paired_finish_parse_controls_v1.json`).
-  O0−I11회복중5개는I상한/O0자연종료,4개는모두자연종료·추출성공,2개는형식/포기상태도달라졌다.
-  모듈책임/인과효과/새MMMU점수로합산하지않는다. O0는이미지대체텍스트이며IO0와구분한다.
-  gold/판정방향없는14사례의별도Sol감사와28원문/70인용/7상한말미main검증도완료했다.
-  `pilot60_O0_I_transition_review_local_verification_v1.json`;Music10동일답/형식과CS7·PublicHealth9의
-  이미있는자료/절차·범주·완결변화를분리한다. 이미지진실/모듈원인인증은아니며GemmaGPU/최종회수/삭제미완료다.
-
-- 22:24:11 UTC:coverage3139/birth5842638의실제live대기를검증했다.
-  289조건/265실호출/14차단/10제외/36문항MI종료·오류0이고GemmaGPU/최종회수/삭제는미완료다.
-  기존V8의918파일/원래900JSONL/공개86파일불변및새내부보고서36링크/Git제외/diff검사를통과했다.
-  `coverage_actual_progress_20261002T222411Z.json`은진행증거이고완료로해석하지않는다.
-
-## 최신 운영 규칙 — V8 및 제출 저장소 분리 (2026-09-26)
-
-**이 절이 아래 역사 기록/이전 목표 구조보다 우선한다.**
-
-- P1 PDF 추가(2026-09-30): `results/P1/V8_32K_highres.pdf`는900문항/5,943쪽/479,661,632bytes,
-  `V8_32K_highres_wrong_342.pdf`는오답342문항/4,071쪽/209,462,288bytes로 둘 다512,000,000bytes 미만이다.
-  모든 질문·보기·정답·풀이 전문·이미지982/372회와 픽셀/순서를 검증했다. 중복 설명은 한 번만 인쇄하고
-  전체 원장/토큰ID/원래 Unicode는 PDF 내부 `records.jsonl` 첨부로 보존한다. HTML 원본은 byte 불변이다.
-  내부 도구 `analysis_exports/tools/export_v8_pdf.py`, 증거 `analysis_exports/mmmu_20260924/p1_pdf_20260930/verification.json`.
-  PDF/도구는 내부용이며 MMDL/GitHub·평가코드/채점/점수는 변경하지 않았다.
-- V8 과목별 내부 분석(2026-09-30): 사용자 요청으로 `claudedocs/MMMU_V8_70pct_subject_analysis_20260930.md`에
-  ≥70%(Finance 포함)/<70%의 문항 구성·난이도·생성/파싱 실패·대표 이미지/응답을 기록했다.
-  지정 Parquet와900개 결과 일치 및 HTML hash를 확인했다. 집계 JSON은
-  `analysis_exports/mmmu_20260924/v8_subject_groups_20260930.json`이다. 전문지식·학습 노출의 인과효과는 미측정이다.
-  동일V8 이전554→고해상도558은 +61/−57, 순증가4개다. 분석만 수행했으며 파서/점수/원본/MMDL/GitHub는 불변이다.
-- P1 전체 HTML 용량 축소(2026-09-29): `V8_32K_highres.html`을554,470,586→398,995,534bytes로 줄였다.
-  512,000,000bytes 미만이며 원본 크기 RGB PNG를 무손실 WebP로 저장한 표현 변경뿐이다.
-  900문항/정답558/오답342·이미지982회(959고유)·모든 픽셀/크기·풀이/metadata 동일성 검증 PASS.
-  이미지의 `data-sha256`은 원본 PNG 해시이며 WebP byte 해시가 아니다. 채점/모델 입력은 변경하지 않았다.
-  이전 PNG 내장 전체본은 `analysis_exports/mmmu_20260924/p1_png_backup_20260929/`에 보존한다.
-  증거: `analysis_exports/mmmu_20260924/p1_compact_images_20260929.json`.
-  오답 전용 HTML·원본 결과·MMDL/GitHub는 변경하지 않았다. 내부 생성기의 `--compact-full` 사용;
-  기존 `--verify-only`는 PNG/WebP 모두 검사하며 WebP 검증에는 기존 Pillow 환경이 필요하다.
-- P1 최초 PNG 이미지 내장 HTML(역사, 2026-09-29): `V8_32K_highres.html`은900문항/이미지982회(959고유),
-  `V8_32K_highres_wrong_342.html`은오답342문항/이미지372회(369고유)를 포함한다.
-  질문/선택지 이미지의 번호·순서·원본 PNG byte/크기·텍스트/메타데이터 보존을 검증했다.
-  단일 오프라인 HTML이며 풀이 접기·원본 크기 이미지 보기 지원, Windows Chrome 표시 확인.
-  이전 텍스트본은 `analysis_exports/mmmu_20260924/p1_text_only_backup_20260929/`에 보존한다.
-  내부 도구는 기존 `analysis_exports/tools/export_v8_wrong_html.py`를 확장했고, MMDL/GitHub는 변경하지 않았다.
-  검증 hash/크기 기록: `analysis_exports/mmmu_20260924/p1_embedded_images_20260929.json`.
-- 내부 오답 HTML 최초 생성(역사, 2026-09-28): `results/P1/V8_32K_highres_wrong_342.html`.
-  고해상도32K V8의900개 중 정답558/오답342(38%)를 원장으로 확인하고 오답만 추출했다.
-  342고유 ID·누락/중복/정답혼입0·풀이 전문/전체 metadata 무변조를 독립 검증했다.
-  텍스트 전용82,874,884bytes. 생성/검증 코드는 Git 제외 `analysis_exports/tools/export_v8_wrong_html.py`에만 둔다.
-  MMDL/GitHub/평가코드/원본 결과는 변경하지 않았으며 향후에도 이 도구와 HTML은 게시하지 않는다.
-- 최신 게시(2026-09-28): `197838c11557911a14a46d87b7f52fda0cac5b3c`.
-  GitHub 직접 수정 `fd8f582`를 먼저 반영·보존하고 보고서의 초 단위 소요시간을 시간·분·초로 바꿨다.
-  평가24시간52분41초/전체호출24시간53분29초(초 단위 반올림, 설치·다운로드 제외).
-  기존 보고서 시간 표시 함수와 회귀검사도 갱신했다. 제출본171 CPU tests/Ruff/mypy26/Bash·공개검사 PASS.
-  seed 정책·평가 설정·파서·점수는 변경하지 않았으며 GPU 재실행 없음. MMDL/원격 HEAD 일치·clean 확인.
-- **보고서 경로 변경(최신 사용자 요청):** 정본은 상위 소스 및 공개 MMDL의
-  `reports/mmmu_baseline.md` 하나다. 제공된 SUBMISSION_TEMPLATE의8절을 유지한다.
-  공개 루트 `Assignment_1.md`는 제외하고 생성기도 다시 만들지 않는다. 상위에 남은 동명 파일은
-  과거 기록으로만 보존하며 수정/게시 원본으로 사용하지 않는다. `assignment/assignment1.md`는 링크다.
-- 기타 특이사항 게시(역사): `6b019dfd696dc4b029b1bb83802d7b2a80362a6c`, MMDL/원격 default HEAD·상위 allowlist 일치·clean 확인.
-  사용자 요청으로 §8의 기존 본문을 이미지 입력 확대 관측(554→558/900,+0.44%p), 파서의 표현 한계,
-  엄격 판정의 절충점·독립 검증 한계로 교체했다. §1–7·팀 정보·평가 코드·점수는 불변이다.
-  보고서9 CPU tests·Ruff·mypy25·Bash·공개파일 검사 PASS. 보고서 생성기의 호환용 상태 표식은 빈 채로 유지했다.
-- 격차 분석 게시(역사): `1b3e51bb47cf43629b23d3f072e78fac121adcbf`, MMDL/원격 default HEAD·상위 allowlist 일치·clean 확인.
-  GitHub 직접 수정 `ac451fa706da8d3b991a5d50a19c5b0e02fd0f51`을 먼저 fast-forward하고 상위 보고서에 반영했다.
-  팀명 `Team 2`, 팀원 `장우석, 정예찬, 김기원, 김정현`을 보존했다. 이후 공개 변경은 보고서 §7만이다.
-  격차 분석은 공백·줄바꿈·Markdown 링크 포함934자이며 Manage_20/Accounting_9·V8 집계에 근거한다.
-  채점 한계/생성 실패를 원인 가설로 제시하고 해상도·seed 차이를 인과효과로 단정하지 않는다.
-  제출본170 CPU tests·Ruff·mypy25·Bash·공개파일 검사 PASS. 평가 코드·설정·558/900 점수 불변, GPU 미실행.
-- 템플릿 정리 게시(역사): `fa98910d560b196396395010bd29d7a6d00446ce`, MMDL/원격 HEAD·86파일 byte 일치·clean 확인.
-  사용자 승인으로 reports 본문을 SUBMISSION_TEMPLATE의8절에 맞춰 간결하게 정리했다.
-  본문에는 P0·V6/V7 개발 이력이나 내부 원장 설명을 넣지 않고, 최종 구현 식별자·출처·설계 이유·한계는 유지한다.
-  저장 응답을 최종 규칙으로 다시 채점했다는 사실과 GPU 실측의 출처는 §8 한 문장으로 남긴다.
-  생성기도 같은 형식을 유지하며 모델/데이터/생성/이미지/실행/최종 채점 조건이 다르면 거부한다.
-  README에 전체 프로젝트 지도·최신 평가 진입점·부분 cache 환경의 명시적 준비 명령을 추가했다.
-  상위176/제출본170 CPU tests·Ruff·mypy25·Bash·공개 파일·원본900/V8 overlay 보고서 재생성 PASS.
-  파서·평가 설정·응답·점수558/900은 변경하지 않았다. 새 의존성 설치/GPU/RunPod/학습 미실행.
-  게시 증거: `analysis_exports/template_publication_20260925.json`.
-- 보고서 경로 통일 게시(역사): `53a37bcdad221f88ce5ba355f37e1b78e744d3e5`, MMDL/원격 HEAD·86파일 byte 일치·clean 확인.
-  README clone/설치/평가/재채점/보고서 명령 및 기한 갱신. 제출본168 CPU tests/Ruff/mypy/Bash,
-  기존900 원장→reports 템플릿→보고서 동일 생성 검사 PASS. GPU 재실행 없음.
-  게시 증거 `analysis_exports/report_path_publication_20260924.json`; 공개 루트 보고서 백업은
-  `analysis_exports/submission_backups/20260924T142715Z/Assignment_1.md`.
-- V8 최초 게시(역사): `88dd56bb6887369196c510a43c1462215eb2fe2b`, 원격 default branch `feat/mmmu-baseline`.
-  `MMDL/` clean checkout·원격 HEAD 일치, allowlist87개 파일·내부 제외 경로 확인.
-  상위 전체173개(게시 도구6 포함)/제출본167개 CPU tests 및 Ruff/mypy/Bash PASS.
-  이전 공개 AGENTS/docs/claudedocs/3개 smoke 결과/통제 실행 셸은 공개본에서 제거했으며,
-  `analysis_exports/submission_backups/20260924T141534Z/`와 Git 이력에서 복구할 수 있다.
-  게시 증거는 `analysis_exports/submission_publication_20260924.json`에 남긴다.
-- 최신 파서는 `team-final-answer-v8`, 새 평가 진입점은 `configs/eval/mmmu_val_v8.yaml`이다.
-  B2와 protocol ID/채점기만 다르며 모델/revision/BF16/P0/sampling/출력32768/이미지/동시2는 유지한다.
-- 저장2700개 CPU 재채점·무변조·gold 독립 추출 확인 완료: R1 **478/900 (53.11%)**,
-  R2 **554/900 (61.56%)**, B2 **558/900 (62.00%)**. 제출 baseline은 사전 선택한 B2다.
-  V6보다 모두 낮다. 전체4증가/11감소이며 qualifier 지원 한계3건/명시 정정 없는 충돌4건/
-  모호·잘림 충돌4건이다. 감소를 전부 거짓 정답 제거라고 주장하지 않는다.
-- pipeline167 CPU unit/Ruff/mypy25/Bash 검사, 원본/출력900×3 ID·record/JSONL·비채점 필드 불변·
-  source snapshot·산술 검증 통과. 개발 회귀이며 독립 holdout/완전 의미 판정 인증이 아니다.
-  V7 누락46 중39·정책누락2/2·유효증가4/4를 수용했다. 상세는 `claudedocs/mmmu_v8_pipeline_20260924.md`.
-- 확정 결과/HTML/원장: `analysis_exports/mmmu_20260924/team_final_v8/`.
-  공개 집계: `results/scoring-v8-20260924/`. V6/V7/원본/실패 개발 후보를 덮어쓰지 않는다.
-  사용자 요청으로2026-09-26 `results/P1/`에 `V8_2K.html`, `V8_32K.html`, `V8_32K_highres.html`을 추가 복사했다.
-  원본과 byte 일치·각900문항·478/554/558정답 확인. 이미지 없는 독립 텍스트 HTML이며 기존 V6/V7·MD는 보존했다.
-  scoring SHA256 `b80a28a4b66906d5c4f1ece046bd7c4be2b447445da4b072144e52ce7ee047fa`.
-- 이번 범위는 평가 파이프라인·CPU 재채점·제출 정리다. GPU/LLM judge/학습/상세 오답 분석은 시작하지 않는다.
-
-### 공개본의 유일한 작업 위치
-
-- **내부 작업공간**: `C:\projects\multimodel` (`/mnt/c/projects/multimodel`).
-  AGENTS/docs/claudedocs/실험/원본 자료/대형 결과는 여기에만 보관한다.
-- **GitHub 게시용 독립 checkout**: `C:\projects\multimodel\MMDL`.
-  이 폴더의 내용만 `jang2296/MMDL`에 commit/push한다. 상위 저장소 전체를 다시 push하지 않는다.
-- 공개본에는 `AGENTS.md`, `docs/`, `claudedocs/`, 강의 PDF, 내부 감사/실험 모음,
-  비밀키·가중치·MMMU 원문/이미지/대형 응답을 넣지 않는다. `.gitignore`와 게시 검사기도 차단한다.
-- 교수님용 설명은 `README.md`(설치/한 명령 실행)와 `reports/mmmu_baseline.md`(조건/출처/자체 설계 이유/결과/한계)에 모은다.
-  PDF p.15의 `assignment/assignment1.md`에는 정본 링크만 유지한다.
-- PDF p.7의 코드/설정/결과/README·재현성과 p.15의30과목 점수/시간/데이터 경로 인자 요구를 충족하는
-  확정 코드·lock·설정·프롬프트·manifest·license·회귀 검사·작은 집계만 복사한다. 미구현 학습 코드를 꾸며 넣지 않는다.
-
-### 변경·게시 순서 (항상 적용)
-
-1. 상위 소스/설정/보고서 수정 → CPU 검사. MMDL의 독자 수정이 있다면 먼저 대조하여 상위에 반영한다.
-2. 상위에서 `python -m scripts.sync_submission --sync` → `python -m scripts.sync_submission --check`.
-   명시적 allowlist만 복사한다. 교체/제외된 기존 공개 파일은 `analysis_exports/submission_backups/`에 이동한다.
-   `.git`는 보존하며 상위 원본/기존 실험을 삭제하지 않는다.
-3. MMDL에서 CPU 검사/공개파일 검사/`git diff --check` → diff 검토 → feature branch commit → 정상 push.
-   `--force`, 이력 재작성, 상위 `git add -A`/push는 하지 않는다.
-4. 공개 checkout의 파일 목록·SHA256·실행권한을 상위 allowlist와 대조하고,
-   로컬 HEAD와 원격 default branch SHA·clean status를 확인한다. `.git` 메타데이터는 비교 대상이 아니다.
-   검증 cache/임시 파일도 게시 폴더에 남기지 않는다. 내부 동기화 스크립트는 공개하지 않는다.
-5. 수정 뒤 미동기화 상태를 완료라고 보고하지 않는다. 원격 갱신 실패 시 실패 사실과 남은 명령을 보고한다.
-
-> **역사 기록 — V7 REJECTED, V6 복원:** 승인된 V7 제거/V6 rollback은 당시 runtime에서 완료했다.
-> 현재 사용 가능한 CPU scorer는 `team-final-answer-v6`; V7 module/test와 V7 parser selection은 제거됐다.
-> 동일 저장 R1/R2/B2 재채점의 V6 결과는 **479/900 (53.22%), 558/900 (62.00%), 560/900 (62.22%)**다.
-> V7 시도는 64개 판정을 바꿨다(60 감소, 4 증가). 감소 60개는 46 명확한 V7 false negative,
-> 2 엄격 문자열 정책 누락, 12 모호/잘림으로 검토됐다. 4개 증가는 정상 회수로 판정했다.
-> 이는 AI 보조 텍스트 감사이며 전체2700개 의미 검증·이미지 재풀이·사람의 독립 인증은 아니다.
-> 합성 회귀에서 V6의 부정/복수답 및 문자열 부분일치 false-positive 예가 확인됐으나,
-> 이를 근거로 전체 실제 응답의 false-positive 수가 0이라고 보장하지 않는다.
-> 최신 공개 집계 `results/scoring-v6-20260924/summary.json`; 상세 비교/감사는
-> `claudedocs/mmmu_v6_v7_false_positive_audit_20260924.md`다. V6 원본은 `team_final_v6/`,
-> 독립 재현은 `analysis_exports/mmmu_20260924/v6_v7_audit/v6_replayed/`에 보존한다.
-> 거부된 V7 결과·개발 후보·공개 집계·snapshot은 `analysis_exports/mmmu_20260924/rejected_v7/` 아래 보존한다.
-> 현재 source나 CLI로 V7을 실행할 수 없다. V6 source hash 일치 및 132 tests 통과 확인.
-> FROZEN V4 inference protocol·generation settings 불변. 새 GPU/학습/commit/push는 수행하지 않았다.
-> V7의 이전 보고는 historical/rejected 기록이며 최신 채점으로 사용하지 않는다.
-
-> **역사 기록 — 2026-09-24 V5 CPU 채점 수정:** 사용자 승인으로 `team-final-answer-v5`를 추가했다.
-> 앞의 correct/best 선언 때문에 뒤 Answer를 놓치는 우선순위와 가정문 후보 필터 순서를 수정했다.
-> V4 동작/원본/기존 inference protocol은 보존한다. V5는 명시적 CPU 재채점이며 새 모델 추론이 아니다.
-> 이전32K R2는556→558/900(62.00%,+2/−0), 고해상도 B2는557→561/900(62.33%,+5/−1).
-> 두900 원응답·비채점 필드 불변/독립 재채점/record hash·coverage 확인, 전체126 tests/Ruff/mypy 통과.
-> 결과와 소스 스냅샷: `analysis_exports/mmmu_20260924/team_final_v5/`; 비교는 `v4_to_v5_comparison.json`.
-> B2 회수 정답5개 중2개는 length의 명시 답이며 풀이 완료/학습 개선으로 주장하지 않는다.
-> 상세는 `claudedocs/mmmu_b2_score_diagnosis_20260924.md`. GPU 재실행·유료 작업·Git 게시는 하지 않았다.
-
-> **2026-09-24 최신 완료 기록 — 아래 진행중 checkpoint보다 우선:**
-> `mmdl-official-b2-20260923-evaluation`은900/900,557정답(61.89%),누락/시스템 오류0으로 완료했다.
-> 사용자 요청에 따라 결과를 `analysis_exports/mmmu_20260924/official_b2_complete/`로 회수했다.
-> 추론 commit `6d6d4a1a4bed1785e8770902d65e12b54340ba75`의 검증기로 archive/member/record/code hash,
-> 900 ID·30과목·원응답 재채점·이미지959개·viewer를 로컬 검증했다(`extracted/local_receipt.json`).
-> 2026-09-24 07:44:32 UTC Pod `58nm0qrpgwc4ub` 삭제204→조회404→동명 목록0 확인.
-> Pod30GB container/80GB workspace는 폐기했으며 별도 Network Volume은 없었다. R1/R2는 그대로 보존한다.
-> 회수/archive SHA256·파일수·브라우저 검증·삭제 증거는 해당 폴더 `recovery_receipt.json`에 있다.
-> 이번 요청은 회수·삭제이며 새 추론/학습/유료작업은 시작하지 않았다. 제출 보고서 표·GitHub 최종 게시 갱신은 별도 작업이다.
-
-> **2026-09-23 최신 사용자 승인 — 아래 과거 변경 금지/추가 추론 제한보다 우선:**
-> `docs/P0/MMMU_audit` 원본 V2 확보·검토 → 두 저장 실행 CPU 재채점 → 실패 단계 분류 →
-> CPU 입력 대조와 A/B/C 소규모 통제 실험 → 조건 고정·GitHub 게시 → RTX3090 신규900 평가를 진행한다.
-> P0, 지정 모델/processor/revision/BF16/데이터와 공식 sampling recipe, 출력32768은 유지한다.
-> 이미지 전처리/해상도 및 LLM 없는 채점은 별도 version으로 고정하며 원본 결과는 덮어쓰지 않는다.
-> 외부 LLM judge·학습·MMMU test는 승인하지 않았다. 새 baseline 완료 전 기존51.00%를 대체하지 않는다.
-> 감사 V2 코드는 확보되었으며 두 원본900에 독립 재적용하여536/900,584/900을 재현했다(8 tests PASS).
-> V2는 length/open 판정 유지 및 legacy fallback 한계가 있는 진단용 버전이다.64.89%는 새 모델 추론 결과가 아니다.
-> 새 `team-final-answer-v4`는 명시적 최종답 추출+공식 open evaluator를 고정했다. 저장 R1/R2 재채점은
-> 479/900·556/900이며 개발 후보와 원본/V2 원장은 모두 보존했다. 전체111 CPU tests 통과.
-> 다음 조건·근거·확정 상태는 `docs/EVALUATION_V2.md`를 확인한다. 유료 실행은 로컬검사 통과 후에만 시작한다.
-> 코드 `a7fb5fec8d6b2a96c29e4577b351926e1aaba4b9`의 A/B/C는 각6/6·오류0으로 완료했다.
-> 각2정답·Music21 length1이며 정확도 개선을 입증한 표본이 아니다. 완료된 통제18개만 로컬 회수·hash 확인했다.
-> **06:14 UTC 최신 사용자 지시:** 동시1 C full900을 중단하고 부분 결과를 회수하지 않은 채
-> Pod `pdszzbcroakws1`를 삭제했다(API204→조회404). 해당 부분 결과/Pod 디스크는 복구할 수 없다.
-> 새 `mmmu-val-official-vllm-b2-v2`는 C와 protocol ID·동시 요청2만 다르다. 기존 continuous refill을 재사용한다.
-> 모델·P0·이미지1003520..4014080·출력32768·context40960·sampling·scorer는 유지한다.
-> 로컬111 tests/Ruff/mypy 통과 후 GitHub 게시→새3090 clean clone→3문제 smoke→새900 순서다.
-> CUDA Graph/async는 이번 변경에 포함하지 않는다. 새 GPU 성공/속도는 실행 증거 전 주장하지 않는다.
-> 폐기 지시는 중단된 C 부분 실행에만 적용하며, 새 완료 결과는 기존 회수·검증 후 삭제 원칙을 따른다.
-> **06:33 UTC 실행 확인:** 게시 commit `6d6d4a1a4bed1785e8770902d65e12b54340ba75`를 새3090 Pod
-> `58nm0qrpgwc4ub`가 clean clone했다. 설치·BF16·다운로드·3/3 smoke(오류0)를 통과했다.
-> `mmdl-official-b2-20260923-evaluation`은06:31:57 UTC 시작, 확인 시3/900·진행 중2·오류0이다.
-> 로그 `/workspace/artifacts/jobs/mmdl-official-b2-20260923.008-evaluation.log`. 새 전체 점수/가속률은 미확정이다.
-
-> 갱신일: 2026-09-23. 저장소 루트 지침. 실행정책: **로컬 smoke/부분 검증 → GitHub 고정 commit → RunPod 단일 900문제 평가 → 로컬 회수·검증 → 작업 전용 클라우드 자원 삭제**.
-> **현재 확정 상태:** 2,048-token 실행과 32,768-token 연속 처리 실행 모두 900/900 완료·로컬 회수·독립 검증·해당 Pod 삭제 완료. 점수는 각각 **47.44% / 51.00%**다. 최신 실험 사실·한계·후속 추적 기준은 **§0.1**을 우선한다. 아래 과거의 실행 중/초안 표기는 당시 기록이며 새 실행 지시가 아니다.
-
-> **2026-09-22 사용자 변경 승인(아래 이전 운영 제한보다 우선):** 기존 실행은 역사 자료로 보존한다.
-> 별도 가속 protocol(vLLM continuous scheduling, 토큰 streamer 제거)을 구현하고
-> 로컬 smoke 검증→GitHub 고정 commit→단일 3090 평가 run으로 900문제를 검증·회수한다.
-> ‘분석용’과 ‘테스트용/제출용’은 새 평가 역할로 만들지 않으며, 하나의 저장 결과를 점수와 실패 검토에 함께 사용한다.
-> legacy continuous32k run은 전체900과 독립 검증을 완료했으며 현재 32k baseline 결과의 근거다. 새 이름으로 같은 900개를 다시 생성하지 않는다.
-> 코드 변경은 실행 중인 Pod에 자동 적용하지 않는다. 추가 사용자 승인에 따라 먼저 끝나는 Pod는 900개 완료 후 로컬 회수·독립 검증을 거쳐 삭제하며, 불필요한 후속 900회는 차단한다.
-> 최초 USD6.80 상한은 과거 승인 기록이며, 사용자가 이후 비용 제한을 철회한 현재 운영 승인과 구분한다.
-> 기존 reference protocol은 보존하며 모델/revision/BF16/데이터/P0/생성/이미지/채점은 변경하지 않는다.
-> 로컬 CPU-offload 1문제는 Transformers 경로 검증이고 vLLM 검증이 아니다. continuous vLLM은 기존3090의3문제 smoke로 검증했다.
-> 추가 사용자 지정: 제출 보고서 정본은 `Assignment_1.md`. 수업 §4의 `reports/mmmu_baseline.md`에도
-> 동일 본문을 유지하며 템플릿8절, 공식 출처/revision, 자체 설계 이유·차이·한계를 정확히 적는다.
-> **최신 승인:** 단일 평가 run은 공식 생성 상한32768 (`mmmu-val-fast-vllm-32k-continuous-v1`)로 전환한다.
-> 기존 실행/완료한 로컬1 smoke의2048은 역사적 결과로 보존한다. 새 출력 상한을 자동 축소하지 않는다.
-> 로컬 추가 모델 추론은 하지 않는다. 가속 코드 검사 후32768 설정을 GitHub에 게시하고 새3090에서 검증한다.
-> `[수업]`은 첨부 규정, `[사용자]`는 이번 실행범위, `[설계]`는 구현 정책, `[외부]`는 공식 기술 근거다. 팀 설계를 수업 규정으로 말하지 않는다.
-> 문서·참고 코드의 존재는 구현·실행·평가 완료 증거가 아니다. 과거 미검증 표기도 현재 상태로 단정하지 말고 실제 코드·로그·manifest를 확인한다.
-
-## 0. 에이전트 작업 규칙과 현재 범위
-
-- 적용 지침 전체, Git 루트/상태, 기존 코드·README·설정·테스트·진행 기록, `local_sources/assignment_guidance.md`·`SUBMISSION_TEMPLATE.md`를 확인한다. 기존 작업을 reset하거나 덮어쓰지 않는다.
-- `[사용자]` **로컬은 smoke/필요한 부분 검증, RunPod는 단일 `mmmu-val` 평가 run의 실제 추론 900회**다. 별도 분석용/테스트용 full run을 새로 만들지 않는다. 완료·독립검증된 legacy continuous32k 저장 결과를 baseline 평가와 실패 검토에 함께 사용한다.
-- 확인된 팀 GitHub `MMDL`로 검사된 파일의 commit/push, 승인 예산 내 RunPod 실행·회수, 로컬 검증 후 작업 전용 자원 삭제를 허용한다. 정상 단계별 재승인은 없다. 계정/권한·저장소·가격/예산 상한/최대시간·회수경로 미확정은 유료 배포 전에 확인한다. 무제한 지출 승인이 아니다.
-- 이번에는 평가만 완성한다. MMMU-Pro는 취득/hash 확인만 한다. **향후 승인된 MMMU test/MMMU-Pro full도 RunPod**에서 하되 현재 evaluation에는 포함하지 않는다. 모든 benchmark split/파생본은 학습·증강 금지다.
-- 기존 파일을 우선한다. 중복 구현·빈 학습/증강기·가짜PASS·임시v2/final/new·불필요한 프레임워크/대시보드/문서를 만들지 않는다. 전역/다른 프로젝트 환경, OS/WSL/driver, Codex 모델·추론 강도·지침 한도를 임의 변경하지 않는다.
-- 상태·결정·검증 명령·증거·다음 행동은 `docs/PROJECT_STATUS.md`에 갱신한다. 변경 없는 전체 재독, 대형 로그/900응답 대화 출력, 자동 에이전트 토론/무한 리팩터링을 금지한다. 같은 차단 원인의 수정·검증은 최대3회다. 장시간 작업은 실행장비 프로세스/로그와 완료 대기·드문 확인으로 운영한다.
-- 단일 평가 검증·로컬 회수·전용 자원 삭제 후 새 유료 실행은 자동 시작하지 않는다. 2026-09-23 사용자 요청으로 1차 결과·설정·문제·개선 추적을 이 파일에 기록한다. 이 문서 갱신은 파서 수정·새 채점 결과 확정·모델 재추론·학습·유료 judge 호출의 승인이 아니다.
-
-## 0.1. 1차 평가 실측·문제·개선 추적 원장 — 2026-09-23
-
-`[실측]`은 저장 결과/receipt로 확인한 사실, `[진단]`은 저장 응답의 읽기 전용 분석, `[미검증]`은 원인 가설/후속 실험이다. **측정값, 수정 시의 산술 예상, 향후 계획을 섞지 않는다.** 이 절은 발표와 이후 비교의 출발점이며 900개 원문을 복제하는 장소가 아니다. 원본 증거 위치는 F항에 고정한다. 다른 문서의 과거 진행 중 표기보다 이 절의 완료 상태가 최신이다.
-
-### A. 두 완료 실행과 실제 설정
-
-| 항목 | R1: 2,048-token reference | R2: 32,768-token continuous baseline |
+# MMDL 프로젝트 지침 — Qwen3-VL-4B 평가·실패 분석·오답노트 RL 개선·재현
+
+> **이 파일은 `AGENTS.md`(Codex용)와 `CLAUDE.md`(Claude Code용)에 byte 동일하게 둔다.**
+> 한쪽만 고치지 않는다. 수정 후 `cmp AGENTS.md CLAUDE.md`로 동일성을 확인한다.
+>
+> 2026-10-30 축약본이다. 이전 6,498줄 원본(2026-10-28 마지막 갱신, SHA256
+> `2d65b4f4c2f6a296b71ee6f619da3358557cc24fdaee487ea5e1f94ecd89d403`)은 Git 제외 경로
+> `analysis_exports/agents_md_backup_20261030/AGENTS_full_20261028.md`에 그대로 보존했다.
+> 날짜별 세부 수치·SHA·PID·실패 원장은 그 원본, `docs/PROJECT_STATUS.md`, 각 private 원장이 정본이다.
+> 이 파일은 **규칙 + 현재 상태 + 파이프라인 설명 + 요약 이력**만 담는다.
+>
+> 표기: `[수업]` 첨부 수업 규정 · `[사용자]` 사용자 지시 · `[설계]` 팀 구현 정책 ·
+> `[외부]` 공식 기술 근거 · `[실측]` 저장 결과로 확인한 사실 · `[미검증]` 가설/계획.
+> 팀 설계를 수업 규정이라고 말하지 않는다. 문서·코드의 존재는 실행 성공 증거가 아니다.
+
+## 목차
+
+- §0 읽는 순서와 우선순위
+- §1 프로젝트가 하는 일
+- §2 절대 규칙 (가장 먼저 확인)
+- §3 오답노트형 자기개선 RL 파이프라인
+- §4 현재 상태 (2026-10-31 기준)
+- §5 저장소·게시 정책 (MMDL / MMDL_test / 상위 작업공간)
+- §6 MMMU baseline 결과와 고정 평가 조건
+- §7 평가 프로토콜 상세 (P0·생성·seed·파서·기록)
+- §8 하드웨어·환경·재현
+- §9 manifest·재개·비용·회수·정리 gate
+- §10 코드·모델·데이터·결과 저장 위치
+- §11 1차 평가 실측 원장 요약 (R1/R2)
+- §12 이력 요약 (2026-09-21 → 2026-10-30)
+- §13 반복 실패에서 얻은 교훈
+- §14 진행·제출·발표
+- §15 근거 자료와 외부 출처
+- §16 이 문서의 유지 규칙
+
+---
+
+## 0. 읽는 순서와 우선순위
+
+1. **§2 절대 규칙**을 먼저 확인한다. 사용자가 명시적으로 해제하기 전까지 어떤 작업도 이를 넘지 않는다.
+2. **§4 현재 상태**에서 지금 살아 있는 실행·다음 단계를 확인한다.
+3. 작업 대상이 오답노트 RL이면 **§3**과 `fine_tuning/notebook_rl/README.md`,
+   설계 정본 `claudedocs/notebook_rl_redesign_20261026/`(research·plan·architecture.html)을 읽는다.
+4. 평가/제출 작업이면 §5–§9를 읽는다.
+5. 최신 사용자 지시가 이 문서와 충돌하면 사용자 지시가 우선한다. 단 §2의 금지 사항은
+   사용자가 그 항목을 직접 해제하기 전까지 유지한다. 승인은 범위가 정해진 것이며 다음 단계로 확대하지 않는다.
+6. 오래된 "진행 중" 표기를 현재 상태로 단정하지 않는다. 실제 코드·로그·manifest·프로세스를 확인한다.
+
+작업 시작 시: 적용 지침, Git 루트/상태(`git status`, `git branch`), 관련 README·설정·테스트,
+`docs/PROJECT_STATUS.md`를 확인한다. 기존 작업을 reset하거나 덮어쓰지 않는다.
+상태·결정·검증 명령·증거·다음 행동은 `docs/PROJECT_STATUS.md`에 기록한다.
+변경 없는 전체 재독, 대형 로그/900응답의 대화 출력, 자동 에이전트 토론/무한 리팩터링은 금지한다.
+같은 차단 원인의 수정·검증은 최대 3회다. 장시간 작업은 실행 장비의 프로세스/로그와 드문 확인으로 운영한다.
+
+---
+
+## 1. 프로젝트가 하는 일
+
+`[수업]` MMDL(멀티모달 딥러닝) 팀 프로젝트. 팀명 **Team 2** (장우석, 정예찬, 김기원, 김정현).
+지정 모델 **Qwen3-VL-4B-Instruct**에 대해 다음 순서를 수행한다. [S3 pp.4–5; S4 pp.14–20]
+
+| 단계 | 내용 | 현재 |
 |---|---|---|
-| 원본 run ID | `mmdl-val-20260922-3090-assignment` | `mmdl-cont32k-analysis-20260922-analysis` |
-| 실제 추론 commit | `af961a36b2471e978e96efd7347e150cb0bbce00` | `702ed44c4c45f454746ec4b371ad1b7403b67856` |
-| protocol | `mmmu-val-v1` | `mmmu-val-fast-vllm-32k-continuous-v1` |
-| 설정 파일 | `configs/eval/mmmu_val_v1.yaml` | `configs/eval/mmmu_val_continuous_vllm_v1.yaml` |
-| 실행 | Transformers, batch 1, SDPA MATH, deterministic=true | vLLM 0.11.0, 연속 처리, 최대 동시 요청 2, deterministic=false |
-| 생성 상한 / 전체 문맥 | `max_new_tokens=2048` | `max_new_tokens=32768` / `max_model_len=36864` |
-| 완료 / 시스템 오류·누락 | 900/900 / 0 | 900/900 / 0 |
-| 정답 / macro accuracy | **427/900 = 47.44%** | **459/900 = 51.00%** |
-| 수업 비교값 67.4%와 차이 | −19.96 percentage points | −16.40 percentage points |
-| 상한 종료 `length` | **226/900 = 25.11%** | **75/900 = 8.33%** |
-| 자연 종료 | `eos` 674개 | `stop` 825개 |
-| 파싱 실패 `NO_PARSE` | **96개** | **69개**, 모두 객관식·오답 처리 |
-| 생성 token 합 | 776,359 | 3,719,200 |
-| 평가 wall time, 모델 로드 제외 | 49,741.672초 ≈ 13시간 49분 | 57,885.846초 ≈ 16시간 05분 |
-| GPU 메모리 관측 | allocator allocated 13,037,445,120 / reserved 23,595,057,152 bytes | 장치 전체 사용량 표본 최대 22,885,171,200 bytes, 500ms 간격; worker allocator peak는 미측정 |
+| A. Baseline 평가 | MMMU validation 30과목×30=900문항, 공식 비교값 67.4 | **완료**: V8 채점 558/900 (62.00%) |
+| B. 실패 분석 | 생성 잘림·파싱·시각 관측·지식/규칙 적용 병목 분리 | 진단 완료(내부 보고서) |
+| C. 외부 데이터·학습법 | 벤치마크와 분리된 프로그램 생성/공개 데이터 | 지도학습 시도는 개선 실패 → RL로 전환 |
+| D. 실제 fine-tuning | 실제 파라미터 업데이트(LoRA/QLoRA/adapter 등) | **오답노트형 자기수정 RL 구현·검증 중** (§3) |
+| E. 동일 조건 재평가 | baseline과 같은 평가·채점으로 비교 | 미완료 |
+| F. 최종 평가 | MMMU test, MMMU-Pro Standard 10-way | 미착수 (취득/hash만) |
 
-- **공통 고정 조건:** §2의 지정 Qwen3-VL-4B-Instruct와 모델/processor/tokenizer revision, MMMU revision, BF16·비양자화·미학습 원본 가중치. validation **30과목×30개=900**, 실제 유형은 **객관식 847 / 주관식 53**이다. 전부 객관식이라고 설명하지 않는다. 두 실행의 ID·질문·보기·정답·seed·이미지 순서/grid 및 입력 token 합 **534,018**이 일치함을 확인했다.
-- **프롬프트:** 둘 다 §5의 **P0**. 원본 이미지들을 참조 순서대로 먼저 전달하고 질문/보기를 마지막 user text로 전달한다. MCQ는 `Question: ...\nOptions:\nA. ...\n...\nPlease select the correct answer from the options above.`, open은 `Question: ...`; 원본 hint가 있을 때만 앞에 붙인다. 추가 system/few-shot/CoT 지시 없음. 별도 분석용 프롬프트가 아니다.
-- **생성 공통값:** `do_sample=true, temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.0, presence_penalty=1.5, num_beams=1`. master seed **3407**, 샘플 seed는 `SHA256("3407:{sample_id}")`의 첫 8 bytes를 big-endian 정수로 바꿔 `mod (2**31)` 하는 **팀 정책**이다. Qwen의 난수 소비 순서와 동일하다고 주장하지 않는다.
-- **이미지 공통값:** `min_pixels=262144, max_pixels=1310720`, official processor 소유 resize. 수업 고정 해상도가 아니라 팀이 택한 pixel budget이며 R2에서도 유지했다.
-- **파싱 공통값:** `mmmu-official-no-random-v1`. pinned MMMU 규칙 기반 MCQ 파서에서 무작위 추측을 제거했고, 실패는 `NO_PARSE`·오답으로 처리한다. open은 공식 문자열/수치 정규화 evaluator를 쓴다. **Qwen 평가 코드의 LLM 보조 판정은 사용하지 않았다.** 원본의 임의 추측 대신 실패를 명시하려던 설계이나, 아래 형식 인식 누락이 확인됐다.
-- **R2 실행 세부:** 독립 문제 하나가 끝나면 저장 후 다음 문제를 넣는다. `max_num_seqs=2`, `async_scheduling=false`, eager, prefix cache=false, GPU memory utilization=0.90, tensor parallel=1. presence penalty는 vLLM native generated-only 적용; R1은 custom generated-only 구현이다. EOS/stop/기본값을 포함한 전체 실효 설정은 각 `backend.json`·샘플 기록을 근거로 한다.
-- **실제 장비/환경:** 두 full run 모두 **RTX 3090 24GB GPU-only**, CPU/disk weight offload 없음. Python 3.12.3, Torch 2.8.0+cu128, Transformers 4.57.1. R1 driver 565.57.01/Linux 6.8.0-50, R2 driver 580.65.06/Linux 6.8.0-57. **4090 실측 완료가 아니다.** R2 RAM peak는 부모 프로세스만 포함하므로 worker 포함 총 RAM으로 쓰지 않는다. 표의 GPU 메모리 두 지표도 직접 비교하지 않는다.
-- **paired 결과:** 둘 다 정답 347, 둘 다 오답 361, R1 오답→R2 정답 112, 정답→오답 80. 순증 **32개 / +3.56pp**다. 길이·백엔드·코드·환경이 함께 바뀌었으므로 **순수 토큰 효과나 fine-tuning 효과가 아니다.** R2 생성량은 약 4.79배이고 전체 평가 시간은 더 길다. 이 비교만으로 가속 배율을 주장하지 않는다.
+- Fine-tuning은 **실제 파라미터 업데이트**여야 한다. 프롬프트/RAG/앙상블/파싱 개선만으로 완료하지 않는다.
+- 원본 구조 유지가 기본이며 구조 변경은 필수가 아니다. 초파리 신경망·압축·트레이딩 등 다른 주제를 섞지 않는다.
+- 현재 사용자의 최우선 목표: **정확한 오답노트 → 검증된 내용의 실제 RL → 경로 선택 → 저장·새 프로세스 재로딩
+  → 새 문항 비교**로 이어지는 오답노트형 자기개선 학습 파이프라인 완성. 부분 판정 학습·정답 재시도·
+  가중치 변경만으로 완료라고 하지 않는다.
 
-### B. 출력 상한·장문 반복에서 확인한 한계
+---
 
-- 2,048은 초기 자원/시간 예산을 위한 팀 선택이며 공식 권장값으로 쓰지 않는다. R1 226개가 상한에 도달해 답변이 완결되지 않을 위험이 실제로 컸다. 이후 사용자 승인으로 Qwen MMMU 평가 recipe의 출력 상한 **32,768**을 채택했다. 이는 **최대 생성량**이지 항상 그만큼 생성하라는 뜻이 아니다. 지정 model card의 일반 VL 안내 **16,384**와 평가 recipe **32,768**은 출처가 다름을 남긴다.
-- R2도 75개가 **정확히 32,768 token**에서 잘렸다. 그중 정답 24 / 오답 51, 파싱 실패 13이다. 자연 종료 825개는 정답 435 / 오답 390이다. 잘린 응답이 항상 오답인 것도, 상한을 올리면 반드시 정답이 되는 것도 아니다.
-- 저장 응답에서 같은 문장/계산을 반복하는 장문 사례를 관측했다. **반복 현상은 관측, 발생 원인과 penalty/이미지/샘플링의 기여도는 미검증**이다. 출력 길이 부족만으로 모든 오답과 긴 실행 시간을 설명하거나 더 큰 상한을 자동 적용하지 않는다.
-- R2 최대 입력은 2,655 token, **동일 샘플의 입력+출력 실측 최대는 35,390**으로 문맥 한도 36,864 안이다. 입력 최댓값과 출력 상한을 단순 합친 35,423은 보수적 합계이지 실제 단일 샘플 최댓값이 아니다. 따라서 이번 75개의 상한 종료를 작은 전체 문맥 때문에 출력 32,768을 확보하지 못한 사례라고 설명하지 않는다.
-- `length`는 종료 사유, `NO_PARSE`는 추출 상태다. 두 집합은 겹치므로 단순 합산하지 않는다. R2 오답 중 `(length 또는 NO_PARSE)`는 **51+69−13=107개**이며, 이는 수정하면 107개가 모두 정답이 된다는 뜻이 아니다.
+## 2. 절대 규칙
 
-### C. 확정된 파싱 문제와 점수 해석
+### 2.1 학습 방식 — 지도학습 금지
 
-- 원인 위치: `src/mmdl/evaluation/parsers.py::parse_mcq_response`. `(A)` → 공백으로 둘러싸인 `A` → **응답이 5단어를 초과할 때만** 보기 문구 검색 순이다. 끝의 punctuation 제거는 내부 `A. 내용`의 점을 없애지 못한다. 짧은 `LETTER. option text` 응답을 놓칠 수 있고, 여러 후보가 나오면 마지막 출현을 택한다.
-- `[진단]` R2 `NO_PARSE` 69개 중 **32개**는 응답 전체가 유효한 `LETTER. 해당 보기 원문`과 정확히 일치했다. 그중 **24개는 정답 label과도 일치했지만 오답 처리**됐다. 32개 모두 `stop` 종료라서 이 24개의 손실은 토큰 잘림 때문이 아니다. 재현 기준: `re.fullmatch(r'([A-Z])\.\s*(.+)', raw.strip(), re.S)` 후 label 범위와 본문/해당 보기의 `strip()` 일치 검사; 정답은 추출 후 비교에만 사용한다.
-- 같은 기준으로 R1 `NO_PARSE` 96개 중 **31개**가 형식 일치, 그중 **23개**가 정답 label 일치였다. R1에도 같은 추출 문제가 있었으므로 후속 SC1은 R2만이 아니라 두 실행을 같은 scoring version으로 대조한다. 원래 R1 427/900은 변경하지 않는다.
-- 진단 사례 ID: `validation_Agriculture_1`, `validation_Art_10`. 원문/보기는 F항의 비공개 원본에서 확인한다. 이 두 사례만으로 만든 예외 처리나 정답 기반 파싱은 금지한다.
-- **24개만 바로잡고 나머지가 같다는 산술 가정**이면 `(459+24)/900 = 53.67%`, +2.67pp다. **새 파서로 전체 재채점한 실측 성적이 아니다. 현재 확정 원본 점수는 51.00%다.** 수정 규칙이 이미 PARSED인 응답에 미치는 영향도 검증해야 한다.
-- 69개 NO_PARSE가 전부 정답으로 바뀐다고 가정해도 `(459+69)/900 = 58.67%`다. 이는 **NO_PARSE 집합만의 산술 상한**이지 모든 파서 오류의 상한이나 개선 예측이 아니다. 이미 PARSED인 오답의 잘못된 답 추출 여부는 별도 검토 대상이다.
-- R2 유형별 결과: 객관식 **440/847**, 주관식 **19/53**. 모델 지식/시각 이해의 오답과 출력 형식/채점 손실을 분리해야 한다. 공식 점수와 격차 전부를 모델 능력 부족이나 parser 하나에 귀속하지 않는다.
+`[사용자 2026-10-16, 이후 반복 재확인]`
 
-### D. 공식 Qwen 평가와 같은 것·다른 것·아직 모르는 것
+- **지도학습(SFT)을 하지 않는다.** 특히 상위 모델(GPT/Gemini/Claude/Gemma 등)의 풀이·설명을 정답 문장으로
+  모방시키는 SFT/distillation, teacher rationale, cross-entropy target, DPO 대체를 절대 쓰지 않는다.
+- 모델 자신이 생성한 문장을 정답으로 고정해 외우게 하는 STaR/RFT식 SFT도 설계에서 제외한다.
+- 학습은 **독립 검증기 보상 기반 강화학습(RL)**만 사용한다. 정답은 검증기(private verifier)에만 전달하고
+  모델 입력(actor payload)에는 gold 문자열·기준 풀이·오류 목록·검증 결과의 정답값을 넣지 않는다.
+- 정확한 명칭은 "추가 SFT와 교사 모델 풀이 모방을 사용하지 않는 독립 검증 보상 기반 자기수정 RL"이다.
+  비공개 정답·프로그램 검사로 보상을 주므로 순수 "자기지도학습"이라고 부르지 않는다.
+- 학습 라벨은 프로그램 생성 또는 사람이 만든 것만 사용한다. AI 검토는 `human_verified=false`로 기록하며
+  사람 인증으로 표시하지 않는다.
+- 이유: 과거 지도학습 시도(G6 FL/FM/FV/FML, TabMWP A/B)가 MMMU 또는 외부 지표를 개선하지 못하고
+  오히려 낮췄다(§12). 수업도 벤치마크 학습을 금지한다.
 
-| 비교 항목 | 이번 실행과 공식 공개 코드의 관계 | 해석 / 다음 확인 |
-|---|---|---|
-| 모델·P0·sampling | 지정 Instruct/BF16, 기본 P0, T/p/k/penalty 및 R2 출력 32,768은 채택 근거가 있다 | Thinking 모델/CoT 프롬프트로 실행한 것이 아님 |
-| 이미지 budget | 우리 262,144–1,310,720 pixels / Qwen `infer_instruct.sh` 1,003,520–4,014,080 pixels | 더 작은 시각 입력이 세부 문자/도형 인식에 영향을 줄 가능성; 실제 점수 영향은 미측정 |
-| 이미지 처리 경로 | Qwen `qwen_vl_utils.process_vision_info` 경로와 우리 pinned processor/vLLM 경로가 다름 | 우리 reference 입력 token/grid 검증과 **엔진 내부 pixel tensor 동등성 검증은 별개**; 후자는 미완료 |
-| 객관식 채점 | Qwen은 option/text 규칙 추출 후 실패 시 LLM 보조 판정, 재시도 소진 시 random fallback; 우리는 MMMU 규칙 변형, 실패 오답 | 저장 raw response로 추출 차이부터 분리. 공식 방식이면 반드시 정답이 된다고 가정하지 않음 |
-| 주관식 채점 | Qwen 공개 코드는 **채점 단계에서** 정답/Other Answers 후보로 판정; 우리는 공식 MMMU open 정규화 | gold를 baseline 추론 프롬프트에 넣었다는 뜻이 아님; 두 점수의 직접 동등성 미검증 |
-| seed·실행 환경 | Qwen README seed3407, 참고 실행 코드 seed42; 우리는 per-sample SHA seed / 고정 vLLM 0.11.0 | 같은 sampling 숫자만으로 응답 동일성을 보장하지 않음 |
-| 데이터 취득 | 수업 지정 HF validation 900 / Qwen 공개 코드 `MMMU_DEV_VAL.tsv` | TSV와 HF의 ID·이미지·split 전체 동등성 대조 미완료. 임의로 dev 포함본으로 교체하지 않음 |
+### 2.2 데이터 — 벤치마크 오염 금지
 
-공식의 `</think>` 이후 추출 처리 차이도 확인했으나 R2 900개에는 해당 종료 태그가 **0개**여서 관측된 원인으로 세지 않는다. **67.4는 과제에 제시된 비교값**이며, 그 수치를 만든 모든 내부 실행 조건을 재현·입증한 상태가 아니다. 위 차이는 확인된 설정 차이이지 각각의 점수 손실을 정량 입증한 목록이 아니다.
+- **MMMU / MMMU-Pro의 모든 split과 모든 파생물**(paraphrase, 수치·이미지만 바꾼 변형, 전사, 응답, 해설)은
+  학습·증강에 사용하지 않는다. `BENCHMARK_DERIVED`, `training_allowed=false`, `public_upload_allowed=false`를 전파한다.
+- "validation으로 tune"은 정답 학습 허용이 아니다. [S4 pp.14,16,21]
+- 오염 검사에는 벤치마크 정보를 **제외 신호로만** 쓰고 학습기로 전달하지 않는다.
+  검출기·임계값은 완화하지 않는다. 경고 후보는 실제 문제·이미지 대조로 DISTINCT/DUPLICATE/UNRESOLVED를
+  별도 원장에 기록하고, DUPLICATE·UNRESOLVED는 같은 family까지 blacklist로 제외한다(2026-10-17 사용자 승인).
+- 학습/평가 문항의 출처·구조(전체 multigraph 등)·이미지 hash 분리를 확인한다.
+- 학습 결과에 따라 표본을 몰래 교체하지 않는다. 사전 고정한 순서·ID·seed를 유지한다.
 
-출처 고정(2026-09-23 대조): Qwen commit `96588727e44c78b25ba03ea03b8e12f7e64fd0da`의 [prompt/추론](https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/evaluation/mmmu/run_mmmu.py), [Instruct 실행 설정](https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/evaluation/mmmu/infer_instruct.sh), [채점](https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/evaluation/mmmu/eval_utils.py), [데이터](https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/evaluation/mmmu/dataset_utils.py). 우리 parser의 원류는 [MMMU evaluator](https://github.com/MMMU-Benchmark/MMMU/blob/268471d0d488258990025331c7528359c324aa25/mmmu/utils/eval_utils.py), commit `268471d0d488258990025331c7528359c324aa25`다. 고정 model card는 W2, 수업 조건은 S1, 추가 대조 근거는 `docs/SOURCE_REVIEW.md`다.
-
-### E. 구현·환경 문제의 경과와 재현 한계
-
-- **로컬 사전 검사(역사 기록):** RTX 5060 8GB의 CPU weight offload에서 Accounting 30개는 18/30, `length` 15/30, 평가 22,194.080초였다. 추가 다중이미지/open 3개도 검증했다. 이는 full900 점수가 아니다. 가속 Transformers 로컬 1문제는 312 token/EOS, 생성 174.740초로 완료했으나 **vLLM 검증을 대신하지 않는다**. 상세 증거는 `docs/PROJECT_STATUS.md`의 로컬 smoke/partial 및 외부 `setup/*audit.json` 참조.
-- **설치와 호스트 문제 분리:** 초기 5090의 `cuInit=999`, UVM open `EIO(5)`는 호스트 CUDA/UVM 접근 문제로 진단됐고 정확한 커널 원인은 미확정이다. 모델 추론 전 실패·로그 회수 후 삭제했다. 초기 3090은 호스트 CUDA12.7과 cu128 컨테이너의 `cuda>=12.8` 부팅 조건 불일치로 시작하지 못했다. 공식 base image digest로 교체한 뒤 같은 평가 lock으로 CUDA/UVM/BF16 검사를 통과했다. 모델/BF16을 낮춰 해결한 것이 아니다.
-- 성공한 R1 base image: `runpod/base@sha256:a5aead56b5ed7754235250afface107a8a19646ac34f62c87e5f41eb147fa7b2`. 재현 shell은 clone commit·exact lock·`pip check`·실제 GPU/driver·CUDA/UVM·BF16·mount/disk·pinned model/data 검사를 수행한다. **부팅 자체가 안 되는 이미지는 shell이 고칠 수 없으므로 배포 전 호스트/이미지 조건 확인이 필요하다.** `nvidia-smi` CUDA 표시는 설치된 Torch runtime 버전과 구별한다.
-- **가속 경과:** MATH attention/매 token CPU 진행 전송 경로의 비용을 검토하여 별도 fast protocol을 만들었다. 초기 vLLM 고정 batch2는 두 요청 묶음이 끝날 때까지 기다리는 구조였고, 이후 `LLMEngine.add_request()/step()`로 최대2 요청을 유지·개별 완료 즉시 refill하도록 바꿨다. 3문제 GPU smoke에서 앞 요청 미완료 중 다음 요청 투입을 관측했다. kernel 변경·로그 전송 제거·연속 처리 각각의 단독 속도 기여는 측정하지 않았다.
-- 이전 고정 batch 32k **70문항 partial은 사용자 요청으로 Pod·로컬 결과/압축 사본까지 삭제**했다. 삭제 전 관측은 61 EOS / 9 length, 생성 399,758 token 중 상한9개가 294,912 token이었다. 이는 과거 운영 관측이며 현재 원문 재검증이 가능한 R1/R2 결과가 아니다. 900개와 합치거나 복원 가능하다고 하지 않는다.
-- R1/R2는 각각 전체 raw 재채점·900 고유 ID/30과목·입력/코드/레코드 hash·PNG 959개·HTML 참조를 로컬에서 검증한 뒤 해당 Pod를 삭제했다. R1 Pod `2j4knzy36jtzmv`는 **2026-09-22 14:36:23 UTC**, R2 `vf8wla9q5v9gm8`는 **2026-09-23 01:03:17 UTC** 삭제 기록이 있다. 삭제 후 조회 부재를 확인했으며 추가 full900은 시작하지 않았다. 이 시점의 자원 정리 기록을 미래 계정 상태로 가정하지 않는다.
-
-### F. 원본·공유 묶음·보고서 상태
-
-Windows 보관 루트는 **`C:\projects\multimodel\analysis_exports\mmmu_20260923\`**이며 Git 제외 대상이다. `originals/`는 검증한 WSL `$MMDL_ARTIFACT_ROOT/recovered/`의 두 회수 폴더를 복사한 것으로 WSL 원본도 보존했다.
-
-| 증거 | 보관 루트 아래 상대경로 |
-|---|---|
-| R1 전체 회수본 | `originals/baseline-2048-complete-20260922/` |
-| R1 개별 결과 | 위 폴더의 `extracted/artifacts/runs/mmdl-val-20260922-3090-assignment/` |
-| R2 전체 회수본 | `originals/continuous32k-complete-20260923/` |
-| R2 개별 결과 | 위 폴더의 `extracted/runs/mmdl-cont32k-analysis-20260922-analysis/` |
-| 먼저 웹 GPT에 올릴 자료 | `upload/mmmu_analysis_text.zip` — **2,955,323 bytes / 2.82 MiB**, 두 실행 각900 raw 응답·paired900·과목별30·설정/환경/프롬프트 |
-| 필요할 때 추가할 이미지 | `upload/mmmu_images.zip` — **324,943,322 bytes / 309.89 MiB**, 두 실행이 공유한 고유 PNG **959개** |
-| 분할 열람·무결성 | `upload/by_subject/` 60개 파일, `SHA256SUMS.txt`, `README.md` |
-
-개별 run의 `summary.json`, `subject_scores.csv`, `predictions.jsonl`, `resolved_eval_config.yaml`, `resolved_hardware_config.yaml`, `backend.json`, `environment.json`, `run_manifest.json`과 회수 루트의 `recovery_receipt.json`을 근거로 사용한다. 공유용 텍스트 ZIP은 raw 응답을 자르지 않았지만 token ID 배열·tensor·전체 로그를 생략했다. 상세 검증에는 `originals/`를 사용하며 benchmark/이미지를 학습·증강에 재사용하지 않는다.
-
-- R1 원본 archive `results.tar.gz`: **332,612,462 bytes**, SHA-256 `11cba0dff07a228c7ee70332f3b10859b66894a9349687507017c5072a3444e6`.
-- R2 원본 archive `mmdl-cont32k-analysis-20260922.tar.gz`: **350,207,727 bytes**, SHA-256 `67d2734d909aca42043d12ae17ed5364cf50d3cb19fbbec25504d073b7cc7416`. supplement/receipt도 함께 보존한다. 모델 가중치·전체 HF cache·venv가 담긴 배포본은 아니다.
-- 원본 ID의 `assignment`/`analysis` 문자열은 추적용으로 유지한다. 지금도 별도 테스트용/분석용 모델·프롬프트가 있다는 의미가 아니다.
-- **보고서 반영은 별도 미완료 항목:** 이 원장 작성 시 `Assignment_1.md`와 `reports/mmmu_baseline.md`에는 최종 R2 수치·파싱 진단이 아직 반영되지 않았다. 이후 S1/S2를 따라 함께 갱신하고, 공식값과 차이 진단의 **1000자 제한은 제출 보고서**에 적용한다. 이 원장을 보고서 제출 완료로 간주하지 않는다.
-
-### G. 다음 개선을 추적하는 방법과 발표 원칙
-
-| 추적 ID / 상태 | 변경·확인 대상 | 완료에 필요한 증거 |
-|---|---|---|
-| R1 / COMPLETE | 초기2048 평가 | 위 원본427/900·commit·receipt 보존 |
-| R2 / COMPLETE | 32768+vLLM 연속 처리 평가 | 위 원본459/900·commit·receipt 보존; 현 baseline |
-| D1 / DIAGNOSED | 짧은 `LETTER. 보기` 파싱 누락 | 32개 형식 일치/24개 정답 손실, 원인 함수와 읽기 전용 진단 기준; 수정 완료 아님 |
-| SC1 / PLANNED | 일반화한 parser 수정·새 scoring version | 합성 회귀 검사 후 **동일 저장 raw900 전체** 재채점, old/new 답·점수 차이 및 PARSED 회귀 확인; R1/R2 원본 덮어쓰기 금지 |
-| SC2 / PLANNED | Qwen 규칙/LLM 보조 채점과 대조 | MCQ/open별 차이 분리, judge 모델/버전/프롬프트/비용 기록; 유료 API는 별도 승인 전 호출 금지 |
-| I1 / PLANNED | 이미지 budget/전처리 동등성·장문 반복 원인 | 사전 고정 표본/가설, 한 요인씩 바꾼 protocol, 길이/반복/점수/시간/메모리 함께 측정; 900 재추론은 새 승인 필요 |
-| T1 / NOT STARTED | 실패 유형→외부 데이터→실제 fine-tuning | MMMU/MMMU-Pro 오염 차단·학습 manifest·parameter update·고정 checkpoint·동일 평가 조건 비교 |
-
-후속 기록은 **날짜 → 문제/근거 ID → 가설 → 변경한 단일 요인과 유지 조건 → 코드 commit·protocol/scoring version·환경 → 전후 정답 수/파싱 실패/length/시간·메모리 → 회귀·한계 → 증거 경로·상태** 순으로 이 원장에 덧붙인다. 실패한 실험도 삭제해 성공만 남기지 않는다. 현재 요청은 기록이며 PLANNED 항목의 실행 승인이 아니다.
-
-발표에서는 **① 초기 상한의 한계 → ② 연속 처리와32k 적용 후 관측 변화 → ③ 남은 반복/파싱/공식 평가 차이 → ④ 원인을 분리할 다음 실험 → ⑤ 외부 데이터와 학습 계획** 순서로 연결한다. **47.44→51.00%는 실행 조건 묶음의 관측 변화**, **53.67%는 아직 가정 계산**, **학습 개선 성과는 아직 없음**을 명시한다. 점수 상승을 위해 프롬프트/파서를 바꿨다면 모델 학습 성능과 분리하고, baseline과 fine-tuned 모두 같은 최종 평가/채점 조건으로 비교한다.
-
-## 1. 프로젝트·근거 자료
-
-`[수업:S3 pp.4–5; S4 pp.14–20]` Qwen3-VL-4B-Instruct baseline→실패 분석→외부 데이터/학습법→fine-tuning→동일 평가·개선→최종 MMMU test/MMMU-Pro Standard10-way 순서다. Fine-tuning은 실제 파라미터 업데이트이며 전체/일부 학습, LoRA/QLoRA/adapter가 후보다. 원본 구조 유지가 기본이고 구조 변경은 필수가 아니다. 프롬프트/RAG/앙상블/파싱만으로 완료하지 않는다. [S4 pp.15,18–19] 초파리 신경망·압축·트레이딩을 섞지 않는다.
-
-| ID | 자료 | 근거 |
-|---|---|---|
-| S1 | `assignment_guidance.md` / `(1)` 사본 | 고정스펙·채점·경로·마감 |
-| S2 | `SUBMISSION_TEMPLATE.md` / `(1)` 사본 | 보고항목·실측·결과표 |
-| S3 | `02_MMDL_Team_Project_Introduction.pdf` | 흐름·GitHub·평가·발표 |
-| S4 | `03_MMDL_VLM_Introduction.pdf` | 입력/파싱·학습·데이터금지 |
-| S5 | `01_MMDL_Course_Introduction.pdf` | 범위·HW·Standard10-way |
-| S6 | `04_MMDL_Deep_Learning_1(2).pdf` | 파라미터·손실·최적화 |
-| S7 | `05_MMDL_Deep_Learning_2.pdf` | 역전파·목적함수·softmax |
-| S8 | 사용자 PPP#1 공지 | 발표일정·시간·LMS |
-
-사본은 이름이 아니라 hash로 확인한다. S3 p.15의 `assignment/assignment1.md`와 S1 §4의 `reports/mmmu_baseline.md` 차이는 후자에 본문, 전자에 링크를 두고 기록한다. “validation으로 tune”은 정답 학습 허용이 아니다. 모든 MMMU/MMMU-Pro는 학습 금지다. [S4 pp.14,16,21] S6/S7은 이론이지 특정 학습률/배치/레이어 지시가 아니다.
-
-## 2. 변경하면 안 되는 수업 조건
+### 2.3 수업 고정 조건 — 변경 금지
 
 `[수업: S1 §§0–4; S2; S4 pp.14,16,21]`
 
 ```yaml
 model_id: Qwen/Qwen3-VL-4B-Instruct
 model_revision: ebb281ec70b05090aa6165b016eac8ec08e71b17
-dtype: bfloat16
+dtype: bfloat16            # baseline 평가는 BF16·비양자화·원본 가중치
 mmmu_dataset_id: MMMU/MMMU
 mmmu_dataset_revision: 98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68
 assignment_split: validation
@@ -1592,132 +123,349 @@ assignment_report: reports/mmmu_baseline.md
 assignment_deadline: "2026-09-28 23:59 (수업 공지 기준)"
 ```
 
-- 공식 Qwen 배포본만 사용한다. 커뮤니티 재업로드·GGUF·AWQ 등은 baseline 대체물이 아니다.
-- 모델뿐 아니라 processor/tokenizer/chat template도 동일한 지정 revision으로 받는다.
-- 30개 subject config를 각각 로드한다. 로드 오류가 난 과목을 버리거나 900개 중 일부만 제출하지 않는다.
-- 과목별 accuracy 30개와 macro average를 기록한다. 전체가 과목당 30개이면 `정답 수 / 900`과 같다.
-- 공식 비교값은 **과제 지침에 제시된 67.4**이다. 이를 우리 측정값처럼 쓰지 않는다.
-- 공식값과의 차이 진단은 **1000자 이내**다. 표면적 추측보다 응답·설정·보조 실험의 근거를 쓴다.
-- 한 명령으로 평가를 재실행하고, 모델 위치와 데이터 위치를 인자/환경변수로 교체할 수 있게 한다.
-- 프롬프트 전문·출처, 생성 설정·근거, 파싱 규칙·출처, 환경·의존성·시간·peak VRAM을 기록한다.
-- 4090 24GB에서도 실행 가능한 경로를 제공한다. 24GB가 강제 최대치라는 뜻은 아니다. [S1 §1.3]
+- 공식 Qwen 배포본만 사용한다(커뮤니티 재업로드·GGUF·AWQ는 baseline 대체물이 아니다).
+  processor/tokenizer/chat template도 같은 revision.
+- 30개 subject config를 각각 로드한다. 로드 오류 과목을 버리거나 일부만 제출하지 않는다.
+- 과목별 accuracy 30개와 macro average(과목당 30개이므로 = 정답 수/900)를 기록한다.
+- 공식 비교값 **67.4**는 과제 지침의 값이며 우리 측정값이 아니다. 차이 진단은 **1000자 이내**.
+- 한 명령으로 재실행하고 모델·데이터 위치를 인자/환경변수로 바꿀 수 있어야 한다.
+- 4090 24GB에서 실행 가능한 경로를 제공한다(24GB가 강제 최대치라는 뜻은 아니다). [S1 §1.3]
+- MMMU-Pro는 수업 지정 **Standard 10-way**만 기준으로 한다(vision-only로 대체 보고 금지). [S5 p.11]
+- QLoRA/NF4 학습은 수업이 허용한 학습 방식 예시이지만 baseline 평가의 BF16 무양자화 규칙과 구분한다. [S4 p.18]
 
-현재 Assignment 1은 **MMMU validation만 필수**다. MMMU-Pro와 MMMU test는 최종 단계다.
-MMMU-Pro는 수업이 지정한 **Standard 10-way**를 기준으로 삼고 vision-only를 대신 보고하지 않는다. [S5 p.11]
+### 2.4 저장소·코드 위치
 
-## 3. 저장소 전체 목표 구조
+- **교수님 제출용 `MMDL/` 폴더와 `jang2296/MMDL` 저장소는 절대 수정하지 않는다**(사용자가 명시 요청한 제출
+  작업 제외). 실험 코드·결과·이미지를 MMDL로 동기화하지 않는다.
+- 실험 코드는 `fine_tuning/` 안에만 둔다. 오답노트 RL은 `fine_tuning/notebook_rl/`.
+- `fine_tuning/train.py`, `fine_tuning/modules.py`, `fine_tuning/protocol.json`은 과거 manifest가 SHA로
+  고정하므로 수정하지 않는다.
+- 실행 중인 동결(frozen) 소스 복사본은 hotpatch하지 않는다. 수정은 상위 소스에서 하고 새 동결본/새 protocol로 분리한다.
+- 비밀키·가중치·체크포인트·HF/benchmark 원문·이미지·대형 결과·강의 원본은 어떤 공개 저장소에도 올리지 않는다.
+- 중복 구현·빈 학습/증강기·가짜 PASS·임시 v2/final/new 파일·불필요한 프레임워크를 만들지 않는다.
+  기존 helper를 먼저 재사용한다. 전역 환경·OS/WSL/driver·다른 프로젝트를 임의 변경하지 않는다.
 
-`[설계]` 폴더명은 수업 강제규정이 아니다. 기존 코드를 보존하고 필요한 파일만 구현한다. 예정 파일을 완료로 표시하지 않는다.
+### 2.5 결과 보고의 정직성
+
+다음을 서로 섞지 않는다. 섞어서 보고하는 것이 가장 자주 지적된 실수다.
+
+| 구분해야 할 것 | 설명 |
+|---|---|
+| fixture/CPU 검사 통과 ↔ 실제 Qwen GPU 실행 | 작은 무작위 모델·작성 fixture는 자기개선 증거가 아니다 |
+| 노트 생성 ↔ 정확한 노트 ↔ 노트 내용의 학습 | 생성·형식 통과·strict 정확성·실제 기울기 기여는 각각 다르다 |
+| 답 보상 update ↔ 노트(오류·수정) 학습 | 가중치 변경이 답 보상/KL에서 왔으면 노트 학습이 아니다 |
+| 재시도 정답 회복 ↔ 가중치 자기개선 | 같은 부모의 재시도 회복은 독립 첫 시도 개선이 아니다 |
+| 부분 판정 학습 ↔ 전체 오답노트 성공 | bounded claim 정확성을 전수 오류 설명으로 확대하지 않는다 |
+| UNKNOWN/관측 누락 ↔ Vision 정상 | 미확정은 정상 Vision 인증이 아니다 |
+| 독립 관측 오류 ↔ 내부 Vision 모듈 단독 책임 | 운영 분류이지 인과 인증이 아니다 |
+| AI 검토 ↔ 사람 검증 | `human_verified=false` 유지 |
+| 산술 예상 ↔ 실측 재채점 | 예: "24개만 바로잡으면 53.67%"는 가정 계산 |
+| 실행 종료 ↔ 유효한 전수 판정 | 시간한도·BUDGET_STOP·실패는 그대로 보고 |
+| ON 단독 update ↔ OFF-only/양 경로 검증 | 혼합 update는 Vision 동결 경로 증거가 아니다 |
+| 중간저장 ↔ 전체 완료/새 process reload | 중간 checkpoint는 재개 지원·최종 완료가 아니다 |
+
+- 검증 기준·보상·채점·한도를 완화해서 통과시키지 않는다. 실패는 원문과 함께 보존하고 덮어쓰지 않는다.
+- 과거 결과를 새 protocol로 소급 재표기하지 않는다. 새 scoring/protocol version으로 분리한다.
+- 테스트를 skip/disable해 통과시키지 않는다. 실행하지 않은 검사를 통과했다고 하지 않는다.
+- "blazingly fast", "100%" 등 근거 없는 표현, 근거 없는 시간·퍼센트를 쓰지 않는다.
+
+### 2.6 실행·비용·클라우드
+
+- 대규모 학습, 새 900문항 평가, cloud 실행, 다른 GPU·고가 GPU 확대, fallback(양자화·해상도·토큰·
+  정밀도 자동 축소), 자동 연장·재시작을 **자동으로 시작하지 않는다**. 각각 사용자 승인이 필요하다.
+- RunPod 실행 전: 실제 잔액·가격·최초 과금 시각·회수 예약금·GPU/금융 종료 시각·최대 시간을 고정하고
+  watchdog을 둔다. 자동충전·결제 설정은 바꾸지 않는다. 약속된 충전은 실제 잔액이 아니다.
+- RunPod는 GitHub 고정 commit의 clean clone으로만 실행한다. 로컬 코드/venv/모델/cache 업로드, Pod 수동 패치 금지.
+- 실행 중 10분 간격으로 Pod/프로세스/오류/예산을 점검한다. 같은 원인의 무근거 반복 실행 금지.
+- 정리 순서: **REMOTE_VERIFIED → LOCAL_VERIFIED → POD_TERMINATED → OWNED_STORAGE_DELETED → CLEANUP_VERIFIED**.
+  로컬 수신·hash·재채점 검증 receipt 전에는 삭제하지 않는다. Stop만으로 정리 완료라고 하지 않는다.
+- **이 대화/작업이 만든 소유 자원만** 삭제한다. 공유·기존 volume, 다른 프로젝트 자원은 건드리지 않는다.
+- 로컬 프로세스 제어는 PID와 startticks·명령·cwd를 대조한 **소유 프로세스에만** 신호를 보낸다.
+- 공유 BF16 원본 가중치는 기존 checkpoint 6개(G6 FL/FM/FV/FML, TabMWP A/B)가 의존하므로 삭제하지 않는다.
+  격리가 필요하면 non-overwrite 이동 + journal로 복구 가능하게 한다.
+- 외부 유료 API·LLM judge 호출은 별도 승인 없이 하지 않는다.
+
+### 2.7 Git
+
+- feature branch에서만 작업한다(현재 상위 `feat/mmmu-baseline`). main/master 직접 작업 금지.
+- commit/push는 사용자가 요청할 때만. force push·이력 재작성·공개 범위/계정 설정 변경 금지.
+- 상위 저장소에서 `git add -A`/전체 push를 하지 않는다. 명시 파일만 stage한다.
+- 공개 게시는 §5의 동기화 스크립트와 검사를 거친다. commit 전 `git diff` 검토.
+
+### 2.8 단일 답 원칙 — 여러 답을 만들고 고르기 금지
+
+`[사용자 2026-10-30, 중요 제한]`
+
+- 평가·보고 점수는 **문항마다 한 번 생성한 답 하나**로만 낸다. 여러 답을 만들어 그중 하나를 고르는 방식은 모두 금지:
+  best-of-N, 다수결(self-consistency), 재순위(reranker·verifier·LLM judge로 선택), 정답·검증기 피드백을 이용한 재시도 후 선택, 앙상블.
+- 여러 seed·실행·체크포인트 중 좋은 것을 고르지 않는다. 여러 seed 평가는 seed별 정확도의 평균으로만 보고하고 문항별로 seed를 고르지 않는다.
+  과제용 점수는 사전 등록한 실행 하나(과제 protocol, seed 3407)다. arm당 평가 체크포인트는 하나다.
+- `[설계 해석]` 학습 중 RL 그룹 표본(문항당 n개)은 모든 표본의 보상이 기울기에 쓰이는 학습 신호이며 답을 고르는 것이 아니다.
+  오답노트 파이프라인의 검증기 피드백 재시도·회복률은 학습·진단 지표로만 쓰고 모델 정확도로 보고하지 않는다.
+  사용자가 다르게 지시하면 이 해석을 고친다.
+
+---
+
+## 3. 오답노트형 자기개선 RL 파이프라인
+
+### 3.1 무엇을 만드는가
+
+모델이 실제로 틀린 풀이를 **스스로 점검·수정**하고, 모든 시도를 종합한 **오답노트**를 작성하게 한 뒤,
+독립 검증기가 확인한 수정 행동과 노트 내용에 **RL 보상**을 주어 가중치를 실제로 바꾸는 파이프라인이다.
+설계 정본: `claudedocs/notebook_rl_redesign_20261026/research_notebook_rl_redesign_20261026.md`(D00–),
+`plan.md`(P00–P23, 요구사항 R01–R18), `architecture.html`. 초기 설계(2026-10-16)는
+`claudedocs/research_error_notebook_self_correction_rl_plan_20261016.md`와 `error_notebook_rl_pipeline_20261016.html`.
+
+사용자 의도의 구현(설계 D00):
+
+1. 같은 Qwen 모델이 이미지·문제를 보고 풀이와 답을 생성한다(T1).
+2. 별도 검증기가 답 정오와, 검사 가능한 관측(이미지에서 읽은 사실)·연산(규칙 적용)의 모순을 판정한다.
+3. 실패한 실제 응답을 문맥에 그대로 남긴 채, 모델이 한 completion 안에서
+   `ErrorCheck:`(오류 점검 JSON) → `RevisedSolution:`(수정 풀이)를 순서대로 생성한다(T2/T3).
+4. 답이 맞아도 검증된 과정 오류(VIOLATED 관측·연산)가 남으면 재시도 대상이 될 수 있다.
+5. 정답 후보가 생기면 모델이 **모든 실제 시도(실패·잘림·성공·형제·조상·피드백)와 이미지**를 보고
+   최종 오답노트(final note)를 작성한다(n4).
+6. 검증기가 노트의 주장·인용·수정 관계(CORRECTED/PERSISTED/UNKNOWN 등)를 확인하고,
+   **실제 생성된 원래 토큰에만** RL 보상을 연결한다.
+7. 검증된 관측 오류 근거로 Vision 학습 포함 여부(경로)를 고르고, 실제 update → 저장 → 별도 프로세스 재로딩을 검증한다.
+8. 새로운 문항의 첫 시도 성능을 별도로 측정한다. 기능 통과를 정확도 향상으로 바꾸어 말하지 않는다.
+
+용어 바로잡기: "맞을 때까지" = 최대 3단계 안의 재시도(못 맞히면 UNRESOLVED로 종료).
+"답지를 보고" = 검증기만 정답과 비교. "찍어서 맞혔나" = 정답인데 검증된 과정 오류가 남았는지 관측.
+"풀파인튜닝" = 로컬에서는 하지 않는다(아래 3.2).
+
+### 3.2 모델과 학습 범위
+
+- 모델 `Qwen/Qwen3-VL-4B-Instruct@ebb281ec70b05090aa6165b016eac8ec08e71b17`.
+- 로컬 RTX 5060 8GB는 BF16 가중치(8.88GB)만으로 VRAM(8.55GB)을 넘고, 기존 native HF+vLLM 경로 하한은
+  26.5GiB다(2026-10-18 실측). 그래서 2026-10-21부터
+  **NF4 양자화 기저 동결 + Vision LoRA + LLM LoRA + 비양자화 Merger 4개**를 학습한다(QLoRA 계열).
+  Merger: `model.visual.merger`, `model.visual.deepstack_merger_list.{0,1,2}`.
+  설치 trainable tensor 624개(L 어댑터/M Merger/V Vision 어댑터). **full-parameter FT가 아니다.**
+- 경로(route)는 독립 관측 검증으로 정한다. 모델 노트의 자기주장으로 정하지 않는다.
+  - `VISION_ON`: 독립 검증된 관측 오류 근거 → Vision adapter + Merger + LLM adapter 학습.
+  - `VISION_OFF`: 필수 관측이 모두 검증됨 → Vision 동결, Merger + LLM adapter 학습.
+  - `UNRESOLVED`/미확정: 학습 진입 금지. 미확정을 Vision 정상으로 처리하지 않는다.
+- 별도 trainer·framework·scheduler·다운로드 계층을 새로 만들지 않는다. 기존 `fine_tuning` 경로를 재사용한다.
+
+### 3.3 현재 고정 설정 (로컬 NF4 경로)
+
+| 항목 | 값 |
+|---|---|
+| 단계·표본 수 | T1 n4 → T2 n2 → T3 n2, 최대 3단계 |
+| 출력 상한 | 풀이 1024 토큰(ErrorCheck 포함), 최종 노트 8192 토큰 |
+| 문맥 | 24576 (초과 시 원문을 자르지 않고 `CONTEXT_BLOCKED`로 기록) |
+| 생성 | 기존 sampling, master seed 3407, 샘플별 seed 식 고정 |
+| 보상 | 답 binary(CORRECT 1/기타 0), online repair PG .0625, final note PG .0625, KL .01 |
+| 정규화 | 원래 그룹 크기·고정 분모·MIS·원래 n 유지, ErrorCheck/노트 토큰에는 답 PG 없음 |
+| update | 최소시험 최대 1 update(2문항), 고정10 최대 5 update(pair 단위) |
+| 시간 | 내부 14400초, 외부 14430–14700초 + kill 30초 (실행별 launch 원장 확인) |
+| 부모 선택 | `SHA256(f"{key}:{sample_id}")` 오름차순 + 답 첫 등장 우선, native 후보 우선 |
+
+- **재관찰 v3**(`repair-retry-collector-v3`): 첫 eligible 재시도 직전에 같은 정책이 원본 이미지·질문·
+  공개 관측 문법만 보고 n1/1024로 한 번 다시 관찰한다. 이전 풀이·정오·gold는 주지 않는다.
+  T2/T3와 최종 노트가 이 원문을 **미검증(UNVERIFIED) 문맥**으로 공유한다. 보상·시도·그룹·라우팅·loss에서 제외.
+- **문법 실패 응답**: 원문과 logprob가 완전하면 `result=None`/`INVALID_RESPONSE_CONTRACT`로 보존하고
+  PG 0으로 원래 그룹에 남긴다. 정상 후보가 없을 때만 실제 원문 SHA를 재확인한 문법 실패 응답 하나를
+  다음 부모로 쓴다(`repair-retry-collector-v2`). 원문 누락·무결성 실패는 계속 차단한다.
+- **동일 보상**이면 상대 신호 0이다. 가짜 분산을 만들지 않는다. 무신호 문항은 순서대로 소비하고 교체하지 않는다.
+
+### 3.4 상태 머신
 
 ```text
-MMDL/
-├── AGENTS.md / README.md / pyproject.toml
-├── .gitignore / .gitattributes / .env.example
-├── env/requirements.in / requirements-{eval,train}.lock / environment.json
-│       Dockerfile                         # 선택, image digest 기록
-├── configs/eval/{mmmu_val_v1,mmmu_test_v1,mmmu_pro_standard10_v1}.yaml
-│           hardware/{rtx5060_8gb,rtx4090_24gb}.yaml
-│           data/{sources_v1,augmentation_v1}.yaml
-│           train/{lora_pilot,qlora_pilot,final}.yaml
-├── prompts/{mmmu_mcq_v1,mmmu_open_v1,mmmu_pro_mcq_v1}.txt
-├── scripts/check_config.sh / doctor.sh / test_reference.sh
-│           prepare_data.sh / augment_data.sh / train.sh
-│           eval.sh / rescore.sh / reproduce.sh
-├── src/mmdl/runtime/                      # 계약·환경·배치·생성·hash·경로·artifact
-│           evaluation/                   # CLI·engine·prompt·이미지·parser·저장·재개
-│             datasets/{mmmu,mmmu_pro}.py
-│             backends/{transformers_backend,vllm_backend}.py
-│           data/ / augmentation/ / training/
-├── manifests/{sources,datasets,models,runs}/
-├── third_party/ / tests/{unit,integration,fixtures}/
-├── results/<run_id>/                      # 작은 공개 결과
-├── reports/{mmmu_baseline,project_plan,progress,final_report}.md
-├── assignment/assignment1.md
-├── docs/{PROJECT_IMPLEMENTATION_GUIDE,SOURCE_REVIEW,REPRODUCIBILITY,PROJECT_STATUS}.md
-└── .github/workflows/ci.yml               # CPU 검사만
+DATA_BOUND → INPUT_CHECKED → MODEL_READY
+  → T1_GENERATED → ANSWER_AND_PROCESS_AUDITED
+  → [RETRY_ELIGIBLE and attempts_remaining]
+       (첫 eligible 재시도 직전) FRESH_REREAD n1 — 미검증 문맥
+       T2/T3: ErrorCheck → RevisedSolution → FRESH_AUDIT
+  → TERMINAL_HISTORY
+       정답 후보 있음 → ALL_HISTORY_FINAL_NOTE(n4) → NOTE_AUDIT
+       정답 후보 없음 → UNRESOLVED_RECORD (가짜 성공 노트를 만들지 않음)
+  → INDEPENDENT_ROUTE
+       UNRESOLVED → SAVE_NO_ADMISSION
+       ON/OFF → CREDIT_BOUND → PREUPDATE_REPLAY → UPDATE_OR_NO_SIGNAL
+  → SYNCHRONIZED → CHECKPOINT_CLOSED → FRESH_PROCESS_RELOAD
+  → FUNCTIONAL_RESULT / REPAIR_RESULT
 ```
 
-`src/mmdl`은 필요한 `__init__.py`를 갖춘 설치 가능한 패키지로 만든다. 평가/학습/증강 CLI를 분리하고 학습기에서 평가로더를 import하지 않는다. RunPod는 기존 `reproduce.sh`와 runtime을 확장한다.
+종료 규칙: 답이 맞고 검증 가능한 모순이 없으면 그 분기 종료(범위 부족이면 "답 맞음/과정 미확정").
+마지막 시도까지 실패하면 실패로 닫는다. CONTEXT_BLOCKED·BUDGET_STOP·OOM·비유한 손실·원문 변조는
+원인을 저장하고 종료하며 한도·모델·검증 기준을 자동 완화하지 않는다.
+형제 후보의 정답을 다른 부모의 회복으로 세지 않는다.
 
-## 4. 코드·모델·데이터·결과 저장 위치
+### 3.5 검증 등급 — F / S / E
 
-GitHub에는 코드·설정·lock·출처/manifest·작은 결과만 둔다. 모델/benchmark 원문/cache/venv/강의 원본/secret/개인경로/전체 응답·이미지는 공개하지 않는다. 대용량 구조는 다음과 같다.
+| 등급 | 필수 관측 | 이것만으로 말할 수 없는 것 |
+|---|---|---|
+| **F 기능** | 실제 Qwen 생성 → 실제 보상·원래 토큰 → 유한 기울기 → 파라미터 변경 → 실물 저장 → 새 프로세스 재로딩(optimizer/step/가중치/단일·복수 이미지 forward·생성 일치, 원본 접근 0) | 노트 정확성, 성능 상승 |
+| **S 수정 의미** | 실제 native `CORRECTED` 관계·원문 증거·독립 검증, 양성 VERIFIED CORRECTED-only VJP와 전체 signed CORRECTED VJP가 **각각** 유한·비영, 실제 저장 update에 연결 | 내부 Vision 단독 책임, 모든 자연어 추론의 정확성 |
+| **E 효과** | 사전 고정한 별도 문항에서 첫 시도·회복·노트 정확성·비용을 동결 평가기로 비교 | 작은 표본을 MMMU 전체 개선으로 일반화 |
 
-```text
-HF_HOME/                                  # pinned cache
-MMDL_DATA_ROOT/evaluation/{mmmu,mmmu_pro}/  # 학습·증강 접근 금지
-MMDL_DATA_ROOT/training/{raw,clean,augmented,final}/
-MMDL_ARTIFACT_ROOT/{checkpoints,generations,runs,imports}/<version_or_id>/
-MMDL_VENV_ROOT/                            # 저장소 밖 격리 환경
-```
+- 작은 기능시험에서 성능 상승은 필수가 아니다(사용자 2026-10-26 정정). 그러나 정확한 내용 검증과 실패 보존은 필수.
+- 코드 상태 단계: DESIGNED → IMPLEMENTED → TESTED → FUNCTIONAL_VERIFIED → REPAIR_VERIFIED → EFFECT_MEASURED
+  (또는 BLOCKED). 각 전환에는 해당 증거가 필요하다.
+- E가 개선을 보이지 않으면 "기능 구현 완료, 대규모 학습 효과 미입증"으로 남긴다. 대규모 학습은 별도 승인.
 
-로컬 저장소는 현재 위치, 대용량/venv는 WSL Linux 파일시스템에 둔다. 인자/환경변수로 경로를 바꿀 수 있게 한다.
+### 3.6 실행 순서
 
-```bash
-export HF_HOME="${HF_HOME:-$HOME/mmdl-cache/huggingface}"
-export MMDL_DATA_ROOT="${MMDL_DATA_ROOT:-$HOME/mmdl-data}"
-export MMDL_ARTIFACT_ROOT="${MMDL_ARTIFACT_ROOT:-$HOME/mmdl-artifacts}"
-export MMDL_VENV_ROOT="${MMDL_VENV_ROOT:-$HOME/mmdl-envs/eval}"
-```
+1. 상위 소스 수정 → CPU 회귀(관련 집중 검사 + 연결 검사) · Ruff · 범위 mypy · 독립 검토.
+2. 새 동결 소스 manifest(`package-root-vN`, 파일 byte/size/mode) 고정.
+3. source-bound CPU 입력 준비/검증(고정10·기존 170 입력 byte 보존·CPU guard·CUDA 미초기화).
+4. 기존 NF4 cache 무변조 재사용 검증(save → 별도 PID check, 두 생성 token 동일·68 logprob 차이 0·원본 접근 0).
+   이는 베이스 재로딩 검증이지 학습 checkpoint 재로딩이 아니다.
+5. **최소시험**: 고정 첫 single + 첫 paired 이미지 2문항, freshF0, 최대 1 update.
+6. 종료 CPU 감사(원문 재생) → 실물 624 tensor 검사(`check_payload.py`) → 공개 `local_train reload`의 fresh reload.
+7. **고정10**: `--admission verified-functional-repair-exploration-v1`로 freshF0에서 시작(최소시험 가중치를 이어 쓰지 않음).
+   기본 strict admission은 유지된다. 이 경로는 실행 허용이지 S/E 인증이 아니다.
+8. 같은 입력·초기값·seed의 **답 보상 대조군(answer-only control)** → 각 arm fresh reload.
+9. 별도 독립 평가(native 회로 10문항/3위상 등, n1, 평가 중 학습 0) → F0 / FT / control 비교.
+10. S/E 판정 후에만 대규모 학습을 사용자에게 제안한다.
 
-유효 cache를 먼저 확인하고 재다운로드·실물복제·전체 snapshot을 피한다. WSL 내부와 VHDX Windows 볼륨, 다운로드/변환/회수 압축해제 peak를 검사하여 **로컬50GiB 여유**를 남긴다. 부족하면 임의 삭제하지 않는다.
+### 3.7 코드 위치와 주요 모듈
 
-RunPod는 GitHub 새 checkout/격리 환경에서 공식 pinned 모델·데이터를 받는다. **로컬 코드/venv/모델/cache 업로드는 금지**하고 평가 run 안에서 cache를 재사용한다. 경로의 실제 mount를 검사하며 미회수 결과는 stop에도 남는 작업 전용 Pod volume disk에 둔다. container disk만을 유일 저장소로 쓰지 않고 Network Volume은 기본 생성하지 않는다. [W10,W11] 대여 용량은 설치/취득/변환/단일 결과/bundle peak+기록된 안전여유로 정하며 로컬50GiB를 무조건 복사하지 않는다.
+- `fine_tuning/notebook_rl/README.md`: 현재 상태·인터페이스 표·재현 명령(정본).
+- `repair_contract.py`(재시도/최종노트 문법·투영), `repair_credit.py`(online/final 관계 감사·그룹 credit),
+  `repair_tokens.py`(원래 토큰 소유권), `losses.py`(answer/online/final 분리 loss, KL 1회),
+  `repair_training.py`(fresh 학습 준비), `updates.py`(optimizer step·VJP 검사),
+  `repair_replay.py`·`repair_evidence.py`(원문 재생·저장 update 증거), `checkpoint.py`(저장·
+  생성 중 AdamW moment CPU 보관 `park_adam_moments`), `local_train.py`·`local_run.py`(minimum/fixed10/control/reload),
+  `local_eval.py`·`local_ladder_*`(독립 n1 평가), `rollout.py`(부모 선택·피드백), `notebook_synthesis.py`.
+- 실행 CLI 예: `python -m fine_tuning.notebook_rl.local_run minimal|reload ...`,
+  `python -m fine_tuning.notebook_rl.local_train ... --repair-notebook --admission ...` (정확한 인자는 README).
+- 폴더 단독 실행(`mmdl`/`experiments` 없이)이 가능해야 한다.
 
-MMMU는 지정 validation30config×30 고유ID/유형을 검증한다. `MMMU_DEV_VAL` TSV·dev 포함본·다른 revision으로 대체하지 않는다. Pro `standard (10 options)` test는 취득 시 공식 전체 commit SHA를 한 번 고정해 보관/hash 확인만 한다. 향후 Pro 표본수를900으로 가정하지 않는다.
+### 3.8 데이터
 
-출처/license/revision·파일 목록/크기/hash와 실제 비공개 경로를 추적하고 다운로드/평가 완료를 구별한다. 채택한 외부 생성 학습 데이터는 서비스 재호출 대신 artifact를 고정·복원하며 접근권한/보존기간/hash/복원 명령을 남긴다. 강의 원본은 Git 제외 `local_sources/`에 두고 파일명/페이지/hash만 추적한다. `.gitignore`는 경로 단위로 적용하고 `results/` 전체를 숨기지 않는다. 이미 추적된 비공개/대용량 파일도 검사한다.
+- 현재 학습 자료는 프로그램 생성 합성 그래프/트리/DFA/최단경로/회로 문항(고정 10문항, 15 이미지)이며
+  정답은 private verifier만 가진다. benchmark 파생 없음. `human_verified=false`.
+- 별도 평가 자료: native 회로 10문항/3위상(기존 AI 검토 재사용, 새 시각 검토 0), 학습 문항과 출처·이미지·구조 분리.
+- 데이터 권한·제외·분리 검사는 재사용하되 새 오염 전수검사를 했다고 과장하지 않는다.
+- 증강은 의미 보존을 검증한다. crop/회전/반전이 글자·축·방향·화학 구조·보기 참조를 바꿀 수 있으므로
+  무조건 적용하지 않는다. 차트/도형은 수치·구조를 먼저 만들고 렌더링·정답을 프로그램으로 검증한다.
+- 추론용 `device_map='auto'`를 학습용 offload로 재사용하지 않는다. effective batch가 같아도 token loss 정규화·
+  샘플 순서·update 수·scheduler가 다르면 같은 학습이 아니다. 데이터량/step이 함께 바뀌면 교란 요인으로 보고한다.
 
-## 5. 공통 평가 조건과 P0
+### 3.10 compact 오답노트 계약 (`repair-note-compact-v1`, 2026-10-30)
 
-`[설계]` 로컬 smoke와 RunPod 단일 평가 run, 이후 fine-tuned MMMU 평가에 **같은 평가 protocol**을 사용한다. 모델/processor/BF16, 데이터 revision/순서, 이미지 변환, P0, 생성/seed/길이, parser/scoring/실패 처리를 고정한다. backend·batch·attention은 선택한 protocol에 기록한다. smoke/evaluation은 실행 범위이며 서로 다른 점수 역할이 아니다. legacy A/B run은 역사 자료로 보존하고 새 run과 섞지 않는다.
+- 입력: 문제·보기 + 모든 시도의 원문(번호 1..N, 재시도는 "retry of attempt k") + 이진 정오(CORRECT/NOT CORRECT/
+  NOT GRADED) + 미검증 재관찰 + 원본 이미지. 상태 코드·정답·오류 목록·구체 예시 값은 넣지 않는다.
+- 출력: `{"errors":[최대4 채점], "vision_misread":"YES|NO|UNSURE", "lesson":"…"}`. 항목은
+  `OBSERVATION{attempt,item,correct}` / `NO_FINAL_ANSWER{attempt}` / `WRONG_STEP{attempt}`.
+- 채점: 그 시도의 사실이 fresh 감사에서 VIOLATED이고 제안 값이 verifier 1-사실 검사에서 맞으면 +1, 원래 맞았던
+  사실을 틀렸다고 하면 −1, 위치만 맞으면 0; NO_FINAL/WRONG_STEP은 실제 결과·TRACE 검사로 ±1; vision 자기판단은
+  독립 strict_routing과 일치 +1/반대 −1. 노트 보상 = 합/5. lesson은 무보상·credit 제외.
+- 학습 경로는 여전히 독립 판정(strict_routing)이 정한다. 노트의 vision 판단은 검증·보상 대상일 뿐이다.
+- 증거: S_note = 양의 advantage이면서 검증 통과 항목(또는 vision 정답)이 있는 노트 토큰의 VJP 비영
+  (`s_definition=verified-note-claim-v1`). v2의 CORRECTED 전용 S와 합치지 않는다.
+- 주의: NO_FINAL_ANSWER는 텍스트만으로 확인되므로 S를 시각 학습으로 해석하기 전 항목 유형별 검증 수를 본다.
+  현재 데이터가 거의 VISION_ON이라 vision 자기판단이 "항상 YES"로 쏠릴 수 있다.
 
-### 역사적 초안: `configs/eval/mmmu_val_v1.yaml`
+### 3.9 지금까지 확인된 사실 (요약)
 
-아래 DRAFT/2048 발췌는 초기 설계 이력이다. 실제 R1은 고정 설정으로 완료했고, 현재 채택한 R2는 `configs/eval/mmmu_val_continuous_vllm_v1.yaml`의 FROZEN/32768이다. 최신 실측·선택 근거는 §0.1을 따른다.
+- **F는 여러 번 실제 통과**: V58(판정 단위 보상, signed assessment-only 기울기 비영), V59 v6·frozen8·source10 최소시험
+  (update1·L252/M24/V48 변경·624 저장·fresh reload). 단, 대부분 학습 신호는 **답 보상**에서 왔다.
+- **S는 아직 미확보**: online/final의 signed·positive native CORRECTED VJP가 모든 실제 update에서 0.
+- 최종 노트 반복 실패 패턴: `success_sample_id` 누락, `claims=[]`(허용된 기권이지만 검증 주장 0),
+  자유 lesson의 거짓 주장, e4/e8 방향 관측 오류를 정답 후에도 유지, 정상 항목에 대한 거짓 교정 주장.
+- 전체 이력·성공 재시도·재관찰 원문은 실제 입력에 무손실 전달됨을 여러 번 확인했다. 전달 누락이 원인이 아니다.
+- 많은 이력에서 검증기가 인정할 수 있는 descendant 교정 기회(VIOLATED→COMPLIANT) 자체가 0이다.
+  형식만 고쳐도 S가 생기지 않는다.
+- 새 문항 효과(E)는 2026-10-21 로컬 비교에서 개선 미관측(첫 시도 F0/NFT/CFT 모두 5/10, 최종 모두 8/10).
 
-```yaml
-status: DRAFT
-protocol_id: mmmu-val-v1
-model:
-  id: Qwen/Qwen3-VL-4B-Instruct
-  revision: ebb281ec70b05090aa6165b016eac8ec08e71b17
-  dtype: bfloat16
-dataset:
-  id: MMMU/MMMU
-  revision: 98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68
-  split: validation
-  expected_total: 900
-generation:
-  do_sample: true
-  temperature: 0.7
-  top_p: 0.8
-  top_k: 20
-  repetition_penalty: 1.0
-  presence_penalty: 1.5
-  seed: 3407
-  seed_policy: per_sample_sha256_v1
-  max_new_tokens: 2048
-  num_beams: 1
-image:
-  min_pixels: 262144
-  max_pixels: 1310720
-  resize_owner: official_processor
-execution:
-  backend: transformers
-  batch_size: 1
-  attention: sdpa
-  sdpa_kernel: math
-  deterministic: true
-```
+---
 
-sampling은 Qwen Instruct Evaluation Reproduction, seed3407은 공식 README를 근거로 확인한다. [W1,W2] 참고 실행 코드 seed42와의 차이, per-sample seed가 팀 설계임을 기록한다. 지정 model card VL 길이16384와 GitHub 평가안내32768의 차이를 숨기지 않는다. **2048과 pixel budget은 실측 전 팀 초안**이며 공식 정답값이 아니다. 기존 smoke 증거를 우선 활용하여 메모리·속도·잘림으로 공통값을 확정한다. 자동 fallback이나 점수 기반 조정을 하지 않는다.
+## 4. 현재 상태 (2026-10-31 기준)
 
-### P0의 근거·전문·이미지 입력
+`[실측]` 마지막 기록 시점. 실행 중 표기는 반드시 실제 PID/로그로 재확인한다. 상세는 `docs/PROJECT_STATUS.md` 최상단.
 
-Qwen3-VL Technical Report `arXiv:2511.21631v2` 부록 B.1 p.34, Qwen `evaluation/mmmu/run_mmmu.py`의 `build_mmmu_prompt`/`prepare_inputs_for_vllm`, VLMEvalKit `vlmeval/vlm/qwen3_vl/prompt.py`의 `_build_mmmu_prompt`를 대조한다. 실제 흐름·URL·조회일·각 코드 commit·파일/함수/관련 위치·채택 근거를 `docs/SOURCE_REVIEW.md`에 한 번 기록한다. 이미 확인된 근거를 반복 탐색하거나 후보별 900문제 경쟁평가하지 않는다.
+- **사용자 결정(2026-10-30)**: 학습 데이터는 기존 공개 데이터셋(HF 등)만, 자체 생성 금지(저품질 유입 방지). 오염 = MMMU/MMMU-Pro와
+  동일한 문제 학습 금지. RunPod는 **최대 3,000문항 증명 1회**, 결과 마감 **2026-11-17**. 학습은 오답노트 파이프라인 1개 arm(Vision 동결),
+  평가는 혼합(동시16 새 protocol F0·FT seed 3개 짝 비교 + 과제 protocol 동시2 FT 1회). §2.8 단일 답 원칙.
+- **데이터(로컬 고정 완료)**: `hf-pool-v3` — HF 학습 split 10개 출처, MMMU/Pro 전 split 대비 3단계 분류(T1 제외, T2 전부·부족 과목 T3 실제
+  이미지 대조 검토, DUPLICATE 0), 출처별 품질 수용 표본 검사, `freeze-v2/dataset_manifest.json`(sha `4ff8f945…`) + `vault-v1`(union receipt).
+  학습 적격 3,418(eligible_ids가 정본), dev 402 / sealed 209. 과목 공백(회계·경영·마케팅·심리·예술·디자인·공학 5과목 등)은 채우지 않음.
+- **파이프라인 추가(CPU 시험)**: 슬롯 없는 문항용 정답 검증 경로(`--answer-verified-route`, Vision 동결, ANSWER_VERIFIED 기록), 최종답 보상
+  (`--finalization-reward`), 평가 정렬 T1(`p0-eval-aligned-v1`, P0 + V8 파서), `--retry-out-of-choice`, 통과율 사전필터·hard-negatives,
+  scale(배치·vLLM·BF16 정책·update당 K·k마다 저장·감사 단계 VJP·이어하기), 증명 선택 규칙 `pool-proof-selection-v1`, Pod frozen-approval 모드.
+- **실제 GPU(로컬 NF4, 새 데이터)**: v15 최소시험 F 통과(update1, L252/M24/V0, 새 프로세스 재로딩·624텐서 PASS). 고정10 노트 arm update5·재로딩 PASS
+  (S_note·S_text false). 대조군 update5·재로딩 PASS. 풀 평가는 결함 2건(체인 인자 경로, guard 아래 lineage 읽기)으로 실패 → 수정·회귀시험 후
+  **동결 v16(`proof-freeze-v16/package-root-v16`)으로 로컬 전체 재실행 중**(`local-test-v4/chain-v16.sh`: 최소·고정10·대조군·평가12·GPU 통과율).
+- **RunPod 준비(CPU만, RunPod 미실행)**: `fine_tuning/notebook_rl/pod/`(volume·data bundle·job 승인 sha·start/watchdog·chain 단계 stage1/pilot-300/main·
+  eval 단계·회수·비용), `env/requirements-proof.lock`, Fable 감사 2회(1차 FAIL→수정, 2차 PASS). 다음: v16 승인 export·번들·MMDL_test 동기화 후
+  사용자 승인 게이트(G0 push, G1 volume, GD 데이터 업로드, GE 평가 데이터, G2/G3 1단계).
+- **CPU 전체 시험**: 2,738개 중 36개 실패는 10-30 이전 동결본에서도 같은 legacy 결함(증명 경로 미사용, 미수정).
+- 교수님 MMDL clean (HEAD `197838c11557911a14a46d87b7f52fda0cac5b3c`), V8 558/900 불변. cloud/API/게시 없음.
 
-객관식은 원래 순서의 **모든** 보기를 `A. 내용` 형식으로 한 줄씩 직렬화한다.
+---
+
+## 5. 저장소·게시 정책
+
+| 위치 | 용도 | 원격 |
+|---|---|---|
+| `C:\projects\multimodel` (`/mnt/c/projects/multimodel`) | 내부 원본 작업공간: 지침·docs·claudedocs·실험·원본 자료 | 상위 Git(직접 push 금지) |
+| `C:\projects\multimodel\MMDL` | 교수님 제출용 독립 checkout | `jang2296/MMDL` (default `feat/mmmu-baseline`) |
+| `C:\projects\multimodel\MMDL_test` | 실험 코드 게시용 독립 checkout | `jang2296/MMDL_test` (feature branch) |
+| `analysis_exports/` | 원본 결과·회수본·백업·내부 도구 (Git 제외) | 없음 |
+| `/home/jang2/mmdl-artifacts/` | 대형 결과·체크포인트·private 원장 | 없음 |
+
+### 5.1 MMDL (제출본)
+
+- 제출 보고서 정본은 **`reports/mmmu_baseline.md`** 하나(SUBMISSION_TEMPLATE 8절 형식).
+  `assignment/assignment1.md`는 링크만. 공개 루트 `Assignment_1.md`는 제외하며 상위의 동명 파일은 과거 기록이다.
+- 공개본에는 `AGENTS.md`/`CLAUDE.md`, `docs/`, `claudedocs/`, 강의 PDF, 내부 감사/실험, 비밀키·가중치·
+  MMMU 원문/이미지/대형 응답을 넣지 않는다.
+- 순서: 상위 수정 → CPU 검사 → `python -m scripts.sync_submission --sync` → `--check` →
+  MMDL에서 CPU/공개파일 검사·`git diff --check` → feature branch commit → 정상 push →
+  파일 목록·SHA256·실행권한과 원격 HEAD·clean status 대조. MMDL에 독자 수정이 있으면 먼저 상위에 반영.
+- 최신 게시 `197838c` (2026-09-28): 소요시간 표기만 변경. 평가 설정·파서·점수 불변.
+
+### 5.2 MMDL_test (실험)
+
+- 실험 코드·설정·문서와 필수 자체 생성 CPU fixture만 게시한다. `python -m scripts.sync_test_repo`로 복사/검사.
+- 새 RunPod는 MMDL_test 전체 commit SHA의 clean checkout·고정 lock으로 받는다. 수동 overlay 금지.
+- 원문·전사·정답·가중치·실행 결과는 게시하지 않는다.
+- 2026-10-21 이후 로컬 NF4 실행은 private 동결 소스 복사본(`package-root-vN`)으로 하며 게시하지 않았다.
+
+---
+
+## 6. MMMU baseline 결과와 고정 평가 조건
+
+### 6.1 최종 baseline (V8 채점)
+
+| 실행 | protocol | 출력 상한 | 이미지 pixel budget | V8 정답 | 정확도 |
+|---|---|---|---|---|---|
+| R1 | `mmmu-val-v1` (Transformers, batch1) | 2048 | 262144–1310720 | 478/900 | 53.11% |
+| R2 | `mmmu-val-fast-vllm-32k-continuous-v1` (vLLM 동시2) | 32768 | 262144–1310720 | 554/900 | 61.56% |
+| **B2** | `mmmu-val-official-vllm-b2-v2` | 32768 | **1003520–4014080** (Qwen 공식) | **558/900** | **62.00%** |
+
+- 제출 baseline은 사전 선택한 **B2 + `team-final-answer-v8`** = **558/900 (62.00%)**, 공식 67.4와 −5.40pp.
+- 새 평가 진입점 `configs/eval/mmmu_val_v8.yaml`. B2와 protocol ID/채점기만 다르다.
+- 원래 채점(공식 MMMU 규칙 기반, 무작위 추측 제거): R1 427 (47.44%), R2 459 (51.00%), B2 557 (V4 기준).
+- 채점기 이력: V2(감사 진단용) → V4(명시적 최종답 추출 + 공식 open evaluator) → V5 → V6 → V7(**REJECTED**,
+  46개 false negative) → V8 확정. 원본·각 버전 결과는 덮어쓰지 않고 보존.
+- V8 집계 `results/scoring-v8-20260924/`, 결과/HTML `analysis_exports/mmmu_20260924/team_final_v8/`,
+  설명 `claudedocs/mmmu_v8_pipeline_20260924.md`. 내부 열람본 `results/P1/V8_*.html|pdf`(게시 안 함).
+- 이미지 확대 효과(554→558, +61/−57)는 seed·실행 차이와 함께 바뀐 관측이며 인과효과로 단정하지 않는다.
+
+### 6.2 고정 조건 (B2/V8)
+
+- 모델·revision·BF16·비양자화·미학습. 30과목×30, 실제 유형 객관식 847 / 주관식 53.
+- 생성: `do_sample=true, temperature=0.7, top_p=0.8, top_k=20, repetition_penalty=1.0,
+  presence_penalty=1.5, num_beams=1`, `max_new_tokens=32768`, `max_model_len=40960`.
+- vLLM 0.11.0, 연속 처리(continuous refill), 최대 동시 요청 2, eager, prefix cache false.
+- 프롬프트 P0(§7), master seed 3407 + 샘플별 seed.
+- 이 조건을 바꾸면 새 protocol ID로 분리한다. 같은 이름으로 섞지 않는다.
+
+---
+
+## 7. 평가 프로토콜 상세
+
+### 7.1 P0 프롬프트
+
+근거: Qwen3-VL Technical Report arXiv:2511.21631v2 부록 B.1 p.34, Qwen `evaluation/mmmu/run_mmmu.py`의
+`build_mmmu_prompt`, VLMEvalKit `_build_mmmu_prompt`. 상세 commit·위치는 `docs/SOURCE_REVIEW.md`.
+
+객관식: 모든 보기를 원래 순서대로 `A. 내용` 한 줄씩.
 
 ```text
 Question: {question}
@@ -1726,76 +474,12 @@ Options:
 Please select the correct answer from the options above.
 ```
 
-주관식은 `Question: {question}`만 쓰고 Options/선택 지시문을 생략한다. 유효한 원본 hint가 있을 때만 `Hint: {hint}\n`을 앞에 붙인다. 정답·해설에서 hint를 만들지 않는다. 실제 이미지 content를 참조 관계/순서대로 먼저 넣고 P0 텍스트를 마지막에 둔 단일 user message에 지정 processor의 `apply_chat_template(add_generation_prompt=True)`를 적용한다.
+주관식은 `Question: {question}`만. 유효한 원본 hint가 있을 때만 `Hint: {hint}\n`을 앞에 붙인다.
+이미지 content를 참조 순서대로 먼저 넣고 P0 텍스트를 마지막에 둔 단일 user message에
+지정 processor의 `apply_chat_template(add_generation_prompt=True)`를 적용한다.
+추가 system/few-shot/CoT/JSON 강제/도구/대화 이력 없음. 이미지 누락·문자열 대체·이중 resize 금지.
 
-P0 파일·chat template·입력 변환을 hash로 고정한다. 이미지 누락/문자열 대체, 이중 resize, Qwen2.5의 28계수 가정 복사를 막고 실제 image tensor·크기·grid·token hash를 확인한다. Qwen3-VL processor의 pixel budget/32계수 안내와 강의 예시를 구분한다. [W1] 추가 system/few-shot/CoT/JSON/answer-reason 강제/도구/대화 이력을 넣지 않는다. 분석용/테스트용 별도 P1을 만들지 않는다. Transformers reference는 공식 vLLM 실행과 동일하다고 주장하지 않는다.
-
-## 6. 로컬 5060 / RunPod 4090 하드웨어 profile
-
-`[사용자 전제]` 노트북 RTX 5060 8GB·RAM24GB, 재현 대상은 **단일 RTX 4090 24GB GPU-only**다. 사용자 승인으로 이번 full900 두 실행은 `configs/hardware/rtx3090_24gb.yaml`의 **RTX 3090 24GB**에서 완료했다(§0.1). 아래 4090 값은 weight 배치 초안이며 실제 측정/성공 보장이 아니다.
-
-| profile 항목 | rtx5060_8gb | rtx4090_24gb |
-|---|---|---|
-| placement | cpu_offload | gpu_only |
-| 허용 평가 | 로컬 SMOKE/PARTIAL, 30문제 규모 | RunPod 단일 full evaluation, 향후 승인된 final |
-| gpu_index / expected_vram_gib | 0 / 8 | 0 / 24 |
-| gpu_weight_cap_gib / gpu_reserve_gib | 5.5 / 2.0 | 20.0 / 3.0 |
-| cpu_weight_cap_gib / cpu_available_fraction | 12.0 / 0.65 | 12.0 / 0.65 (weight offload에 사용 안 함) |
-| min_free_gpu_gib | 3.0 | 12.0 |
-| allow_disk_offload / num_workers | false / 0 | false / 0 |
-
-RAM과 VRAM은 합산 VRAM이 아니다. Accelerate CPU offload의 `max_memory`는 주로 가중치 배치 예산이며 KV cache/활성값/workspace peak 제한이 아니다. [W3] 5060은 CPU 전처리와 RAM weight offload+GPU 추론을 사용한다. GPU cap은 실가용량에서 reserve를 빼고, CPU cap은 **WSL available RAM** 비율로 제한한다. 4090은 실제 전체 가중치 GPU 배치를 검사하며 부족하면 중단한다.
-
-`device_map="auto"`는 OOM 방지/학습 성공 보장이 아니다. offload 뒤 `model.to("cuda")`를 호출하지 않는다. 정수 `input_ids`/`image_grid_thw`를 BF16으로 바꾸지 않는다. `inference_mode`, RNG, determinism, SDPA kernel과 실제 device map을 확인한다. disk offload는 금지다.
-
-4090 품절/환경 실패를 이유로 고가 GPU·다른 backend·양자화·greedy·batch 확대에 자동 전환하지 않는다. 다른 GPU는 가격/예산과 별도 hardware profile을 승인·검증하고 실제 모델명으로 기록한다. 다른 24GB+ GPU 실행을 **4090 검증 완료**라고 하지 않는다.
-
-## 7. 환경·GitHub clean-clone·교차 GPU 재현
-
-`doctor`는 GPU/freeVRAM·CPU/availableRAM·OS/WSL·driver·Python·torch/CUDA runtime·compiled architectures·패키지·CUDA/BF16 실제 연산·disk/mount를 기록한다. `nvidia-smi` 표시와 torch runtime을 구별하고 wheel의5060지원도 공식 확인한다. WSL에 Linux display driver를 설치하지 않는다. [W4,W5]
-
-같은 Python minor와 성공한 exact lock을 사용한다. 재현에 `latest`/무조건 `pip install -U`를 쓰지 않는다. GitHub 참고코드 commit·HF revision·Transformers 구현 버전을 구별한다. 필요한 외부 코드만 license/출처/commit/수정점과 관리한다. Docker image digest도 driver 차이를 없애지는 않는다.
-
-**유료 배포 전** 로컬 검증·공개/secret 검사·README/lock·회수/정리를 준비한다. Git remote로 팀MMDL을 확인해 명시적 파일만 commit/push한다. force push/이력 삭제/공개범위·계정설정 변경을 금지한다. 강의 원본 없이 공개된 고정 계약으로 실행되어야 한다.
-
-RunPod는 GitHub **전체 commit SHA**·clean tracked files·lock hash를 검사한다. 미commit 파일 전송·Pod 수동 패치·실행 중 branch 이동은 금지한다. 수정은 로컬 검사→새 commit/push→새 checkout으로 처리하고 결과는 외부 root에 쓴다.
-
-같은 코드/seed도 GPU 간 응답·점수 동일성을 보장하지 않는다. [W6] 절차/결과/재학습 재현을 구별하고 입력 hash→raw→parsed→score를 비교한다. 이후 baseline/fine-tuned는 가능한 같은4090 환경·P0로 비교한다.
-
-## 8. 한 명령 재현과 실제 평가 1회
-
-아래는 **구현 후 검증할 CLI 계약**이다. 기존 동등 인자를 재사용하면 README도 일치시킨다. 파일 존재를 실행 성공으로 표시하지 않는다.
-
-```bash
-# 로컬30문제: 유효한 기존 실행은 반복하지 않는다.
-bash scripts/eval.sh --protocol configs/eval/mmmu_val_v1.yaml \
-  --hardware configs/hardware/rtx5060_8gb.yaml --model-ref manifests/models/baseline.json \
-  --model-path "${MMDL_MODEL_PATH:-Qwen/Qwen3-VL-4B-Instruct}" \
-  --data-root "$MMDL_DATA_ROOT/evaluation/mmmu" --run-id smoke-local-30 \
-  --mode partial --subject Accounting --limit 30
-# RunPod: 설치→doctor→취득→최소GPU검증→단일900→검증/포장
-bash scripts/reproduce.sh --stage evaluate --target runpod --suite mmmu-val \
-  --commit "$MMDL_CODE_COMMIT" --protocol configs/eval/mmmu_val_continuous_vllm_v1.yaml \
-  --hardware configs/hardware/rtx4090_24gb.yaml --model-ref manifests/models/baseline.json \
-  --model-path "${MMDL_MODEL_PATH:-Qwen/Qwen3-VL-4B-Instruct}" \
-  --data-root "$MMDL_DATA_ROOT/evaluation/mmmu" --job-id "$MMDL_JOB_ID" --execute
-# 저장raw만 재채점
-bash scripts/rescore.sh --artifact-root "$MMDL_ARTIFACT_ROOT" --run-id "$RUN_ID"
-```
-
-README에는 Git 설치된 승인 Pod에서 **GitHub 취득→전체 SHA 검사→reproduce를 한 번의 shell 호출**로 수행하는 완결 명령도 둔다. 수동 코드수정/설치 탐색 없이 경로만 바꿔 실행한다. `--model-path`/`MMDL_MODEL_PATH`로 모델 위치를 바꾸되 baseline revision/hash를 검사한다. `reproduce.sh`는 기본 dry-run, `--execute`로 실행하며 학습/증강/final을 자동 시작하지 않는다.
-
-새 실행은 `<job_id>-evaluation` 하나로 식별한다. `--suite mmmu-val`은 smoke 후 하나의 900문제 평가를 수행하며, 저장된 raw response와 sample record를 점수 산출 및 실패 검토에 함께 사용한다. 별도 분석 900회를 새로 만들지 않는다. 이미 실행 중인 legacy continuous32k run은 전체900·독립검증 완료 후 같은 목적의 결과로 채택할 수 있으나, 다른 run과 합치거나 평균내지 않는다. 같은 run 재개에서는 성공 ID 중복생성을 막는다. smoke/중단 시도는 본 평가와 별도 상태로 기록한다.
-
-기존 `<job_id>-assignment`/`<job_id>-analysis` artifact는 legacy 형식으로 읽을 수 있게 보존한다. 새 단일 run으로 이름을 바꾸거나 서로 합치지 않는다. legacy run을 재개할 때는 기록된 원래 commit/protocol을 사용하며 최신 CLI의 새 role로 재실행하지 않는다. continuous32k legacy run이 900개와 독립검증을 완료하면 보고서 full score 근거로 사용할 수 있다. 새 CLI는 legacy role을 새 run으로 재분류하지 않는다.
-
-Bash는 `set -euo pipefail`, script 기준 root, 안전한 인자/실패 전파를 적용한다. 로컬 제어측에서 회수/정리를 연결해 Pod 삭제 후에도 증거를 남긴다. 교수님은 RunPod 계정 없이4090에서 `eval.sh` 한 명령으로 평가를 재현할 수 있어야 한다.
-
-## 9. 평가 engine·파싱·모델 풀이 기록
-
-30과목각30·고유ID/유형·원래 보기·이미지 참조/순서를 검증한다. 주관식을 버리거나 객관식으로 바꾸지 않는다. 정답/해설은 채점·저장에만 전달한다. [S4 pp.8,11;W7]
-
-`presence_penalty` 실제 적용을 검사하고 미지원이면 테스트된 **generated-only logits processor**를 쓴다. 무시/중복 적용을 금지하고 대상/순서·실제 generation config(eos/pad/stop/default 포함)를 저장한다. 동일 evaluation seed는 다음 팀 정책이다.
+### 7.2 seed
 
 ```python
 import hashlib
@@ -1803,125 +487,330 @@ value = hashlib.sha256(f"{master_seed}:{sample_id}".encode()).digest()
 seed = int.from_bytes(value[:8], "big") % (2**31)  # master_seed=3407
 ```
 
-매 샘플 Python/NumPy/Torch RNG를 설정하고 ID 순서를 고정한다. 공식 `mmmu/utils/eval_utils.py` parser/open-ended evaluator의 commit/license/수정점을 기록한다. **무작위 추측 fallback은 NO_PARSE=오답**으로 바꾸고 생성 답변만 파싱한다. 빈답/파싱 실패도 완료 추론이면900 분모에 포함한다. OOM/입력 오류/누락은 시스템 실패이고 INCOMPLETE다.
+팀 정책이다. Qwen 내부 난수 소비 순서와 동일하다고 주장하지 않는다. 매 샘플 Python/NumPy/Torch RNG 설정.
 
-단일 evaluation은 ID·과목·유형·질문·원래 보기·이미지 참조·실제 prompt/messages·seed·입력 hash·**raw response 전체**·추출답·gold·정오·파싱 상태·종료 사유·token 수·시간을 외부 JSONL에 저장한다. `model_explanation`은 실제 출력 원문 구간/offset·추출 규칙만 보존한다. 없으면 `null/NOT_GENERATED`, 불명확하면 상태와 raw를 남긴다. **전문제 기록은 전문제 풀이 생성 보장이 아니다.** Codex/외부 모델이 답/풀이를 채우지 않는다. `gold_explanation`은 데이터셋에 있을 때만 따로 둔다. 설명 사실성과 정답 일치는 별개다. [S4 p.12]
+### 7.3 파서·채점
 
-같은900개 질문/보기/이미지/응답/실제 풀이/정답으로 단순 로컬 HTML/Markdown 열람본을 만든다. 추가 추론이나 원문 요약/삭제 없이 HTML escape·안전한 상대경로를 적용한다. 사용 이미지만 공유 assets로 한 번 보존하거나 검증된 로컬 data root에 연결해 Pod 삭제 후 열람을 보장한다. base64 중복·무거운 웹앱·불필요한 hidden state/attention 전체 저장은 금지한다.
+- 공식 MMMU `mmmu/utils/eval_utils.py` 계열. 무작위 추측 fallback은 제거하여 `NO_PARSE`=오답.
+  빈답/파싱 실패도 완료 추론이면 900 분모에 포함. OOM/입력 오류/누락은 시스템 실패(INCOMPLETE).
+- `presence_penalty`는 실제 적용을 검사한다(vLLM native generated-only / Transformers custom generated-only).
+- Qwen 공개 코드의 LLM 보조 판정은 사용하지 않는다. 외부 LLM judge는 승인 없이 쓰지 않는다.
+- 파서 수정은 합성 회귀 → 저장 raw 900 전체 재채점 → old/new 차이·PARSED 회귀 확인 후 새 scoring version으로.
 
-공개 `results/<run_id>/`에는 작은 summary·30과목 scores·resolved eval/hardware config·sanitized environment·run manifest·외부 상대참조/hash만 둔다. 전체 predictions/failures JSONL·열람본/이미지는 외부 root에 둔다. run별 peakGPU/RAM·전체시간과 다운로드/설치/모델로드/평가/포장/전송을 구별한다. 반올림 전 macro=정답수/900, 공식 차이의 퍼센트포인트를 검사한다.
+### 7.4 기록
 
-## 10. manifest·재개·비용·회수·정리
+각 샘플: ID·과목·유형·질문·원래 보기·이미지 참조·실제 prompt/messages·seed·입력 hash·**raw response 전체**·
+추출답·gold·정오·파싱 상태·종료 사유·token 수·시간. `model_explanation`은 실제 출력 원문 구간/offset만.
+Codex/외부 모델이 답/풀이를 채우지 않는다. 공개 `results/<run_id>/`에는 summary·30과목 scores·resolved config·
+sanitized environment·manifest만 두고 전체 JSONL·이미지·열람본은 외부 root에 둔다.
 
-`source revision→data/code/config→checkpoint→eval protocol→run→성적표`를 연결한다. 모델은 base/adapter/full/merged·base revision·artifact/hash·processor·train/data config·code commit을, 데이터는 source/revision/split/license·부모ID·변환/seed·상대경로/크기/hash·count·검수/오염검사를 기록한다. LoRA 외 vision/projector도 저장하며 학습 재개에는 optimizer/scheduler/step/RNG/data 순서를 포함한다.
+---
 
-protocol hash는 P0/chat template/입력변환/dataset 내용 manifest/parser/evaluator를 묶는다. 절대경로/run_id/시각/로그 상세도는 execution manifest로 분리한다. 모델hash·code commit·env lock·device map/kernel·dirty patch와 이후 report commit을 구별한다. atomic/append-only 저장 후 ID·모델/protocol/코드/안정적 환경/하드웨어 일치를 검사해 재개한다. 원본 덮어쓰기·5060/4090/A/B 혼합은 금지한다. 재채점 변경은 새 scoring version에 남긴다.
+## 8. 하드웨어·환경·재현
 
-### 비용 gate
+### 8.1 하드웨어 profile
 
-새 유료 작업은 승인된 Pod 범위에서만 수행한다. 당시 가격/GPU/disk·비용 정책·전송/복구 여유를 기록한다. 가격은 공식 console에서 확인한다. [W12] 자동충전/결제·계정한도 변경, 다른 유료 서비스/LLM judge·미승인 Pod·고가 GPU 확대는 금지한다. 평가에 필요한 cache를 재사용하며 인적 분석/문서 편집을 기다리며 idle시키지 않는다. 설치/취득/전송/재시도 비용도 기록하며, 현재 비용 상한 철회와 기본 strict 정책을 구분한다.
+| 항목 | rtx5060_8gb (로컬) | rtx4090_24gb / rtx3090_24gb (RunPod) |
+|---|---|---|
+| placement | cpu_offload (평가 smoke) / NF4 학습 | gpu_only |
+| 용도 | 로컬 smoke·부분 평가·NF4 오답노트 RL | full 평가·승인된 학습 |
+| gpu_weight_cap / reserve | 5.5 / 2.0 GiB | 20.0 / 3.0 GiB |
+| min_free_gpu | 3.0 GiB | 12.0 GiB |
+| disk offload | 금지 | 금지 |
 
-대여 전 로컬 수신/여유 공간·SSH 전송·작업 전용 Pod/volume ID·정리 권한을 확인한다. SSH 단절에도 작동하는 최대시간/진행정지 watchdog을 준비하되 GPU이용률0만으로 중지하지 않는다.
+- 로컬: 노트북 RTX 5060 8GB, RAM 24GB, WSL2. RAM과 VRAM은 합산 VRAM이 아니다.
+  `device_map="auto"`는 OOM 방지/학습 성공 보장이 아니다. offload 뒤 `model.to("cuda")` 금지.
+- full 900 실행은 RTX 3090 24GB에서 완료(4090 실측 아님). 다른 GPU 실행을 "4090 검증 완료"라 하지 않는다.
+- allocator peak allocated/reserved가 물리 8GB보다 크면 완전 VRAM 상주라고 주장하지 않는다(paging 원인 미측정).
+- 고가 GPU·다른 backend·양자화·greedy·batch 확대로 자동 전환하지 않는다.
 
-### 회수와 삭제 gate
+### 8.2 환경
 
-**REMOTE_VERIFIED→LOCAL_VERIFIED→POD_TERMINATED→OWNED_STORAGE_DELETED→CLEANUP_VERIFIED** 순서다.
+- `doctor`: GPU/freeVRAM·CPU/availableRAM·OS/WSL·driver·Python·torch/CUDA runtime·패키지·실제 CUDA/BF16 연산·
+  disk/mount 기록. `nvidia-smi` 표시와 torch runtime을 구별한다. WSL에 Linux display driver를 설치하지 않는다.
+- 같은 Python minor와 exact lock(`env/requirements-*.lock`). `latest`/무조건 `pip install -U` 금지.
+- 확인된 성공 환경: Python 3.12.3, Torch 2.8.0+cu128, Transformers 4.57.1, vLLM 0.11.0.
+- HF generate는 `use_model_defaults=False`로 학습 sampling을 모델 기본값이 덮어쓰지 않게 한다(2026-10-18 수정).
 
-평가 결과·공유 이미지·JSONL/열람본·환경/설정/출처/로그/명령을 회수한다. 과거 서로 다른 run은 합치지 않는다. 파일 path/크기/SHA-256·archive hash·job/run/code/protocol을 기록한다. 모델/venv/전체 HF·benchmark cache/강의 원본은 회수하지 않는다.
+### 8.3 한 명령 재현
 
-로컬에서 SSH/SFTP/rsync로 pull한다. 점진 회수는 닫힌 shard만 하고 최종 전체 hash를 검사한다. 안전한 압축해제(경로이탈/외부 symlink 금지), 각900 고유ID/30과목/필수필드/산술·저장raw 재채점·이미지 열람을 검증해 **로컬 receipt**를 만든다. 원격 자체검사/전송 exit code만으로 삭제하지 않는다.
-
-검증 후 해당 작업 Pod를 **Terminate/Delete**하고 별도 생성한 Network Volume 등은 정확한 ID/소유권/미공유를 확인해 삭제한다. **Stop/파일rm만으로 정리 완료라 하지 않는다**. [W10,W11] 기존/공유 volume·다른 프로젝트·전체 계정 자원은 삭제하지 않는다. 승인 범위의 정리는 조건 충족 시 재승인 없이 수행하되 식별/권한이 불명확하면 막는다. 계정 API/console에서 잔존 자원을 확인하고 ID·시각·응답은 로컬에 보존한다. 이미 발생한 비용까지0이라고 하지 않는다.
-
-회수 실패는 최대3회 복구 후 **미검증 원격 결과를 삭제하지 않는다**. 결과가 Pod volume disk에 안전한지 확인하고 GPU를 stop하여 idle compute를 줄인 뒤 `RECOVERY_REQUIRED/CLEANUP_PENDING`과 storage 과금 가능성을 보고한다. 무기한 방치/무검증 자동삭제/자동 새Pod 재실행을 금지한다. 복구·로컬 검증 후 정리한다. 보존과 비용 완전 중단을 동시에 달성할 수 없는 장애는 차단 사항이다. [W10,W11]
-
-## 11. 증강·학습 계획
-
-`[수업: S4 pp.14–21]` 외부 공개/합성/타 모델 생성 데이터가 후보이다.
-데이터·학습법의 구체값은 아직 미확정이다.
-**실패 분석→관련 연구→원인 가설→데이터/학습법→실험 계획**으로 정한다.
-증강은 의미 보존을 검증한다. crop/회전/반전이 글자·축·방향·화학 구조·보기 참조를 바꿀 수 있으므로 무조건 적용하지 않는다.
-차트/도형은 수치·구조를 먼저 만들고 렌더링·정답 검증하는 방식을 후보로 둔다.
-MMMU 원본을 paraphrase하거나 수치/이미지만 바꾼 파생 학습 데이터도 금지한다.
-오염검사에는 benchmark 정보를 제외 신호로만 사용하고 학습기로 전달하지 않는다.
-
-**추론용 `device_map='auto'`를 학습용 offload로 그대로 재사용하지 않는다.** [W3]
-이번 5060 작업은 평가기·데이터 처리·CPU 검사·30문제 검증까지다. 아래 학습 pilot은 이후 별도 승인 단계다.
-8GB BF16 full fine-tuning 성공을 전제하지 않는다. 실제 학습은 자원 확보와 memory smoke 후 결정한다.
-LoRA rank/대상 모듈/freeze 범위는 실험 조건이며 GPU에 따라 몰래 바꾸지 않는다.
-QLoRA는 별도 학습 실험이다. 수업의 QLoRA 허용 예시와 baseline BF16 무양자화 규칙을 구분한다. [S4 p.18; S1 §1.1]
-양자화 학습 후 평가의 base/adapter/merge/precision 정책을 명시한다.
-
-```text
-effective batch = micro_batch × accumulation steps × world_size
-1×16×1 = 4×4×1 = 16 (표본 수 기준)
+```bash
+# 로컬 30문제 smoke (유효한 기존 실행은 반복하지 않는다)
+bash scripts/eval.sh --protocol configs/eval/mmmu_val_v1.yaml \
+  --hardware configs/hardware/rtx5060_8gb.yaml --model-ref manifests/models/baseline.json \
+  --model-path "${MMDL_MODEL_PATH:-Qwen/Qwen3-VL-4B-Instruct}" \
+  --data-root "$MMDL_DATA_ROOT/evaluation/mmmu" --run-id smoke-local-30 \
+  --mode partial --subject Accounting --limit 30
+# RunPod: 설치→doctor→취득→최소 GPU 검증→단일 900→검증/포장 (기본 dry-run)
+bash scripts/reproduce.sh --stage evaluate --target runpod --suite mmmu-val \
+  --commit "$MMDL_CODE_COMMIT" --protocol configs/eval/mmmu_val_v8.yaml \
+  --hardware configs/hardware/rtx4090_24gb.yaml --model-ref manifests/models/baseline.json \
+  --model-path "${MMDL_MODEL_PATH:-Qwen/Qwen3-VL-4B-Instruct}" \
+  --data-root "$MMDL_DATA_ROOT/evaluation/mmmu" --job-id "$MMDL_JOB_ID" --execute
+# 저장 raw만 재채점
+bash scripts/rescore.sh --artifact-root "$MMDL_ARTIFACT_ROOT" --run-id "$RUN_ID"
 ```
 
-같은 effective batch만으로 동일 학습은 보장되지 않는다.
-가변길이 token loss 정규화, 샘플 순서, update 횟수, scheduler, dropout, accumulation을 함께 맞춘다.
-학습 collator의 prompt/padding/image token loss mask와 답변 supervision을 검사한다.
-작은 외부 데이터로 실제 parameter update와 checkpoint 저장/재로딩을 확인한다.
-원본 학습→증강 추가→학습 영역 변경을 분리하고 데이터량/step이 같이 바뀌면 교란 요인으로 보고한다.
+- 정확한 현재 인자는 `README.md`를 따른다. `reproduce.sh`는 학습/증강/final을 자동 시작하지 않는다.
+- Bash는 `set -euo pipefail`, script 기준 root, 안전한 인자/실패 전파.
+- 교수님은 RunPod 계정 없이 4090에서 `eval.sh` 한 명령으로 평가를 재현할 수 있어야 한다.
+- 같은 코드/seed도 GPU 간 응답·점수 동일성을 보장하지 않는다. 절차/결과/재학습 재현을 구별한다. [W6]
 
-## 12. 테스트·완료 기준·교수님 재현
+---
 
-CPU CI는 고정계약/금지override·정답누출·이미지/주관식·parser/penalty·coverage/산술·hash/재개·secret/대용량·archive 경로를 검사한다. fixture는 자체 제작한다. hardware의 dtype/prompt/generation/image/backend/batch override를 거부한다. 로컬full·A/B응답cache·receipt 없는 삭제·잘못된Pod/공유volume 삭제 거부는 mock으로 검사한다.
+## 9. manifest·재개·비용·회수·정리 gate
 
-`로컬1→1과목30→GitHub고정→RunPod최소smoke→단일 evaluation900→회수→정리` 순서다. 다중이미지/주관식은30문제/fixture 안에서 우선 확인하고 부족한 유형만 최소 추가SMOKE로 분리한다. 유효30/완료full을 반복하지 않는다.
+- 추적 사슬: `source revision → data/code/config → checkpoint → eval protocol → run → 성적표`.
+- 모델 manifest: base/adapter/full/merged·base revision·artifact/hash·processor·train/data config·code commit.
+  학습 재개에는 optimizer/scheduler/step/RNG/data 순서를 포함한다. LoRA 외 vision/projector(Merger)도 저장.
+- 데이터 manifest: source/revision/split/license·부모 ID·변환/seed·상대경로/크기/hash·count·검수/오염검사.
+- protocol hash는 P0/chat template/입력변환/dataset manifest/parser/evaluator를 묶는다.
+  절대경로/run_id/시각은 execution manifest로 분리한다.
+- 저장은 atomic/append-only. 재개 시 ID·모델/protocol/코드/환경/하드웨어 일치를 검사한다.
+  원본 덮어쓰기·서로 다른 run 혼합 금지. 재채점 변경은 새 scoring version.
+- 완료 상태는 독립적으로 기록한다: 구현/CPU 검사 · 로컬 SMOKE/PARTIAL · GitHub clean clone 재현 ·
+  실제 GPU(doctor·BF16·device map) · FULL(900/900·raw·30과목·산술) · 로컬 회수(receipt) · 자원 정리(잔존 조회).
+  미실행/실패를 PASS로 채우지 않는다.
+- 회수: 닫힌 shard만 점진 회수, 최종 전체 hash 검사, 안전한 압축해제(경로 이탈/외부 symlink 금지),
+  고유 ID/필드/산술·raw 재채점·이미지 열람 검증 → 로컬 receipt. 원격 exit code만으로 삭제하지 않는다.
+- 회수 실패는 최대 3회 복구, 미검증 결과는 삭제하지 않고 GPU stop 후 `RECOVERY_REQUIRED/CLEANUP_PENDING`과
+  storage 과금 가능성을 보고한다. 이미 발생한 비용을 0이라고 하지 않는다. API 잔액 snapshot ≠ 최종 청구서.
 
-| 독립 상태 | 증거 |
-|---|---|
-| 구현/CPU | 실제 검사 명령/결과 |
-| 로컬SMOKE/PARTIAL | 30ID·protocol·peak·시간·입력/파싱/재개 |
-| GitHub 재현 | commit·clean checkout·lock·한 명령 로그 |
-| RunPod/실제4090 | doctor·BF16·device map·실GPU명 |
-| evaluation FULL | 900/900·실제생성·raw·30과목·산술 |
-| 로컬 회수 | hash·재채점·coverage·열람·receipt |
-| 자원 정리 | 전용Pod/storage 삭제·잔존조회 |
+---
 
-미실행/실패를 PASS로 채우지 않는다. 제출은 검증된 단일900 결과와1000자 이내 근거 기반 격차 진단이다. 사용자 요청으로 확인한 1차 진단과 후속 미실행 항목은 §0.1에 구분한다. 교수님은 공개코드commit→lock→4090 doctor→pinned artifact/hash→같은eval→재채점으로 재현한다. RunPod는 수업 강제 provider가 아니다. checkpoint 교체 재평가에는 재학습이 필요 없고 재학습 재현은 별도 요청이다.
+## 10. 코드·모델·데이터·결과 저장 위치
 
-## 13. 진행·제출·발표
+```bash
+export HF_HOME="${HF_HOME:-$HOME/mmdl-cache/huggingface}"
+export MMDL_DATA_ROOT="${MMDL_DATA_ROOT:-$HOME/mmdl-data}"
+export MMDL_ARTIFACT_ROOT="${MMDL_ARTIFACT_ROOT:-$HOME/mmdl-artifacts}"
+export MMDL_VENV_ROOT="${MMDL_VENV_ROOT:-$HOME/mmdl-envs/eval}"
+```
 
-`[수업: S3 pp.7,19–21; S1 §4; S8]` 팀장 public repo, 전체 팀원 collaborator,
-각자 계정 commit/PR, default branch에 최종 병합을 따른다.
-Assignment 본문은 `reports/mmmu_baseline.md`, 기존 경로에는 링크를 둔다.
-전체 수업 흐름은 환경/입력/채점→baseline→실패분석→보고서/발표다. 평가·회수·클라우드 정리는 완료했고 현재 요청은 1차 실험 원장 작성이다. 템플릿 보고서 최종 반영·발표 제작·학습은 각각의 완료 증거와 요청 범위를 확인한다.
-Assignment 마감은 **9/28 23:59**, 첫 발표는 학습 완료 보고가 아니라 개선 계획이다.
+- GitHub에는 코드·설정·lock·출처/manifest·작은 결과만. 대용량·venv는 WSL Linux 파일시스템.
+- `MMDL_DATA_ROOT/evaluation/{mmmu,mmmu_pro}/`는 학습·증강 접근 금지. 학습 자료는 `training/` 아래.
+- 로컬 디스크는 다운로드/변환/회수 peak를 고려해 **50GiB 여유**를 남긴다. 부족하면 임의 삭제하지 않는다.
+- 유효 cache를 먼저 확인하고 재다운로드·실물 복제를 피한다.
+- 주요 위치:
+  - 오답노트 RL private 원장: `/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/`
+    (V59: `verified-repair-notebook-v59/`, 그 이전 V1–V58 각 폴더).
+  - 기존 학습 checkpoint: `/home/jang2/mmdl-artifacts/recovered/g6-full-*`, `tabmwp-{A,B}-2000-*`.
+  - MMMU 평가 회수본: `analysis_exports/mmmu_20260923/`, `analysis_exports/mmmu_20260924/`.
+  - 진단: `analysis_exports/bottleneck_20261003/`, `input_recovery_20261011/`, `g6_runtime_20261005/`.
+  - 이 지침의 원본 백업: `analysis_exports/agents_md_backup_20261030/`.
+- 강의 원본은 Git 제외 `local_sources/`에 두고 파일명/페이지/hash만 추적한다.
+- Pro `standard (10 options)` test는 취득 시 전체 commit SHA를 고정하고 보관/hash 확인만 한다.
 
-| PPP #1 | 팀 순서 |
-|---|---|
-| 9/29 화 | 9, 10, 11 |
-| 9/30 수 | 8, 7, 1 |
-| 10/6 화 | 12, 6, 3 |
-| 10/7 수 | 13, 5, 4, 2 |
+---
 
-팀 번호는 미확인이다. 발표 **최소 10분+Q&A 5분**이며 공지에 상한은 없다.
-PDF를 LMS `모델 개선 계획안 발표 - PPP #1`에 사전 제출한다. GitHub 제출과 별개다.
-PPT/PDF·HDMI 노트북/강의실 PC·다음 팀 대기를 준비한다.
-내용은 평가→실패사례→목표→관련연구→데이터/학습법→HW→실험/일정 순으로 연결한다.
-전문용어를 설명하고 인용을 표시한다. 아직 실행하지 않은 목표를 성과로 쓰지 않는다.
-`docs/PROJECT_STATUS.md`에 상태·담당·증거를 남긴다. 기존 팀 저장소의 완성도는 조사 전 추정하지 않는다.
+## 11. 1차 평가 실측 원장 요약 (R1 / R2)
 
-## 14. 외부 근거·검증 상태
+| 항목 | R1 (2,048) | R2 (32,768 continuous) |
+|---|---|---|
+| run ID | `mmdl-val-20260922-3090-assignment` | `mmdl-cont32k-analysis-20260922-analysis` |
+| commit | `af961a36…` | `702ed44c…` |
+| 실행 | Transformers, batch1, SDPA MATH, deterministic | vLLM 0.11.0, 동시 2, non-deterministic |
+| 정답(원래 채점) | 427/900 = 47.44% | 459/900 = 51.00% |
+| 상한 종료 length | 226 (25.11%) | 75 (8.33%) |
+| NO_PARSE | 96 | 69 (모두 객관식) |
+| 생성 token 합 | 776,359 | 3,719,200 |
+| 평가 시간 | 49,741.672초 | 57,885.846초 |
 
-실제 Qwen/MMMU/VLMEvalKit commit·문헌 위치는 `docs/SOURCE_REVIEW.md`에서 고정한다. 기술 근거는 수업 규정을 대체하지 않는다.
+- 두 실행의 ID·질문·보기·정답·seed·이미지 순서/grid·입력 token 합 534,018 일치.
+- paired: 둘 다 정답 347, 둘 다 오답 361, R1 오답→R2 정답 112, 반대 80. 순증 32(+3.56pp)는 길이·백엔드·코드·
+  환경이 함께 바뀐 관측이며 순수 토큰 효과가 아니다.
+- R2 동일 샘플 입력+출력 실측 최대 35,390 < 36,864. 75개 상한 종료는 문맥 부족 때문이 아니다.
+- **파싱 결함 진단(D1)**: `parse_mcq_response`가 짧은 `LETTER. 보기 원문` 응답을 놓쳤다. R2 NO_PARSE 69 중 32개가
+  형식 일치, 그중 24개가 정답(모두 stop 종료). R1도 31/23. → V4–V8 최종답 추출기로 해결.
+- 공식 Qwen과 확인된 차이: 이미지 budget(우리 262144–1310720 vs 공식 1003520–4014080 → B2에서 공식값 채택),
+  처리 경로, LLM 보조 채점·random fallback, seed(README 3407 vs 코드 42), 데이터(HF validation vs MMMU_DEV_VAL.tsv).
+  각 차이의 점수 기여는 정량 입증하지 않았다.
+- 원본: `analysis_exports/mmmu_20260923/originals/`(R1/R2 회수본, archive SHA는 원본 지침 §0.1),
+  공유용 `upload/mmmu_analysis_text.zip`·`mmmu_images.zip`(959 PNG). Pod 2j4knzy36jtzmv·vf8wla9q5v9gm8 삭제 완료.
+
+---
+
+## 12. 이력 요약 (2026-09-21 → 2026-10-30)
+
+상세 수치·SHA·PID·실패 원인은 원본 백업과 `docs/PROJECT_STATUS.md`를 본다. 아래는 결정과 결과만.
+
+### 12.1 Baseline 평가 (09-21 ~ 09-28)
+
+- 09-22: R1(2048) 427/900, R2(32K 연속 처리) 459/900 완료·회수·Pod 삭제.
+  초기 5090은 호스트 UVM `EIO`, 초기 3090은 CUDA 12.7 vs cu128 부팅 조건 불일치 → 공식 base image digest로 해결.
+  고정 batch2 → `LLMEngine.add_request()/step()` 연속 refill로 전환.
+- 09-23: 감사 V2 재적용(536/584, 진단용), V4 채점기 확정(479/556). A/B/C 통제 각 6/6.
+  동시1 C full900은 사용자 지시로 중단·부분결과 폐기. B2(동시2·공식 이미지 budget) 3090 실행.
+- 09-24: B2 900/900 557(V4) → V5 561 → V6 → V7 REJECTED → **V8 확정 558/900**. MMDL 게시 `88dd56b`.
+- 09-24~28: 보고서 템플릿 정리(`fa98910`), 격차 분석(`1b3e51b`), 기타 특이사항(`6b019df`),
+  시간 표기(`197838c`, 최신). 보고서 경로를 `reports/mmmu_baseline.md`로 통일.
+- 09-26~30: 내부 열람 HTML/PDF(`results/P1/`, 900/오답342, WebP 무손실로 512MB 미만),
+  과목별 분석(`claudedocs/MMMU_V8_70pct_subject_analysis_20260930.md`).
+
+### 12.2 병목 진단 (10-02 ~ 10-03, 비공개)
+
+- Qwen 30과목/102문항(pilot60+coverage42), 816조건/749 실호출: 이미지 I 40/102, 텍스트 대체 O0 42/85,
+  O1 31/69. 해설 전용 이미지 5장을 발견해 진단에서 제외(원래 결과 불변).
+- Knowledge Oracle 15분야×2: K1(기초 지식) 30/30, K2(정확한 상태의 규칙 적용) 30/30. 전문 추론 전체 인증 아님.
+- Gemma 동결 전수 감사(별도 protocol): 900 시도 중 유효 판정 미완료, 새 정확도 null. 원래 558/900 불변.
+- 보고서 `claudedocs/Qwen3_VL_4B_Bottleneck_Diagnostic_Report_20261003.md`, `..._Knowledge_Oracle_20261003.md`.
+  Pod h447a4u6c0vq3k, re5qljwwyq7yui 삭제.
+
+### 12.3 지도학습 시도 — 개선 실패 (10-04 ~ 10-12)
+
+- 10-04: MMDL_test 저장소 정책 도입. G6(FL=LLM, FM=Merger, FV=Vision, FML=Merger+LLM) smoke를 A40에서 실행,
+  기본 2배 예산 gate(필요 83,786초 > 잔여 48,418초)로 본학습 중단, Pod 삭제.
+- 10-05~06: 3090에서 G6 full 10K×4조건(각 625 update). 동일 4K/P0/V8 **MMMU60: F0 36 → FL 22 / FM 27 / FV 21 / FML 23
+  (모두 하락)**. 외부 dev: FM 25/48 > FML 21 > FL 18 = FV 18 > F0 15. 50K/최종900 자동 진행 없음.
+  분석 `claudedocs/g6_full10k_final_analysis_20261005.md`. Pod 22u0uqi171v0cn 삭제.
+- 10-11~12: 8K 입력 회복 진단 336호출(F0 48문항: I22/T24/IT26/IR20/TR22).
+  TabMWP teacher-free A(답)/B(표 facts+답) 각 2000행/125 update: 외부 QA F0 35 / A 30 / B 28 (of 48),
+  표 exact 19/11/17, 셀 268/253/299. 확대 gate 모두 false. Pod z2sa5xt3b93er9 삭제.
+- **결론**: 지도학습은 MMMU·외부 QA를 개선하지 못했다 → 2026-10-16 사용자가 RL-only 오답노트 방식으로 전환.
+
+### 12.4 오답노트 RL — 클라우드 시도 (10-16 ~ 10-18)
+
+- 10-16: RL-only 설계(v1/v2) 작성, `fine_tuning/notebook_rl/` 신설.
+- 10-17: A40 e10034q5chqqcr. 오염 검출기 후보 → 사용자 "후보면 중단" → 이후 "직접 대조 후 동일 문제만 blacklist"로 재개.
+  native G9(OFF/동결 기울기 비교) 실패, vLLM 시작 메모리 비율 실패 → update 0, Pod 삭제.
+- 10-18: 공유 HF 정책(24GB) 구현. 3090 kxxt6w3fpsb7ur는 `/dev/nvidia-uvm` EIO로 삭제.
+  재시도 2uiqg6ym30ou3y: HF cold import guard 차단 수정, sampling 기본값 덮어쓰기 발견 → `use_model_defaults=False`,
+  예산 한도로 update 0, Pod 삭제. 로컬 5060은 BF16 가중치만으로 VRAM 초과, native 경로 하한 26.5GiB 확인.
+
+### 12.5 로컬 NF4 전환과 첫 실제 RL (10-21)
+
+- 사용자 승인: 로컬 RTX 5060 8GB의 실제 Qwen4B **NF4/QLoRA** 자기수정 RL. 기존 NF4 cache 검증(68 logprob 차이 0).
+- minimal-v3: **첫 실제 update1 + 별도 프로세스 fresh reload 통과**(L252/M24, V 동결 경로).
+  노트 4개 보상 0. minimal-v4/v5: UNKNOWN 진단도 노트 생성(v2 protocol), Vision_ON update.
+- 고정10 notebook arm: 실제 update2·90응답, both routes true; answer-only 대조군 update3·92응답.
+  **외부 회로10: 첫 시도 F0/NFT/CFT 모두 5/10, 최종 모두 8/10 → 새 문항 개선 미관측.**
+- 원본 BF16 두 blob을 복구 가능 격리 후 원본 경로 부재 상태 학습/reload 검증, 이후 복원.
+- 전체 이력 오답노트 목표 시작(full-history-v1 → compact-v1 → schema-v2 → ranges-v3).
+  전체 이력 v1/v2 update/reload 통과, 노트 보상 0.
+
+### 12.6 전체 이력 노트 계약 반복 (10-22 ~ 10-25, V4 ~ V54)
+
+- 노트 계약을 여러 번 바꿈: facts-first(V12), 독립 재관찰(V13), 부분 component 보상(V15), 사실 값 토큰 credit(V16),
+  bounded synthesis(V25), 관계 부분보상(V29), OUTPUT FINALIZATION 관계(V31), 탐색 admission(V32/V33),
+  공개 비교쌍·라벨 RL(V41–V43), 공개 참조형 전체 판정(V48–V54).
+- 실제 update/reload 통과 사례: V15, V16, V17(고정10 5 update), V35, V43, V54 등. 그러나
+  **strict 전체노트는 일관되게 0/N**(0/12, 0/16, 0/4 …), 학습 후 같은 이력 비교도 0/4→0/4.
+- 검증기 결함도 발견·수정: 따옴표 관계값 파싱 오판(V43 고정10 중단), Trace 공백 문법(V26), 빈 인용 피드백(V35),
+  native tree false-child 검출 누락(V17 전 TEN2 중단), checkpoint 교체 시 reload 증거 재사용(V59).
+
+### 12.7 판정 단위 학습과 재설계 (10-26)
+
+- V58: 판정 token 계수 정규화 → **signed assessment-only 기울기 비영 + update1 + fresh reload 통과**.
+  기능 검증(F)이지만 strict 전체노트 0/4·오류→수정 관계 학습 0.
+- 사용자 정정: 소규모 시험에서 성능 상승은 요구하지 않는다. 기능 검증과 성능 개선을 분리.
+- **V59 재설계(verified-repair-notebook)**: T2/T3 한 completion의 ErrorCheck→RevisedSolution, bounded final(최대 3 claim),
+  answer/online/final PG 분리, CORRECTED-only VJP gate, F/S/E 분리. 설계 3문서 + P04–P13 CPU 구현.
+
+### 12.8 V59 실제 실행 (10-27 ~ 10-28)
+
+- 10-27: 첫 고정2는 문법 오류 형제가 정상 형제의 T3를 막는 결함으로 중단 → repair-note-v2 수정.
+  v6 최소시험 update1·저장·fresh reload: **F=true, S=false**. 노트 4개 `success_sample_id` 누락·claims=[].
+  ASCII 빈줄 경계(v7), 탐색 admission 구현, frozen8 최소시험 F 통과.
+  frozen8 고정10: 70풀이·24노트·update3 후 외부 14700초 한도(exit124) 종료. 노트 신호 0.
+  optimizer moment CPU parking 구현(생성 중 약 1.077GiB 절약). 문법 실패 부모 재시도 v2.
+- 10-28: 재관찰 v3 통합(115 CPU 검사), source10 최소시험 update1·fresh reload **F=true**.
+  고정10 진행(update1→2→3, 모든 online/final VJP 0). claims-first 후보·실행기 v3 CPU 준비. → §4.
+
+---
+
+### 12.9 compact 노트와 데이터 정책 전환 (10-29 ~ 10-30)
+
+- compact 노트 계약 `repair-note-compact-v1` 최소시험 v12: F + S_note 통과(update1, VISION_ON). 프롬프트 예시 gold 누설로 v11 무효·수정.
+  고정10 compact·대조군 후 회로 평가10: F0·노트 FT·대조 FT 모두 엄격 0/10(바닥 효과, 개선 판단 불가).
+- 사용자 정책 전환: 기존 데이터셋만·3,000문항 증명·11/17 마감·단일 답 원칙 → HF 풀 v3 구축·오염/품질 검사·동결(→ §4).
+
+## 13. 반복 실패에서 얻은 교훈
+
+1. **입력에 전체 이력을 넣는 것 ≠ 정확한 노트.** 실제 토큰 decode로 무손실 전달을 확인한 뒤에도
+   모델은 성공 시도의 관측 오류를 연결하지 못하고, 올바른 재관찰 값도 버리고 기존 오류를 유지했다.
+2. **동일 보상 = 상대 신호 0.** 네 후보가 모두 같은 점수면 노트 학습 기울기가 없다. 가짜 분산 금지.
+3. **답 보상 update를 노트 학습으로 착각하지 않는다.** 대부분의 실제 가중치 변경은 T1 답 PG와 KL에서 왔다.
+   online/final의 signed·positive VJP를 별도 채널로 확인한다.
+4. **형식 통과로 내용 실패가 해결되지 않는다.** 숫자 문자열·키 이름을 고쳐도 관계·방향 오류가 남았다.
+5. **검증기 결함과 모델 실패를 분리한다.** 따옴표·공백·빈 인용 등 표기 결함은 검증기를 수정하되
+   기준을 완화하지 않고, 실제 내용 실패는 그대로 0점으로 둔다.
+6. **같은 조건 GPU 재실행 반복 금지.** 원인을 바꾸지 않은 재시도는 비용만 쓴다.
+7. **지도학습은 MMMU를 낮췄다.** G6 네 조건 모두 MMMU60 하락, TabMWP A/B도 외부 QA 하락.
+8. **클라우드 실패는 호스트 단계에서 많이 발생했다**(UVM EIO, CUDA 부팅 조건, vLLM 시작 메모리 비율).
+   모델 로드 전 doctor·실제 CUDA/BF16 검사를 먼저 한다.
+9. **관찰자 스크립트 오류를 결과로 보고하지 않는다.** tuple/list 비교, 잘못된 파일명, cwd 혼동 등은
+   원래 실패를 보존하고 관찰자만 정정한다.
+10. **도구 세션 종료 ≠ 학습 종료.** 실제 PID/startticks·로그·result.json으로 판정한다.
+
+---
+
+## 14. 진행·제출·발표
+
+`[수업: S3 pp.7,19–21; S1 §4; S8]`
+
+- 팀장 public repo, 전체 팀원 collaborator, 각자 계정 commit/PR, default branch에 최종 병합.
+- Assignment 1 마감 9/28 23:59 (완료). 본문 `reports/mmmu_baseline.md`, `assignment/assignment1.md`는 링크.
+- PPP #1(모델 개선 계획안 발표): 9/29·9/30·10/6·10/7 팀 순서 배정, 최소 10분 + Q&A 5분,
+  LMS `모델 개선 계획안 발표 - PPP #1`에 PDF 사전 제출(GitHub 제출과 별개).
+- 발표 흐름: 평가 → 실패 사례 → 목표 → 관련 연구 → 데이터/학습법 → HW → 실험/일정.
+  아직 실행하지 않은 목표를 성과로 쓰지 않는다. 47.44→51.00%는 실행 조건 묶음의 관측 변화,
+  53.67%는 가정 계산, 학습 개선 성과는 아직 없음을 명시한다.
+- 발표 자료(내부, 게시 안 함): `qwen3_mmmu_problem_improvement.pptx`(42장),
+  `Qwen3VL_MMMU_발표_*.pptx` 등. 사용자가 저장한 원본을 먼저 대조·보존한 뒤 수정한다.
+
+---
+
+## 15. 근거 자료와 외부 출처
+
+| ID | 자료 | 근거 |
+|---|---|---|
+| S1 | `local_sources/assignment_guidance.md` | 고정 스펙·채점·경로·마감 |
+| S2 | `local_sources/SUBMISSION_TEMPLATE.md` | 보고 항목·실측·결과표 |
+| S3 | `02_MMDL_Team_Project_Introduction.pdf` | 흐름·GitHub·평가·발표 |
+| S4 | `03_MMDL_VLM_Introduction.pdf` | 입력/파싱·학습·데이터 금지 |
+| S5 | `01_MMDL_Course_Introduction.pdf` | 범위·HW·Standard 10-way |
+| S6 | `04_MMDL_Deep_Learning_1(2).pdf` | 파라미터·손실·최적화 (이론) |
+| S7 | `05_MMDL_Deep_Learning_2.pdf` | 역전파·목적함수·softmax (이론) |
+| S8 | 사용자 PPP#1 공지 | 발표 일정·시간·LMS |
+
+사본은 이름이 아니라 hash로 확인한다. S6/S7은 이론이지 특정 학습률/배치/레이어 지시가 아니다.
 
 | ID | 공식 근거 |
 |---|---|
-| W1 | Qwen recipe/processor: `https://github.com/QwenLM/Qwen3-VL` |
-| W2 | 고정 model card: `https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct/blob/ebb281ec70b05090aa6165b016eac8ec08e71b17/README.md` |
-| W3 | Accelerate: `https://huggingface.co/docs/accelerate/concept_guides/big_model_inference` |
-| W4 | WSL: `https://docs.nvidia.com/cuda/wsl-user-guide/index.html` |
-| W5 | Blackwell 배경: `https://pytorch.org/blog/pytorch-2-7/` |
-| W6 | 재현 한계: `https://docs.pytorch.org/docs/2.7/notes/randomness.html` |
-| W7 | MMMU 평가: `https://github.com/MMMU-Benchmark/MMMU/tree/main/mmmu` |
-| W8 | Generation API: `https://huggingface.co/docs/transformers/main_classes/text_generation` |
-| W9 | AGENTS.md: `https://developers.openai.com/codex/guides/agents-md` |
-| W10 | RunPod Stop/Terminate: `https://docs.runpod.io/pods/manage-pods` |
-| W11 | RunPod storage: `https://docs.runpod.io/pods/storage/types` |
-| W12 | RunPod pricing: `https://docs.runpod.io/pods/pricing` |
+| W1 | Qwen recipe/processor: https://github.com/QwenLM/Qwen3-VL |
+| W2 | 고정 model card: https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct/blob/ebb281ec70b05090aa6165b016eac8ec08e71b17/README.md |
+| W3 | Accelerate big model inference: https://huggingface.co/docs/accelerate/concept_guides/big_model_inference |
+| W4 | CUDA on WSL: https://docs.nvidia.com/cuda/wsl-user-guide/index.html |
+| W5 | Blackwell/PyTorch 2.7: https://pytorch.org/blog/pytorch-2-7/ |
+| W6 | 재현 한계: https://docs.pytorch.org/docs/2.7/notes/randomness.html |
+| W7 | MMMU 평가: https://github.com/MMMU-Benchmark/MMMU/tree/main/mmmu |
+| W8 | Generation API: https://huggingface.co/docs/transformers/main_classes/text_generation |
+| W9 | AGENTS.md: https://developers.openai.com/codex/guides/agents-md |
+| W10 | RunPod Stop/Terminate: https://docs.runpod.io/pods/manage-pods |
+| W11 | RunPod storage: https://docs.runpod.io/pods/storage/types |
+| W12 | RunPod pricing: https://docs.runpod.io/pods/pricing |
 
-W10–W12는2026-09-21 공식 문서 확인 근거다. 배포 시 가격/CLI/API/정리 동작을 다시 확인한다. 과거 구현·로컬30·환경 문제는 `docs/PROJECT_STATUS.md`, 2026-09-23 완료 상태·결과·진단·회수/삭제 증거는 **§0.1과 연결된 원본 receipt**로 판정한다. 실제4090·학습/final은 미실행이다. 사용자 실행 요약은 재확인 전 사용자 보고값이다. test 정답/revision/절차 미확정 시 prediction export와 점수를 구별한다.
+Qwen 평가 코드 대조 commit `96588727e44c78b25ba03ea03b8e12f7e64fd0da`(`run_mmmu.py`, `infer_instruct.sh`,
+`eval_utils.py`, `dataset_utils.py`), MMMU evaluator commit `268471d0d488258990025331c7528359c324aa25`.
+상세는 `docs/SOURCE_REVIEW.md`. 모델 card VL 길이 16384와 평가 recipe 32768은 출처가 다르다.
 
-기존 구현가이드/검증 기록의 필요 구간만 활용한다. 지침 byte·상위/하위 합산 한도·실제 로드 목록을 확인한다. 자동로딩에서 잘렸다면 최초 작업 때 누락 구간을 명시적으로 읽되 한도를 임의 변경하거나 미로딩 구간을 읽었다고 하지 않는다.
+주요 내부 문서:
+- `docs/PROJECT_STATUS.md` — 상태·결정·증거 원장(최신 정본)
+- `docs/EVALUATION_V2.md` — 채점 버전 조건
+- `fine_tuning/README.md`, `fine_tuning/notebook_rl/README.md` — 학습 코드 사용법·현재 상태
+- `claudedocs/notebook_rl_redesign_20261026/` — 오답노트 RL 설계 정본
+- `claudedocs/research_error_notebook_self_correction_methods_20261026.md` — 관련 연구
+- `claudedocs/g6_full10k_final_analysis_20261005.md` — 지도학습(G6) 결과
+- `claudedocs/Qwen3_VL_4B_Bottleneck_Diagnostic_Report_20261003.md` — 병목 진단
+
+---
+
+## 16. 이 문서의 유지 규칙
+
+- `AGENTS.md`와 `CLAUDE.md`는 **항상 byte 동일**하게 유지한다. 한쪽을 고치면 다른 쪽에 복사하고 `cmp`로 확인한다.
+- 이 문서는 규칙·현재 상태·요약 이력만 담는다. 목표 분량 약 800줄. 날짜별 상세 원장(수치·SHA·PID·실패)은
+  `docs/PROJECT_STATUS.md`와 private 원장에 기록하고, 여기에는 §4 현재 상태와 §12 이력에 1–3줄만 추가한다.
+- §4를 갱신할 때 이전 §4 내용은 §12의 해당 날짜 항목으로 1–3줄 요약해 옮긴다.
+- 과거 기록을 소급 수정하지 않는다. 잘못된 서술은 새 항목으로 정정하고 원래 기록은 원본 백업에 남는다.
+- 규칙(§2)을 바꾸는 것은 사용자의 명시적 지시가 있을 때만이다. 변경 시 날짜와 지시 내용을 함께 적는다.
+- Codex 지침 로드 한도(`~/.codex/config.toml`의 `project_doc_max_bytes`, 현재 262144)를 넘지 않게 한다.

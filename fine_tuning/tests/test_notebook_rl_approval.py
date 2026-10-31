@@ -28,6 +28,114 @@ def write(path, value):
     return a._sha(raw)
 
 
+class CanonicalHashTests(unittest.TestCase):
+    def test_nested_json_hash_matches_existing_serializer(self):
+        vector = [0., -0., 1e-7, 1e20, 1e21, 1.2345678901234567, 5e-324, 1.7976931348623157e308]
+        values = [None, True, False, 42, -42, "한글😀\"\\\n\t\x00", [], {}, vector,
+                  {"z": vector, "a": [{"é": "e\u0301", "😀": None}, [True, {}, []]], "": ""},
+                  ({"tuple": [1, 2]}, "unchanged"), {3: "three", 1: "one"},
+                  {None: "null"}, {False: "false"}, {2.5: "float"}]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(a._hash(value), a._sha(a._json(value)))
+
+    def test_evidence_containers_are_chunked_but_vectors_use_existing_serializer(self):
+        vector = [i / 1152 for i in range(1152)]
+        value = {"siglip": {"benchmark_images": {
+            f"{i:064x}": {"sha256": f"{i:064x}", "vector": vector} for i in range(8)}}}
+        expected = a._sha(a._json(value))
+        serialized = []
+        original = a._json
+
+        def record(item):
+            serialized.append(item)
+            return original(item)
+
+        with patch.object(a, "_json", side_effect=record):
+            self.assertEqual(a._hash(value), expected)
+        self.assertEqual(sum(item is vector for item in serialized), 8)
+        self.assertFalse(any(type(item) is dict for item in serialized))
+
+    def test_fallback_preserves_subclass_serialization(self):
+        class Mapping(dict):
+            def items(self):
+                return [("replacement", "한글")]
+
+        class Sequence(list):
+            def __iter__(self):
+                return iter(["replacement"])
+
+        class Key(str):
+            pass
+
+        for value in (Mapping(ignored=1), Sequence([1, 2]), {Key("key"): {"nested": 1}}):
+            with self.subTest(kind=type(value)):
+                expected = a._sha(a._json(value))
+                with patch.object(a, "_json", wraps=a._json) as serializer:
+                    self.assertEqual(a._hash(value), expected)
+                self.assertIs(serializer.call_args.args[0], value)
+
+        class RecursiveSequence(list):
+            def __iter__(self):
+                raise RecursionError("fixture iterator failure")
+
+        with patch.object(a, "_json", wraps=a._json) as serializer:
+            with self.assertRaisesRegex(RecursionError, "fixture iterator failure"):
+                a._hash(RecursiveSequence())
+        self.assertEqual(serializer.call_count, 1)
+
+    def test_invalid_values_preserve_serializer_exception_types(self):
+        values = [float("nan"), float("inf"), -float("inf"), {"nested": [float("nan")]},
+                  {1: "number", "1": "string"}, {("tuple",): "invalid"},
+                  {"bad": object()}, b"bytes", "\ud800", {"nested": "\udfff"},
+                  {"a": "\ud800", "b": float("nan")}, {"a": "\ud800", "b": object()},
+                  [{"a": "\ud800"}, float("nan")]]
+        for value in values:
+            with self.subTest(value=value):
+                try:
+                    a._json(value)
+                except (TypeError, ValueError, UnicodeError) as error:
+                    with self.assertRaises(type(error)) as caught:
+                        a._hash(value)
+                    self.assertIs(type(caught.exception), type(error))
+                else:
+                    self.fail("invalid fixture serialized")
+
+    def test_cycles_are_rejected_and_shared_aliases_remain_valid(self):
+        mapping, sequence = {}, []
+        mapping["self"] = mapping
+        sequence.append(sequence)
+        through_tuple = {}
+        through_tuple["tuple"] = (through_tuple,)
+        for value in (mapping, sequence, {"a": [mapping]}, through_tuple):
+            with self.subTest(kind=type(value)):
+                with self.assertRaisesRegex(ValueError, "Circular reference detected"):
+                    a._hash(value)
+        shared = {"vector": [0.25, -0.]}
+        value = {"a": shared, "b": [shared, shared]}
+        self.assertEqual(a._hash(value), a._sha(a._json(value)))
+
+    def test_deep_values_and_mutations_between_hashes(self):
+        value = {"vector": [0.25, -0.]}
+        first = a._hash(value)
+        value["vector"][0] = 0.5
+        self.assertNotEqual(a._hash(value), first)
+        self.assertEqual(a._hash(value), a._sha(a._json(value)))
+        nested = {}
+        for _ in range(200):
+            nested = {"child": [nested]}
+        self.assertEqual(a._hash(nested), a._sha(a._json(nested)))
+        for _ in range(sys.getrecursionlimit()):
+            nested = {"child": nested}
+        try:
+            expected = a._sha(a._json(nested))
+        except RecursionError:
+            with self.assertRaises(RecursionError):
+                a._hash(nested)
+        else:
+            self.assertEqual(a._hash(nested), expected)
+
+
 class ApprovalTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -215,6 +323,75 @@ class ApprovalTests(unittest.TestCase):
             self.assertNotIn(forbidden, json.dumps(result))
         self.assertEqual(before, {str(p): a._sha(p.read_bytes()) for p in self.base.rglob("*") if p.is_file()})
 
+    def test_evidence_is_canonically_hashed_once_per_validation_with_unchanged_bindings(self):
+        path = self.base / "evidence.json"
+        raw_sha = write(path, self.evidence)
+        canonical_sha = a._hash(self.evidence)
+        self.assertNotEqual(raw_sha, canonical_sha)
+        expected = self.binding | {"data_report_sha256": a._hash(self.data_report),
+            "gpu_report_sha256": a._hash(self.gpu_report),
+            "source_registry_artifact_sha256": a._hash(self.registry)}
+        for evidence, artifact_sha in ((self.evidence, canonical_sha),
+                ({"path": str(path), "file_sha256": raw_sha}, raw_sha)):
+            for invocation in range(2):
+                with self.subTest(artifact_sha=artifact_sha, invocation=invocation), \
+                        patch.object(a, "_hash", wraps=a._hash) as hash_value:
+                    result = self.validate(evidence=evidence)
+                self.assertEqual(result["status"], "VALIDATED_FOR_TRAINING", result["blockers"])
+                self.assertEqual(result["input_binding"], expected | {"evidence_artifact_sha256": artifact_sha})
+                evidence_calls = [call for call in hash_value.call_args_list
+                    if type(call.args[0]) is dict and set(call.args[0]) == set(self.evidence)]
+                self.assertEqual(len(evidence_calls), 1)
+
+    def test_evidence_descriptor_and_json_failures_block_before_semantic_use(self):
+        path = self.base / "evidence.json"
+        write(path, self.evidence)
+        invalid = [(None, "MISSING_ARTIFACT"), ([], "MISSING_ARTIFACT"),
+            ({"path": str(path), "file_sha256": "0" * 64}, "ARTIFACT_SHA_MISMATCH"),
+            ({"path": None, "file_sha256": "0" * 64}, "ARTIFACT_PATH"),
+            ({"path": str(self.base / "missing.json"), "file_sha256": "0" * 64},
+             "MISSING_MALFORMED_OR_CHANGED_PREREQUISITE")]
+        for evidence, code in invalid:
+            with self.subTest(evidence=evidence), patch.object(c, "_calibration") as calibration:
+                self.assert_blocked(self.validate(evidence=evidence), code)
+                calibration.assert_not_called()
+        for raw in (b'{"duplicate":1,"duplicate":2}', b'{"nonfinite":NaN}', b'[]'):
+            path.write_bytes(raw)
+            descriptor = {"path": str(path), "file_sha256": a._sha(raw)}
+            with self.subTest(raw=raw), patch.object(c, "_calibration") as calibration:
+                self.assert_blocked(self.validate(evidence=descriptor))
+                calibration.assert_not_called()
+
+    def test_evidence_file_changed_during_validation_is_rejected(self):
+        path = self.base / "evidence.json"
+        descriptor = {"path": str(path), "file_sha256": write(path, self.evidence)}
+        original = c._calibration
+
+        def change_file(*args):
+            thresholds = original(*args)
+            path.write_bytes(path.read_bytes() + b"\n")
+            return thresholds
+
+        with patch.object(c, "_calibration", side_effect=change_file) as calibration:
+            self.assert_blocked(self.validate(evidence=descriptor), "INPUT_OR_CODE_CHANGED_DURING_VALIDATION")
+            calibration.assert_called_once()
+
+    def test_evidence_mutated_by_semantic_helper_is_rejected_by_final_hash(self):
+        path = self.base / "evidence.json"
+        descriptor = {"path": str(path), "file_sha256": write(path, self.evidence)}
+        original = c._calibration
+
+        def mutate_evidence(evidence, *args):
+            thresholds = original(evidence, *args)
+            evidence["unbound_marker"] = True
+            return thresholds
+
+        for evidence in (copy.deepcopy(self.evidence), descriptor):
+            with self.subTest(descriptor=evidence is descriptor), \
+                    patch.object(c, "_calibration", side_effect=mutate_evidence) as calibration:
+                self.assert_blocked(self.validate(evidence=evidence), "EXCLUSION_EVIDENCE_BINDING")
+                calibration.assert_called_once()
+
     def test_actual_current_protocol_and_partial_index_never_approve(self):
         self.assert_blocked(a._validate(self.payload), "PROTOCOL_NOT_FROZEN")
         self.index["full_coverage"] = False
@@ -255,8 +432,11 @@ class ApprovalTests(unittest.TestCase):
         registry["sources"]["fake"]["rights_approved"] = False
         self.assert_blocked(self.validate(source_registry=registry), "EXCLUSION_EVIDENCE_BINDING")
         evidence = copy.deepcopy(self.evidence)
-        evidence["sscd"]["input_images"].clear()
+        evidence["unbound_marker"] = True
         self.assert_blocked(self.validate(evidence=evidence), "EXCLUSION_EVIDENCE_BINDING")
+        evidence = copy.deepcopy(self.evidence)
+        evidence["sscd"]["input_images"].clear()
+        self.assert_blocked(self.validate(evidence=evidence), "MISSING_MALFORMED_OR_CHANGED_PREREQUISITE")
         scope = copy.deepcopy(self.scope)
         scope["code_sha256"]["approval.py"] = "0" * 64
         self.assert_blocked(self.validate(expected_gpu_scope=scope), "GPU_CURRENT_SCOPE_MISMATCH")
@@ -393,6 +573,22 @@ print(json.dumps(result))
         poisoned = self.validate() | {"gold": "PRIVATE-NOT-ALLOWED"}
         with patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, stdout=a._json(poisoned))):
             self.assert_blocked(a.validate_for_training(self.root, self.selection_path, phase_a_report=self.phase_path, **kwargs), "PREFLIGHT_RESPONSE_INVALID")
+
+    def test_public_timeout_bounds_only_expand_for_explicit_limited_smoke(self):
+        for stage in (None, "training", "measurement", "limited_smoke", "unknown"):
+            payload = {} if stage is None else {"stage": stage}
+            limit = 600 if stage == "limited_smoke" else 300
+            for timeout in (.25, 300, limit):
+                with self.subTest(stage=stage, timeout=timeout), patch(
+                        "subprocess.run", side_effect=subprocess.TimeoutExpired("fixture", timeout)) as worker:
+                    self.assert_blocked(a._public_validate(payload, timeout), "PREFLIGHT_TIMEOUT")
+                    worker.assert_called_once()
+                    self.assertEqual(worker.call_args.kwargs["timeout"], timeout)
+            for timeout in (True, False, None, "600", 0, -1, float("nan"),
+                            float("inf"), -float("inf"), limit + .25, 10**1000):
+                with self.subTest(stage=stage, timeout=timeout), patch("subprocess.run") as worker:
+                    self.assert_blocked(a._public_validate(payload, timeout), "INVALID_TIMEOUT")
+                    worker.assert_not_called()
 
     def measurement_fixture(self):
         """Separate authored D evidence; never re-label existing training proofs."""
@@ -548,6 +744,20 @@ print(json.dumps(result))
         # The same evidence cannot enter the ordinary frozen-weight/full-data route.
         self.assert_blocked(self.measurement_validate(payload | {"stage": "measurement"}), "MEASUREMENT_SCOPE_REQUIRED")
 
+    def test_limited_smoke_historical_scanner_receipt_keeps_current_scope_and_input_bytes(self):
+        self.receipt["code_sha256"] = {
+            str(Path("/historical/fine_tuning") / relative): digest
+            for relative, digest in a._LEGACY_SCANNER_CODE.items()}
+        payload = self.limited_fixture()
+        before = {str(p): a._sha(p.read_bytes()) for p in self.base.rglob("*") if p.is_file()}
+        result = self.measurement_validate(payload)
+        self.assertEqual(result["status"], "VALIDATED_FOR_MEASUREMENT", result["blockers"])
+        self.assertFalse(result["training_allowed"])
+        self.assertEqual(result["code_sha256"], self.scope["code_sha256"])
+        self.assertEqual(result["input_binding"]["exclusion_receipt_sha256"],
+                         self.binding["exclusion_receipt_sha256"])
+        self.assertEqual(before, {str(p): a._sha(p.read_bytes()) for p in self.base.rglob("*") if p.is_file()})
+
     def test_limited_smoke_keeps_full_index_and_all_record_review_requirements(self):
         payload = self.limited_fixture()
         self.index["full_coverage"] = False
@@ -587,6 +797,7 @@ print(json.dumps(result))
         request = {"index": {}, "source_registry": {}, "evidence": {}, "data_report": None}
         for scope, override, expected in (({}, {}, 120),
                 ({"purpose": a.SMOKE_PURPOSE}, {}, 300),
+                ({"purpose": a.SMOKE_PURPOSE}, {"timeout": 600}, 600),
                 ({"purpose": a.SMOKE_PURPOSE}, {"timeout": 45}, 45)):
             with self.subTest(scope=scope, override=override), patch.object(a, "_public_validate", return_value={}) as validate:
                 a.validate_for_gate_data(self.root, expected_measurement_scope=scope, **request, **override)
@@ -613,6 +824,165 @@ print(json.dumps(result))
         self.receipt.update(quarantined_ids=quarantine["quarantined_ids"], allowlist=quarantine["allowlist"],
                             quarantined_families=quarantine["families"])
         self.assert_blocked(self.measurement_validate(self.limited_fixture()), "NO_ELIGIBLE_TRAIN_ITEMS")
+
+
+class ScannerCodeRelocationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "fine_tuning"
+        self.code = {}
+        for relative in a._SCANNER_FILES:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(relative)
+            self.code[str(path)] = a._sha(path.read_bytes())
+        self.patched = patch.object(a, "_HERE", self.root / "notebook_rl")
+        self.patched.start()
+        self.addCleanup(self.patched.stop)
+
+    def relocated(self):
+        return {str(Path("/historical/fine_tuning") / Path(name).relative_to(self.root)): digest
+                for name, digest in self.code.items()}
+
+    def test_same_root_and_identical_relocated_code_use_current_bytes_without_receipt_edits(self):
+        for code in (self.code, self.relocated()):
+            with self.subTest(code=code), patch.object(a, "_read", wraps=a._read) as read:
+                before = a._json(code)
+                files = {}
+                a._scanner_code(code, files)
+                self.assertEqual(files, self.code)
+                self.assertEqual(a._json(code), before)
+                self.assertTrue(all(Path(call.args[0]).is_relative_to(self.root) for call in read.call_args_list))
+
+    def test_recorded_or_current_sha_changes_fail_closed(self):
+        code = self.relocated()
+        key = next(iter(code))
+        with self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_CHANGED"):
+            a._scanner_code(code | {key: "0" * 64}, {})
+        (self.root / "audit.py").write_text("changed")
+        with self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_CHANGED"):
+            a._scanner_code(code, {})
+
+    def test_missing_extra_wrong_relative_basename_and_mixed_roots_are_rejected(self):
+        code = self.relocated()
+        key = "/historical/fine_tuning/notebook_rl/schema.py"
+        invalid = [
+            {name: sha for name, sha in code.items() if name != key},
+            code | {"/historical/fine_tuning/extra.py": "0" * 64},
+            {(name.replace("notebook_rl/schema.py", "schema.py") if name == key else name): sha
+             for name, sha in code.items()},
+            {(name.replace("/historical/", "/other/") if name == key else name): sha
+             for name, sha in code.items()},
+            {(name.replace("notebook_rl/schema.py", "nested/notebook_rl/schema.py") if name == key else name): sha
+             for name, sha in code.items()},
+        ]
+        for changed in invalid:
+            with self.subTest(changed=changed), self.assertRaises(a._Blocked):
+                a._scanner_code(changed, {})
+
+    def test_unnormalized_traversal_relative_and_duplicate_identity_paths_are_rejected(self):
+        code = self.relocated()
+        key = "/historical/fine_tuning/notebook_rl/schema.py"
+        for replacement in ("/historical/fine_tuning/notebook_rl/../schema.py",
+                "/historical//fine_tuning/notebook_rl/schema.py",
+                "/historical/fine_tuning/notebook_rl/./schema.py",
+                "//historical/fine_tuning/notebook_rl/schema.py",
+                "fine_tuning/notebook_rl/schema.py",
+                "/fine_tuning/historical/fine_tuning/notebook_rl/schema.py",
+                "/other/fine_tuning/notebook_rl/vault.py"):
+            changed = {(replacement if name == key else name): sha for name, sha in code.items()}
+            with self.subTest(replacement=replacement), self.assertRaises(a._Blocked):
+                a._scanner_code(changed, {})
+
+    def test_invalid_digest_and_symlink_current_source_are_rejected(self):
+        code = self.relocated()
+        key = next(iter(code))
+        for digest in (None, "not-a-sha", "A" * 64):
+            with self.subTest(digest=digest), self.assertRaises(a._Blocked):
+                a._scanner_code(code | {key: digest}, {})
+        source = self.root / "audit.py"
+        source.unlink()
+        source.symlink_to(self.root / "notebook_rl/schema.py")
+        with self.assertRaises(ValueError):
+            a._scanner_code(code, {})
+
+
+class ScannerCodeCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "fine_tuning"
+        for relative in (*a._SCANNER_FILES, "notebook_rl/guards.py"):
+            target = self.root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes((a._HERE.parent / relative).read_bytes())
+        patched = patch.object(a, "_HERE", self.root / "notebook_rl")
+        patched.start()
+        self.addCleanup(patched.stop)
+        self.historical = {str(Path("/historical/fine_tuning") / relative): digest
+                           for relative, digest in a._LEGACY_SCANNER_CODE.items()}
+
+    def test_exact_historical_sources_use_current_hashes_without_relabeling(self):
+        before = {str(p): a._sha(p.read_bytes()) for p in self.root.rglob("*") if p.is_file()}
+        code_before = copy.deepcopy(self.historical)
+        files = {}
+        a._scanner_code(self.historical, files)
+        self.assertEqual(files, before)
+        self.assertEqual(self.historical, code_before)
+        self.assertEqual(before, {str(p): a._sha(p.read_bytes()) for p in self.root.rglob("*") if p.is_file()})
+        for relative, digest in a._COMPATIBLE_SCANNER_CODE.items():
+            self.assertEqual(files[str(self.root / relative)], digest)
+        self.assertNotEqual(files[str(self.root / "notebook_rl/schema.py")],
+                            self.historical["/historical/fine_tuning/notebook_rl/schema.py"])
+
+    def test_historical_acceptance_rejects_changes_to_all_six_current_sources_and_guards(self):
+        for relative in (*a._SCANNER_FILES, "notebook_rl/guards.py"):
+            path = self.root / relative
+            raw = path.read_bytes()
+            path.write_bytes(raw + b"\n# future unreviewed source\n")
+            with self.subTest(relative=relative), self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_CHANGED"):
+                a._scanner_code(self.historical, {})
+            path.write_bytes(raw)
+
+    def test_unknown_partial_and_mixed_historical_sources_fail_closed(self):
+        for key in self.historical:
+            for changed in (self.historical | {key: "0" * 64},
+                            {name: digest for name, digest in self.historical.items() if name != key}):
+                with self.subTest(key=key, changed=changed), self.assertRaises(a._Blocked):
+                    a._scanner_code(changed, {})
+        for relative in ("notebook_rl/schema.py", "notebook_rl/vault.py"):
+            changed = self.historical | {
+                str(Path("/historical/fine_tuning") / relative): a._COMPATIBLE_SCANNER_CODE[relative]}
+            with self.subTest(relative=relative), self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_CHANGED"):
+                a._scanner_code(changed, {})
+        with self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_COVERAGE"):
+            a._scanner_code(self.historical | {"/historical/fine_tuning/extra.py": "0" * 64}, {})
+
+    def test_current_exact_sources_remain_supported_and_future_schema_is_not_legacy(self):
+        code = {str(Path("/current/fine_tuning") / relative): digest
+                for relative, digest in a._COMPATIBLE_SCANNER_CODE.items()}
+        files = {}
+        a._scanner_code(code, files)
+        self.assertEqual(files, {str(self.root / relative): digest
+                                 for relative, digest in a._COMPATIBLE_SCANNER_CODE.items()})
+        (self.root / "notebook_rl/schema.py").write_text("future schema")
+        with self.assertRaisesRegex(a._Blocked, "SCANNER_CODE_CHANGED"):
+            a._scanner_code(self.historical, {})
+
+    def test_legacy_guard_symlink_or_hardlink_is_not_accepted(self):
+        path = self.root / "notebook_rl/guards.py"
+        original = path.read_bytes()
+        path.unlink()
+        source = self.root / "guard-copy.py"
+        source.write_bytes(original)
+        path.symlink_to(source)
+        with self.assertRaisesRegex(ValueError, "unaliased"):
+            a._scanner_code(self.historical, {})
+        path.unlink()
+        path.hardlink_to(source)
+        with self.assertRaisesRegex(ValueError, "unaliased"):
+            a._scanner_code(self.historical, {})
 
 
 if __name__ == "__main__":

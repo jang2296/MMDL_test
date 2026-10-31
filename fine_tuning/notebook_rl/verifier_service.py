@@ -24,17 +24,27 @@ import weakref
 from collections import OrderedDict
 from pathlib import Path
 
+from .reasoning_trace import validate_trace_report
+from .repair_contract import RepairContractError, parse_retry_sections, project_solution
 from .schema import DiagTarget, VerifierResult, from_json, to_json
+from .answers import extract_eval_aligned
+from .verifier import RETRY_OUT_OF_CHOICE_TAG, VERSION as VERIFIER_VERSION
 
-VERSION = "notebook-rl-verifier-service-v1"
+VERSION = "notebook-rl-verifier-service-v5"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_RESULTS = 256
 MAX_SLOTS = 1024
-_METHODS = {"grade", "cause", "diagnosis_target", "route", "grade_diagnosis"}
+_METHODS = {"grade", "trace", "cause", "diagnosis_target", "route", "grade_diagnosis"}
 _CAUSES = {"VISUAL_MISREAD", "VISUAL_RELATION", "NON_VISUAL", "FINALIZATION", "UNKNOWN"}
 _ROUTES = {"verified-any-visual-v1", "verified-any-visual-v1+probe"}
 _ERRORS = {"INVALID_REQUEST", "UNKNOWN_PROBLEM", "UNISSUED_RESULT", "UNISSUED_TARGET",
-           "RESULT_LIMIT", "VERIFIER_ERROR", "VAULT_UNAVAILABLE"}
+           "RESULT_LIMIT", "VERIFIER_ERROR", "VAULT_UNAVAILABLE", "INVALID_RESPONSE_CONTRACT"}
+_VERIFIER_SOURCES = ("verifier_service.py", "verifier.py", "answers.py", "v8_parser.py", "observations.py",
+                     "attribution.py", "reasoning_trace.py", "repair_contract.py", "circuit_trace.py", "schema.py",
+                     "guards.py", "vault.py",
+                     "generators/graph.py", "generators/graph_pair.py", "generators/circuit.py",
+                     "generators/common.py", "../nvw.py", "../circuit_bridge.py", "../graph_bridge.py",
+                     "../ablation.py")
 
 
 class VerifierServiceError(RuntimeError):
@@ -90,7 +100,8 @@ def _result(value: VerifierResult) -> None:
     if value.slots is not None:
         if value.slots.all_total > MAX_SLOTS:
             raise _Rejected("RESULT_LIMIT")
-        _slot_names((*value.slots.wrong_required, *value.slots.conflicting))
+        _slot_names((*value.slots.wrong_required, *value.slots.conflicting,
+                     *value.slots.false_relations, *value.slots.unverified_relations))
 
 
 def _route(value, size: int):
@@ -98,19 +109,20 @@ def _route(value, size: int):
             or type(value[1]) is not dict):
         raise _Rejected("VERIFIER_ERROR")
     route, data = value
-    if (set(data) != {"rule", "observed_evidence", "wrong_required", "complete_required_indices",
+    if (set(data) != {"rule", "observed_evidence", "wrong_required", "false_relations", "complete_required_indices",
                       "probe_evidence", "probe_used", "module_causality_certified"}
             or data["rule"] not in _ROUTES or data["observed_evidence"] not in ("VISUAL", "NON_VISUAL", "UNKNOWN")
             or data["probe_evidence"] not in ("VISUAL", "NON_VISUAL", "UNKNOWN")
             or type(data["probe_used"]) is not bool or data["module_causality_certified"] is not False
             or type(data["wrong_required"]) is not list or len(data["wrong_required"]) > size
+            or type(data["false_relations"]) is not list or len(data["false_relations"]) > size
             or type(data["complete_required_indices"]) is not list
             or len(data["complete_required_indices"]) > size):
         raise _Rejected("VERIFIER_ERROR")
     for index in data["complete_required_indices"]:
         if type(index) is not int or not 0 <= index < size:
             raise _Rejected("VERIFIER_ERROR")
-    for entry in data["wrong_required"]:
+    for entry in data["wrong_required"] + data["false_relations"]:
         if (type(entry) is not dict or set(entry) != {"result_index", "wrong_slots"}
                 or type(entry["result_index"]) is not int or not 0 <= entry["result_index"] < size
                 or type(entry["wrong_slots"]) is not list):
@@ -147,15 +159,46 @@ def _dispatch(verifier, issued: _Issued, request: dict):
     _check_text(pid, identity=True)
     if pid not in verifier.items:
         raise _Rejected("UNKNOWN_PROBLEM")
-    if method == "grade":
-        if set(args) != {"text", "finish_reason", "mode"} or args["finish_reason"] not in ("stop", "length") or args["mode"] not in ("plain", "obs"):
+    if method == "trace":
+        fields = {"text", "finish_reason"}
+        if set(args) not in (fields, fields | {"response_contract"}) or args["finish_reason"] not in ("stop", "length"):
             raise _Rejected("INVALID_REQUEST")
         _check_text(args["text"])
-        result = verifier.grade(pid, args["text"], args["finish_reason"], args["mode"])
+        contract = args.get("response_contract")
+        options = {} if contract is None else {"response_contract": contract}
+        report = verifier.trace(pid, args["text"], args["finish_reason"], **options)
+        validate_trace_report(report, args["text"], args["finish_reason"], response_contract=contract)
+        return report
+    if method == "grade":
+        fields = {"text", "finish_reason", "mode"}
+        if (set(args) not in (fields, fields | {"response_contract"}, fields | {"answer_contract"},
+                              fields | {"response_contract", "retry_out_of_choice"})
+                or args["finish_reason"] not in ("stop", "length") or args["mode"] not in ("plain", "obs")):
+            raise _Rejected("INVALID_REQUEST")
+        _check_text(args["text"])
+        contract, answer_contract = args.get("response_contract"), args.get("answer_contract")
+        rule = args.get("retry_out_of_choice")
+        options = ({} if contract is None else {"response_contract": contract}) | (
+            {} if answer_contract is None else {"answer_contract": answer_contract}) | (
+            {} if rule is None else {"retry_out_of_choice": rule})
+        result = verifier.grade(pid, args["text"], args["finish_reason"], args["mode"], **options)
         _result(result)
         # An extracted answer must come from the submitted response, never the vault.
-        if result.extracted is not None and result.extracted not in args["text"]:
-            raise _Rejected("VERIFIER_ERROR")
+        if answer_contract is not None:
+            # V8 normalises its answer, so re-extract it gold-blind from the response instead of a substring test.
+            item = verifier.items[pid]
+            extracted = extract_eval_aligned(args["text"], args["finish_reason"], verifier.actors[pid].question,
+                                             item.choices, item.answer_type).answer
+            if (result.extracted != extracted
+                    or result.verifier_version != VERIFIER_VERSION + "+" + answer_contract):
+                raise _Rejected("VERIFIER_ERROR")
+        else:
+            body = (args["text"] if contract is None else project_solution(args["text"],
+                    parse_retry_sections(args["text"], contract_version=contract)))
+            if (result.extracted is not None and result.extracted not in body
+                    or contract is not None and result.verifier_version != VERIFIER_VERSION + "+" + contract
+                    + (RETRY_OUT_OF_CHOICE_TAG if rule is not None else "")):
+                raise _Rejected("VERIFIER_ERROR")
         issued.add("result", pid, result)
         return json.loads(to_json(result))
     if method in ("cause", "diagnosis_target"):
@@ -216,18 +259,19 @@ def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
     try:
         # Trusted imports precede the one-shot guard: distribution stdlib files can
         # be hard-linked. Install before opening gold or accepting any actor request.
-        from . import attribution, vault
+        from . import attribution, circuit_trace, reasoning_trace, repair_contract, v8_parser, vault
+        from .generators import circuit, graph, graph_pair
         from .guards import install_guards
         from .schema import load_protocol
         from .verifier import Verifier
-        del attribution
+        del attribution, circuit_trace, reasoning_trace, repair_contract, v8_parser, circuit, graph, graph_pair
         install_guards(forbidden_roots=forbidden_roots,
                        vault_files=[vault_root / "verifier_private.jsonl", vault_root / "lineage.jsonl"],
                        allow_vault=True, allow_benchmark=False)
         vault_root = vault._safe_root(vault_root)
         manifest_sha = hashlib.sha256(vault._read(vault_root / "manifest.yaml")).hexdigest()
         verifier = Verifier(vault_root)
-        actors, lineages = vault.read_actors(vault_root), vault.read_lineage(vault_root)
+        actors, lineages = list(verifier.actors.values()), vault.read_lineage(vault_root)
         if set(verifier.items) != {a.problem_id for a in actors} or set(verifier.items) != set(lineages):
             raise ValueError("vault identities differ")
         for actor in actors:
@@ -238,13 +282,11 @@ def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
         if hashlib.sha256(vault._read(vault_root / "manifest.yaml")).hexdigest() != manifest_sha:
             raise ValueError("vault manifest changed during startup")
         here = Path(__file__).resolve().parent
-        modules = ("verifier_service.py", "verifier.py", "answers.py", "observations.py", "attribution.py",
-                   "schema.py", "guards.py", "vault.py")
         metadata = {"version": VERSION, "pid": os.getpid(), "item_count": len(verifier.items),
                     "vault_manifest_sha256": manifest_sha,
                     "max_frame_bytes": MAX_FRAME_BYTES, "python_guards_installed": True,
                     "os_sandbox": False, "protocol_sha256": load_protocol(here / "protocol_v1.yaml")["sha256"],
-                    "code_sha256": {name: hashlib.sha256((here / name).read_bytes()).hexdigest() for name in modules}}
+                    "code_sha256": {name: hashlib.sha256((here / name).read_bytes()).hexdigest() for name in _VERIFIER_SOURCES}}
         _send(output, {"id": 0, "ok": True, "result": metadata})
     except Exception:
         _send(output, {"id": 0, "ok": False, "error": "VAULT_UNAVAILABLE"})
@@ -269,6 +311,8 @@ def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
             _send(output, {"id": request["id"], "ok": True, "result": value})
         except _Rejected as exc:
             _send(output, {"id": request["id"], "ok": False, "error": str(exc)})
+        except RepairContractError:
+            _send(output, {"id": request["id"], "ok": False, "error": "INVALID_RESPONSE_CONTRACT"})
         except Exception:
             _send(output, {"id": request["id"], "ok": False, "error": "VERIFIER_ERROR"})
 
@@ -300,7 +344,7 @@ def _stop_process(process: subprocess.Popen) -> None:
 
 
 class VerifierService:
-    """Synchronous, thread-serialized five-method interface used by rollout.build_tree."""
+    """Synchronous, thread-serialized verifier interface used by rollout.build_tree."""
     def __init__(self, vault_root: Path, *, forbidden_roots: list[Path], timeout: float = 30.0,
                  max_request_bytes: int = MAX_FRAME_BYTES):
         if (type(timeout) not in (float, int) or not math.isfinite(timeout) or not 0 < timeout <= 120
@@ -309,7 +353,7 @@ class VerifierService:
             raise ValueError("verifier service: invalid explicit bounds/benchmark roots")
         self._timeout, self._limit = float(timeout), max_request_bytes
         self._sequence, self._closed, self._lock = 0, False, threading.Lock()
-        command = [sys.executable, "-m", "fine_tuning.notebook_rl.verifier_service", "--worker",
+        command = [sys.executable, "-B", "-m", "fine_tuning.notebook_rl.verifier_service", "--worker",
                    "--vault-root", str(Path(vault_root).absolute())]
         for root in forbidden_roots:
             command.extend(["--forbidden-root", str(root.absolute())])
@@ -334,8 +378,7 @@ class VerifierService:
                     or metadata["python_guards_installed"] is not True or metadata["os_sandbox"] is not False):
                 raise VerifierServiceError("verifier service: INVALID_RESPONSE")
             here = Path(__file__).resolve().parent
-            expected = ("verifier_service.py", "verifier.py", "answers.py", "observations.py", "attribution.py",
-                        "schema.py", "guards.py", "vault.py")
+            expected = _VERIFIER_SOURCES
             # Code files are public; no actor-side private vault open is needed.
             if (type(metadata["code_sha256"]) is not dict or set(metadata["code_sha256"]) != set(expected)
                     or any(metadata["code_sha256"][name] != hashlib.sha256((here / name).read_bytes()).hexdigest()
@@ -418,15 +461,48 @@ class VerifierService:
                 self.close()
                 raise
 
-    def grade(self, problem_id: str, text: str, finish_reason: str, mode: str) -> VerifierResult:
-        value = self._request("grade", problem_id, {"text": text, "finish_reason": finish_reason, "mode": mode})
+    def grade(self, problem_id: str, text: str, finish_reason: str, mode: str, *,
+              response_contract: str | None = None, answer_contract: str | None = None,
+              retry_out_of_choice: str | None = None) -> VerifierResult:
+        """Under answer_contract the actor side holds no question to re-run V8 here; the worker re-extracts,
+        and audit_native_sample binds the answer to the public actor by the same V8 extraction."""
+        params = {"text": text, "finish_reason": finish_reason, "mode": mode}
+        if response_contract is not None:
+            params["response_contract"] = response_contract
+        if answer_contract is not None:
+            params["answer_contract"] = answer_contract
+        if retry_out_of_choice is not None:
+            params["retry_out_of_choice"] = retry_out_of_choice
+        value = self._request("grade", problem_id, params)
         try:
             result = _record(VerifierResult, value)
             _result(result)
-            if result.extracted is not None and result.extracted not in text:
+            if answer_contract is not None:
+                if result.verifier_version != VERIFIER_VERSION + "+" + answer_contract:
+                    raise _Rejected("VERIFIER_ERROR")
+                return result
+            body = (text if response_contract is None else project_solution(text,
+                    parse_retry_sections(text, contract_version=response_contract)))
+            if (result.extracted is not None and result.extracted not in body
+                    or response_contract is not None
+                    and result.verifier_version != VERIFIER_VERSION + "+" + response_contract
+                    + (RETRY_OUT_OF_CHOICE_TAG if retry_out_of_choice is not None else "")):
                 raise _Rejected("VERIFIER_ERROR")
             return result
         except (TypeError, ValueError, _Rejected):
+            self.close()
+            raise VerifierServiceError("verifier service: INVALID_RESPONSE") from None
+
+    def trace(self, problem_id: str, text: str, finish_reason: str, *,
+              response_contract: str | None = None) -> dict:
+        params = {"text": text, "finish_reason": finish_reason}
+        if response_contract is not None:
+            params["response_contract"] = response_contract
+        report = self._request("trace", problem_id, params)
+        try:
+            validate_trace_report(report, text, finish_reason, response_contract=response_contract)
+            return report
+        except (TypeError, ValueError):
             self.close()
             raise VerifierServiceError("verifier service: INVALID_RESPONSE") from None
 

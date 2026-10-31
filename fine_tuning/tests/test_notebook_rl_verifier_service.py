@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 import signal
 import struct
 import subprocess
@@ -139,7 +140,8 @@ with VerifierService(root,forbidden_roots=[root.parent/'benchmark']) as service:
             service.route(self.actor.problem_id, [None] * 257, "verified-any-visual-v1")
 
     def test_timeout_kills_owned_process_and_disallows_fallback(self):
-        service = self.service(timeout=5)
+        # Startup uses the normal bound; the stopped request alone exercises 250ms.
+        service = self.service()
         service._timeout = 0.25
         os.kill(service._process.pid, signal.SIGSTOP)
         started = time.monotonic()
@@ -173,6 +175,7 @@ with VerifierService(root,forbidden_roots=[root.parent/'benchmark']) as service:
             process.communicate(timeout=5)
         self.addCleanup(cleanup)
         def receive():
+            assert process.stdout is not None
             length = struct.unpack("!I", process.stdout.read(4))[0]
             self.assertLessEqual(length, MAX_FRAME_BYTES)
             return json.loads(process.stdout.read(length))
@@ -243,6 +246,37 @@ with VerifierService(root,forbidden_roots=[root.parent/'benchmark']) as service:
         self.assertEqual(service.grade(self.actor.problem_id, "Final answer: 8", "stop", "plain").status, "INCORRECT")
         self.assertEqual(service.metadata["vault_manifest_sha256"],
                          hashlib.sha256((self.root / "manifest.yaml").read_bytes()).hexdigest())
+
+    def test_fresh_worker_does_not_write_bytecode_without_environment_flag(self):
+        source = Path(__file__).parents[1]
+        copied = self.base / "source" / "fine_tuning"
+        shutil.copytree(source / "notebook_rl", copied / "notebook_rl",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for name in ("__init__.py", "nvw.py", "circuit_bridge.py", "graph_bridge.py", "ablation.py"):
+            shutil.copyfile(source / name, copied / name)
+        inventory = sorted(path.relative_to(copied) for path in copied.rglob("*"))
+        cache = self.base / "pycache"
+        env = dict(os.environ, PYTHONPATH=str(copied.parent), PYTHONPYCACHEPREFIX=str(cache))
+        env.pop("PYTHONDONTWRITEBYTECODE", None)
+        popen = subprocess.Popen
+
+        def spawn(command, **kwargs):
+            return popen(command, cwd=copied.parent, env=env, **kwargs)
+
+        # Parent-only suppression must also hold in the fresh interpreter.
+        with patch.object(sys, "dont_write_bytecode", True), patch(
+                "fine_tuning.notebook_rl.verifier_service.subprocess.Popen", side_effect=spawn) as child:
+            with self.service() as service:
+                self.assertNotEqual(service.metadata["pid"], os.getpid())
+                for name in ("circuit_trace.py", "generators/circuit.py", "generators/common.py",
+                             "../nvw.py", "../circuit_bridge.py", "../graph_bridge.py", "../ablation.py"):
+                    self.assertEqual(service.metadata["code_sha256"][name],
+                                     hashlib.sha256((copied / "notebook_rl" / name).read_bytes()).hexdigest())
+                self.assertEqual(service.grade(self.actor.problem_id, "Final answer: 7", "stop", "plain").status,
+                                 "CORRECT")
+            child.assert_called_once()
+        self.assertEqual(list(cache.rglob("*.pyc")), [])
+        self.assertEqual(sorted(path.relative_to(copied) for path in copied.rglob("*")), inventory)
 
     def test_issued_results_are_bound_to_problem_not_only_content(self):
         actor, verifier, lineage, *_ = records()

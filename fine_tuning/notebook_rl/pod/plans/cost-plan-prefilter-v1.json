@@ -1,0 +1,17 @@
+{
+  "version": "cost-plan-v1",
+  "notes": [
+    "F0 pass-rate prefilter (k=8 first attempts, no retries, no update); project with the PASSRATE receipt <stage1 run_dir>/out/passrate/throughput_receipt.json (n_samples 8, retries 0).",
+    "pilot items 3420 = INCLUDED train items of freeze-v2 (hf-pool-v3/freeze-v2/summary.md, sha256 540dcc2af8dd9593ca29f47cb8e784c1ec258362f09176db39ae8cdaf7541a03), an upper bound: the eligible distinct-structure count after propose-proof's default source exclusions is lower; replace it with prefilter.items.",
+    "setup and reserve are counted in cost-plan-v1.json, so they are 0 here; add the two totals."
+  ],
+  "hourly_usd": 0.59,
+  "setup_minutes": 0,
+  "reserve_usd": 0.0,
+  "range": 0.5,
+  "gpu_memory_gib": 48,
+  "stages": [
+    {"name": "stage1-prefilter", "items": 16, "n_samples": 8, "retries_per_item": 0},
+    {"name": "pilot-300-prefilter", "items": 3420, "n_samples": 8, "retries_per_item": 0}
+  ]
+}

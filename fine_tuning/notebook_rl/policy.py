@@ -184,10 +184,11 @@ def completion_logprobs(bundle: PolicyBundle, sample_inputs: dict, completion_le
     return _logprobs(bundle, sample_inputs, completion_len, chunk)
 
 
-def reference_logprobs(bundle: PolicyBundle, sample_inputs: dict, completion_len: int) -> torch.Tensor:
+def reference_logprobs(bundle: PolicyBundle, sample_inputs: dict, completion_len: int, *,
+                       chunk: int = 1024) -> torch.Tensor:
     try:
         with torch.no_grad(), bundle.model.disable_adapter():
-            return _logprobs(bundle, sample_inputs, completion_len, 1024)
+            return _logprobs(bundle, sample_inputs, completion_len, chunk)
     finally:
         # PEFT re-enables all adapters on exit, including a previously blocked Vision branch.
         bundle.route.apply(bundle.route.vision_on)
