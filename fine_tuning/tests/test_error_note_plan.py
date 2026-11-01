@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +97,30 @@ class ErrorNotePlanTests(unittest.TestCase):
                     planner.plan("note-300", changed)
         with self.assertRaises(ValueError):
             planner.plan("eval-ft", params())
+
+    def test_auto_kv_and_seqs_pass_through(self) -> None:
+        spec = planner.plan("note-3417", params(kv_cache_gib="auto", seqs="auto", pilot_limit=20))
+        self.assertIs(chain.check_spec(spec), spec)
+        for step in spec["steps"]:
+            argv = step["argv"]
+            if "--kv-cache-gib" in argv:
+                self.assertEqual(argv[argv.index("--kv-cache-gib") + 1], "auto", step["name"])
+        sweep = {step["name"]: step for step in spec["steps"]}["sweep"]["argv"]
+        self.assertEqual(sweep[sweep.index("--seqs") + 1], "auto")
+        fixed = {step["name"]: step for step in planner.plan("note-300", params())["steps"]}["sweep"]["argv"]
+        self.assertEqual((fixed[fixed.index("--seqs") + 1], fixed[fixed.index("--kv-cache-gib") + 1]), ("1,2,4", "8.5"))
+
+    def test_bad_kv_and_seqs_still_refused(self) -> None:
+        cases = {
+            "kv text": {"kv_cache_gib": "fast"}, "kv upper auto": {"kv_cache_gib": "AUTO"}, "kv zero": {"kv_cache_gib": 0},
+            "kv negative": {"kv_cache_gib": -1}, "kv bool": {"kv_cache_gib": True}, "kv nan": {"kv_cache_gib": math.nan},
+            "kv list": {"kv_cache_gib": ["auto"]}, "seqs text": {"seqs": "fast"}, "seqs upper auto": {"seqs": "AUTO"},
+            "seqs csv string": {"seqs": "1,2"}, "seqs empty": {"seqs": []}, "seqs zero": {"seqs": [0]},
+            "seqs bool": {"seqs": [True]}, "seqs float": {"seqs": [1.5]}, "seqs mixed": {"seqs": [4, "auto"]},
+        }
+        for name, changes in cases.items():
+            with self.subTest(case=name), self.assertRaises(ValueError):
+                planner.plan("note-300", params(**changes))
 
     def test_same_params_same_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -2,8 +2,8 @@
 
 Nothing here trains or selects. ``run-eval`` only registers the three 8k variant IDs inside its own process
 and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
-The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots, an 8192-token output
-cap, the image budget 262144..1310720 pixels (an evaluation budget, not the RL training budget) and a 24576
+The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots (the configs' batch_size; a
+run executes MMDL_EVAL_SLOTS slots, see ``resolve_slots``), an 8192-token output cap, the image budget 262144..1310720 pixels (an evaluation budget, not the RL training budget) and a 24576
 context. The c16 variant files stay on disk but are not registered.
 Scope: every preregistered run is a ``--mode partial`` run on one of two subsets of the 900 MMMU-val items, both
 derived from the frozen B2 + team-final-answer-v8 baseline and bound by sha256 in the preregistration
@@ -35,6 +35,7 @@ import math
 import os
 import re
 import statistics
+import subprocess
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -55,7 +56,7 @@ HERE = Path(__file__).resolve().parent
 FORMAT = "notebook-rl-proof-prereg-v3"
 SUBSET_VERSION = "proof-eval-subset-v1"
 REST_SUBSET_VERSION = "proof-eval-subset-rest-v1"
-ARMS = ("F0", "FT-NOTE", "FT-SOLUTION")
+ARMS = ("F0", "FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417")
 # subset tag -> (file version, B2 key it must equal)
 SUBSETS = {"wrong": (SUBSET_VERSION, "wrong_ids"), "rest": (REST_SUBSET_VERSION, "right_ids")}
 SEEDS = (3407, 3408, 3409)
@@ -169,7 +170,18 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
 
 V8 = "mmmu-val-v8"
 # The only differences of a registered variant from its mmmu-val-v8 twin besides protocol_id and seed.
+# Slots = concurrent requests = vLLM max_num_seqs. 32 is the batch_size of the preregistered configs (their
+# config_digest) and the default; a run may execute more via MMDL_EVAL_SLOTS (resolve_slots), recorded in its
+# registration. analyze/gate refuse to compare runs of different slots or GPUs.
 FAST_SLOTS = 32
+SLOTS_ENV = "MMDL_EVAL_SLOTS"
+# auto_slots inputs (the backend fixes gpu_memory_utilization at 0.90, vllm_backend.py)
+GPU_MEMORY_UTILIZATION = 0.90
+WEIGHTS_GIB = 8.68  # model weights
+OTHER_VLLM_GIB = 5.0  # other vLLM memory, about
+KV_TOKENS_PER_GIB = 7280  # KV-cache tokens per GiB
+MEAN_CONTEXT_TOKENS = 4800  # time-weighted mean context of a running request
+SLOT_STEP = 8
 FAST_MAX_NEW_TOKENS = 8192
 FAST_PIXELS = {"min_pixels": 262144, "max_pixels": 1310720}  # evaluation budget; the RL path (local_profile) keeps its own, smaller max_pixels
 FAST_MAX_MODEL_LEN = 24576
@@ -179,22 +191,62 @@ PATCHED_SRC = ("src/mmdl/runtime/contracts.py", "src/mmdl/evaluation/backends/vl
 REGISTRATION_FILE = "variant_registration.json"
 
 
-def variant_registration(protocol_id: str) -> dict:
-    """What run-eval registers and the exact src/ + proof_eval bytes it patched around."""
+def auto_slots(total_gib: float) -> int:
+    """Slots a GPU of ``total_gib`` GiB can feed: KV memory left after weights and other vLLM memory, as running
+    requests of the mean context, rounded down to a multiple of 8; never below the 32 of the preregistered configs."""
+    kv_gib = GPU_MEMORY_UTILIZATION * total_gib - WEIGHTS_GIB - OTHER_VLLM_GIB
+    return max(FAST_SLOTS, math.floor(kv_gib * KV_TOKENS_PER_GIB / MEAN_CONTEXT_TOKENS / SLOT_STEP) * SLOT_STEP)
+
+
+def gpu_info() -> tuple[str | None, int | None]:
+    """(name, total MiB) of the first GPU from nvidia-smi; (None, None) when it cannot be read."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, check=True, timeout=30).stdout
+        name, total = out.splitlines()[0].rsplit(",", 1)
+        return name.strip(), int(total)
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return None, None
+
+
+def resolve_slots() -> dict:
+    """Slots of this run-eval process, resolved once: MMDL_EVAL_SLOTS = positive int | "auto" | unset (= 32)."""
+    raw = os.environ.get(SLOTS_ENV)
+    name, total_mib = gpu_info()
+    if raw is None:
+        slots, source = FAST_SLOTS, "default"
+    elif raw == "auto":
+        if total_mib is None:
+            raise ValueError(f"proof_eval: {SLOTS_ENV}=auto needs nvidia-smi to report the GPU memory")
+        slots, source = auto_slots(total_mib / 1024), "auto"
+    elif re.fullmatch(r"[1-9][0-9]*", raw):
+        slots, source = int(raw), "env"
+    else:
+        raise ValueError(f"proof_eval: {SLOTS_ENV} must be a positive integer or 'auto', not {raw!r}")
+    return {"slots": slots, "slots_source": source, "gpu_total_mib": total_mib, "gpu_name": name}
+
+
+def variant_registration(protocol_id: str, resolved: dict | None = None) -> dict:
+    """What run-eval registers and the exact src/ + proof_eval bytes it patched around.
+
+    ``resolved`` = resolve_slots() (default: resolved now); its slots and GPU facts are part of the registration."""
     from mmdl.runtime import contracts
 
+    resolved = resolve_slots() if resolved is None else resolved
     return {
         "format": "proof-eval-variant-registration-v1", "protocol_id": protocol_id,
         "protocol_file_sha256": sha256_file(VARIANTS[protocol_id][0]),
+        **resolved,
         "registered": {pid: {"seed": seed, "parser": PARSER, "max_new_tokens": FAST_MAX_NEW_TOKENS,
-                             "control_images": _fast_images(contracts), "execution_profile": _fast_execution(contracts)}
+                             "control_images": _fast_images(contracts),
+                             "execution_profile": _fast_execution(contracts, resolved["slots"])}
                        for pid, seed in REGISTERED.items()},
         "patched": {
-            "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, 32 slots, 8192 output tokens, "
-                                                       "262144..1310720 pixels, 24576 context, V8 parser; all else "
-                                                       "validated as the mmmu-val-v8 twin; other IDs unchanged",
+            "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, config batch_size 32, 8192 output "
+                                                       "tokens, 262144..1310720 pixels, 24576 context, V8 parser; all "
+                                                       "else validated as the mmmu-val-v8 twin; other IDs unchanged",
             "mmdl.evaluation.backends.vllm_backend.VLLMBackend.__init__": "registered IDs: slot check sees 2, vLLM "
-                                                                          "max_num_seqs=32, batch_size=32; other IDs unchanged"},
+                                                                          "max_num_seqs=batch_size=slots; other IDs unchanged"},
         "src_files": {p: sha256_file(ROOT / p) for p in PATCHED_SRC},
         "proof_eval_sha256": sha256_file(Path(__file__)),
         "entry_point": "python -m fine_tuning.notebook_rl.proof_eval run-eval <scripts/eval.sh arguments>; "
@@ -217,13 +269,17 @@ def _fast_images(contracts) -> dict:
     return dict(contracts.CONTROL_IMAGES[V8], **FAST_PIXELS)
 
 
-def _fast_execution(contracts) -> dict:
-    return dict(contracts.EXECUTION_PROFILES[V8], batch_size=FAST_SLOTS, max_model_len=FAST_MAX_MODEL_LEN)
+def _fast_execution(contracts, slots: int = FAST_SLOTS) -> dict:
+    return dict(contracts.EXECUTION_PROFILES[V8], batch_size=slots, max_model_len=FAST_MAX_MODEL_LEN)
 
 
 @contextmanager
-def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterator[None]:
-    """Register exactly the 8k IDs in this process; tables and functions are restored on exit."""
+def registered_variants(on_backend: Callable[[], None] | None = None, slots: int = FAST_SLOTS) -> Iterator[None]:
+    """Register exactly the 8k IDs in this process; tables and functions are restored on exit.
+
+    ``slots`` is what the backend executes. Registered configs keep batch_size 32 (their preregistered
+    config_digest, so the resolved config of every run stays the preregistered one): the validator accepts
+    exactly that and the backend is widened to ``slots``."""
     from mmdl.evaluation.backends import vllm_backend
     from mmdl.runtime import contracts
 
@@ -241,8 +297,9 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
                 or type(tokens) is not int or tokens != FAST_MAX_NEW_TOKENS
                 or cfg.get("image") != contracts.CONTROL_IMAGES[pid]
                 or cfg["execution"] != contracts.EXECUTION_PROFILES[pid]):
-            raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, 32 slots, 8192 output tokens, "
-                             "262144..1310720 pixels, 24576 context and the V8 parser")
+            raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, config batch_size {FAST_SLOTS} "
+                             f"(this run executes {slots} slots), 8192 output tokens, 262144..1310720 pixels, "
+                             "24576 context and the V8 parser")
         twin = copy.deepcopy(cfg)
         twin["protocol_id"], twin["generation"]["seed"], twin["generation"]["max_new_tokens"] = V8, 3407, 32768
         twin["image"] = dict(contracts.CONTROL_IMAGES[V8])
@@ -265,7 +322,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
             def llm(**kwargs):
                 if kwargs.get("max_num_seqs") != 2:
                     raise RuntimeError("proof_eval: unexpected VLLMBackend structure; refusing to widen slots")
-                return llm_cls(**kwargs | {"max_num_seqs": FAST_SLOTS})
+                return llm_cls(**kwargs | {"max_num_seqs": slots})
             return llm, sampling_cls, version
 
         vllm_backend._vllm = widened
@@ -275,7 +332,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
             vllm_backend._vllm = real
         if self.batch_size != 2 or self.cfg is not view:
             raise RuntimeError("proof_eval: unexpected VLLMBackend structure after load")
-        self.cfg, self.batch_size = cfg, FAST_SLOTS
+        self.cfg, self.batch_size = cfg, slots
 
     try:
         for pid in REGISTERED:
@@ -308,14 +365,18 @@ def run_eval(argv: list[str]) -> int:
                          "the c2 course run (mmmu-val-v8) uses plain scripts/eval.sh")
     artifact_root = known.artifact_root if known.artifact_root.is_absolute() else ROOT / known.artifact_root
     run_dir = artifact_root / "runs" / known.run_id
-    registration = variant_registration(pid)
+    resolved = resolve_slots()
+    registration = variant_registration(pid, resolved)
+    print(f"proof_eval: {resolved['slots']} slots ({resolved['slots_source']}) on {resolved['gpu_name']} "
+          f"{resolved['gpu_total_mib']} MiB", flush=True)
     from mmdl.evaluation import cli
 
     cwd, saved_argv = Path.cwd(), sys.argv
     os.chdir(ROOT)  # scripts/eval.sh runs the CLI from the repository root
     sys.argv = ["mmdl.evaluation.cli", *argv]
     try:
-        with registered_variants(on_backend=lambda: _record_registration(run_dir, registration)):
+        with registered_variants(on_backend=lambda: _record_registration(run_dir, registration),
+                                 slots=resolved["slots"]):
             cli.main()
     finally:
         sys.argv = saved_argv
@@ -401,6 +462,10 @@ def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path 
                                           "(proof_eval export); a comparison arm that never replaces FT-NOTE",
                             "model_ref": "bound at analysis by --ft-solution-model-ref; all FT-SOLUTION runs share "
                                          "its model_sha256"},
+            "FT-NOTE-3417": {"definition": "merged BF16 export of the single checkpoint trained with the note on all "
+                                           "3,417 ordered items; run only after the 300-item gate passes",
+                             "model_ref": "bound at analysis by --ft-note-3417-model-ref; all FT-NOTE-3417 runs share "
+                                          "its model_sha256"},
         },
         "evaluation_subsets": items,
         "protocol_variants": variants,
@@ -723,6 +788,19 @@ def _subset_report(ids: list[str], by_arm: dict[str, dict[str, dict]]) -> dict:
             "per_discipline": {a: _grouped(m, ids, DISCIPLINES) for a, m in item_mean.items()}}
 
 
+def _require_same_slots_and_gpu(runs: list[dict]) -> None:
+    """Concurrency and hardware shift sampling numerics slightly: runs compared or pooled must share both.
+
+    A registration without the keys (written before they existed) counts as 32 slots on an unknown GPU."""
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    for run in runs:
+        reg = run["registration"] or {}
+        groups[(reg.get("slots", FAST_SLOTS), reg.get("gpu_name"))].append(Path(run["run_dir"]).name)
+    if len(groups) > 1:
+        raise ValueError("proof_eval: runs of different slots or GPU cannot be compared or pooled: " + "; ".join(
+            f"slots={slots} gpu={gpu}: {', '.join(sorted(ids))}" for (slots, gpu), ids in sorted(groups.items(), key=str)))
+
+
 def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, Path] | None, ledger: Path) -> dict:
     """Every run directory of the ledger: finished runs are scored, unfinished ones listed; seeds only as means."""
     prereg, prereg_sha = load_preregistration(prereg_path)
@@ -788,6 +866,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
         if (reg is None or reg.get("protocol_id") != key[1]
                 or reg.get("protocol_file_sha256") != prereg["protocol_variants"][key[1]]["sha256"]):
             raise ValueError(f"proof_eval: statistical run {key} lacks its matching {REGISTRATION_FILE}")
+    _require_same_slots_and_gpu(list(runs.values()))
     if len({digest({k: x for k, x in r["registration"].items() if k not in ("protocol_id", "protocol_file_sha256")})
             for r in runs.values()}) != 1:
         raise ValueError("proof_eval: statistical runs must share one registration (src and proof_eval bytes)")
@@ -823,6 +902,7 @@ def gate_300(results: dict) -> dict:
     Seeds are the ones both F0 and FT-NOTE finished and are combined only as means. Token statistics and the
     no-parse / length-finish counts of the collapse alert are the seed means of the per-seed values. A threshold for
     spending more, never proof of improvement."""
+    _require_same_slots_and_gpu(results.get("runs", []))
     wrong = results["subsets"]["wrong"]
     f0, note = wrong["arms"].get("F0"), wrong["arms"].get("FT-NOTE")
     seeds = sorted(set(f0["seeds"]) & set(note["seeds"])) if f0 and note else []
@@ -949,6 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
                              help="eval run dirs or their predictions.jsonl (dir name = ledger run id)")
     ana.add_argument("--ft-note-model-ref", type=Path, default=None)
     ana.add_argument("--ft-solution-model-ref", type=Path, default=None)
+    ana.add_argument("--ft-note-3417-model-ref", type=Path, default=None)
     ana.add_argument("--output", type=Path, required=True, help="report path; .json and .md are written")
     gate.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
     args = parser.parse_args(argv)
@@ -976,7 +1057,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"GATE {result['status']} mean_diff={result['mean_diff']:.3f} collapse_alert={result['collapse_alert']}")
     else:
         refs = {arm: path for arm, path in (("FT-NOTE", args.ft_note_model_ref),
-                                            ("FT-SOLUTION", args.ft_solution_model_ref)) if path}
+                                            ("FT-SOLUTION", args.ft_solution_model_ref),
+                                            ("FT-NOTE-3417", args.ft_note_3417_model_ref)) if path}
         report = analyze(args.prereg, args.runs, refs, args.ledger)
         _write_once(args.output.with_suffix(".json"), json.dumps(report, indent=2, sort_keys=True) + "\n")
         _write_once(args.output.with_suffix(".md"), render_markdown(report))

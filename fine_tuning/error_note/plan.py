@@ -6,7 +6,9 @@ Writes STEPS.json once (an existing file is refused) and prints its sha256. Same
 Executes nothing; the job's main argv runs the steps with `pod.chain run --spec STEPS.json`.
 
 params (`error-note-plan-params-v1`): exactly the keys below; the paths are canonical absolute paths.
-pilot_limit 0 omits the pilot steps. Step timeouts by kind: pin-order and the collect steps -> collect;
+pilot_limit 0 omits the pilot steps. kv_cache_gib is a positive number or "auto"; seqs is a non-empty list of positive
+integers or "auto". Both reach collect as given, and collect sizes the KV cache and the sweep from the GPU's memory.
+Step timeouts by kind: pin-order and the collect steps -> collect;
 train-* and pilot-train -> train; reload-* and pilot-reload -> reload; pilot-export -> export.
 """
 from __future__ import annotations
@@ -70,11 +72,11 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     _positive_int(params, "max_num_batched_tokens", 1)
     _positive_int(params, "token_budget", 1)
     kv = params["kv_cache_gib"]
-    if isinstance(kv, bool) or not isinstance(kv, (int, float)) or not math.isfinite(kv) or kv <= 0:
-        raise ValueError("kv_cache_gib must be a positive finite number")
+    if kv != "auto" and (isinstance(kv, bool) or not isinstance(kv, (int, float)) or not math.isfinite(kv) or kv <= 0):
+        raise ValueError('kv_cache_gib must be a positive finite number or "auto"')
     seqs = params["seqs"]
-    if not isinstance(seqs, list) or not seqs or any(type(s) is not int or s < 1 for s in seqs):
-        raise ValueError("seqs must be a non-empty list of positive integers")
+    if seqs != "auto" and (not isinstance(seqs, list) or not seqs or any(type(s) is not int or s < 1 for s in seqs)):
+        raise ValueError('seqs must be a non-empty list of positive integers or "auto"')
     if params["gradient_checkpointing"] not in ("on", "off"):
         raise ValueError('gradient_checkpointing must be "on" or "off"')
     arms = params["arms"]
@@ -99,6 +101,7 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     order = f"{p['repo_root']}/fine_tuning/error_note/item_order.json"
     collect_cmd, train_cmd, chain_cmd = [py, "-m", COLLECT], [py, "-m", TRAIN], [py, "-m", CHAIN]
     collect_dir, limit, timeouts = f"{out}/collect", str(p["limit"]), p["timeouts"]
+    seqs = p["seqs"] if p["seqs"] == "auto" else ",".join(str(s) for s in p["seqs"])
 
     def common(model_path: str) -> list[str]:
         return ["--build-root", build, "--order", order, "--model-path", model_path,
@@ -145,7 +148,7 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
         ]
     steps += [
         _step("sweep", [*collect_cmd, "sweep", *common(model), "--limit", limit, "--output", collect_dir,
-                        "--seqs", ",".join(str(s) for s in p["seqs"]), "--seconds", str(p["sweep_seconds"])],
+                        "--seqs", seqs, "--seconds", str(p["sweep_seconds"])],
               [f"{collect_dir}/sweep.json"], "collect", timeouts),
         _step("note", [*collect_cmd, "note", *common(model), "--limit", limit, "--output", collect_dir,
                        "--max-num-seqs-from", f"{collect_dir}/sweep.json"],

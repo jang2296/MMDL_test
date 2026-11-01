@@ -13,6 +13,7 @@ import concurrent.futures
 import contextlib
 import itertools
 import json
+import math
 import os
 import subprocess
 import sys
@@ -20,7 +21,7 @@ import threading
 import time
 import warnings
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
@@ -35,6 +36,15 @@ PREFETCH_WORKERS = 8
 THROUGHPUT_EVERY = 60.0
 SKIPPED_T1_STATUSES = ("UNVERIFIABLE", "CONTEXT_BLOCKED")
 MIB = 1024 * 1024
+# Auto sizing (--kv-cache-gib auto, --seqs auto) from measured Qwen3-VL-4B BF16 vLLM runs; keep these numbers in sync with them.
+WEIGHTS_GIB = 8.68            # model weights
+OTHER_VLLM_GIB = 5.0          # other vLLM memory at 32-48 concurrency (A40 peak 41.66 GiB with KV 28 GiB)
+KV_TOKENS_PER_GIB = 7280      # 8 GiB of KV cache gave 58,240 tokens
+MEAN_CONTEXT_TOKENS = 4800    # time-weighted mean context of a running sequence
+AUTO_RESERVE_GIB = 16         # kept outside the KV cache: WEIGHTS_GIB + OTHER_VLLM_GIB plus about 2.3 GiB of margin
+MIN_AUTO_KV_GIB = 8
+SEQS_STEP = 8
+SEQS_FACTORS = (0.75, 1.0, 1.25)
 
 
 class InputTooLong(ValueError):
@@ -50,6 +60,7 @@ class StreamStats:
     stopped_early: bool = False
     metrics: Callable[[], dict | None] | None = None  # set by the engine builder: {"generation_tokens", "preemptions"}
     on_step: Callable[[], None] | None = None
+    receipt_extra: dict = field(default_factory=dict)  # merged into the final receipt (resolved KV size and its source)
 
 
 Stream = Callable[[Iterable[dict], StreamStats, float | None], Iterator[tuple[dict, dict]]]
@@ -367,7 +378,7 @@ def run_generation(stage: str, out: Path, requests: Iterable[dict], stream: Stre
         raise
     finally:
         tick(force=True)
-        receipt = snapshot() | {"completed": error is None and not stats.stopped_early, "error": error}
+        receipt = snapshot() | stats.receipt_extra | {"completed": error is None and not stats.stopped_early, "error": error}
         write_json(out / f"receipt-{stage}.json", receipt)
     return receipt
 
@@ -448,6 +459,38 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
                           stop_after=stop_after, every=every, gpu_probe=gpu_probe)
 
 
+# ------------------------------------------------------------------ auto sizing from the GPU's memory
+
+def gpu_total_gib() -> float:
+    """Total memory of GPU 0 in GiB from nvidia-smi, so the calling process holds no CUDA context."""
+    total_mib = _gpu_sample()[2]
+    if total_mib is None:
+        raise RuntimeError("--kv-cache-gib auto: nvidia-smi did not report the GPU memory")
+    return total_mib / 1024
+
+
+def auto_kv_gib(total_gib: float) -> int:
+    kv = math.floor(total_gib - AUTO_RESERVE_GIB)
+    if kv < MIN_AUTO_KV_GIB:
+        raise ValueError(f"--kv-cache-gib auto: a {total_gib:.1f} GiB GPU leaves {kv} GiB for the KV cache, "
+                         f"below the minimum of {MIN_AUTO_KV_GIB}")
+    return kv
+
+
+def auto_seqs(kv_gib: int) -> list[int]:
+    """Sweep candidates around the concurrency the KV cache holds at the mean context: multiples of 8, sorted, distinct."""
+    estimate = kv_gib * KV_TOKENS_PER_GIB / MEAN_CONTEXT_TOKENS
+    return sorted({max(SEQS_STEP, round(factor * estimate) // SEQS_STEP * SEQS_STEP) for factor in SEQS_FACTORS})
+
+
+def resolve_kv(kv_arg: float | str, total_gib: Callable[[], float] = gpu_total_gib) -> dict:
+    """The GPU is read only for "auto"."""
+    if kv_arg != "auto":
+        return {"gpu_total_gib": None, "kv_cache_gib_resolved": kv_arg, "kv_source": "fixed"}
+    total = total_gib()
+    return {"gpu_total_gib": total, "kv_cache_gib_resolved": auto_kv_gib(total), "kv_source": "auto"}
+
+
 # ------------------------------------------------------------------ engines (GPU; not exercised by the unit tests)
 
 def vllm_metrics(llm: Any) -> dict | None:
@@ -461,6 +504,8 @@ def vllm_metrics(llm: Any) -> dict | None:
 
 def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream:
     def stream(requests: Iterable[dict], stats_: StreamStats, stop_after: float | None) -> Iterator[tuple[dict, dict]]:
+        kv = resolve_kv(args.kv_cache_gib)  # before the heavy imports: a GPU too small for "auto" fails fast
+        stats_.receipt_extra |= kv
         os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
         from importlib.metadata import version
 
@@ -475,7 +520,7 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
             raise RuntimeError("collect: vllm==0.11.0 required")
         began = time.monotonic()
         model_path = str(args.model_path)
-        kwargs = vllm_kwargs(Path(model_path), IMAGE, int(args.kv_cache_gib * 2**30), args.max_num_seqs, CONTEXT_LIMIT,
+        kwargs = vllm_kwargs(Path(model_path), IMAGE, int(kv["kv_cache_gib_resolved"] * 2**30), args.max_num_seqs, CONTEXT_LIMIT,
                              gpu_memory_utilization=float(args.gpu_memory_utilization))
         kwargs |= {"max_num_batched_tokens": args.max_num_batched_tokens, "disable_log_stats": False}
         processor = AutoProcessor.from_pretrained(model_path, local_files_only=True, min_pixels=IMAGE["min_pixels"],
@@ -602,16 +647,20 @@ def _run_child(command: list[str]) -> int:
     return subprocess.run(command).returncode
 
 
-def sweep(args: argparse.Namespace, run_child: Callable[[list[str]], int] = _run_child) -> int:
-    """One short solve child per --seqs value, then a final child with the fastest S that runs the rest to completion."""
+def sweep(args: argparse.Namespace, run_child: Callable[[list[str]], int] = _run_child,
+          total_gib: Callable[[], float] = gpu_total_gib) -> int:
+    """One short solve child per --seqs value (or "auto": candidates from the KV size), then a final child with the
+    fastest S that runs the rest to completion. The children get --kv-cache-gib as given and resolve it themselves."""
     out, items = Path(args.output), _prefix(args)
+    kv = resolve_kv(args.kv_cache_gib, total_gib)
+    seqs_values = (auto_seqs(int(kv["kv_cache_gib_resolved"])) if args.seqs == "auto"
+                   else [int(v) for v in args.seqs.split(",")])
     out.mkdir(parents=True, exist_ok=True)
     total, ids = len(items), {item["problem_id"] for item in items}
 
     def finished() -> int:
         return len(ids & set(read_jsonl_done(out / "t1.jsonl", repair=False)))
 
-    seqs_values = [int(v) for v in args.seqs.split(",")]
     runs: list[dict] = []
     for seqs in seqs_values:
         if finished() >= total:
@@ -625,7 +674,7 @@ def sweep(args: argparse.Namespace, run_child: Callable[[list[str]], int] = _run
         runs.append(receipt)
     measured = [run for run in runs if run.get("tokens_per_second") is not None]
     best = max(measured, key=lambda run: (run["tokens_per_second"], -run["S"]))["S"] if measured else None
-    result = {"runs": runs, "best_seqs": best}
+    result = {"runs": runs, "best_seqs": best} | kv | {"seqs_resolved": seqs_values}
     write_json(out / "sweep.json", result)
     if best is not None and finished() < total:
         code = run_child(_child_command(args, best, None))
@@ -760,6 +809,15 @@ def _rows(args: argparse.Namespace) -> int:
     return 0
 
 
+def _kv_arg(text: str) -> float | str:
+    if text == "auto":
+        return text
+    value = float(text)
+    if not math.isfinite(value) or value <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number or 'auto'")
+    return value
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -773,7 +831,7 @@ def _parser() -> argparse.ArgumentParser:
     def engine(p: argparse.ArgumentParser) -> None:
         p.add_argument("--model-path", type=Path, required=True)
         p.add_argument("--engine", choices=("vllm", "hf"), required=True)
-        p.add_argument("--kv-cache-gib", type=float, default=28)
+        p.add_argument("--kv-cache-gib", type=_kv_arg, default=28, help="GiB of KV cache, or auto (GPU memory - 16)")
         p.add_argument("--max-num-batched-tokens", type=int, default=16384)
         p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
 
@@ -788,7 +846,7 @@ def _parser() -> argparse.ArgumentParser:
         if name != "sweep":
             run_options(p)
     sub.choices["note"].add_argument("--max-num-seqs-from", type=Path, default=None)
-    sub.choices["sweep"].add_argument("--seqs", required=True)
+    sub.choices["sweep"].add_argument("--seqs", required=True, help="comma list of --max-num-seqs values, or auto")
     sub.choices["sweep"].add_argument("--seconds", type=float, default=300.0)
     rows = sub.add_parser("rows")
     common(rows)

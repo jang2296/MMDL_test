@@ -589,6 +589,28 @@ class EvalStagePlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'proof-eval-subset-v1'):
             eval_stage.plan('eval-f0', wrong_file)
 
+    def test_eval_slots_prefix_only_the_run_eval_argv(self):
+        for stage in eval_stage.STAGES:
+            plain = eval_stage.plan(stage, self.params(stage))
+            self.assertNotIn('eval_slots', json.dumps(plain))
+            for slots in ('auto', 48):
+                spec = eval_stage.plan(stage, self.params(stage, eval_slots=slots))
+                chain.check_spec(spec)
+                self.assertNotEqual(plain['meta']['params_sha256'], spec['meta']['params_sha256'])
+                self.assertEqual(len(plain['steps']), len(spec['steps']))
+                evals = 0
+                for old, new in zip(plain['steps'], spec['steps']):
+                    if new['name'].startswith('eval-'):
+                        evals += 1
+                        self.assertEqual(['/usr/bin/env', f'MMDL_EVAL_SLOTS={slots}', *old['argv']], new['argv'])
+                        self.assertEqual(old['expect_files'], new['expect_files'])
+                    else:
+                        self.assertEqual(old, new)
+                self.assertEqual(3, evals)
+            for bad in (0, -1, True, '48', 'Auto', 4.5, None, [48]):
+                with self.assertRaises(ValueError, msg=(stage, bad)):
+                    eval_stage.plan(stage, self.params(stage, eval_slots=bad))
+
     def test_params_are_refused(self):
         for stage, changes in (
                 ('eval-x', {}), ('eval-f0', {'checkpoint': f'{self.volume}/ckpt'}), ('eval-course', {'ft_export': None}),

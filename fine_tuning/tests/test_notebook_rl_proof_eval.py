@@ -31,6 +31,19 @@ C16_FILES = [pe.HERE / f"eval_configs/mmmu_val_v8_c16_seed{s}.yaml" for s in (34
 ARM_BY_PREFIX = {"f0": "F0", "note": "FT-NOTE", "solution": "FT-SOLUTION"}
 
 
+A40_MIB = 46068  # what nvidia-smi reports for an A40
+LEGACY_KEYS = ("slots", "slots_source", "gpu_total_mib", "gpu_name")  # a registration written before they existed
+
+
+def setUpModule():
+    """No test depends on the machine's GPU or on MMDL_EVAL_SLOTS."""
+    for patcher in (mock.patch.object(pe, "gpu_info", return_value=("NVIDIA A40", A40_MIB)),
+                    mock.patch.dict(os.environ)):
+        patcher.start()
+        unittest.addModuleCleanup(patcher.stop)
+    os.environ.pop(pe.SLOTS_ENV, None)
+
+
 def flatten(value, prefix=""):
     if isinstance(value, dict):
         return {k: v for key, item in value.items() for k, v in flatten(item, f"{prefix}{key}.").items()}
@@ -190,7 +203,7 @@ class ProofAnalysisTests(unittest.TestCase):
         self.assertEqual(prereg["format"], "notebook-rl-proof-prereg-v3")
         self.assertEqual(len(prereg["b2_reference"]["wrong_ids"]), 342)
         self.assertEqual(len(prereg["b2_reference"]["right_ids"]), 558)
-        self.assertEqual(set(prereg["arms"]), {"F0", "FT-NOTE", "FT-SOLUTION"})
+        self.assertEqual(set(prereg["arms"]), {"F0", "FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417"})
         self.assertEqual(prereg["runs"], [{"arm": a, "variant": v, "subset": t, "role": "statistical"}
                                           for a in pe.ARMS for v in FAST for t in ("wrong", "rest")])  # no course run
         self.assertEqual(set(prereg["protocol_variants"]), set(FAST))
@@ -199,7 +212,7 @@ class ProofAnalysisTests(unittest.TestCase):
         self.assertEqual((prereg["primary_endpoint"]["arm"], prereg["primary_endpoint"]["items"]), ("FT-NOTE", 342))
         self.assertEqual(prereg["course_facing_run"]["status"], "DROPPED")
         self.assertEqual((prereg["mmmu_val_budget"]["checkpoints_per_arm"], prereg["mmmu_val_budget"]["runs"],
-                          prereg["mmmu_val_budget"]["items_per_run"]), (1, 18, {"wrong": 342, "rest": 558}))
+                          prereg["mmmu_val_budget"]["items_per_run"]), (1, 24, {"wrong": 342, "rest": 558}))
         subsets = prereg["evaluation_subsets"]
         self.assertEqual({t: (r["ids"], r["sha256"], r["count"], r["version"]) for t, r in subsets.items()},
                          {"wrong": (SUBSET, sha256_file(self.subset), 342, "proof-eval-subset-v1"),
@@ -401,6 +414,48 @@ class ProofAnalysisTests(unittest.TestCase):
         (self.runs[5] / pe.REGISTRATION_FILE).write_text(json.dumps(registration))
         with self.assertRaisesRegex(ValueError, "share one registration"):
             self.analyze(self.runs)
+
+    def set_registration(self, run, **changes):
+        """Change keys of a run's variant_registration.json; the value None removes the key."""
+        path = run / pe.REGISTRATION_FILE
+        registration = json.loads(path.read_text())
+        for key, value in changes.items():
+            registration.pop(key, None) if value is None else registration.__setitem__(key, value)
+        path.write_text(json.dumps(registration))
+
+    def test_runs_of_different_slots_or_gpu_are_not_compared_or_pooled(self):
+        self.assertEqual(self.analyze(self.runs)["runs"][0]["registration"]["slots"], 32)
+        self.set_registration(self.runs[2], slots=40)
+        with self.assertRaisesRegex(ValueError, f"slots=40 gpu=NVIDIA A40: {self.runs[2].name}"):
+            self.analyze(self.runs)
+        self.set_registration(self.runs[2], slots=32, gpu_name="NVIDIA H100")
+        with self.assertRaisesRegex(ValueError, f"gpu=NVIDIA H100: {self.runs[2].name}"):
+            self.analyze(self.runs)
+        self.set_registration(self.runs[2], gpu_name="NVIDIA A40")
+        self.assertEqual(len(self.analyze(self.runs)["runs"]), 6)
+
+    def test_runs_without_the_slot_keys_count_as_32_slots_on_an_unknown_gpu(self):
+        for run in self.runs[:3]:  # F0 seeds from an older registration, FT-NOTE seeds recorded
+            self.set_registration(run, **dict.fromkeys(LEGACY_KEYS))
+        with self.assertRaises(ValueError) as caught:
+            self.analyze(self.runs)
+        self.assertIn("slots=32 gpu=None: f0-", str(caught.exception))
+        self.assertIn("slots=32 gpu=NVIDIA A40: note-", str(caught.exception))
+        for run in self.runs[3:]:
+            self.set_registration(run, **dict.fromkeys(LEGACY_KEYS))
+        self.assertEqual(len(self.analyze(self.runs)["runs"]), 6)
+
+    def test_gate_refuses_runs_of_different_slots_or_gpu(self):
+        results = self.fake_results({3407: 100}, {3407: 107})
+        same = {"slots": 32, "gpu_name": "A"}
+
+        def runs(note_registration):
+            return [{"run_dir": "/x/f0-a", "registration": same}, {"run_dir": "/x/note-b", "registration": note_registration}]
+
+        self.assertEqual(pe.gate_300(results | {"runs": runs(same)})["status"], "PASS")
+        for other in (same | {"slots": 40}, same | {"gpu_name": "B"}, {}):  # {} = an older registration
+            with self.assertRaisesRegex(ValueError, "cannot be compared or pooled.*note-b"):
+                pe.gate_300(results | {"runs": runs(other)})
 
     # ------------------------------------------------------------------ the 300-item gate
 
@@ -717,6 +772,16 @@ def backend_mocks():
                                _final_only_output_kind=lambda: "FINAL_ONLY")
 
 
+def eval_argv(root):
+    """scripts/eval.sh arguments of the 8k seed-3408 variant on the first three subset items (root/data must exist)."""
+    return ["--protocol", "fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_8k_seed3408.yaml",
+            "--hardware", str(A40), "--model-ref", "manifests/models/baseline.json",
+            "--model-path", str(root / "model"), "--base-path", str(root / "base"),
+            "--data-root", str(root / "data"), "--artifact-root", str(root / "art"),
+            "--job-id", "8k-3408", "--run-role", "standalone", "--run-id", "8k-3408-evaluation",
+            "--mode", "partial", *(x for sid in SUBSET[:3] for x in ("--sample-id", sid)), "--no-download"]
+
+
 def validation_outcome(cfg, hw):
     from mmdl.runtime import contracts
 
@@ -825,6 +890,87 @@ class ProofRunEvalTests(unittest.TestCase):
         self.assertIs(wide.cfg, fast)
         self.assertEqual(recorded, [True])
 
+    def test_auto_slots_follows_the_formula(self):
+        def expected(gib):  # the formula written out once more: (0.90 * GiB - 8.68 - 5.0) * 7280 / 4800 / 8, floored to 8
+            return max(32, math.floor(((0.90 * gib - 8.68 - 5.0) * 7280 / 4800) / 8) * 8)
+
+        for gib in (44.42, A40_MIB / 1024, 79.1, 94.5, 24.0, 8.0, 0.0):
+            self.assertEqual(pe.auto_slots(gib), expected(gib), gib)
+        self.assertEqual([pe.auto_slots(g) for g in (44.42, A40_MIB / 1024, 79.1, 94.5)], [32, 40, 80, 104])
+        self.assertEqual((pe.auto_slots(24.0), pe.auto_slots(8.0)), (32, 32))  # a small GPU never goes below 32
+
+    def test_slots_come_from_the_environment_and_are_recorded_in_the_registration(self):
+        def resolved(**env):
+            with mock.patch.dict(os.environ, env):
+                return pe.resolve_slots()
+
+        facts = {"gpu_total_mib": A40_MIB, "gpu_name": "NVIDIA A40"}
+        self.assertEqual(resolved(), {"slots": 32, "slots_source": "default"} | facts)
+        self.assertEqual(resolved(MMDL_EVAL_SLOTS="48"), {"slots": 48, "slots_source": "env"} | facts)
+        self.assertEqual(resolved(MMDL_EVAL_SLOTS="auto"), {"slots": 40, "slots_source": "auto"} | facts)
+        with mock.patch.object(pe, "gpu_info", return_value=("NVIDIA H100", 81559)):
+            self.assertEqual(resolved(MMDL_EVAL_SLOTS="auto")["slots"], pe.auto_slots(81559 / 1024))
+        with mock.patch.object(pe, "gpu_info", return_value=(None, None)):  # unreadable GPU: only auto needs it
+            self.assertEqual(resolved(MMDL_EVAL_SLOTS="16"), {"slots": 16, "slots_source": "env",
+                                                              "gpu_total_mib": None, "gpu_name": None})
+            with self.assertRaisesRegex(ValueError, "needs nvidia-smi"):
+                resolved(MMDL_EVAL_SLOTS="auto")
+        for bad in ("0", "-3", "abc", "", "4.5", "Auto", "032", " 40"):
+            with self.assertRaisesRegex(ValueError, "MMDL_EVAL_SLOTS must be a positive integer or 'auto'", msg=bad):
+                resolved(MMDL_EVAL_SLOTS=bad)
+        default, forty = pe.variant_registration(FAST[0]), pe.variant_registration(FAST[0], resolved(MMDL_EVAL_SLOTS="auto"))
+        for registration, slots, source in ((default, 32, "default"), (forty, 40, "auto")):
+            self.assertEqual({k: registration[k] for k in ("slots", "slots_source", "gpu_total_mib", "gpu_name")},
+                             {"slots": slots, "slots_source": source} | facts)
+            self.assertEqual({r["execution_profile"]["batch_size"] for r in registration["registered"].values()}, {slots})
+        self.assertNotEqual(default, forty)
+        self.assertEqual(pe.variant_registration(FAST[0]), default)  # resolved from the unchanged environment
+
+    def test_validator_and_backend_use_the_resolved_slots(self):
+        from mmdl.evaluation.backends.vllm_backend import VLLMBackend
+
+        hw, fast, v8 = yaml.safe_load(A40.read_text()), variant_cfg(FAST[1]), variant_cfg(pe.COURSE)
+        FakeLLM.calls.clear()
+        with backend_mocks(), pe.registered_variants(slots=40):
+            self.assertIsNone(validation_outcome(fast, hw))  # the preregistered config (batch_size 32) is the one accepted
+            for bad in (16, 40):
+                outcome = validation_outcome(changed(fast, execution__batch_size=bad), hw)
+                self.assertIn("this run executes 40 slots", outcome[1], bad)
+            wide, plain = VLLMBackend("model", fast, hw), VLLMBackend("model", v8, hw)
+        self.assertEqual([c["max_num_seqs"] for c in FakeLLM.calls], [40, 2])
+        self.assertEqual((wide.batch_size, plain.batch_size, wide.cfg["execution"]["batch_size"]), (40, 2, 32))
+
+    def test_run_eval_slots_are_recorded_and_a_resume_with_other_slots_is_refused(self):
+        from mmdl.evaluation import engine
+        from mmdl.evaluation.backends.vllm_backend import VLLMBackend
+
+        def fake_run(args, cfg, hw, root):
+            (args.artifact_root / "runs" / args.run_id).mkdir(parents=True, exist_ok=args.resume)
+            VLLMBackend(str(args.model_path), cfg, hw, "base", str(args.base_path))
+            return {"status": "SMOKE"}
+
+        with tempfile.TemporaryDirectory(prefix="proof-run-eval-slots-") as tmp:
+            root = Path(tmp)
+            (root / "data").mkdir()
+            (root / "data/manifest.json").write_text("{}")
+            argv, registration_path = eval_argv(root), root / "art/runs/8k-3408-evaluation" / pe.REGISTRATION_FILE
+            FakeLLM.calls.clear()
+            with backend_mocks(), mock.patch.object(engine, "run", fake_run):
+                with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "0"}), self.assertRaisesRegex(ValueError, pe.SLOTS_ENV):
+                    pe.run_eval(argv)
+                self.assertEqual(FakeLLM.calls, [])
+                with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "auto"}):
+                    pe.run_eval(argv)
+                recorded = json.loads(registration_path.read_text())
+                with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "48"}), \
+                        self.assertRaisesRegex(ValueError, "different variant registration"):
+                    pe.run_eval(argv + ["--resume"])
+                with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "auto"}):
+                    pe.run_eval(argv + ["--resume"])
+        self.assertEqual((recorded["slots"], recorded["slots_source"], recorded["gpu_total_mib"], recorded["gpu_name"]),
+                         (40, "auto", A40_MIB, "NVIDIA A40"))
+        self.assertEqual([call["max_num_seqs"] for call in FakeLLM.calls], [40, 40])
+
     def test_run_eval_calls_the_eval_sh_entry_point_and_records_registration(self):
         from mmdl.evaluation import engine
         from mmdl.evaluation.backends.vllm_backend import VLLMBackend
@@ -844,12 +990,7 @@ class ProofRunEvalTests(unittest.TestCase):
             root = Path(tmp)
             (root / "data").mkdir()
             (root / "data/manifest.json").write_text("{}")
-            argv = ["--protocol", "fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_8k_seed3408.yaml",
-                    "--hardware", str(A40), "--model-ref", "manifests/models/baseline.json",
-                    "--model-path", str(root / "model"), "--base-path", str(root / "base"),
-                    "--data-root", str(root / "data"), "--artifact-root", str(root / "art"),
-                    "--job-id", "8k-3408", "--run-role", "standalone", "--run-id", "8k-3408-evaluation",
-                    "--mode", "partial", *(x for sid in SUBSET[:3] for x in ("--sample-id", sid)), "--no-download"]
+            argv = eval_argv(root)
             cwd, saved_argv = Path.cwd(), list(sys.argv)
             FakeLLM.calls.clear()
             with backend_mocks(), mock.patch.object(engine, "run", fake_run), mock.patch.dict(os.environ):

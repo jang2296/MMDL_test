@@ -1,6 +1,9 @@
 """Authored cases for the error-note collect stage; fake engines, graders and tokenizers only, no GPU, weights or network."""
+import contextlib
 import hashlib
+import io
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -12,8 +15,8 @@ from unittest import mock
 
 from fine_tuning.error_note import collect
 from fine_tuning.error_note.collect import (
-    InputTooLong, ResourceLog, StreamStats, append_jsonl, bounded_map, collect_rows, continuous_stream, make_records,
-    read_jsonl_done, run_note, run_solve, sweep)
+    InputTooLong, ResourceLog, StreamStats, append_jsonl, auto_kv_gib, auto_seqs, bounded_map, collect_rows,
+    continuous_stream, gpu_total_gib, make_records, read_jsonl_done, resolve_kv, run_note, run_solve, sweep)
 from fine_tuning.error_note.contract import MAX_NEW_TOKENS, sample_seed
 from fine_tuning.notebook_rl.prompts import p0_eval_text
 
@@ -272,8 +275,10 @@ class SweepTests(unittest.TestCase):
     class Runner:
         def __init__(self, out, total, tps, per_child=2, fail_with=0):
             self.out, self.total, self.tps, self.per_child, self.fail_with, self.calls = out, total, tps, per_child, fail_with, []
+            self.commands = []
 
         def __call__(self, command):
+            self.commands.append(command)
             seqs = int(command[command.index("--max-num-seqs") + 1])
             stopping = "--stop-after-seconds" in command
             self.calls.append((seqs, stopping))
@@ -287,10 +292,10 @@ class SweepTests(unittest.TestCase):
                                                                   "items_done": len(fresh)}))
             return 0
 
-    def args(self, tmp, total, seqs="32,48,64"):
+    def args(self, tmp, total, seqs="32,48,64", kv=28.0):
         write_order(tmp / "order.json", total)
         return SimpleNamespace(build_root=tmp / "V", order=tmp / "order.json", limit=total, output=tmp / "out",
-                               model_path=tmp / "M", engine="vllm", kv_cache_gib=28.0, max_num_batched_tokens=16384,
+                               model_path=tmp / "M", engine="vllm", kv_cache_gib=kv, max_num_batched_tokens=16384,
                                gpu_memory_utilization=0.9, seqs=seqs, seconds=300.0)
 
     def test_sweep_picks_best_and_runs_final(self):
@@ -317,6 +322,113 @@ class SweepTests(unittest.TestCase):
             runner = self.Runner(tmp / "out", 10, tps, fail_with=3)
             self.assertEqual(sweep(self.args(tmp, 10), runner), 3)
             self.assertEqual(len(runner.calls), 1)
+
+    def test_sweep_fixed_records_provenance_and_never_reads_the_gpu(self):
+        def no_probe():
+            raise AssertionError("a fixed KV size and an explicit --seqs never read the GPU")
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            runner = self.Runner(tmp / "out", 2, {32: 100.0, 48: 150.0, 64: 150.0})
+            self.assertEqual(sweep(self.args(tmp, 2), runner, no_probe), 0)
+            result = json.loads((tmp / "out" / "sweep.json").read_text())
+        self.assertEqual({k: result[k] for k in ("gpu_total_gib", "kv_cache_gib_resolved", "seqs_resolved", "kv_source")},
+                         {"gpu_total_gib": None, "kv_cache_gib_resolved": 28.0, "seqs_resolved": [32, 48, 64],
+                          "kv_source": "fixed"})
+
+    def test_sweep_auto_uses_the_probe_and_resolved_list(self):
+        probed = []
+
+        def probe():
+            probed.append(1)
+            return 44.42
+
+        expected = auto_seqs(28)
+        tps = {s: 100.0 + i for i, s in enumerate(expected)}
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            runner = self.Runner(tmp / "out", 10, tps)
+            self.assertEqual(sweep(self.args(tmp, 10, seqs="auto", kv="auto"), runner, probe), 0)
+            result = json.loads((tmp / "out" / "sweep.json").read_text())
+        self.assertEqual(probed, [1])  # read once
+        self.assertEqual(runner.calls, [(s, True) for s in expected] + [(expected[-1], False)])
+        for command in runner.commands:  # the children resolve "auto" themselves
+            self.assertEqual(command[command.index("--kv-cache-gib") + 1], "auto")
+        self.assertEqual((result["gpu_total_gib"], result["kv_cache_gib_resolved"], result["seqs_resolved"],
+                          result["kv_source"], result["best_seqs"]), (44.42, 28, expected, "auto", expected[-1]))
+        with tempfile.TemporaryDirectory() as raw:  # auto candidates from a fixed KV size need no GPU read
+            tmp = Path(raw)
+            runner = self.Runner(tmp / "out", 2, {s: 1.0 for s in auto_seqs(8)})
+            self.assertEqual(sweep(self.args(tmp, 2, seqs="auto", kv=8.9), runner, lambda: self.fail("no GPU read")), 0)
+            self.assertEqual(json.loads((tmp / "out" / "sweep.json").read_text())["seqs_resolved"], auto_seqs(8))
+
+
+class AutoSizingTests(unittest.TestCase):
+    def test_auto_kv_gib(self):
+        for total, expected in ((44.42, 28), (79.1, 63), (94.5, 78)):  # A40, H100, 96 GB
+            self.assertEqual(auto_kv_gib(total), expected)
+        self.assertEqual(auto_kv_gib(24.0), 8)
+        for total in (20, 23.99):
+            with self.assertRaises(ValueError):
+                auto_kv_gib(total)
+
+    def test_auto_seqs_follow_the_formula(self):
+        def expected(kv_gib):
+            estimate = kv_gib * 7280 / 4800
+            return sorted({max(8, round(f * estimate) // 8 * 8) for f in (0.75, 1.0, 1.25)})
+
+        for kv_gib in (28, 63, 78):
+            got = auto_seqs(kv_gib)
+            self.assertEqual(got, expected(kv_gib))
+            self.assertEqual(len(got), 3)
+            self.assertTrue(all(s % 8 == 0 and s >= 8 for s in got))
+        self.assertEqual(auto_seqs(28), [32, 40, 48])
+        self.assertEqual(auto_seqs(8), [8])  # all three candidates collapse to the floor
+
+    def test_reserve_covers_the_measured_memory(self):
+        self.assertGreaterEqual(collect.AUTO_RESERVE_GIB, collect.WEIGHTS_GIB + collect.OTHER_VLLM_GIB)
+
+    def test_resolve_kv_reads_the_gpu_only_for_auto(self):
+        def no_probe():
+            raise AssertionError("fixed must not read the GPU")
+
+        self.assertEqual(resolve_kv(12.5, no_probe),
+                         {"gpu_total_gib": None, "kv_cache_gib_resolved": 12.5, "kv_source": "fixed"})
+        self.assertEqual(resolve_kv("auto", lambda: 79.1),
+                         {"gpu_total_gib": 79.1, "kv_cache_gib_resolved": 63, "kv_source": "auto"})
+        with self.assertRaises(ValueError):
+            resolve_kv("auto", lambda: 20.0)
+
+    def test_gpu_total_gib_from_nvidia_smi_sample(self):
+        with mock.patch.object(collect, "_gpu_sample", return_value=(7, 100, 46068)):
+            self.assertAlmostEqual(gpu_total_gib(), 46068 / 1024)
+        with mock.patch.object(collect, "_gpu_sample", return_value=(None, None, None)):
+            with self.assertRaises(RuntimeError):
+                gpu_total_gib()
+
+    def test_cli_parses_auto_and_numbers(self):
+        base = ["sweep", "--build-root", "b", "--order", "o", "--limit", "1", "--output", "out", "--model-path", "m",
+                "--engine", "vllm"]
+        parser = collect._parser()
+        args = parser.parse_args(base + ["--seqs", "32,48"])
+        self.assertEqual((args.kv_cache_gib, args.seqs), (28, "32,48"))  # defaults unchanged
+        args = parser.parse_args(base + ["--seqs", "auto", "--kv-cache-gib", "auto"])
+        self.assertEqual((args.kv_cache_gib, args.seqs), ("auto", "auto"))
+        self.assertEqual(parser.parse_args(base + ["--seqs", "8", "--kv-cache-gib", "12.5"]).kv_cache_gib, 12.5)
+        solve = parser.parse_args(["solve", *base[1:], "--kv-cache-gib", "auto"])
+        self.assertEqual(solve.kv_cache_gib, "auto")
+        for bad in ("fast", "0", "-1", "nan", "inf"):
+            with self.subTest(value=bad), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args(base + ["--seqs", "8", "--kv-cache-gib", bad])
+
+    def test_receipt_carries_the_resolved_kv(self):
+        extra = {"gpu_total_gib": 44.42, "kv_cache_gib_resolved": 28, "kv_source": "auto"}
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt = run_solve(make_items(1), make_actors(1), load, FakeStream(), StreamStats(receipt_extra=dict(extra)),
+                                lambda *a: ("CORRECT", "A"), Path(tmp), S=1, B=16384, engine="vllm", gpu_probe=no_gpu)
+            written = json.loads((Path(tmp) / "receipt-t1.json").read_text())
+        for key, value in extra.items():
+            self.assertEqual((receipt[key], written[key]), (value, value))
 
 
 class UtilityTests(unittest.TestCase):
