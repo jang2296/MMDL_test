@@ -56,8 +56,9 @@ def _validate_protocol(model_path: Path, arm: str, protocol: dict, device_index:
             or protocol["initial_checkpoint"].get("revision") != BASE_REVISION
             or protocol.get("quantization") != quantization_contract()
             or protocol.get("model", {}).get("modules_to_save") != list(MERGERS)
-            or protocol.get("forbidden") != {"additional_sft": True,
-                "teacher_or_upper_model_labels": True, "benchmark_training": True}):
+            or protocol.get("forbidden") not in (
+                {"additional_sft": True, "teacher_or_upper_model_labels": True, "benchmark_training": True},
+                {"additional_sft": False, "teacher_or_upper_model_labels": True, "benchmark_training": True})):
         raise ValueError("NF4 policy: explicit separate NF4/identity/forbidden/Merger contract required")
 
 

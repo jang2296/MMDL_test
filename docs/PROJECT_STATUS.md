@@ -148,7 +148,26 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
 - **사용자 결정(2026-10-31)**: vLLM↔HF 일치검사 기준 — "vLLM 전용 기준 0.04로 보정 (권장)". HF↔HF 0.02는 유지, vLLM 표본기 보고에만 0.04(실측 최대 0.0228의
   약 1.75배)를 새 protocol 표지로 기록, 갱신마다 push 전후 차이 기록, 학습 손실의 표본별 불일치 제거(delta_seq 0.05)는 유지. 구현 중(+ 사전 거르기 전용 vLLM 예산 `prefilter_vllm`).
 - 로컬 v16 체인: control-reload가 1,800초 한도 초과(exit 124, 같은 시간대 CPU 시험·에이전트 작업과 경합; v15에서도 ≈1,740초) → 한도 3,600초로
-  `chain-v16-cont.sh`(control-reload2 → physical → 평가12×3 → compare) 재개. v16 코드의 GPU 통과율 단계는 v18에서 고친 결함이 있어 제외. 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
+  `chain-v16-cont.sh`(control-reload2 → physical → 평가12×3 → compare) 재개. v16 코드의 GPU 통과율 단계는 v18에서 고친 결함이 있어 제외.
+  재개 1차 실패: 이어붙인 스크립트에 `CUBLAS_WORKSPACE_CONFIG` 누락(제 실수) → 추가. 2차 실패: v19 동결 중 소유 reload 프로세스를 SIGSTOP한 사이
+  그 프로세스의 승인 재검증 시간창이 지나 "validation differs"(일시정지가 원인) — 교훈: 검증 중인 프로세스는 멈추지 않는다. 3차(`control-reload4`) 재실행.
+- **v19 동결·게시**: vLLM 전용 0.04(사용자 결정)·`prefilter_vllm`·`passrate --item-batch`·raw 9,999 초과 수정. `proof-freeze-v19`(manifest `3c75c1d3…`),
+  approval export `8f57ee6e…`, 번들 `proof-data-v19`(archive `8b36a0d5…`, manifest `7246d0cc…`, verify 0). MMDL_test `4181902eb6b50c22ee10422f31dce40bc339f817` push
+  (.py 전부 동결본과 일치).
+- **1단계 3·4차(Pod `1rrqadukeabj2i`, A40 EU-SE-1, 11:31:47Z 생성, 잔액 기준 48.50)**: 준비 924초 수준·번들 STAGED·verify 0. stage1-c는 passrate-measure 200초 exit 1:
+  vLLM 시작 시 여유 35.22GiB < 요구 35.54GiB(`prefilter_vllm.gpu_memory_utilization` 0.8, 내가 정한 값; 코드 결함 아님). 0.75로 낮춰 같은 Pod에서 새 실행 stage1-d(spec `05cce8dc…`) 12:01Z 시작.
+- **설계 지적(사용자 2026-10-31)**: "실제 학습은 가끔만 맞히는 문항으로만 한다는데… 그러면 오답노트 형태로 하는게 의미가 없잖아". 검토 결과 타당: 0/4 문항은 T1 보상 분산이 없어도
+  재시도 회복 시 온라인 수정 신호·노트가 생기는데 사전 거르기 1..3 규칙이 이를 제외함. 제안: 4/4만 제외(`min_pass 0, max_pass 3`, 코드·chain 검증 범위 내), 표본 기준 약 56%(약 1,900문항, 추정). 사용자 답 대기.
+  솔직한 한계: 노트북 고정10에서 가중치 변화는 정답 보상에서 왔고 S_note·S_text false, 0/4 문항의 재시도 회복률은 아직 미측정.
+- **사용자 설계 확인 요청(2026-10-31)**: "다 틀리면 정답을 보고 풀이와 문제를 보며 모델이 직접 오답노트를 작성하고 이 오답노트와 문제 그리고 정답을 json으로 학습… 사진을 잘못 봐서인지를 보면서
+  풀파인튜닝인지 LLM+머저인지 결정하는 것이 우리가 구현하고자 하는 것". 현 구현과 다름(정답 비공개·RL만·일반 문항 Vision 고정) → §2.1 항목이라 사용자 결정 대기.
+- **사용자 지시로 Pod 종료(2026-10-31 12:05Z)**: stage1-d는 정답률 측정 시작 전 중단(갱신 0). 기록 `hf-pool-v3/pod-stage1cd/stage1-cd-runs.tgz`(sha `28c2d390…` 일치) 회수 후 `1rrqadukeabj2i` 삭제,
+  list-pods 0 확인. 비용: billing 10:00Z까지 $1.84 + 이 Pod 약 33분 추정 ≈ $2.2, 잔액 추정 ≈ $48.2. **대여기에서 16비트 가중치 갱신은 아직 성공한 적 없음.** 로컬 v16 평가는 계속 실행 중.
+- **로컬 v16 비교 완료(2026-11-01 00:06Z, `local-test-v4/pooleval-compare`)**: 12문항 첫 시도 F0·노트FT·대조FT 모두 0/12(바닥, 확인한 행은 INVALID_NO_FINAL, 원인 미확정), 재시도 포함 최종 9/8/8, 노트 검증 0. 개선 미관측(`improvement_claimed=false`).
+- **사용자 의도 재확인(2026-11-01)**: 문항당 1회 풀이 → V8 채점 → 모델이 정답을 직접 보고 사람처럼 오답노트(맞아도 작성, 이미지 오독 여부 포함) → 이미지면 풀파인튜닝/아니면 LLM+Merger → 문제·답·노트를 함께 학습. 상위 모델·튜터·MMMU/Pro 금지, 평가 파서·프롬프트 불변, 이미지 기존 값, 8K.
+  현 구현과 불일치: 정답 비공개, 다회 표본+재시도, 맞힌 문항만 노트, 칸 채우기 노트(lesson 학습 제외), 강화학습, 일반 문항 Vision 고정, 사전 거르기, 이미지 262144–1003520(보고서 값 아님), 342문항만 평가. §2.1·등록 목표와 충돌하므로 사용자 해제 확인 대기. 코드 변경·대여기 없음.
+- **사용자 결정(2026-11-01, `/sc:research`)**: 위 설계로 확정. 풀파인튜닝 = 조정층(LoRA), 시험 = 300문항 학습 → 틀렸던 약 300여 문항 풀이 → 맞는 것이 생기면 3,000여 문항, 데이터 그대로, 프롬프트·해상도·토큰 고정, 런포드 16비트·로컬 4비트 작동 확인, 쉬는 대여기 닫기.
+  통합 계획 `claudedocs/research_self_note_finetuning_plan_20261101.md`. 코드·규칙 문서는 아직 안 고침(§2.1 변경은 구현 첫 단계). 잔액 48.24달러(50.42−청구 2.18, 2026-11-01 조회), 대여기 0대. 증명 평가 사전 등록 `proof-prereg/prereg.json`(sha fbf1f886…).
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후

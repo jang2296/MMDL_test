@@ -21,7 +21,8 @@ AUTHORED_JSON = {
     "mixture_policy_v1.json", "protocol.json", "source_inventory_20261004.json",
     "source_registry_bridge_v2.json", "source_registry_v1.json",
 }
-AUTHORED_JSON_PATHS = {"fine_tuning/notebook_rl/benchmark_inventory_v1.json",
+AUTHORED_JSON_PATHS = {"fine_tuning/error_note/item_order.json",
+                       "fine_tuning/notebook_rl/benchmark_inventory_v1.json",
                        *(f"fine_tuning/notebook_rl/pod/plans/{name}.json" for name in (
                            "cost-plan-prefilter-v1", "cost-plan-v1", "params-main-resume", "params-main",
                            "params-pilot-300", "params-stage1"))}

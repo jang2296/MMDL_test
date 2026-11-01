@@ -426,9 +426,10 @@ class CliAndReadinessTests(unittest.TestCase):
         self.assertFalse({"turn1_contract", "turn1_max_new_tokens"} & set(
             local_profile.repair_cli_keywords(self.parse(self.NO_CONTRACT))))
 
-    def test_pod_proof_flags_bind_the_fast8k_eval_cap_and_image_budget_inside_the_24576_context(self) -> None:
-        """User decision 2026-10-31: the trained eval-aligned T1 uses the statistical eval arms' 8192 cap and
-        262144..1003520 pixels; retries keep 1024 and the final note keeps its 8192 reservation."""
+    def test_pod_proof_flags_bind_the_8k_eval_cap_inside_the_24576_context(self) -> None:
+        """User decision 2026-10-31: the trained eval-aligned T1 uses the statistical eval arms' 8192 cap; the
+        evaluation image budget (max_pixels 1310720) is larger than the RL training one and shares its minimum;
+        retries keep 1024 and the final note keeps its 8192 reservation."""
         import yaml
 
         from fine_tuning.notebook_rl import proof_eval
@@ -441,14 +442,15 @@ class CliAndReadinessTests(unittest.TestCase):
                                              **local_profile.repair_cli_keywords(args))
         cap = built["repair_turn1_contract"]["max_new_tokens"]
         self.assertEqual((cap, built["context_limit"]), (8192, 24576))
-        self.assertEqual({k: built["image"][k] for k in proof_eval.FAST_PIXELS}, proof_eval.FAST_PIXELS)
+        self.assertEqual(built["image"]["min_pixels"], proof_eval.FAST_PIXELS["min_pixels"])
+        self.assertLess(built["image"]["max_pixels"], proof_eval.FAST_PIXELS["max_pixels"])  # not equal: eval is larger
         self.assertEqual({k: v for k, v in built["rollout"]["max_new_tokens"].items() if k != 1}, {2: 1024, 3: 1024})
         for vid, (path, _, _, role) in proof_eval.VARIANTS.items():
             if role == "statistical":
                 cfg = yaml.safe_load(path.read_text())
                 self.assertEqual((cfg["generation"]["max_new_tokens"], cfg["image"]["min_pixels"],
                                   cfg["image"]["max_pixels"]), (cap, built["image"]["min_pixels"],
-                                                                built["image"]["max_pixels"]), vid)
+                                                                proof_eval.FAST_PIXELS["max_pixels"]), vid)
 
     def test_misuse_is_reported_and_unknown_contract_is_refused(self) -> None:
         without_route = ["--repair-notebook", "--context-limit", "24576", "--note-contract", compact_note.VERSION,

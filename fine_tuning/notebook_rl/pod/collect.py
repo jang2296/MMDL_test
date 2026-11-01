@@ -47,7 +47,7 @@ EVAL_KIND = "eval"
 # Exactly what proof_eval.load_run reads from a run directory (no samples/, prompts/, logs, source.patch).
 EVAL_RUN_FILES = ("run_manifest.json", "summary.json", "predictions.jsonl", "resolved_eval_config.yaml",
                   "variant_registration.json")
-EVAL_REQUIRED = EVAL_RUN_FILES[:4]  # variant_registration.json: required for the fast8k (statistical) runs
+EVAL_REQUIRED = EVAL_RUN_FILES[:4]  # variant_registration.json: required for the statistical (8k) runs
 LEDGER_VERSION = "pod-cleanup-ledger-v1"
 ORDER = ("REMOTE_VERIFIED", "LOCAL_VERIFIED", "POD_TERMINATED", "OWNED_STORAGE_DELETED",
          "CLEANUP_VERIFIED")
@@ -226,9 +226,9 @@ def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
     """Pack one evaluation stage: its start.sh run dir and the inputs of `proof_eval analyze`.
 
     Packed (archive paths): <run dir name>/** (logs, chain.jsonl), eval/runs/<run id>/<EVAL_RUN_FILES>
-    for each run the stage plans, eval/<ledger>, eval/<prereg> + .sha256 and, for eval-ft/eval-course,
+    for each run the params plan (their one arm, requested seeds and subset_tag), eval/<ledger>, eval/<prereg> + .sha256 and, for eval-ft/eval-course,
     eval/model_ref.json. The merged model weights are never packed. Every planned run needs its ledger
-    START and must be finished (summary PARTIAL for the subset runs, COMPLETE for a full run), or be recorded
+    START (arm, variant and subset_tag as planned) and must be finished (summary PARTIAL for the subset runs, COMPLETE for a full run), or be recorded
     FAILED in the ledger (packed as it is, marked FAILED).
     """
     from .. import proof_eval  # lazy: numpy/yaml are not needed by pack, verify or state
@@ -263,10 +263,10 @@ def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
     failed = {e["run_id"] for e in events if e["event"] == "FAIL"}
     sources: list[tuple[Path, str]] = []
     eval_runs: list[dict[str, Any]] = []
-    for arm, variant in eval_stage._runs(stage):
-        rid = eval_stage.run_id(p["run_prefix"], arm, variant)
+    for arm, variant in eval_stage._runs(stage, p):
+        rid = eval_stage.run_id(p["run_prefix"], arm, variant, p["subset_tag"])
         start = starts.get(rid)
-        if (start is None or (start["arm"], start["variant"]) != (arm, variant)
+        if (start is None or (start["arm"], start["variant"], start["subset"]) != (arm, variant, p["subset_tag"])
                 or start["preregistration_sha256"] != p["prereg_sha256"]):
             raise CollectError(f"{rid}: no ledger START for {arm}/{variant} under this preregistration")
         base = artifacts / "runs" / rid

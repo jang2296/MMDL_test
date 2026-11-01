@@ -1,24 +1,28 @@
-"""Pre-registered F0-vs-FT MMMU-val proof: merged export, fast8k run wrapper, preregistration, analysis.
+"""Pre-registered F0 / FT-NOTE / FT-SOLUTION MMMU-val proof: merged export, 8k run wrapper, preregistration, analysis, gate.
 
-Nothing here trains or selects. ``run-eval`` only registers the three fast8k variant IDs inside its
-own process and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
-The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots, an 8192-token
-output cap, the training image budget 262144..1003520 pixels and a 24576 context (user decision
-2026-10-31: speed/cost of the RunPod proof). The c16 variant files stay on disk but are not registered.
-Scope (user decision 2026-10-31): every preregistered run is a ``--mode partial`` run on exactly the
-342 MMMU-val items the frozen B2 + team-final-answer-v8 baseline got wrong (the subset file, bound by
-sha256 in the preregistration; evaluation only, never training). The course run (mmmu-val-v8, 900
-items, plain scripts/eval.sh) keeps its code path but is not preregistered.
-``analyze`` re-scores preserved raw responses with the frozen V8 scorer (the only scorer here) and
-reduces several seeds only by the per-item mean (CLAUDE.md §2.8): there is no reducer argument, no
-repeated (arm, protocol) run, and no second FT checkpoint.
+Nothing here trains or selects. ``run-eval`` only registers the three 8k variant IDs inside its own process
+and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
+The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots, an 8192-token output
+cap, the image budget 262144..1310720 pixels (an evaluation budget, not the RL training budget) and a 24576
+context. The c16 variant files stay on disk but are not registered.
+Scope: every preregistered run is a ``--mode partial`` run on one of two subsets of the 900 MMMU-val items, both
+derived from the frozen B2 + team-final-answer-v8 baseline and bound by sha256 in the preregistration
+(evaluation only, never training): "wrong" = the 342 items B2 got wrong (proof-eval-subset-v1) and "rest" = the
+558 items B2 got right (proof-eval-subset-rest-v1). ``make-subset --kind {wrong,rest}`` writes either file.
+The course run (mmmu-val-v8, 900 items, plain scripts/eval.sh) keeps its code path but is not preregistered.
+Arms: F0 (untrained base), FT-NOTE (primary, fixed in advance) and FT-SOLUTION (comparison); each has exactly one
+checkpoint. ``analyze`` re-scores preserved raw responses with the frozen V8 scorer (the only scorer here) and
+reduces several seeds only as means (CLAUDE.md §2.8): no reducer argument, no repeated (arm, variant, subset) run,
+no per-item seed choice, no best seed. ``gate`` applies the preregistered 300-item decision rule to the "wrong"
+subset; it is a threshold for spending more, not proof of improvement.
 
-Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --run-id R
---ledger L`` must precede every evaluation run (``run-eval`` or the plain course ``scripts/eval.sh``; R is the run
-directory name artifact_root/runs/R). It refuses a second start of the same (arm, variant) unless the first is
-recorded with ``ledger-fail --ledger L --run-id R --reason ...`` (refused for a finished run). ``analyze --ledger L``
-is required: it refuses a run that was never started, started under another (arm, variant) or recorded FAILED, and any
-live started run of a registered (arm, variant) that is not the one analyzed (an omitted or replaced repeat).
+Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --subset S
+--run-id R --ledger L`` must precede every evaluation run (``run-eval`` or the plain course ``scripts/eval.sh``; R is
+the run directory name artifact_root/runs/R). It refuses a second start of the same (arm, variant, subset) unless
+the first is recorded with ``ledger-fail --ledger L --run-id R --reason ...`` (refused for a finished run).
+``analyze``/``gate`` take every run directory of the ledger: they refuse a run that was never started, started under
+another (arm, variant, subset) or recorded FAILED, and any live started run that is not passed (an omitted or
+replaced run). A passed run that is not finished is listed as unfinished and left out of the numbers.
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ import json
 import math
 import os
 import re
+import statistics
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -47,18 +52,26 @@ from mmdl.runtime.contracts import MODEL_ID, MODEL_REVISION, SUBJECTS, sample_se
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
-FORMAT = "notebook-rl-proof-prereg-v2"
+FORMAT = "notebook-rl-proof-prereg-v3"
 SUBSET_VERSION = "proof-eval-subset-v1"
+REST_SUBSET_VERSION = "proof-eval-subset-rest-v1"
+ARMS = ("F0", "FT-NOTE", "FT-SOLUTION")
+# subset tag -> (file version, B2 key it must equal)
+SUBSETS = {"wrong": (SUBSET_VERSION, "wrong_ids"), "rest": (REST_SUBSET_VERSION, "right_ids")}
+SEEDS = (3407, 3408, 3409)
+# 300-item gate (claudedocs/research_self_note_finetuning_plan_20261101.md 6.3), fixed before any run
+GATE_PASS_DIFF = 6.5
+GATE_COLLAPSE_TOKEN_RATIO = 0.5
+GATE_COLLAPSE_COUNT_RATIO = 1.10
 # The evaluator's summary status of a run that finished every planned item: full runs end COMPLETE, partial
 # (--sample-id) runs end PARTIAL; anything else (INCOMPLETE, RUNNING, absent) is not finished.
 FINISHED = {"course": "COMPLETE", "statistical": "PARTIAL"}
 PARSER = "team-final-answer-v8"
 COURSE = "mmmu-val-v8"
-SENSITIVITY = "mmmu-val-v8-fast8k-seed3407-v1"
 # variant id -> (config file, seed, max concurrent requests, role)
 VARIANTS = {COURSE: (ROOT / "configs/eval/mmmu_val_v8.yaml", 3407, 2, "course")} | {
-    f"mmmu-val-v8-fast8k-seed{s}-v1": (HERE / f"eval_configs/mmmu_val_v8_fast8k_seed{s}.yaml", s, 32, "statistical")
-    for s in (3407, 3408, 3409)}
+    f"mmmu-val-v8-8k-seed{s}-v2": (HERE / f"eval_configs/mmmu_val_v8_8k_seed{s}.yaml", s, 32, "statistical")
+    for s in SEEDS}
 B2_PREDICTIONS = ROOT / "analysis_exports/mmmu_20260924/team_final_v8/official_b2/predictions.jsonl"
 BASE_MODEL_REF = ROOT / "manifests/models/baseline.json"
 BOOTSTRAP_RESAMPLES = 10_000
@@ -74,10 +87,10 @@ DISCIPLINES = {
                            "Energy_and_Power", "Materials", "Mechanical_Engineering"],
 }
 SINGLE_ANSWER_RULE = (
-    "Each item is scored from the one answer generated once per (arm, protocol variant). No best-of-N, "
+    "Each item is scored from the one answer generated once per (arm, protocol variant, subset). No best-of-N, "
     "majority vote, reranking, verifier/feedback retry, ensemble, or per-item seed choice. Seeds are "
     "combined only as the mean of per-seed correctness. Each arm has exactly one evaluated checkpoint. "
-    "Repeated runs of the same (arm, variant) are refused, never chosen between. An incomplete run is "
+    "Repeated runs of the same (arm, variant, subset) are refused, never chosen between. An incomplete run is "
     "resumed in place (same run_id) or reported as failed; it is never replaced because of its score.")
 
 
@@ -151,14 +164,14 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
 
 
 # ---------------------------------------------------------------------------------------------
-# fast8k run wrapper: in-process registration of exactly three IDs; src/ files stay untouched
+# 8k run wrapper: in-process registration of exactly three IDs; src/ files stay untouched
 # ---------------------------------------------------------------------------------------------
 
 V8 = "mmmu-val-v8"
 # The only differences of a registered variant from its mmmu-val-v8 twin besides protocol_id and seed.
 FAST_SLOTS = 32
 FAST_MAX_NEW_TOKENS = 8192
-FAST_PIXELS = {"min_pixels": 262144, "max_pixels": 1003520}  # = the training image budget (local_profile)
+FAST_PIXELS = {"min_pixels": 262144, "max_pixels": 1310720}  # evaluation budget; the RL path (local_profile) keeps its own, smaller max_pixels
 FAST_MAX_MODEL_LEN = 24576
 REGISTERED = {vid: seed for vid, (_, seed, _, role) in VARIANTS.items() if role == "statistical"}
 PATCHED_SRC = ("src/mmdl/runtime/contracts.py", "src/mmdl/evaluation/backends/vllm_backend.py",
@@ -178,7 +191,7 @@ def variant_registration(protocol_id: str) -> dict:
                        for pid, seed in REGISTERED.items()},
         "patched": {
             "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, 32 slots, 8192 output tokens, "
-                                                       "262144..1003520 pixels, 24576 context, V8 parser; all else "
+                                                       "262144..1310720 pixels, 24576 context, V8 parser; all else "
                                                        "validated as the mmmu-val-v8 twin; other IDs unchanged",
             "mmdl.evaluation.backends.vllm_backend.VLLMBackend.__init__": "registered IDs: slot check sees 2, vLLM "
                                                                           "max_num_seqs=32, batch_size=32; other IDs unchanged"},
@@ -210,12 +223,12 @@ def _fast_execution(contracts) -> dict:
 
 @contextmanager
 def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterator[None]:
-    """Register exactly the fast8k IDs in this process; tables and functions are restored on exit."""
+    """Register exactly the 8k IDs in this process; tables and functions are restored on exit."""
     from mmdl.evaluation.backends import vllm_backend
     from mmdl.runtime import contracts
 
     if any(pid in contracts.CONTROL_IMAGES or pid in contracts.EXECUTION_PROFILES for pid in REGISTERED):
-        raise RuntimeError("proof_eval: fast8k IDs already registered (nested use or src changed)")
+        raise RuntimeError("proof_eval: 8k IDs already registered (nested use or src changed)")
     original_validate = contracts.validate_configs
     original_init = vllm_backend.VLLMBackend.__init__
 
@@ -229,7 +242,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
                 or cfg.get("image") != contracts.CONTROL_IMAGES[pid]
                 or cfg["execution"] != contracts.EXECUTION_PROFILES[pid]):
             raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, 32 slots, 8192 output tokens, "
-                             "262144..1003520 pixels, 24576 context and the V8 parser")
+                             "262144..1310720 pixels, 24576 context and the V8 parser")
         twin = copy.deepcopy(cfg)
         twin["protocol_id"], twin["generation"]["seed"], twin["generation"]["max_new_tokens"] = V8, 3407, 32768
         twin["image"] = dict(contracts.CONTROL_IMAGES[V8])
@@ -280,7 +293,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None) -> Iterato
 
 
 def run_eval(argv: list[str]) -> int:
-    """Same argv as scripts/eval.sh, for one of the three fast8k variant files only."""
+    """Same argv as scripts/eval.sh, for one of the three 8k variant files only."""
     from mmdl.runtime.artifacts import default_path
 
     pre = argparse.ArgumentParser(prog="proof_eval run-eval", add_help=False)
@@ -291,7 +304,7 @@ def run_eval(argv: list[str]) -> int:
     protocol = known.protocol if known.protocol.is_absolute() else ROOT / known.protocol
     pid = yaml.safe_load(protocol.read_text(encoding="utf-8")).get("protocol_id")
     if pid not in REGISTERED or sha256_file(protocol) != sha256_file(VARIANTS[pid][0]):
-        raise ValueError("proof_eval: run-eval runs only the three preregistered fast8k variant files; "
+        raise ValueError("proof_eval: run-eval runs only the three preregistered 8k variant files; "
                          "the c2 course run (mmmu-val-v8) uses plain scripts/eval.sh")
     artifact_root = known.artifact_root if known.artifact_root.is_absolute() else ROOT / known.artifact_root
     run_dir = artifact_root / "runs" / known.run_id
@@ -331,23 +344,36 @@ def _b2_split(path: Path) -> dict:
             "wrong_ids": wrong, "right_ids": right}
 
 
-def _subset(path: Path, b2: dict) -> dict:
-    """The evaluation subset file: exactly the frozen B2 V8 wrong IDs, derived from the same B2 file."""
+def _subset(path: Path, b2: dict, tag: str = "wrong") -> dict:
+    """An evaluation subset file: exactly the sorted frozen B2 V8 wrong ("wrong") or right ("rest") IDs of the same B2 file."""
+    version, key = SUBSETS[tag]
     path = Path(path)
     loaded = json.loads(path.read_text(encoding="utf-8"))
     ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
-    if (loaded.get("version") != SUBSET_VERSION or not isinstance(ids, list) or ids != b2["wrong_ids"]
+    if (loaded.get("version") != version or not isinstance(ids, list) or ids != b2[key]
             or loaded.get("count") != len(ids) or loaded.get("source_sha256") != b2["sha256"]):
-        raise ValueError("proof_eval: the subset must be the sorted frozen B2 V8 wrong IDs of the same B2 file")
-    return {"path": str(path.resolve()), "sha256": sha256_file(path), "version": SUBSET_VERSION, "count": len(ids),
+        raise ValueError(f"proof_eval: the {tag} subset must be the sorted frozen B2 V8 {key.removesuffix('_ids')} IDs "
+                         "of the same B2 file")
+    return {"path": str(path.resolve()), "sha256": sha256_file(path), "version": version, "count": len(ids),
             "source": loaded.get("source"), "source_sha256": loaded["source_sha256"], "ids": ids,
-            "rule": "B2 + team-final-answer-v8 wrong items; evaluation only, never training (CLAUDE.md §2.2)"}
+            "rule": f"B2 + team-final-answer-v8 {key.removesuffix('_ids')} items; evaluation only, never training "
+                    "(CLAUDE.md §2.2)"}
 
 
-def build_preregistration(subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
+def make_subset(kind: str, output: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
+    """Write the "wrong" (342) or "rest" (558) subset file from the frozen B2 file; write-once."""
+    version, key = SUBSETS[kind]
+    b2 = _b2_split(b2_predictions)
+    value = {"version": version, "purpose": f"MMMU-val evaluation subset ({kind}); evaluation only, never training",
+             "source": b2["source"], "source_sha256": b2["sha256"], "count": len(b2[key]), "sample_ids": b2[key]}
+    _write_once(output, json.dumps(value, indent=2, sort_keys=True) + "\n")
+    return value
+
+
+def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
     variants = {}
     for vid, (path, seed, concurrency, role) in VARIANTS.items():
-        if role != "statistical":  # the course run is not in the 342-item proof plan
+        if role != "statistical":  # the course run is not in the proof plan
             continue
         cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
         if (cfg["protocol_id"] != vid or cfg["generation"]["seed"] != seed or cfg["parser"] != PARSER
@@ -356,83 +382,103 @@ def build_preregistration(subset: Path, b2_predictions: Path = B2_PREDICTIONS) -
         variants[vid] = {"path": _rel(path), "sha256": sha256_file(path), "config_digest": digest(cfg),
                          "seed": seed, "concurrency": concurrency, "role": role}
     statistical = list(variants)
-    runs = [{"arm": arm, "variant": v, "role": "statistical"} for arm in ("F0", "FT") for v in statistical]
+    runs = [{"arm": arm, "variant": v, "subset": tag, "role": "statistical"}
+            for arm in ARMS for v in statistical for tag in SUBSETS]
     base_ref = json.loads(BASE_MODEL_REF.read_text(encoding="utf-8"))
     b2 = _b2_split(b2_predictions)
-    items = _subset(subset, b2)
-    n = items["count"]
+    items = {"wrong": _subset(subset, b2, "wrong"), "rest": _subset(rest_subset, b2, "rest")}
+    n, m = items["wrong"]["count"], items["rest"]["count"]
     return {
         "format": FORMAT, "status": "FROZEN",
         "arms": {
-            "F0": {"definition": f"untrained BF16 base {MODEL_ID}@{MODEL_REVISION}, re-run on the subset "
+            "F0": {"definition": f"untrained BF16 base {MODEL_ID}@{MODEL_REVISION}, re-run on the subsets "
                                  "(the stored B2 answers are not F0 and not the comparator)",
                    "model_ref": _rel(BASE_MODEL_REF), "model_sha256": digest(base_ref["files"])},
-            "FT": {"definition": "merged BF16 export of the single notebook-pipeline checkpoint (proof_eval export)",
-                   "model_ref": "bound at analysis by --ft-model-ref; all FT runs must share its model_sha256"},
+            "FT-NOTE": {"definition": "merged BF16 export of the single checkpoint trained with the note "
+                                      "(proof_eval export); the primary arm, fixed in advance",
+                        "model_ref": "bound at analysis by --ft-note-model-ref; all FT-NOTE runs share its model_sha256"},
+            "FT-SOLUTION": {"definition": "merged BF16 export of the single checkpoint trained without the note "
+                                          "(proof_eval export); a comparison arm that never replaces FT-NOTE",
+                            "model_ref": "bound at analysis by --ft-solution-model-ref; all FT-SOLUTION runs share "
+                                         "its model_sha256"},
         },
-        "evaluation_subset": items,
+        "evaluation_subsets": items,
         "protocol_variants": variants,
         "runs": runs,
-        "paired_run_rules": [f"each (arm, variant) run exactly once with --mode partial and one --sample-id per "
-                             f"subset ID; status {FINISHED['statistical']}; run_manifest expected_ids, "
-                             f"identity.ids_sha256 and predictions are exactly the {n} subset IDs",
-                             "F0 and FT of one variant share identity.protocol_sha256",
+        "paired_run_rules": [f"each (arm, variant, subset) run at most once with --mode partial and one --sample-id "
+                             f"per subset ID; status {FINISHED['statistical']}; run_manifest expected_ids, "
+                             f"identity.ids_sha256 and predictions are exactly the {n} (wrong) or {m} (rest) subset "
+                             "IDs; a stage runs only the requested seeds, the rest of the listed runs may never exist",
+                             "all arms of one variant share identity.protocol_sha256",
                              "all statistical runs share identity.code_sha256",
                              "every record seed equals sample_seed(variant seed, id)",
-                             "stored V8 correctness/parse_status must equal the re-score"],
+                             "stored V8 correctness/parse_status must equal the re-score",
+                             "each arm evaluates one checkpoint; the arms evaluate different checkpoints"],
         "scorer": {"parser": PARSER, "files": _scorer_files(),
                    "only_scorer": "strict team-final-answer-v8 re-score; proof_eval has no second (Qwen-style) "
                                   "score: Qwen's published MMMU scoring uses an LLM-assisted judge, which is not "
                                   "used without approval (CLAUDE.md §7.3)"},
         "primary_endpoint": {
-            "statistic": f"mean over the {n} subset items of (FT seed-mean correctness - F0 seed-mean correctness) "
-                         f"= FT - F0 of the seed mean of per-seed strict V8 accuracy on the subset; each per-seed "
-                         f"accuracy = items answered correctly / {n} (= recovered count / {n})",
-            "variants": statistical, "items": n,
+            "statistic": f"wrong subset ({n} items): mean over the seeds both finished of (FT-NOTE strict V8 correct "
+                         "count - F0 correct count); per-seed counts, gains, losses and exact McNemar are reported "
+                         "for every finished (arm, seed)",
+            "arm": "FT-NOTE", "comparator": "F0", "subset": "wrong", "variants": statistical, "items": n,
             "ci": {"method": "paired item bootstrap over the subset items, percentile",
                    "resamples": BOOTSTRAP_RESAMPLES, "seed": BOOTSTRAP_SEED, "level": 0.95},
         },
-        "sensitivity": {"mcnemar_exact_two_sided": {"variant": SENSITIVITY,
-                                                    "pairs": "per-item correctness F0 vs FT on the subset, seed 3407 only"}},
+        "gate_300": {
+            "subset": "wrong", "arm": "FT-NOTE", "comparator": "F0", "seeds": "the seeds both arms finished",
+            "mean_diff": "mean FT-NOTE correct - mean F0 correct over those seeds",
+            "PASS": f"mean_diff >= {GATE_PASS_DIFF}, or 3 seeds finished and FT-NOTE > F0 in each (with fewer than 3 "
+                    "seeds only the mean_diff branch can pass)",
+            "AMBIGUOUS": "mean_diff > 0 otherwise", "STOP": "otherwise",
+            "collapse_alert": f"FT-NOTE median generated tokens < {GATE_COLLAPSE_TOKEN_RATIO} x F0, or its no-parse "
+                              f"or length-finish count > {GATE_COLLAPSE_COUNT_RATIO} x F0 (seed means)",
+            "ft_solution": "reported beside FT-NOTE; never changes the status and never replaces FT-NOTE",
+            "not_proof_of_improvement": True,
+        },
+        "sensitivity": {"mcnemar_exact_two_sided": {"pairs": "per-item correctness F0 vs arm on one subset, per seed "
+                                                             "(every finished seed), seeds never pooled"}},
         "secondary_endpoints": {
-            "length_cutoff_rate": "seed-mean share with finish_reason == length, F0 and FT",
-            "missing_final_answer_rate": "seed-mean share with V8 parse_status != PARSED, F0 and FT",
-            "per_discipline": "seed-mean accuracy per arm and FT-F0 with the same paired bootstrap",
-            "per_subject": "seed-mean accuracy per arm and FT-F0 (table, no CI)",
+            "generation_counts": "per (subset, arm, seed): no-parse count, length-finish count, median and mean "
+                                 "generated tokens",
+            "full_900": "correct count and accuracy of an (arm, seed) whose wrong and rest runs both finished",
+            "per_discipline": "seed-mean accuracy per arm",
+            "per_subject": "seed-mean accuracy per arm (table, no CI)",
         },
         "disciplines": DISCIPLINES,
         "single_answer_rule": SINGLE_ANSWER_RULE,
-        "mmmu_val_budget": {"checkpoints_per_arm": 1, "runs": len(runs), "items_per_run": n,
+        "mmmu_val_budget": {"checkpoints_per_arm": 1, "runs": len(runs), "items_per_run": {"wrong": n, "rest": m},
                             "rule": "no other MMMU-val runs, seeds, items or checkpoints; MMMU-val never selects a "
                                     "checkpoint"},
         "course_facing_run": {"status": "DROPPED", "variant": COURSE,
-                              "rule": "user decision 2026-10-31: the proof evaluates only the subset; the course "
+                              "rule": "user decision 2026-10-31: the proof evaluates only the subsets; the course "
                                       "protocol code path is kept but no course run is preregistered"},
         "limitations": [
-            f"{n}-only: regressions on the {len(b2['right_ids'])} items B2 answered correctly cannot be detected "
-            "(user decision 2026-10-31, budget)",
-            "the subset was chosen because B2 answered these items wrongly once; a re-run of the untrained base "
-            "answers some of them correctly by sampling alone (regression to the mean), so the comparator is the "
-            "paired F0 re-run on the same IDs and seeds, never B2's 0 correct",
-            f"accuracy on the {n} subset is not an MMMU-val accuracy and is not comparable to the 62.00% B2 "
-            "baseline or the official 67.4",
-            "the fast8k variants (8192 output tokens, 262144..1003520 pixels, 32 concurrent) differ from the "
-            "course protocol (32768 tokens, official pixels, 2 concurrent)",
+            f"the wrong subset ({n} items) was chosen because B2 answered them wrongly once; a re-run of the "
+            "untrained base answers some of them correctly by sampling alone (regression to the mean), so the "
+            "comparator is the paired F0 re-run on the same IDs and seeds, never B2's 0 correct",
+            f"accuracy on one subset is not an MMMU-val accuracy and is not comparable to the 62.00% B2 baseline or "
+            f"the official 67.4; a {n + m}-item accuracy exists only for an (arm, seed) whose wrong and rest runs "
+            "both finished",
+            "the 8k variants (8192 output tokens, 262144..1310720 pixels, 32 concurrent) differ from the course "
+            "protocol (32768 tokens, official pixels, 2 concurrent)",
+            "the 300-item gate is a threshold for spending more, not evidence of improvement",
         ],
         "notes": [
-            "user decision 2026-10-31 (speed and cost of the RunPod proof): 8K output, the training image budget "
-            "and 32 concurrent requests for the paired arms (fast8k replaces c16); the proof runs only on the "
-            f"{n} B2 V8 wrong items; the course-protocol run is dropped from the proof plan",
-            "supersedes proof-prereg/prereg.json (format notebook-rl-proof-prereg-v1, 900 items, c16, course run)",
+            "user decision 2026-10-31 (speed and cost of the RunPod proof): 8K output, 262144..1310720 pixels and 32 "
+            "concurrent requests for all arms; the course-protocol run is dropped from the proof plan",
+            "supersedes proof-prereg-v2 (format notebook-rl-proof-prereg-v2: arms F0/FT, 342 items, earlier 8k variants)",
         ],
         "b2_reference": b2,
     }
 
 
-def preregister(output: Path, subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> str:
+def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> str:
     """Write-once preregistration plus ``<output>.sha256``; returns the file hash."""
     output = Path(output)
-    _write_once(output, json.dumps(build_preregistration(subset, b2_predictions), indent=2, sort_keys=True) + "\n")
+    _write_once(output, json.dumps(build_preregistration(subset, rest_subset, b2_predictions), indent=2,
+                                   sort_keys=True) + "\n")
     value = sha256_file(output)
     _write_once(output.with_name(output.name + ".sha256"), value + "\n")
     return value
@@ -456,10 +502,10 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
 # run ledger: one START line per evaluation run, so analyze can see an omitted repeat
 # ---------------------------------------------------------------------------------------------
 
-LEDGER_FORMAT = "proof-eval-ledger-v1"
+LEDGER_FORMAT = "proof-eval-ledger-v2"
 GENESIS = "0" * 64
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
-_EVENT_KEYS = {"START": {"arm", "variant", "run_id", "preregistration_sha256"}, "FAIL": {"run_id", "reason"}}
+_EVENT_KEYS = {"START": {"arm", "variant", "subset", "run_id", "preregistration_sha256"}, "FAIL": {"run_id", "reason"}}
 _COMMON_KEYS = {"format", "event", "prev", "time"}
 
 
@@ -474,12 +520,14 @@ def _check_event(events: list[dict], event: dict) -> None:
         return
     if not _RUN_ID.fullmatch(str(event["run_id"])) or event["run_id"] in starts:
         raise ValueError(f"proof_eval: ledger run_id invalid or already started: {event['run_id']}")
+    if event["arm"] not in ARMS or event["subset"] not in SUBSETS:
+        raise ValueError(f"proof_eval: ledger arm {event['arm']!r} or subset {event['subset']!r} is not known")
     if any(e["preregistration_sha256"] != event["preregistration_sha256"] for e in starts.values()):
         raise ValueError("proof_eval: one ledger serves one preregistration")
-    live = [r for r, e in starts.items() if (e["arm"], e["variant"]) == (event["arm"], event["variant"])
-            and r not in failed]
+    key = (event["arm"], event["variant"], event["subset"])
+    live = [r for r, e in starts.items() if (e["arm"], e["variant"], e["subset"]) == key and r not in failed]
     if live:
-        raise ValueError(f"proof_eval: {event['arm']}/{event['variant']} already started as {live[0]}; "
+        raise ValueError(f"proof_eval: {'/'.join(key)} already started as {live[0]}; "
                          "a second start needs ledger-fail on the first (never replace a run by its score)")
 
 
@@ -520,11 +568,12 @@ def _append(path: Path, kind: str, **fields: str) -> dict:
     return event
 
 
-def ledger_start(prereg_path: Path, arm: str, variant: str, run_id: str, ledger: Path) -> dict:
+def ledger_start(prereg_path: Path, arm: str, variant: str, run_id: str, ledger: Path, subset: str) -> dict:
     prereg, prereg_sha = load_preregistration(prereg_path)
-    if (arm, variant) not in {(r["arm"], r["variant"]) for r in prereg["runs"]}:
-        raise ValueError(f"proof_eval: {(arm, variant)} is not a preregistered run")
-    return _append(ledger, "START", arm=arm, variant=variant, run_id=run_id, preregistration_sha256=prereg_sha)
+    if (arm, variant, subset) not in {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}:
+        raise ValueError(f"proof_eval: {(arm, variant, subset)} is not a preregistered run")
+    return _append(ledger, "START", arm=arm, variant=variant, subset=subset, run_id=run_id,
+                   preregistration_sha256=prereg_sha)
 
 
 def ledger_fail(ledger: Path, run_id: str, reason: str, artifact_root: Path) -> dict:
@@ -536,26 +585,6 @@ def ledger_fail(ledger: Path, run_id: str, reason: str, artifact_root: Path) -> 
     return _append(ledger, "FAIL", run_id=run_id, reason=reason)
 
 
-def check_ledger(ledger: Path, prereg_sha: str, runs: dict[tuple[str, str], dict]) -> dict:
-    """Every analyzed run was started under its (arm, variant); no live started run is left out of the analysis."""
-    events, head = read_ledger(ledger)
-    starts = {e["run_id"]: e for e in events if e["event"] == "START"}
-    failed = {e["run_id"] for e in events if e["event"] == "FAIL"}
-    if any(e["preregistration_sha256"] != prereg_sha for e in starts.values()):
-        raise ValueError("proof_eval: the ledger belongs to another preregistration")
-    analyzed = {key: Path(run["run_dir"]).name for key, run in runs.items()}
-    for key, run_id in analyzed.items():
-        if run_id not in starts:
-            raise ValueError(f"proof_eval: run {run_id} was never started in the ledger")
-        if (starts[run_id]["arm"], starts[run_id]["variant"]) != key or run_id in failed:
-            raise ValueError(f"proof_eval: run {run_id} is recorded in the ledger as another (arm, variant) or FAILED")
-    for run_id, event in starts.items():
-        key = (event["arm"], event["variant"])
-        if run_id not in failed and analyzed.get(key) != run_id:
-            raise ValueError(f"proof_eval: ledger run {run_id} {key} is not the one analyzed (omitted or replaced run)")
-    return {"file_sha256": sha256_file(ledger), "head": head, "starts": len(starts), "failed_run_ids": sorted(failed)}
-
-
 # ---------------------------------------------------------------------------------------------
 # analysis
 # ---------------------------------------------------------------------------------------------
@@ -563,7 +592,7 @@ def check_ledger(ledger: Path, prereg_sha: str, runs: dict[tuple[str, str], dict
 def load_run(path: Path, prereg: dict) -> dict:
     """Validate one eval run directory (or its predictions.jsonl) against the preregistration.
 
-    A statistical run must be the partial run on exactly the preregistered subset (status PARTIAL); a course
+    A statistical run must be the partial run on exactly one preregistered subset (status PARTIAL); a course
     run, if a preregistration ever lists one, the full 900-item run (status COMPLETE)."""
     path = Path(path)
     run_dir = path.parent if path.is_file() else path
@@ -574,14 +603,21 @@ def load_run(path: Path, prereg: dict) -> dict:
     if len(matches) != 1:
         raise ValueError(f"proof_eval: {run_dir} protocol config is not preregistered")
     variant = prereg["protocol_variants"][matches[0]]
+    if not {"protocol_sha256", "model_sha256", "code_sha256"} <= identity.keys():
+        raise ValueError(f"proof_eval: {run_dir} is not an original evaluation run")
     if variant["role"] == "course":
-        mode, expected = "full", sorted(set(prereg["b2_reference"]["wrong_ids"]) | set(prereg["b2_reference"]["right_ids"]))
+        mode, subset = "full", None
+        expected = sorted(set(prereg["b2_reference"]["wrong_ids"]) | set(prereg["b2_reference"]["right_ids"]))
     else:
-        mode, expected = "partial", sorted(prereg["evaluation_subset"]["ids"])
-    if not {"protocol_sha256", "model_sha256", "code_sha256"} <= identity.keys() or identity.get("mode") != mode:
+        mode = "partial"
+        subset = next((tag for tag, row in prereg["evaluation_subsets"].items()
+                       if manifest.get("expected_ids") == sorted(row["ids"])), None)
+        expected = sorted(prereg["evaluation_subsets"][subset or "wrong"]["ids"])
+    if identity.get("mode") != mode:
         raise ValueError(f"proof_eval: {run_dir} is not an original {mode} evaluation run")
     if manifest.get("expected_ids") != expected or identity.get("ids_sha256") != digest(expected):
-        raise ValueError(f"proof_eval: {run_dir} sample set differs from the preregistered {len(expected)} IDs")
+        raise ValueError(f"proof_eval: {run_dir} sample set differs from the preregistered subset IDs "
+                         f"({len(expected)} expected)")
     status = json.loads((run_dir / "summary.json").read_text(encoding="utf-8")).get("status")
     if status != FINISHED[variant["role"]]:
         raise ValueError(f"proof_eval: {run_dir} is {status}, not {FINISHED[variant['role']]}")
@@ -600,10 +636,9 @@ def load_run(path: Path, prereg: dict) -> dict:
         if score["correct"] != row["correct"] or score["parse_status"] != row["parse_status"]:
             raise ValueError(f"proof_eval: stored score differs from V8 re-score {row['id']}")
         items[row["id"]] = {"correct": score["correct"], "length": row.get("finish_reason") == "length",
-                            "missing_final": score["parse_status"] != "PARSED"}
-    arm = "F0" if identity["model_sha256"] == prereg["arms"]["F0"]["model_sha256"] else "FT"
+                            "missing_final": score["parse_status"] != "PARSED", "tokens": row["generated_tokens"]}
     registration = run_dir / REGISTRATION_FILE
-    return {"arm": arm, "variant": matches[0], "seed": variant["seed"], "run_dir": str(run_dir.resolve()),
+    return {"variant": matches[0], "seed": variant["seed"], "subset": subset, "run_dir": str(run_dir.resolve()),
             "identity": {k: identity.get(k) for k in ("protocol_sha256", "model_sha256", "code_sha256",
                                                      "git_commit", "job_id", "run_role", "mode", "ids_sha256")},
             "registration": json.loads(registration.read_text(encoding="utf-8")) if registration.exists() else None,
@@ -639,146 +674,231 @@ def _mean(values) -> float:
     return sum(values) / len(values)
 
 
-def analyze(prereg_path: Path, run_paths: list[Path], ft_model_ref: Path, ledger: Path) -> dict:
-    prereg, prereg_sha = load_preregistration(prereg_path)
-    allowed = {(r["arm"], r["variant"]): r["role"] for r in prereg["runs"]}
-    runs: dict[tuple[str, str], dict] = {}
-    for path in run_paths:
-        run = load_run(path, prereg)
-        key = (run["arm"], run["variant"])
-        if key not in allowed:
-            raise ValueError(f"proof_eval: run {key} is not preregistered")
-        if key in runs:
-            raise ValueError(f"proof_eval: duplicate run for {key}; choosing among repeated runs is prohibited")
-        runs[key] = run
-    statistical = prereg["primary_endpoint"]["variants"]
-    missing = [k for k, role in allowed.items() if role == "statistical" and k not in runs]
-    if missing:
-        raise ValueError(f"proof_eval: preregistered statistical runs missing: {missing}")
-    ref = json.loads(Path(ft_model_ref).read_text(encoding="utf-8"))
-    ft_sha = digest(ref["files"])
-    if {r["identity"]["model_sha256"] for (arm, _), r in runs.items() if arm == "FT"} != {ft_sha}:
-        raise ValueError("proof_eval: every FT run must evaluate the one bound FT export (one checkpoint per arm)")
-    stat_runs = [runs[(arm, v)] for arm in ("F0", "FT") for v in statistical]
-    if len({r["identity"]["code_sha256"] for r in stat_runs}) != 1:
-        raise ValueError("proof_eval: statistical runs must share one evaluation code hash")
-    for v in statistical:
-        if runs[("F0", v)]["identity"]["protocol_sha256"] != runs[("FT", v)]["identity"]["protocol_sha256"]:
-            raise ValueError(f"proof_eval: F0/FT protocol hash differs for {v}")
-    for (arm, v), run in runs.items():
-        reg = run["registration"]
-        if allowed[(arm, v)] == "course":
-            if reg is not None:
-                raise ValueError("proof_eval: the course run must come from plain scripts/eval.sh")
-        elif (reg is None or reg.get("protocol_id") != v
-              or reg.get("protocol_file_sha256") != prereg["protocol_variants"][v]["sha256"]):
-            raise ValueError(f"proof_eval: statistical run {(arm, v)} lacks its matching {REGISTRATION_FILE}")
-    if len({digest({k: x for k, x in r["registration"].items() if k not in ("protocol_id", "protocol_file_sha256")})
-            for r in stat_runs}) != 1:
-        raise ValueError("proof_eval: statistical runs must share one registration (src and proof_eval bytes)")
-    ledger_summary = check_ledger(ledger, prereg_sha, runs)
+def _cell(run: dict, ids: list[str]) -> dict:
+    """Counts and token statistics of one (arm, seed) run on one subset."""
+    items = run["items"]
+    tokens = [items[i]["tokens"] for i in ids]
+    return {"correct": sum(items[i]["correct"] for i in ids), "no_parse": sum(items[i]["missing_final"] for i in ids),
+            "length_finish": sum(items[i]["length"] for i in ids), "tokens_median": statistics.median(tokens),
+            "tokens_mean": statistics.fmean(tokens), "correct_ids": [i for i in ids if items[i]["correct"]]}
 
-    ids = sorted(runs[("F0", statistical[0])]["items"])  # = the preregistered subset (load_run)
-    arms: dict[str, dict[str, Any]] = {}
-    for arm in ("F0", "FT"):
-        seeds = [runs[(arm, v)] for v in statistical]
-        correct = seed_mean([{i: r["items"][i]["correct"] for i in ids} for r in seeds])
-        per_seed = {str(r["seed"]): _mean(r["items"][i]["correct"] for i in ids) for r in seeds}
-        count_per_seed = {str(r["seed"]): sum(r["items"][i]["correct"] for i in ids) for r in seeds}
-        accuracy = _mean(correct.values())
-        if not math.isclose(accuracy, _mean(per_seed.values()), abs_tol=1e-12):
+
+def _grouped(mean_by_id: dict[str, float], ids: list[str], groups: dict[str, list[str]]) -> dict[str, float]:
+    return {g: _mean(mean_by_id[i] for i in members) for g, subjects in groups.items()
+            if (members := [i for i in ids if _subject(i) in subjects])}
+
+
+def _subset_report(ids: list[str], by_arm: dict[str, dict[str, dict]]) -> dict:
+    """by_arm: arm -> seed (str) -> run, all on this subset. Seeds are combined only as means."""
+    n = len(ids)
+    arms: dict[str, Any] = {}
+    item_mean: dict[str, dict[str, float]] = {}
+    for arm, seeds in by_arm.items():
+        cells = {s: _cell(run, ids) for s, run in sorted(seeds.items())}
+        item_mean[arm] = seed_mean([{i: run["items"][i]["correct"] for i in ids} for run in seeds.values()])
+        mean_correct = _mean(c["correct"] for c in cells.values())
+        if not math.isclose(mean_correct / n, _mean(item_mean[arm].values()), abs_tol=1e-12):
             raise AssertionError("proof_eval: item mean and seed mean disagree")
-        arms[arm] = {
-            "item_mean": correct, "accuracy": accuracy, "accuracy_per_seed": per_seed,
-            "correct_per_seed": count_per_seed,
-            "length_cutoff_rate": _mean(seed_mean([{i: r["items"][i]["length"] for i in ids} for r in seeds]).values()),
-            "missing_final_answer_rate": _mean(
-                seed_mean([{i: r["items"][i]["missing_final"] for i in ids} for r in seeds]).values()),
-        }
-    diff = {i: arms["FT"]["item_mean"][i] - arms["F0"]["item_mean"][i] for i in ids}
-    sensitivity = prereg["sensitivity"]["mcnemar_exact_two_sided"]["variant"]
-    sens = runs[("F0", sensitivity)]["items"], runs[("FT", sensitivity)]["items"]
-    report: dict[str, Any] = {
-        "format": "notebook-rl-proof-report-v1", "preregistration_sha256": prereg_sha,
-        "single_answer_rule": prereg["single_answer_rule"], "ledger": ledger_summary,
-        "runs": [{k: r[k] for k in ("arm", "variant", "seed", "run_dir", "identity", "registration")}
-                 for r in runs.values()],
-        "ft_model_ref": {"sha256": sha256_file(Path(ft_model_ref)), "model_sha256": ft_sha,
-                         "export": ref.get("export")},
-        "primary": {"items": len(ids), "scorer": PARSER,
-                    "FT_minus_F0": _mean(diff.values()), "ci95": paired_bootstrap(list(diff.values())),
-                    "F0_accuracy": arms["F0"]["accuracy"], "FT_accuracy": arms["FT"]["accuracy"],
-                    "accuracy_per_seed": {a: arms[a]["accuracy_per_seed"] for a in arms},
-                    "correct_per_seed": {a: arms[a]["correct_per_seed"] for a in arms}},
-        "sensitivity_mcnemar_seed3407": mcnemar_exact({i: sens[0][i]["correct"] for i in ids},
-                                                      {i: sens[1][i]["correct"] for i in ids}),
-        "secondary": {a: {k: arms[a][k] for k in ("length_cutoff_rate", "missing_final_answer_rate")}
-                      for a in arms},
-        "limitations": prereg.get("limitations", []),
-        "per_discipline": {}, "per_subject": {},
+        arms[arm] = {"seeds": cells, "mean_correct": mean_correct, "accuracy": mean_correct / n}
+    f0 = by_arm.get("F0", {})
+    for arm in arms:
+        common = sorted(set(f0) & set(by_arm[arm])) if arm != "F0" else []
+        if not common:
+            continue
+        paired = {}
+        for s in common:
+            m = mcnemar_exact({i: f0[s]["items"][i]["correct"] for i in ids},
+                              {i: by_arm[arm][s]["items"][i]["correct"] for i in ids})
+            gains, losses = m["f0_wrong_ft_right"], m["f0_right_ft_wrong"]
+            paired[s] = {"gains": gains, "losses": losses, "net": gains - losses, "mcnemar": m}
+        base = seed_mean([{i: f0[s]["items"][i]["correct"] for i in ids} for s in common])
+        mine = seed_mean([{i: by_arm[arm][s]["items"][i]["correct"] for i in ids} for s in common])
+        diff = [mine[i] - base[i] for i in ids]
+        arms[arm].update(
+            seeds_compared=common, paired_vs_F0=paired,
+            mean_diff_vs_F0=_mean(arms[arm]["seeds"][s]["correct"] - arms["F0"]["seeds"][s]["correct"] for s in common),
+            mean_diff_ci95=[x * n for x in paired_bootstrap(diff)])
+    return {"n": n, "ids": ids, "arms": arms,
+            "per_subject": {a: _grouped(m, ids, {s: [s] for s in SUBJECTS}) for a, m in item_mean.items()},
+            "per_discipline": {a: _grouped(m, ids, DISCIPLINES) for a, m in item_mean.items()}}
+
+
+def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, Path] | None, ledger: Path) -> dict:
+    """Every run directory of the ledger: finished runs are scored, unfinished ones listed; seeds only as means."""
+    prereg, prereg_sha = load_preregistration(prereg_path)
+    events, head = read_ledger(ledger)
+    starts = {e["run_id"]: e for e in events if e["event"] == "START"}
+    failed = {e["run_id"] for e in events if e["event"] == "FAIL"}
+    if any(e["preregistration_sha256"] != prereg_sha for e in starts.values()):
+        raise ValueError("proof_eval: the ledger belongs to another preregistration")
+    allowed = {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}
+    base_sha = prereg["arms"]["F0"]["model_sha256"]
+    runs: dict[tuple[str, str, str], dict] = {}
+    seen: set[str] = set()
+    unfinished: list[str] = []
+    for path in run_paths:
+        run_dir = Path(path).parent if Path(path).is_file() else Path(path)
+        run_id = run_dir.name
+        if run_id in seen:
+            raise ValueError(f"proof_eval: duplicate run directory {run_id}; choosing among repeated runs is prohibited")
+        seen.add(run_id)
+        if run_id not in starts:
+            raise ValueError(f"proof_eval: run {run_id} was never started in the ledger")
+        if run_id in failed:
+            raise ValueError(f"proof_eval: run {run_id} is recorded in the ledger as FAILED")
+        summary = run_dir / "summary.json"
+        status = json.loads(summary.read_text(encoding="utf-8")).get("status") if summary.is_file() else None
+        if status not in FINISHED.values():  # still running, interrupted or never written; a COMPLETE one fails load_run
+            unfinished.append(run_id)
+            continue
+        run, start = load_run(run_dir, prereg), starts[run_id]
+        key = (start["arm"], run["variant"], run["subset"])
+        if key != (start["arm"], start["variant"], start["subset"]) or key not in allowed:
+            raise ValueError(f"proof_eval: run {run_id} is recorded in the ledger as another (arm, variant, subset)")
+        if (run["identity"]["model_sha256"] == base_sha) != (start["arm"] == "F0"):
+            raise ValueError(f"proof_eval: run {run_id} does not evaluate the model of its arm {start['arm']}")
+        runs[key] = run
+    omitted = sorted(r for r in starts if r not in failed and r not in seen)
+    if omitted:
+        raise ValueError(f"proof_eval: ledger run {omitted[0]} is not among the analyzed runs (omitted or replaced run)")
+    if not runs:
+        raise ValueError("proof_eval: no finished run to analyze")
+    shas = {arm: {r["identity"]["model_sha256"] for key, r in runs.items() if key[0] == arm} for arm in ARMS}
+    if any(len(v) > 1 for v in shas.values()):
+        raise ValueError("proof_eval: every run of an arm must evaluate its one bound export (one checkpoint per arm)")
+    bound = [next(iter(v)) for v in shas.values() if v]
+    if len(set(bound)) != len(bound):
+        raise ValueError("proof_eval: the arms must evaluate different checkpoints (one checkpoint per arm)")
+    refs = {}
+    for arm, ref_path in (ft_model_refs or {}).items():
+        if arm not in ARMS or arm == "F0":
+            raise ValueError(f"proof_eval: {arm} is not a fine-tuned arm")
+        ref = json.loads(Path(ref_path).read_text(encoding="utf-8"))
+        if shas[arm] and shas[arm] != {digest(ref["files"])}:
+            raise ValueError(f"proof_eval: every {arm} run must evaluate the one bound export (one checkpoint per arm)")
+        refs[arm] = {"sha256": sha256_file(Path(ref_path)), "model_sha256": digest(ref["files"]),
+                     "export": ref.get("export")}
+    if len({r["identity"]["code_sha256"] for r in runs.values()}) != 1:
+        raise ValueError("proof_eval: statistical runs must share one evaluation code hash")
+    for variant in {r["variant"] for r in runs.values()}:
+        if len({r["identity"]["protocol_sha256"] for r in runs.values() if r["variant"] == variant}) != 1:
+            raise ValueError(f"proof_eval: protocol hash differs between arms for {variant}")
+    for key, run in runs.items():
+        reg = run["registration"]
+        if (reg is None or reg.get("protocol_id") != key[1]
+                or reg.get("protocol_file_sha256") != prereg["protocol_variants"][key[1]]["sha256"]):
+            raise ValueError(f"proof_eval: statistical run {key} lacks its matching {REGISTRATION_FILE}")
+    if len({digest({k: x for k, x in r["registration"].items() if k not in ("protocol_id", "protocol_file_sha256")})
+            for r in runs.values()}) != 1:
+        raise ValueError("proof_eval: statistical runs must share one registration (src and proof_eval bytes)")
+
+    subsets = {tag: _subset_report(sorted(row["ids"]), {
+        arm: {str(r["seed"]): r for key, r in runs.items() if key[0] == arm and key[2] == tag} for arm in ARMS
+        if any(key[0] == arm and key[2] == tag for key in runs)}) for tag, row in prereg["evaluation_subsets"].items()}
+    total = subsets["wrong"]["n"] + subsets["rest"]["n"]
+    full_900: dict[str, Any] = {}
+    for arm in ARMS:
+        wrong = subsets["wrong"]["arms"].get(arm, {"seeds": {}})["seeds"]
+        rest = subsets["rest"]["arms"].get(arm, {"seeds": {}})["seeds"]
+        cells = {s: {"correct": wrong[s]["correct"] + rest[s]["correct"], "accuracy": (wrong[s]["correct"] + rest[s]["correct"]) / total,
+                     "wrong_subset_correct": wrong[s]["correct"], "rest_subset_correct": rest[s]["correct"]}
+                 for s in sorted(set(wrong) & set(rest))}
+        if cells:
+            full_900[arm] = {"items": total, "seeds": cells, "mean_correct": _mean(c["correct"] for c in cells.values())}
+    return {
+        "format": "notebook-rl-proof-report-v2", "preregistration_sha256": prereg_sha,
+        "single_answer_rule": prereg["single_answer_rule"],
+        "ledger": {"file_sha256": sha256_file(ledger), "head": head, "starts": len(starts),
+                   "failed_run_ids": sorted(failed), "unfinished_run_ids": sorted(unfinished)},
+        "runs": [{"arm": key[0], "variant": key[1], "subset": key[2], "seed": r["seed"], "run_dir": r["run_dir"],
+                  "identity": r["identity"], "registration": r["registration"]} for key, r in sorted(runs.items())],
+        "ft_model_refs": refs, "scorer": PARSER, "subsets": subsets, "full_900": full_900,
+        "course_facing": dict(prereg["course_facing_run"]), "limitations": prereg.get("limitations", []),
     }
-    for name, subjects in DISCIPLINES.items():
-        members = [i for i in ids if _subject(i) in subjects]
-        if not members:
-            continue
-        report["per_discipline"][name] = {
-            "n": len(members), **{a: _mean(arms[a]["item_mean"][i] for i in members) for a in arms},
-            "FT_minus_F0": _mean(diff[i] for i in members), "ci95": paired_bootstrap([diff[i] for i in members])}
-    for subject in SUBJECTS:
-        members = [i for i in ids if _subject(i) == subject]
-        if not members:
-            continue
-        report["per_subject"][subject] = {"n": len(members), **{a: _mean(arms[a]["item_mean"][i] for i in members)
-                                                                for a in arms},
-                                          "FT_minus_F0": _mean(diff[i] for i in members)}
-    course = runs.get(("FT", COURSE))
-    if ("FT", COURSE) not in allowed:
-        report["course_facing"] = dict(prereg["course_facing_run"])
-    elif course is None:
-        report["course_facing"] = {"status": "NOT_RUN"}
-    else:
-        wrong, right = prereg["b2_reference"]["wrong_ids"], prereg["b2_reference"]["right_ids"]
-        c = {i: row["correct"] for i, row in course["items"].items()}
-        report["course_facing"] = {
-            "status": "COMPLETE", "variant": COURSE, "seed": 3407, "correct": sum(c.values()),
-            "accuracy": _mean(c.values()), "b2_wrong_recovery": _mean(c[i] for i in wrong),
-            "b2_right_retention": _mean(c[i] for i in right),
-            "note": "single preregistered course-protocol FT run; not pooled with the statistical runs"}
-    return report
+
+
+def gate_300(results: dict) -> dict:
+    """The preregistered 300-item decision rule on the "wrong" subset of an analyze report (see prereg gate_300).
+
+    Seeds are the ones both F0 and FT-NOTE finished and are combined only as means. Token statistics and the
+    no-parse / length-finish counts of the collapse alert are the seed means of the per-seed values. A threshold for
+    spending more, never proof of improvement."""
+    wrong = results["subsets"]["wrong"]
+    f0, note = wrong["arms"].get("F0"), wrong["arms"].get("FT-NOTE")
+    seeds = sorted(set(f0["seeds"]) & set(note["seeds"])) if f0 and note else []
+    if not seeds:
+        raise ValueError("proof_eval: the gate needs a seed finished by both F0 and FT-NOTE on the wrong subset")
+    f0_counts, note_counts = ([arm["seeds"][s]["correct"] for s in seeds] for arm in (f0, note))
+    mean_diff = _mean(note_counts) - _mean(f0_counts)
+    by_mean = mean_diff >= GATE_PASS_DIFF
+    by_seeds = len(seeds) == len(SEEDS) and all(a > b for a, b in zip(note_counts, f0_counts))
+    status = "PASS" if by_mean or by_seeds else "AMBIGUOUS" if mean_diff > 0 else "STOP"
+    f0_wrong = set.intersection(*(set(wrong["ids"]) - set(f0["seeds"][s]["correct_ids"]) for s in seeds))
+    note_right = set().union(*(set(note["seeds"][s]["correct_ids"]) for s in seeds))
+    seed_mean_of = lambda arm, key: _mean(arm["seeds"][s][key] for s in seeds)  # noqa: E731
+    collapse: dict[str, Any] = {"tokens_median": {"F0": seed_mean_of(f0, "tokens_median"),
+                                                  "FT-NOTE": seed_mean_of(note, "tokens_median")}}
+    collapse["tokens_median"]["alert"] = (collapse["tokens_median"]["FT-NOTE"]
+                                          < GATE_COLLAPSE_TOKEN_RATIO * collapse["tokens_median"]["F0"])
+    for key in ("no_parse", "length_finish"):
+        collapse[key] = {"F0": seed_mean_of(f0, key), "FT-NOTE": seed_mean_of(note, key)}
+        collapse[key]["alert"] = collapse[key]["FT-NOTE"] > GATE_COLLAPSE_COUNT_RATIO * collapse[key]["F0"]
+    solution = wrong["arms"].get("FT-SOLUTION")
+    shared = sorted(set(f0["seeds"]) & set(solution["seeds"])) if solution else []
+    return {
+        "format": "notebook-rl-gate-300-v1", "not_proof_of_improvement": True,
+        "preregistration_sha256": results.get("preregistration_sha256"), "subset": "wrong", "items": wrong["n"],
+        "status": status, "pass_via": [name for name, hit in (("mean_diff", by_mean), ("all_seeds", by_seeds)) if hit],
+        "seeds_used": [int(s) for s in seeds], "fewer_than_3_seeds": len(seeds) < len(SEEDS),
+        "note": ("fewer than 3 seeds finished: PASS is possible only through the mean_diff branch"
+                 if len(seeds) < len(SEEDS) else "3 seeds finished: both PASS branches applied"),
+        "per_seed": {s: {"F0": a, "FT-NOTE": b} for s, a, b in zip(seeds, f0_counts, note_counts)},
+        "mean_f0": _mean(f0_counts), "mean_ft_note": _mean(note_counts), "mean_diff": mean_diff,
+        "recovered_ids": len(f0_wrong & note_right), "collapse_alert": any(c["alert"] for c in collapse.values()),
+        "collapse": collapse,
+        "ft_solution": ({"seeds_used": [int(s) for s in shared],
+                         "mean_correct": _mean(solution["seeds"][s]["correct"] for s in shared),
+                         "mean_f0_correct": _mean(f0["seeds"][s]["correct"] for s in shared),
+                         "mean_diff": _mean(solution["seeds"][s]["correct"] - f0["seeds"][s]["correct"] for s in shared),
+                         "note": "reported beside FT-NOTE; does not change the status"} if shared else None),
+    }
 
 
 def render_markdown(report: dict) -> str:
-    p = report["primary"]
     pct = lambda x: f"{100 * x:.2f}"  # noqa: E731
-    lines = ["# Notebook-RL MMMU-val proof report", "",
-             f"Preregistration sha256 `{report['preregistration_sha256']}`", "",
-             f"Primary ({p['items']} preregistered items, statistical variants, seeds "
-             f"{'/'.join(p['accuracy_per_seed']['F0'])}, seed-mean strict V8 only): "
-             f"F0 {pct(p['F0_accuracy'])}%, "
-             f"FT {pct(p['FT_accuracy'])}%, FT-F0 {pct(p['FT_minus_F0'])} pp "
-             f"[95% paired bootstrap {pct(p['ci95'][0])}, {pct(p['ci95'][1])}]", "",
-             "| arm | " + " | ".join(f"seed {s} correct/{p['items']}" for s in p["accuracy_per_seed"]["F0"]) + " |",
-             "|---|" + "---|" * len(p["accuracy_per_seed"]["F0"])]
-    for arm, seeds in p["accuracy_per_seed"].items():
-        lines.append(f"| {arm} | " + " | ".join(f"{p['correct_per_seed'][arm][s]} ({pct(v)}%)"
-                                                for s, v in seeds.items()) + " |")
-    m = report["sensitivity_mcnemar_seed3407"]
-    lines += ["", f"McNemar exact (seed 3407): F0-only right {m['f0_right_ft_wrong']}, "
-              f"FT-only right {m['f0_wrong_ft_right']}, p = {m['p_value']:.4g}", "",
-              "| secondary | F0 | FT |", "|---|---|---|"]
-    for key in report["secondary"]["F0"]:
-        lines.append(f"| {key} | {pct(report['secondary']['F0'][key])} | {pct(report['secondary']['FT'][key])} |")
-    lines += ["", "| discipline | n | F0 | FT | FT-F0 | 95% CI |", "|---|---|---|---|---|---|"]
-    for name, row in report["per_discipline"].items():
-        lines.append(f"| {name} | {row['n']} | {pct(row['F0'])} | {pct(row['FT'])} | {pct(row['FT_minus_F0'])} | "
-                     f"[{pct(row['ci95'][0])}, {pct(row['ci95'][1])}] |")
-    lines += ["", "| subject | n | F0 | FT | FT-F0 |", "|---|---|---|---|---|"]
-    for name, row in report["per_subject"].items():
-        lines.append(f"| {name} | {row['n']} | {pct(row['F0'])} | {pct(row['FT'])} | {pct(row['FT_minus_F0'])} |")
-    course = report["course_facing"]
-    lines += ["", "Course-facing run (FT, mmmu-val-v8, c2, seed 3407): " + (
-        f"{course['correct']}/900 = {pct(course['accuracy'])}% (not pooled)" if course["status"] == "COMPLETE"
-        else course["status"]), ""]
+    lines = ["# Notebook-RL MMMU-val proof report", "", f"Preregistration sha256 `{report['preregistration_sha256']}`",
+             f"Scorer: strict {report['scorer']} only; seeds combined only as means.", ""]
+    if report["ledger"]["unfinished_run_ids"]:
+        lines += [f"Unfinished runs (not scored): {', '.join(report['ledger']['unfinished_run_ids'])}", ""]
+    for tag, sub in report["subsets"].items():
+        if not sub["arms"]:
+            lines += [f"## Subset {tag} ({sub['n']} items): no finished run", ""]
+            continue
+        lines += [f"## Subset {tag} ({sub['n']} items)", "",
+                  "| arm | seed | correct | no-parse | length | median tokens | mean tokens | gains | losses | net | McNemar p |",
+                  "|---|---|---|---|---|---|---|---|---|---|---|"]
+        for arm, block in sub["arms"].items():
+            for seed, c in block["seeds"].items():
+                p = block.get("paired_vs_F0", {}).get(seed)
+                pair = [p["gains"], p["losses"], p["net"], f"{p['mcnemar']['p_value']:.4g}"] if p else ["-"] * 4
+                lines.append(f"| {arm} | {seed} | {c['correct']} | {c['no_parse']} | {c['length_finish']} | "
+                             f"{c['tokens_median']:g} | {c['tokens_mean']:.1f} | " + " | ".join(map(str, pair)) + " |")
+        lines += ["", "Mean correct per arm: " + ", ".join(
+            f"{arm} {block['mean_correct']:.2f} ({pct(block['accuracy'])}%)"
+            + (f", {block['mean_diff_vs_F0']:+.2f} vs F0 [95% {block['mean_diff_ci95'][0]:+.2f}, "
+               f"{block['mean_diff_ci95'][1]:+.2f}]" if "mean_diff_vs_F0" in block else "")
+            for arm, block in sub["arms"].items()), ""]
+        lines += ["| subject | " + " | ".join(sub["per_subject"]) + " |", "|---|" + "---|" * len(sub["per_subject"])]
+        subjects = sorted({s for row in sub["per_subject"].values() for s in row})
+        lines += [f"| {s} | " + " | ".join(pct(row[s]) if s in row else "-" for row in sub["per_subject"].values()) + " |"
+                  for s in subjects]
+        lines.append("")
+    if report["full_900"]:
+        lines += ["## Full 900 (wrong + rest, same arm and seed)", "", "| arm | seed | correct | accuracy |", "|---|---|---|---|"]
+        lines += [f"| {arm} | {seed} | {c['correct']} | {pct(c['accuracy'])}% |"
+                  for arm, block in report["full_900"].items() for seed, c in block["seeds"].items()]
+        lines.append("")
+    lines += [f"Course-facing run: {report['course_facing']['status']}", ""]
     lines += [f"- Limitation: {text}" for text in report["limitations"]]
     lines += ["", report["single_answer_rule"], ""]
     return "\n".join(lines)
@@ -790,22 +910,28 @@ def main(argv: list[str] | None = None) -> int:
         return run_eval(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("run-eval", help="scripts/eval.sh arguments for one fast8k variant file (passed through verbatim)")
+    sub.add_parser("run-eval", help="scripts/eval.sh arguments for one 8k variant file (passed through verbatim)")
     exp = sub.add_parser("export", help="merge one local_train checkpoint into a BF16 eval model + model_ref.json")
     exp.add_argument("--checkpoint", type=Path, required=True)
     exp.add_argument("--binding", type=Path, required=True, help="binding JSON or launch.json holding 'binding'")
     exp.add_argument("--base", type=Path, required=True, help="pinned BF16 snapshot directory")
     exp.add_argument("--output", type=Path, required=True, help="new directory: model/ + model_ref.json")
     exp.add_argument("--code-commit", required=True, help="40-hex Git commit of the training code")
+    mk = sub.add_parser("make-subset", help="write the wrong (342) or rest (558) evaluation subset file from the B2 file")
+    mk.add_argument("--kind", choices=tuple(SUBSETS), required=True)
+    mk.add_argument("--output", type=Path, required=True)
+    mk.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
     pre = sub.add_parser("preregister", help="write the frozen preregistration and its .sha256")
     pre.add_argument("--output", type=Path, required=True)
     pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
+    pre.add_argument("--rest-subset", type=Path, required=True, help="proof-eval-subset-rest-v1 JSON: the B2 V8 right IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
     start = sub.add_parser("ledger-start", help="append the START of one evaluation run (before run-eval/eval.sh); "
-                           "refused when that (arm, variant) has a started run not recorded as FAILED")
+                           "refused when that (arm, variant, subset) has a started run not recorded as FAILED")
     start.add_argument("--prereg", type=Path, required=True)
-    start.add_argument("--arm", choices=("F0", "FT"), required=True)
+    start.add_argument("--arm", choices=ARMS, required=True)
     start.add_argument("--variant", required=True, help="a preregistered protocol variant id")
+    start.add_argument("--subset", choices=tuple(SUBSETS), required=True)
     start.add_argument("--run-id", required=True, help="the run directory name artifact_root/runs/<run-id>")
     start.add_argument("--ledger", type=Path, required=True)
     fail = sub.add_parser("ledger-fail", help="record a started run as FAILED (refused for a finished COMPLETE/PARTIAL run)")
@@ -813,33 +939,48 @@ def main(argv: list[str] | None = None) -> int:
     fail.add_argument("--run-id", required=True)
     fail.add_argument("--reason", required=True)
     fail.add_argument("--artifact-root", type=Path, default=None, help="default: MMDL_ARTIFACT_ROOT, as run-eval")
-    ana = sub.add_parser("analyze", help="score preregistered runs; writes <output>.json and <output>.md")
-    ana.add_argument("--prereg", type=Path, required=True)
-    ana.add_argument("--ledger", type=Path, required=True, help="the run ledger: every analyzed run was started in it "
-                     "and no live started run is left out")
-    ana.add_argument("--runs", type=Path, nargs="+", required=True, help="eval run dirs or their predictions.jsonl")
-    ana.add_argument("--ft-model-ref", type=Path, required=True)
+    ana = sub.add_parser("analyze", help="score the finished runs of the ledger; writes <output>.json and <output>.md")
+    gate = sub.add_parser("gate", help="apply the preregistered 300-item gate (wrong subset, FT-NOTE vs F0); writes --output")
+    for command in (ana, gate):
+        command.add_argument("--prereg", type=Path, required=True)
+        command.add_argument("--ledger", type=Path, required=True, help="the run ledger: every run dir of it is passed "
+                             "(a live started run left out is refused)")
+        command.add_argument("--runs", type=Path, nargs="+", required=True,
+                             help="eval run dirs or their predictions.jsonl (dir name = ledger run id)")
+    ana.add_argument("--ft-note-model-ref", type=Path, default=None)
+    ana.add_argument("--ft-solution-model-ref", type=Path, default=None)
     ana.add_argument("--output", type=Path, required=True, help="report path; .json and .md are written")
+    gate.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
     args = parser.parse_args(argv)
     if args.command == "export":
         ref = export_for_eval(args.checkpoint, args.binding, args.base, args.output, args.code_commit)
         print(f"EXPORTED {args.output / 'model_ref.json'} unmerged_inference_bit_equivalent="
               f"{ref['export']['unmerged_inference_bit_equivalent']}")
+    elif args.command == "make-subset":
+        value = make_subset(args.kind, args.output, args.b2_predictions)
+        print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
-        print(f"PREREGISTERED {args.output} sha256={preregister(args.output, args.subset, args.b2_predictions)}")
+        print(f"PREREGISTERED {args.output} sha256="
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions)}")
     elif args.command == "ledger-start":
-        event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger)
-        print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['run_id']}")
+        event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset)
+        print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['subset']} {event['run_id']}")
     elif args.command == "ledger-fail":
         from mmdl.runtime.artifacts import default_path
 
         root = args.artifact_root or default_path("MMDL_ARTIFACT_ROOT", "mmdl-artifacts")
         print(f"LEDGER_FAILED {ledger_fail(args.ledger, args.run_id, args.reason, root)['run_id']}")
+    elif args.command == "gate":
+        result = gate_300(analyze(args.prereg, args.runs, None, args.ledger))
+        _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
+        print(f"GATE {result['status']} mean_diff={result['mean_diff']:.3f} collapse_alert={result['collapse_alert']}")
     else:
-        report = analyze(args.prereg, args.runs, args.ft_model_ref, args.ledger)
+        refs = {arm: path for arm, path in (("FT-NOTE", args.ft_note_model_ref),
+                                            ("FT-SOLUTION", args.ft_solution_model_ref)) if path}
+        report = analyze(args.prereg, args.runs, refs, args.ledger)
         _write_once(args.output.with_suffix(".json"), json.dumps(report, indent=2, sort_keys=True) + "\n")
         _write_once(args.output.with_suffix(".md"), render_markdown(report))
-        print(f"ANALYZED {args.output.with_suffix('.json')} FT-F0={report['primary']['FT_minus_F0']:.6f}")
+        print(f"ANALYZED {args.output.with_suffix('.json')} runs={len(report['runs'])}")
     return 0
 
 

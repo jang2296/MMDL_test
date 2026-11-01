@@ -6,25 +6,29 @@ Writes STEPS.json once (an existing file is refused) and prints its sha256, the 
 main argv passes as `chain run --spec STEPS.json --spec-sha256 HEX`. Same params -> same bytes. Executes
 nothing; analysis (`proof_eval analyze`) stays local after collection.
 
-Arms, variants, seeds and config files come from proof_eval.VARIANTS, the table its preregistration is
-built from: statistical runs F0 and FT x fast8k seeds 3407/3408/3409 (32 slots, 8192 output tokens,
-262144..1003520 pixels, 24576 context; `proof_eval run-eval`). Scope (user decision 2026-10-31): every
-run is `--mode partial --run-role standalone` with one `--sample-id` per ID of the pinned subset file
-(the 342 B2 V8 wrong items; the evaluator refuses run role `evaluation` for a partial run). The course
-run (FT x mmmu-val-v8, plain scripts/eval.sh) keeps its code path here but stage `eval-course` is refused:
-it is not in the proof plan. Every stage pins its inputs first (`chain pin`: subset, prereg, ...),
-then appends all of its ledger STARTs, then runs; the ledger START of a run always precedes the run, and
-an omitted or replaced seed stays visible to `analyze --ledger`.
-Run ids: <run_prefix>-<arm>-fast8k-s<seed>-evaluation (job id = run id without -evaluation).
+Arms, variants, seeds and config files come from proof_eval (VARIANTS, ARMS, SEEDS, SUBSETS), the tables its
+preregistration is built from: statistical runs of arm F0 (stage eval-f0) or FT-NOTE / FT-SOLUTION (stage eval-ft)
+x the requested 8k seeds (32 slots, 8192 output tokens, 262144..1310720 pixels, 24576 context;
+`proof_eval run-eval`) on one subset ("wrong" = the 342 B2 V8 wrong items, "rest" = the 558 right ones). Every run
+is `--mode partial --run-role standalone` with one `--sample-id` per ID of the pinned subset file (the evaluator
+refuses run role `evaluation` for a partial run). The course run (FT x mmmu-val-v8, plain scripts/eval.sh) keeps
+its code path here but stage `eval-course` is refused: it is not in the proof plan. Every stage pins its inputs
+first (`chain pin`: subset, prereg, ...), then appends all of its ledger STARTs, then runs; the ledger START of a
+run always precedes the run, and an omitted or replaced seed stays visible to `analyze --ledger`.
+Run ids: <run_prefix>-<arm lowercased>-8k-s<seed>-<subset_tag>-evaluation (job id = run id without -evaluation).
 
 params (`eval-stage-params-v1`), absolute canonical paths:
   all stages   commit (40-hex clone commit, --require-commit), repo_root (the clone), python
                (<volume_root>/venv-<16 hex>/bin/python), volume_root, artifact_root, prereg, prereg_sha256,
-               ledger, run_prefix, subset (proof-eval-subset-v1 JSON), subset_sha256; artifact_root, ledger,
+               ledger, run_prefix, subset (the subset JSON of subset_tag), subset_sha256; artifact_root, ledger,
                prereg and subset under <volume_root>/eval-data/. `plan` reads the subset only after its
-               sha256 equals subset_sha256.
+               sha256 equals subset_sha256. arm ("F0" for eval-f0; "FT-NOTE" or "FT-SOLUTION" for eval-ft),
+               seeds (non-empty list of distinct ints from 3407, 3408, 3409: only these runs are planned),
+               subset_tag ("wrong" | "rest").
   eval-ft      + checkpoint, checkpoint_metadata_sha256 (sha256 of <checkpoint>/metadata.json, which pins
                every checkpoint file), binding, binding_sha256, training_commit, ft_export (new dir)
+               optional: reuse_export true (+ ft_model_ref_sha256): ft_export already holds the export of an
+               earlier stage, so the export step is skipped and <ft_export>/model_ref.json is pinned by that sha
   eval-course  + ft_export, ft_model_ref_sha256 (sha256 of <ft_export>/model_ref.json written by eval-ft)
 """
 from __future__ import annotations
@@ -51,14 +55,16 @@ PROOF = "fine_tuning.notebook_rl.proof_eval"
 HARDWARE = "fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml"
 BASE_REF = "manifests/models/baseline.json"
 COMMON = {"version", "commit", "repo_root", "python", "volume_root", "artifact_root", "prereg",
-          "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256"}
+          "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256", "arm", "seeds", "subset_tag"}
+NOT_PATHS = {"version", "run_prefix", "arm", "seeds", "subset_tag", "reuse_export"}
+ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION")}
 STAGES = ("eval-f0", "eval-ft")  # planned; eval-course is dropped from the proof (user decision 2026-10-31)
-SUBSET_VERSION = proof_eval.SUBSET_VERSION
 MMMU_ID = re.compile(r"validation_[A-Za-z_]+_[0-9]{1,3}\Z")
 EXTRA = {"eval-f0": set(),
          "eval-ft": {"checkpoint", "checkpoint_metadata_sha256", "binding", "binding_sha256",
                      "training_commit", "ft_export"},
          "eval-course": {"ft_export", "ft_model_ref_sha256"}}
+OPTIONAL = {"eval-f0": set(), "eval-ft": {"reuse_export", "ft_model_ref_sha256"}}
 PREFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,40}\Z")
 VENV_PYTHON = re.compile(r"/venv-[0-9a-f]{16}/bin/python\Z")
 # Raw responses (with MMMU questions and gold), the ledger and the prereg live under <volume_root>/eval-data,
@@ -70,13 +76,24 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     if stage not in EVAL_STAGES:
         raise ValueError(f"stage must be one of {EVAL_STAGES}")
     if stage not in STAGES:
-        raise ValueError(f"{stage} is not in the proof plan (user decision 2026-10-31: the 342-item subset only)")
+        raise ValueError(f"{stage} is not in the proof plan (user decision 2026-10-31: the subset runs only)")
     keys = COMMON | EXTRA[stage]
-    if not isinstance(params, dict) or set(params) != keys:
-        raise ValueError(f"{stage} params must have exactly the keys {sorted(keys)}")
+    if not isinstance(params, dict) or not keys <= set(params) <= keys | OPTIONAL[stage]:
+        raise ValueError(f"{stage} params must have the keys {sorted(keys)} and may add {sorted(OPTIONAL[stage])}")
     if params["version"] != PARAMS_VERSION:
         raise ValueError(f"params version must be {PARAMS_VERSION}")
-    for key in keys - {"version", "run_prefix"}:
+    if ("reuse_export" in params and params["reuse_export"] is not True) or (
+            "reuse_export" in params) != ("ft_model_ref_sha256" in params and stage == "eval-ft"):
+        raise ValueError("reuse_export (true) and ft_model_ref_sha256 are given together, for eval-ft only")
+    if params["arm"] not in ARM_OF[stage]:
+        raise ValueError(f"arm of {stage} must be one of {ARM_OF[stage]}")
+    seeds = params["seeds"]
+    if (not isinstance(seeds, list) or not seeds or any(type(x) is not int or x not in proof_eval.SEEDS for x in seeds)
+            or len(set(seeds)) != len(seeds)):
+        raise ValueError(f"seeds must be a non-empty list of distinct values from {list(proof_eval.SEEDS)}")
+    if params["subset_tag"] not in proof_eval.SUBSETS:
+        raise ValueError(f"subset_tag must be one of {list(proof_eval.SUBSETS)}")
+    for key in (keys | (OPTIONAL[stage] & set(params))) - NOT_PATHS:
         value = params[key]
         if not isinstance(value, str):
             raise ValueError(f"{key} must be a string")
@@ -104,11 +121,10 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     return params
 
 
-def _runs(stage: str) -> list[tuple[str, str]]:
-    """(arm, variant) per stage, in the order of proof_eval.VARIANTS (= the preregistered runs)."""
-    statistical = [v for v, (_, _, _, role) in proof_eval.VARIANTS.items() if role == "statistical"]
-    return {"eval-f0": [("F0", v) for v in statistical], "eval-ft": [("FT", v) for v in statistical],
-            "eval-course": [("FT", proof_eval.COURSE)]}[stage]
+def _runs(stage: str, params: dict[str, Any]) -> list[tuple[str, str]]:
+    """(arm, variant) of the requested seeds only, in the order of proof_eval.VARIANTS (= the preregistered runs)."""
+    return [(params["arm"], v) for v, (_, seed, _, role) in proof_eval.VARIANTS.items()
+            if role == "statistical" and seed in params["seeds"]]
 
 
 def subset_ids(params: dict[str, Any]) -> list[str]:
@@ -118,17 +134,18 @@ def subset_ids(params: dict[str, Any]) -> list[str]:
         raise ValueError("subset file sha256 differs from params.subset_sha256")
     loaded = json.loads(raw)
     ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
-    if (loaded.get("version") != SUBSET_VERSION or not isinstance(ids, list) or not ids
+    version = proof_eval.SUBSETS[params["subset_tag"]][0]
+    if (loaded.get("version") != version or not isinstance(ids, list) or not ids
             or loaded.get("count") != len(ids) or ids != sorted(set(ids))
             or not all(isinstance(i, str) and MMMU_ID.match(i) for i in ids)):
-        raise ValueError(f"subset must be {SUBSET_VERSION} with sorted unique MMMU-val sample_ids and their count")
+        raise ValueError(f"subset must be {version} with sorted unique MMMU-val sample_ids and their count")
     return ids
 
 
-def run_id(prefix: str, arm: str, variant: str) -> str:
+def run_id(prefix: str, arm: str, variant: str, subset_tag: str) -> str:
     seed = proof_eval.VARIANTS[variant][1]
-    tag = "course" if variant == proof_eval.COURSE else "fast8k"
-    return f"{prefix}-{arm.lower()}-{tag}-s{seed}-evaluation"
+    tag = "course" if variant == proof_eval.COURSE else "8k"
+    return f"{prefix}-{arm.lower()}-{tag}-s{seed}-{subset_tag}-evaluation"
 
 
 def _step(name: str, argv: list[str], expect: list[str] | None = None) -> dict[str, Any]:
@@ -145,7 +162,8 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     if stage == "eval-ft":
         pins += [("checkpoint", f"{p['checkpoint']}/metadata.json", p["checkpoint_metadata_sha256"]),
                  ("binding", p["binding"], p["binding_sha256"])]
-    if stage == "eval-course":
+    reuse = stage == "eval-course" or p.get("reuse_export") is True
+    if reuse:  # the export of an earlier stage, bound by sha instead of re-exported
         pins += [("ft-model-ref", f"{p['ft_export']}/model_ref.json", p["ft_model_ref_sha256"])]
     steps = [_step(f"pin-{name}", [py, "-m", CHAIN, "pin", "--file", path, "--sha256", sha])
              for name, path, sha in pins]
@@ -153,16 +171,16 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
         model_ref, model_path = f"{repo}/{BASE_REF}", snapshot
     else:
         model_ref, model_path = f"{p['ft_export']}/model_ref.json", f"{p['ft_export']}/model"
-    if stage == "eval-ft":
+    if stage == "eval-ft" and not reuse:
         steps.append(_step("export-ft", [
             py, "-m", PROOF, "export", "--checkpoint", p["checkpoint"], "--binding", p["binding"],
             "--base", snapshot, "--output", p["ft_export"], "--code-commit", p["training_commit"]],
             [model_ref, f"{model_path}/export_manifest.json"]))
-    runs = [(arm, variant, run_id(p["run_prefix"], arm, variant)) for arm, variant in _runs(stage)]
+    runs = [(arm, variant, run_id(p["run_prefix"], arm, variant, p["subset_tag"])) for arm, variant in _runs(stage, p)]
     for arm, variant, rid in runs:
         steps.append(_step(f"ledger-{rid}", [
             py, "-m", PROOF, "ledger-start", "--prereg", p["prereg"], "--arm", arm, "--variant", variant,
-            "--run-id", rid, "--ledger", p["ledger"]], [p["ledger"]]))
+            "--run-id", rid, "--subset", p["subset_tag"], "--ledger", p["ledger"]], [p["ledger"]]))
     for arm, variant, rid in runs:
         protocol = f"{repo}/{proof_eval._rel(proof_eval.VARIANTS[variant][0])}"
         flags = ["--protocol", protocol, "--hardware", f"{repo}/{HARDWARE}", "--model-ref", model_ref,

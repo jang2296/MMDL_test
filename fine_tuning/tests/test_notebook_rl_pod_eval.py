@@ -22,17 +22,17 @@ from fine_tuning.tests import test_notebook_rl_pod as pod_tests
 
 REPO = pod_tests.REPO
 DATA_REVISION = '98e6ac0cb9b7b2cd2c991b85a50762edc4aedc68'
-REAL_PREREG = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg-v2/prereg.json')
-REAL_SUBSET = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-eval-subset-v1/b2_v8_wrong_ids.json')
+REAL_PREREG = Path('/home/jang2/mmdl-artifacts/notebook-rl-local-nf4-20261021/hf-pool-v3/proof-prereg-v3/prereg.json')
 SUBSET_IDS = ['validation_Art_1', 'validation_Math_12', 'validation_Physics_3']
+REST_IDS = ['validation_Art_2', 'validation_Math_7']
 
 
-def write_subset(volume, ids=SUBSET_IDS, raw=None):
-    """A proof-eval-subset-v1 file under <volume>/eval-data/proof/; returns (path, sha256)."""
+def write_subset(volume, ids=SUBSET_IDS, raw=None, version='proof-eval-subset-v1'):
+    """A proof-eval-subset-v1 (or -rest-v1) file under <volume>/eval-data/proof/; returns (path, sha256)."""
     path = Path(volume)/'eval-data/proof/b2_v8_wrong_ids.json'
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(raw if raw is not None else json.dumps(
-        {'version': 'proof-eval-subset-v1', 'count': len(ids), 'sample_ids': ids, 'source': 'fixture',
+        {'version': version, 'count': len(ids), 'sample_ids': ids, 'source': 'fixture',
          'source_sha256': '0'*64}).encode())
     return str(path), common.sha256_file(path)
 
@@ -403,8 +403,10 @@ class EvalStagePlanTests(unittest.TestCase):
 
     def params(self, stage, volume=None, **changes):
         volume = volume or self.volume
-        subset, subset_sha = write_subset(volume)
+        rest = changes.get('subset_tag') == 'rest'
+        subset, subset_sha = write_subset(volume, REST_IDS, version='proof-eval-subset-rest-v1') if rest else write_subset(volume)
         value = {'subset': subset, 'subset_sha256': subset_sha,'version': 'eval-stage-params-v1', 'commit': 'a'*40, 'repo_root': str(REPO),
+                 'arm': 'F0' if stage == 'eval-f0' else 'FT-NOTE', 'seeds': [3407, 3408, 3409], 'subset_tag': 'wrong',
                  'python': f'{volume}/venv-0123456789abcdef/bin/python', 'volume_root': volume,
                  'artifact_root': f'{volume}/eval-data/artifacts', 'prereg': f'{volume}/eval-data/proof/prereg.json',
                  'prereg_sha256': 'b'*64, 'ledger': f'{volume}/eval-data/proof/ledger.jsonl',
@@ -438,7 +440,7 @@ class EvalStagePlanTests(unittest.TestCase):
 
     def test_specs_pass_the_real_chain_check_and_keep_pin_export_ledger_run_order(self):
         self.assertEqual(('eval-f0', 'eval-ft'), eval_stage.STAGES)
-        with self.assertRaisesRegex(ValueError, 'not in the proof plan'):  # user decision 2026-10-31: 342 only
+        with self.assertRaisesRegex(ValueError, 'not in the proof plan'):  # user decision 2026-10-31: subset runs only
             eval_stage.plan('eval-course', self.params('eval-course'))
         for stage in eval_stage.STAGES:
             spec = chain.check_spec(eval_stage.plan(stage, self.params(stage)))
@@ -478,13 +480,13 @@ class EvalStagePlanTests(unittest.TestCase):
             for step in eval_stage.plan(stage, self.params(stage))['steps']:
                 if step['name'].startswith('ledger-'):
                     argv = step['argv']
-                    found.add((argv[argv.index('--arm')+1], argv[argv.index('--variant')+1]))
+                    found.add((argv[argv.index('--arm')+1], argv[argv.index('--variant')+1], argv[argv.index('--subset')+1]))
         return found
 
     def test_runs_and_arguments_match_the_preregistered_design(self):
         statistical = [v for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical']
-        self.assertEqual({(a, v) for a in ('F0', 'FT') for v in statistical},
-                         self.planned_runs())  # = proof_eval.build_preregistration's runs (no course run)
+        self.assertEqual({(a, v, 'wrong') for a in ('F0', 'FT-NOTE') for v in statistical},
+                         self.planned_runs())  # within proof_eval.build_preregistration's runs (no course run)
         steps = {stage: eval_stage.plan(stage, self.params(stage))['steps'] for stage in eval_stage.STAGES}
         snapshot = f'{self.volume}/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17'
         for stage, (model_ref, model_path) in {
@@ -504,33 +506,88 @@ class EvalStagePlanTests(unittest.TestCase):
                 self.assertEqual(value['--job-id']+'-evaluation', value['--run-id'])
                 self.assertEqual(['-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval'], argv[1:4])
                 variant = value['--protocol'].removeprefix(f'{REPO}/')
-                self.assertRegex(variant, r'^fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_fast8k_seed340[789]\.yaml$')
-                self.assertRegex(value['--run-id'], r'^nbrl-proof-v1-f[t0]-fast8k-s340[789]-evaluation$')
+                self.assertRegex(variant, r'^fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_8k_seed340[789]\.yaml$')
+                self.assertRegex(value['--run-id'], r'^nbrl-proof-v1-(f0|ft-note)-8k-s340[789]-wrong-evaluation$')
         export = next(s for s in steps['eval-ft'] if s['name'] == 'export-ft')['argv']
         self.assertEqual(snapshot, export[export.index('--base')+1])
         self.assertEqual('e'*40, export[export.index('--code-commit')+1])
 
-    @unittest.skipUnless(REAL_PREREG.is_file() and REAL_SUBSET.is_file(), 'local preregistration not present')
-    def test_planned_runs_equal_the_real_preregistration(self):
+    @unittest.skipUnless(REAL_PREREG.is_file(), 'local preregistration not present')
+    def test_planned_runs_are_in_the_real_preregistration(self):
         prereg, _ = proof_eval.load_preregistration(REAL_PREREG)  # hash sidecar + scorer bytes unchanged
-        self.assertEqual({(r['arm'], r['variant']) for r in prereg['runs']}, self.planned_runs())
-        raw = REAL_SUBSET.read_bytes()
-        self.assertEqual(prereg['evaluation_subset']['sha256'], common.sha256_bytes(raw))
+        self.assertLessEqual(self.planned_runs(), {(r['arm'], r['variant'], r['subset']) for r in prereg['runs']})
         planned_files = {}
-        for stage in eval_stage.STAGES:
-            params = self.params(stage)  # writes the fixture subset; replaced by the real one just below
-            subset, subset_sha = write_subset(self.volume, raw=raw)  # the real subset, copied under eval-data
-            for step in eval_stage.plan(stage, params | {'subset': subset, 'subset_sha256': subset_sha})['steps']:
-                if step['name'] == 'pin-subset':
-                    self.assertEqual(prereg['evaluation_subset']['sha256'], step['argv'][-1])
-                if step['name'].startswith('eval-'):
-                    argv = step['argv']
-                    self.assertEqual(prereg['evaluation_subset']['ids'], sample_ids(argv))
-                    planned_files[argv[argv.index('--protocol')+1]] = common.sha256_file(argv[argv.index('--protocol')+1])
+        for tag, row in prereg['evaluation_subsets'].items():
+            raw = Path(row['path']).read_bytes()
+            self.assertEqual(row['sha256'], common.sha256_bytes(raw))
+            for stage in eval_stage.STAGES:
+                params = self.params(stage)  # writes the fixture subset; replaced by the real one just below
+                subset, subset_sha = write_subset(self.volume, raw=raw)  # the real subset, copied under eval-data
+                for step in eval_stage.plan(stage, params | {'subset': subset, 'subset_sha256': subset_sha,
+                                                             'subset_tag': tag})['steps']:
+                    if step['name'] == 'pin-subset':
+                        self.assertEqual(row['sha256'], step['argv'][-1])
+                    if step['name'].startswith('eval-'):
+                        argv = step['argv']
+                        self.assertEqual(row['ids'], sample_ids(argv))
+                        planned_files[argv[argv.index('--protocol')+1]] = common.sha256_file(argv[argv.index('--protocol')+1])
         self.assertEqual({f"{REPO}/{row['path']}": row['sha256'] for row in prereg['protocol_variants'].values()},
                          planned_files)  # every planned protocol file is byte-identical to the preregistered one
         self.assertEqual({v: row['concurrency'] for v, row in prereg['protocol_variants'].items()},
                          {v: row[2] for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical'})
+
+    def test_eval_stage_seeds_and_arm_run_ids(self):
+        def runs(stage, **changes):
+            steps = eval_stage.plan(stage, self.params(stage, **changes))['steps']
+            return steps, [s for s in steps if s['name'].startswith('ledger-')], [s for s in steps if s['name'].startswith('eval-')]
+
+        # only the requested seeds, the arm and the subset tag in the run id; the ledger START carries arm/variant/subset
+        steps, ledgers, evals = runs('eval-ft', arm='FT-SOLUTION', seeds=[3408], subset_tag='rest')
+        rid = 'nbrl-proof-v1-ft-solution-8k-s3408-rest-evaluation'
+        self.assertEqual([f'ledger-{rid}'], [s['name'] for s in ledgers])
+        self.assertEqual([f'eval-{rid}'], [s['name'] for s in evals])
+        argv = ledgers[0]['argv']
+        self.assertEqual(('FT-SOLUTION', 'mmmu-val-v8-8k-seed3408-v2', 'rest', rid),
+                         tuple(argv[argv.index(k)+1] for k in ('--arm', '--variant', '--subset', '--run-id')))
+        self.assertEqual(REST_IDS, sample_ids(evals[0]['argv']))
+        self.assertTrue(evals[0]['argv'][evals[0]['argv'].index('--protocol')+1].endswith('mmmu_val_v8_8k_seed3408.yaml'))
+        self.assertEqual(['export-ft'], [s['name'] for s in steps if s['name'].startswith('export')])  # once per plan
+        # F0, two seeds, in the order of the variants (not of the params); seeds 3407 and 3409 only
+        _, ledgers, evals = runs('eval-f0', seeds=[3409, 3407])
+        self.assertEqual(['ledger-nbrl-proof-v1-f0-8k-s3407-wrong-evaluation', 'ledger-nbrl-proof-v1-f0-8k-s3409-wrong-evaluation'],
+                         [s['name'] for s in ledgers])
+        self.assertEqual(2, len(evals))
+        self.assertEqual('nbrl-proof-v1-ft-note-8k-s3407-wrong-evaluation',
+                         eval_stage.run_id('nbrl-proof-v1', 'FT-NOTE', 'mmmu-val-v8-8k-seed3407-v2', 'wrong'))
+        # the export of an earlier stage is reused: no export step, its model_ref is pinned by sha
+        steps, _, evals = runs('eval-ft', reuse_export=True, ft_model_ref_sha256='9'*64)
+        names = [s['name'] for s in steps]
+        self.assertNotIn('export-ft', names)
+        self.assertEqual(['pin-subset', 'pin-prereg', 'pin-checkpoint', 'pin-binding', 'pin-ft-model-ref'], names[:5])
+        self.assertEqual([f'{self.volume}/ft-export/model_ref.json', '9'*64], steps[4]['argv'][-3::2])
+        self.assertEqual(3, len(evals))
+        chain.check_spec(eval_stage.plan('eval-ft', self.params('eval-ft', reuse_export=True, ft_model_ref_sha256='9'*64)))
+        for stage, changes in (
+                ('eval-f0', {'seeds': []}), ('eval-f0', {'seeds': [3410]}), ('eval-f0', {'seeds': [3407, 3407]}),
+                ('eval-f0', {'seeds': ['3407']}), ('eval-f0', {'seeds': [True]}), ('eval-f0', {'seeds': 3407}),
+                ('eval-f0', {'arm': 'FT-NOTE'}), ('eval-f0', {'arm': 'f0'}), ('eval-ft', {'arm': 'F0'}),
+                ('eval-ft', {'arm': 'FT'}), ('eval-f0', {'subset_tag': 'all'}), ('eval-f0', {'subset_tag': None}),
+                ('eval-ft', {'reuse_export': True}), ('eval-ft', {'reuse_export': False, 'ft_model_ref_sha256': '9'*64}),
+                ('eval-ft', {'reuse_export': 1, 'ft_model_ref_sha256': '9'*64}),
+                ('eval-ft', {'ft_model_ref_sha256': '9'*64}), ('eval-ft', {'reuse_export': True, 'ft_model_ref_sha256': 'bad'}),
+                ('eval-f0', {'reuse_export': True, 'ft_model_ref_sha256': '9'*64})):
+            with self.assertRaises(ValueError, msg=(stage, changes)):
+                eval_stage.plan(stage, self.params(stage, **changes))
+        for stage in ('eval-f0', 'eval-ft'):  # arm, seeds and subset_tag are required
+            for key in ('arm', 'seeds', 'subset_tag'):
+                params = self.params(stage)
+                del params[key]
+                with self.assertRaises(ValueError, msg=(stage, key)):
+                    eval_stage.plan(stage, params)
+        # the subset file must be the one of its tag
+        wrong_file = self.params('eval-f0', subset_tag='rest') | {'subset_tag': 'wrong'}
+        with self.assertRaisesRegex(ValueError, 'proof-eval-subset-v1'):
+            eval_stage.plan('eval-f0', wrong_file)
 
     def test_params_are_refused(self):
         for stage, changes in (
@@ -580,12 +637,12 @@ class EvalStagePlanTests(unittest.TestCase):
                 argv, name = step['argv'], step['name']
                 if name.startswith('ledger-'):
                     with mock.patch.object(proof_eval, 'ledger_start', return_value={
-                            'arm': 'A', 'variant': 'V', 'run_id': 'R'}) as called, \
+                            'arm': 'A', 'variant': 'V', 'subset': 'wrong', 'run_id': 'R'}) as called, \
                             mock.patch('sys.stdout', new=io.StringIO()):
                         self.assertEqual(0, proof_eval.main(argv[3:]))
-                    prereg_path, arm, variant, rid, ledger = called.call_args.args
-                    self.assertEqual((Path(volume)/'eval-data/proof/prereg.json', Path(volume)/'eval-data/proof/ledger.jsonl'),
-                                     (prereg_path, ledger))
+                    prereg_path, arm, variant, rid, ledger, subset = called.call_args.args
+                    self.assertEqual((Path(volume)/'eval-data/proof/prereg.json', Path(volume)/'eval-data/proof/ledger.jsonl', 'wrong'),
+                                     (prereg_path, ledger, subset))
                     self.assertEqual(name.removeprefix('ledger-'), rid)
                 elif name == 'export-ft':
                     with mock.patch.object(proof_eval, 'export_for_eval', return_value={

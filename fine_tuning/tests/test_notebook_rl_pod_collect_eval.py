@@ -52,14 +52,14 @@ class EvalPackFixture(unittest.TestCase):
         return value
 
     def planned(self, params, stage):
-        return [(arm, variant, eval_stage.run_id(params['run_prefix'], arm, variant))
-                for arm, variant in eval_stage._runs(stage)]
+        return [(arm, variant, eval_stage.run_id(params['run_prefix'], arm, variant, params['subset_tag']))
+                for arm, variant in eval_stage._runs(stage, params)]
 
     def start_all(self, params, stage, skip=()):
         for arm, variant, rid in self.planned(params, stage):
             if rid not in skip:
-                proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, run_id=rid,
-                                   preregistration_sha256=PREREG_SHA)
+                proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, subset=params['subset_tag'],
+                                   run_id=rid, preregistration_sha256=PREREG_SHA)
 
     def write_run(self, rid, variant, status='PARTIAL'):  # the evaluator's finished status of a --sample-id run
         base = self.artifacts/'runs'/rid
@@ -191,8 +191,8 @@ class PackEvalTests(EvalPackFixture):
     def test_failed_runs_are_packed_marked_failed_when_the_ledger_says_so(self):
         params, run_dir = self.stage('eval-ft', state='MAIN_EXIT 1', complete=False)
         first, second, third = (rid for _, _, rid in self.planned(params, 'eval-ft'))
-        self.write_run(first, 'mmmu-val-v8-fast8k-seed3407-v1')
-        self.write_run(second, 'mmmu-val-v8-fast8k-seed3408-v1', status='RUNNING')  # killed mid-run
+        self.write_run(first, 'mmmu-val-v8-8k-seed3407-v2')
+        self.write_run(second, 'mmmu-val-v8-8k-seed3408-v2', status='RUNNING')  # killed mid-run
         with self.assertRaisesRegex(collect.CollectError, f'{second}: summary is not PARTIAL'):
             self.pack('eval-ft', params, run_dir)
         for rid in (second, third):  # the third never started its directory
@@ -217,15 +217,22 @@ class PackEvalTests(EvalPackFixture):
         self.start_all(params, 'eval-ft', skip=rids[1:2])
         with self.assertRaisesRegex(collect.CollectError, f'{rids[1]}: no ledger START'):
             self.pack('eval-ft', params, run_dir)
-        proof_eval._append(self.ledger, 'START', arm='FT', variant='mmmu-val-v8-fast8k-seed3408-v1',
-                           run_id=rids[1], preregistration_sha256=PREREG_SHA)
+        proof_eval._append(self.ledger, 'START', arm='FT-NOTE', variant='mmmu-val-v8-8k-seed3408-v2',
+                           subset='wrong', run_id=rids[1], preregistration_sha256=PREREG_SHA)
         # STARTs recorded under another preregistration
         good_ledger = self.ledger.read_bytes()
         self.ledger.unlink()
         for arm, variant, rid in self.planned(params, 'eval-ft'):
-            proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, run_id=rid,
+            proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, subset='wrong', run_id=rid,
                                preregistration_sha256='9'*64)
         with self.assertRaisesRegex(collect.CollectError, 'under this preregistration'):
+            self.pack('eval-ft', params, run_dir)
+        # STARTs recorded for the other subset of the same run ids
+        self.ledger.unlink()
+        for arm, variant, rid in self.planned(params, 'eval-ft'):
+            proof_eval._append(self.ledger, 'START', arm=arm, variant=variant, subset='rest', run_id=rid,
+                               preregistration_sha256=PREREG_SHA)
+        with self.assertRaisesRegex(collect.CollectError, 'no ledger START'):
             self.pack('eval-ft', params, run_dir)
         self.ledger.write_bytes(good_ledger)
         # a symlinked packed file
@@ -301,7 +308,7 @@ class PackEvalTests(EvalPackFixture):
         outside = self.params('eval-f0', artifact_root=str(self.volume/'elsewhere'))
         with self.assertRaisesRegex(ValueError, 'must be under'):
             collect.pack_eval(outside, 'eval-f0', run_dir, self.root/'outbox', 'x')
-        with self.assertRaisesRegex(ValueError, 'exactly the keys'):
+        with self.assertRaisesRegex(ValueError, 'params must have the keys'):
             collect.pack_eval(self.params('eval-ft'), 'eval-f0', run_dir, self.root/'outbox', 'x')
 
     def test_spec_hash_equals_what_eval_stage_plan_prints(self):
