@@ -1,7 +1,10 @@
 """Collect stage of the error-note path: one gold-blind solve per item, one note per item with the gold visible, rows.
 
-Plan: claudedocs/research_self_note_finetuning_plan_20261101.md section 3.
-CLI: python -m fine_tuning.error_note.collect {solve,note,sweep,rows} ... (see _parser). Heavy imports stay inside functions.
+Plan: claudedocs/research_self_note_finetuning_plan_20261101.md section 3; version 2: claudedocs/plan_self_note_v2_20261102.md.
+CLI: python -m fine_tuning.error_note.collect {solve,note,sweep,resolve,rows} ... (see _parser). Heavy imports stay inside functions.
+Version 2: `note --note-version v2` writes the note without a corrected solution and, from note.jsonl, the gold-free
+lessons.json; `resolve` re-solves each item whose T1 is not correct once, gold-blind like `solve`, with only the
+lesson in front of the P0 text; `rows --rows-version v2` builds rows from T1 or that re-solve plus the note.
 Generation is a continuous add_request/step loop with the evaluation backend's prompt shape and sampling arguments;
 every completion is appended to its JSONL immediately, so a killed run resumes by skipping the ids already written.
 """
@@ -28,8 +31,8 @@ from typing import Any, Callable, Iterable, Iterator
 
 from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
 
-from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, TURN1_ANSWER_CONTRACT, build_rows, note_prompt, parse_note,
-                       sample_seed)
+from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, TURN1_ANSWER_CONTRACT, build_rows, build_rows_v2, hint_leak,
+                       is_loop, note_prompt, note_prompt_v2, parse_note, parse_note_v2, resolve_prompt, sample_seed)
 from .order import read_order
 
 PREFETCH_WORKERS = 8
@@ -45,6 +48,7 @@ AUTO_RESERVE_GIB = 16         # kept outside the KV cache: WEIGHTS_GIB + OTHER_V
 MIN_AUTO_KV_GIB = 8
 SEQS_STEP = 8
 SEQS_FACTORS = (0.75, 1.0, 1.25)
+LESSONS_VERSION = "error-note-lessons-v1"
 
 
 class InputTooLong(ValueError):
@@ -420,14 +424,22 @@ def run_solve(items: list[dict], actors: dict, load: Callable, stream: Stream, s
 
 def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[str, str], load: Callable, stream: Stream,
              stats: StreamStats, grade: Callable, out: Path, *, S: int, B: int, engine: str,
-             stop_after: float | None = None, every: float = THROUGHPUT_EVERY, gpu_probe: Callable | None = None) -> dict:
-    """Turn 2: the note prompt shows the gold. Items without a usable T1 get a SKIPPED row and no generation."""
+             stop_after: float | None = None, every: float = THROUGHPUT_EVERY, gpu_probe: Callable | None = None,
+             version: str = "v1") -> dict:
+    """Turn 2: the note prompt shows the gold. Items without a usable T1 get a SKIPPED row and no generation.
+
+    version "v2": the note has no corrected solution; its lesson is checked for hints (contract.hint_leak) here, where
+    the gold is known, and lessons.json is rewritten from note.jsonl at the end, also after a stop deadline."""
+    if version not in ("v1", "v2"):
+        raise ValueError(f"unknown note version {version!r}")
     out = Path(out)
     ids = [item["problem_id"] for item in items]
     missing = [pid for pid in ids if pid not in t1]
     if missing:
         raise ValueError(f"no T1 row for {len(missing)} items, first {missing[:3]}")
     done = read_jsonl_done(out / "note.jsonl")
+    if any(("note_version" in row) != (version == "v2") for row in done.values() if "status" not in row):
+        raise ValueError(f"note.jsonl holds notes of another version than {version}")
     for pid in ids:
         if pid not in done and t1[pid]["status"] in SKIPPED_T1_STATUSES:
             done[pid] = {"problem_id": pid, "stage": "note", "status": "SKIPPED_" + t1[pid]["status"]}
@@ -438,15 +450,27 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
         for actor, images in bounded_map(lambda pid: (actors[pid], load(actors[pid])), todo,
                                          workers=PREFETCH_WORKERS, buffer=2 * S):
             pid = actor.problem_id
-            prompt = note_prompt(p0_eval_text(actor.question, actor.choices), t1[pid]["text"], t1[pid]["status"], gold[pid])
+            make = note_prompt_v2 if version == "v2" else note_prompt
+            prompt = make(p0_eval_text(actor.question, actor.choices), t1[pid]["text"], t1[pid]["status"], gold[pid])
             yield {"request_id": pid, "messages": [user_message(prompt, len(images))], "images": images,
-                   "seed": sample_seed(pid, "note"), "max_tokens": MAX_NEW_TOKENS, "prompt": prompt, "mode": actor.mode}
+                   "seed": sample_seed(pid, "note"), "max_tokens": MAX_NEW_TOKENS, "prompt": prompt, "mode": actor.mode,
+                   "choices": actor.choices}
 
     def handle(request: dict, output: dict) -> dict:
         pid = request["request_id"]
         row = {"problem_id": pid, "stage": "note", "seed": request["seed"]}
+        if version == "v2":
+            row["note_version"] = "v2"
         if output.get("blocked"):
             return row | _blocked_fields(output) | {"prompt": request["prompt"], "engine": engine}
+        if version == "v2":
+            note = parse_note_v2(output["text"])
+            return row | {"prompt": request["prompt"], "prompt_tokens": output["prompt_tokens"],
+                          "completion_tokens": output["completion_tokens"], "finish_reason": output["finish_reason"],
+                          "text": output["text"], "image_reading": note.image_reading if note else None,
+                          "cause": note.cause if note else None, "lesson": note.lesson if note else None,
+                          "hint_leak": hint_leak(note.lesson, gold[pid], request["choices"]) if note else None,
+                          "seconds": output["seconds"], "engine": engine}
         parsed = parse_note(output["text"])
         corrected = grade(pid, parsed.corrected_text, output["finish_reason"], request["mode"]) if parsed else (None, None)
         return row | {"prompt": request["prompt"], "prompt_tokens": output["prompt_tokens"],
@@ -455,7 +479,95 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
                       "cause": parsed.cause if parsed else None, "corrected_status": corrected[0],
                       "corrected_extracted": corrected[1], "seconds": output["seconds"], "engine": engine}
 
-    return run_generation("note", out, requests(), stream, stats, handle, total=len(todo), S=S, B=B, engine=engine,
+    receipt = run_generation("note", out, requests(), stream, stats, handle, total=len(todo), S=S, B=B, engine=engine,
+                             stop_after=stop_after, every=every, gpu_probe=gpu_probe)
+    if version == "v2":
+        write_lessons(out)
+    return receipt
+
+
+def _lesson_entry(row: dict) -> dict:
+    """What the gold-blind resolve stage may see of one note row: a usable lesson, or the reason there is none."""
+    if "status" in row:  # SKIPPED_* (no usable T1) or CONTEXT_BLOCKED
+        return {"lesson": None, "skip": "NO_NOTE"}
+    if row.get("note_version") != "v2":
+        raise ValueError(f"{row['problem_id']}: not a v2 note")
+    if row["finish_reason"] != "stop":
+        return {"lesson": None, "skip": "NOTE_NOT_STOPPED"}
+    if row["lesson"] is None:
+        return {"lesson": None, "skip": "NOTE_UNPARSED"}
+    if row["hint_leak"] is not None:
+        return {"lesson": None, "skip": f"HINT_LEAK:{row['hint_leak']}"}
+    return {"lesson": row["lesson"], "skip": None}
+
+
+def write_lessons(out: Path) -> dict:
+    """lessons.json from note.jsonl. note.jsonl holds the gold (in each prompt); lessons.json holds only lessons that
+    passed the hint check, so the resolve process never opens a file with the gold. note_bytes ties it to note.jsonl."""
+    out = Path(out)
+    notes = read_jsonl_done(out / "note.jsonl", repair=False)
+    value = {"version": LESSONS_VERSION, "note_bytes": (out / "note.jsonl").stat().st_size,
+             "items": {pid: _lesson_entry(row) for pid, row in notes.items()}}
+    write_json(out / "lessons.json", value)
+    return value
+
+
+def read_lessons(out: Path) -> dict[str, dict]:
+    """lessons.json, refused unless note.jsonl still has the size it was written from (size only; never its content)."""
+    out = Path(out)
+    value = json.loads((out / "lessons.json").read_text(encoding="utf-8"))
+    if value.get("version") != LESSONS_VERSION:
+        raise ValueError("lessons.json has an unexpected version")
+    if value["note_bytes"] != (out / "note.jsonl").stat().st_size:
+        raise ValueError("lessons.json is older than note.jsonl; rerun the v2 note stage to rewrite it")
+    return value["items"]
+
+
+def run_resolve(items: list[dict], actors: dict, t1: dict[str, dict], lessons: dict[str, dict], load: Callable,
+                stream: Stream, stats: StreamStats, grade: Callable, out: Path, *, S: int, B: int, engine: str,
+                stop_after: float | None = None, every: float = THROUGHPUT_EVERY, gpu_probe: Callable | None = None) -> dict:
+    """One gold-blind re-solve per item whose T1 is not correct: the lesson block, then the P0 text; nothing else.
+
+    No retry and no second sample: an item is generated once (resume skips every id already in resolve.jsonl).
+    An item without a usable lesson gets a row {"skipped": reason} and no generation; a correct T1 gets no row."""
+    out = Path(out)
+    ids = [item["problem_id"] for item in items]
+    missing = [pid for pid in ids if pid not in t1]
+    if missing:
+        raise ValueError(f"no T1 row for {len(missing)} items, first {missing[:3]}")
+    missing = [pid for pid in ids if pid not in lessons]
+    if missing:
+        raise ValueError(f"no note row for {len(missing)} items, first {missing[:3]}")
+    done = read_jsonl_done(out / "resolve.jsonl")
+    candidates = [pid for pid in ids if t1[pid]["status"] != "CORRECT"]
+    for pid in candidates:
+        if pid not in done and lessons[pid]["skip"] is not None:
+            done[pid] = {"problem_id": pid, "stage": "resolve", "skipped": lessons[pid]["skip"]}
+            append_jsonl(out / "resolve.jsonl", done[pid])
+    todo = [pid for pid in candidates if pid not in done]
+    stats.receipt_extra |= {"candidates": len(candidates),
+                            "skipped": dict(Counter(done[pid]["skipped"] for pid in candidates
+                                                    if "skipped" in done.get(pid, {})))}
+
+    def requests() -> Iterator[dict]:
+        for actor, images in bounded_map(lambda pid: (actors[pid], load(actors[pid])), todo,
+                                         workers=PREFETCH_WORKERS, buffer=2 * S):
+            pid = actor.problem_id
+            prompt = resolve_prompt(p0_eval_text(actor.question, actor.choices), lessons[pid]["lesson"])
+            yield {"request_id": pid, "messages": [user_message(prompt, len(images))], "images": images,
+                   "seed": sample_seed(pid, "resolve"), "max_tokens": MAX_NEW_TOKENS, "prompt": prompt, "mode": actor.mode}
+
+    def handle(request: dict, output: dict) -> dict:
+        row = {"problem_id": request["request_id"], "stage": "resolve", "seed": request["seed"], "prompt": request["prompt"]}
+        if output.get("blocked"):
+            return row | _blocked_fields(output) | {"prompt_tokens": None, "completion_tokens": 0, "extracted": None,
+                                                    "seconds": 0.0, "engine": engine}
+        status, extracted = grade(request["request_id"], output["text"], output["finish_reason"], request["mode"])
+        return row | {"prompt_tokens": output["prompt_tokens"], "completion_tokens": output["completion_tokens"],
+                      "finish_reason": output["finish_reason"], "text": output["text"], "status": status,
+                      "extracted": extracted, "seconds": output["seconds"], "engine": engine}
+
+    return run_generation("resolve", out, requests(), stream, stats, handle, total=len(todo), S=S, B=B, engine=engine,
                           stop_after=stop_after, every=every, gpu_probe=gpu_probe)
 
 
@@ -705,9 +817,9 @@ def make_records(items: list[dict], actors: dict, t1: dict[str, dict], note: dic
     return records
 
 
-def summarize(records: list[dict], rows: list[dict], drops: list[dict]) -> dict:
+def summarize(records: list[dict], rows: list[dict], drops: list[dict], parse: Callable = parse_note) -> dict:
     """Counts only; no text."""
-    parsed = [parse_note(r["note"]["text"]) if "note" in r else "NO_NOTE" for r in records]
+    parsed = [parse(r["note"]["text"]) if "note" in r else "NO_NOTE" for r in records]
     by_kind: dict[str, list[int]] = {}
     for row in rows:
         by_kind.setdefault(row["kind"], []).append(row["target_tokens"])
@@ -722,6 +834,70 @@ def summarize(records: list[dict], rows: list[dict], drops: list[dict]) -> dict:
         "t1_status": dict(Counter(r["t1"]["status"] for r in records)),
         "mean_target_tokens": {kind: round(sum(v) / len(v), 1) for kind, v in by_kind.items()},
     }
+
+
+def make_records_v2(items: list[dict], actors: dict, t1: dict[str, dict], note: dict[str, dict],
+                    resolve: dict[str, dict]) -> list[dict]:
+    """The inputs of contract.build_rows_v2: note {prompt, text, finish_reason}, resolve {text, finish_reason, status}
+    or {skipped}. A note or resolve row with a status other than a grade (SKIPPED / CONTEXT_BLOCKED note) is no note."""
+    records = []
+    for item in items:
+        pid = item["problem_id"]
+        if pid not in t1:
+            raise ValueError(f"no T1 row for {pid}")
+        actor, first, second, third = actors[pid], t1[pid], note.get(pid), resolve.get(pid)
+        record = {"problem_id": pid, "subject": item["subject"], "source": item["source"],
+                  "p0_text": p0_eval_text(actor.question, actor.choices), "image_paths": list(actor.image_paths),
+                  "t1": {"text": first.get("text", ""), "finish_reason": first.get("finish_reason") or "",
+                         "status": first["status"]}}
+        if second is not None and "status" not in second:
+            if second.get("note_version") != "v2":
+                raise ValueError(f"{pid}: rows v2 needs v2 notes")
+            record["note"] = {key: second[key] for key in ("prompt", "text", "finish_reason")}
+        if third is not None:
+            record["resolve"] = ({"skipped": third["skipped"]} if "skipped" in third else
+                                 {"text": third.get("text", ""), "finish_reason": third.get("finish_reason") or "",
+                                  "status": third["status"]})
+        records.append(record)
+    return records
+
+
+def length_report(outputs: dict[str, dict]) -> dict:
+    """Completions cut at the token limit, split into loops (contract.is_loop) and the rest: the rest is the share
+    that a higher limit might finish (user decision 2026-11-02: report it; the limit is never raised automatically)."""
+    cut = [row["text"] for row in outputs.values() if row.get("finish_reason") == "length"]
+    loops = sum(is_loop(text) for text in cut)
+    return {"generated": sum("text" in row for row in outputs.values()), "length": len(cut), "length_loop": loops,
+            "length_not_loop": len(cut) - loops, "not_loop_share": (len(cut) - loops) / len(cut) if cut else None}
+
+
+def collect_rows_v2(records: list[dict], tokenize: Callable[[str], list[int]],
+                    outputs: dict[str, dict[str, dict]]) -> tuple[list[dict], list[dict], dict]:
+    """outputs: {"t1", "note", "resolve"} -> the rows of the ordered prefix, for the counts that need more than records."""
+    rows: list[dict] = []
+    drops: list[dict] = []
+    for record in records:
+        built, dropped = build_rows_v2(record, tokenize)
+        rows += built
+        drops += dropped
+    resolves = [r["resolve"] for r in records if "resolve" in r]
+    attempted = [r for r in resolves if "skipped" not in r]
+    correct = sum(r["status"] == "CORRECT" for r in attempted)
+    skipped = Counter(r["skipped"] for r in resolves if "skipped" in r)
+    notes = [row for row in outputs["note"].values() if "status" not in row]
+    summary = summarize(records, rows, drops, parse_note_v2) | {
+        "rows_version": "v2",
+        "resolve": {"candidates": sum(r["t1"]["status"] != "CORRECT" for r in records),
+                    "no_row": sum(r["t1"]["status"] != "CORRECT" and "resolve" not in r for r in records),
+                    "attempted": len(attempted), "correct": correct,
+                    "success_rate": correct / len(attempted) if attempted else None,
+                    "skipped_by_reason": dict(skipped),
+                    "hint_leak_skips": sum(n for reason, n in skipped.items() if reason.startswith("HINT_LEAK:"))},
+        "note_hint_leak_by_reason": dict(Counter((row["hint_leak"] or "NONE").split(":")[0] for row in notes
+                                                 if row["lesson"] is not None)),
+        "length_finishes": {stage: length_report(rows_) for stage, rows_ in outputs.items()},
+    }
+    return rows, drops, summary
 
 
 def collect_rows(records: list[dict], tokenize: Callable[[str], list[int]]) -> tuple[list[dict], list[dict], dict]:
@@ -760,12 +936,16 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
     items = _prefix(args)
     seqs = args.max_num_seqs
     gold = None
+    if stage in ("note", "resolve") and args.max_num_seqs_from:
+        seqs = json.loads(Path(args.max_num_seqs_from).read_text())["best_seqs"]
+        if type(seqs) is not int:
+            raise ValueError("--max-num-seqs-from: the sweep has no best_seqs")
+    auto = None
+    if seqs == "auto":  # no sweep (T1 reused): the middle sweep candidate for the KV size
+        auto = auto_seqs(int(resolve_kv(args.kv_cache_gib)["kv_cache_gib_resolved"]))
+        seqs = auto[len(auto) // 2]
+    args.max_num_seqs = seqs
     if stage == "note":
-        if args.max_num_seqs_from:
-            seqs = json.loads(Path(args.max_num_seqs_from).read_text())["best_seqs"]
-            if type(seqs) is not int:
-                raise ValueError("--max-num-seqs-from: the sweep has no best_seqs")
-        args.max_num_seqs = seqs
         verifier = read_verifier(build_root / "train")  # the gold is read before any guard, in this process only
         gold = {item["problem_id"]: verifier[item["problem_id"]].gold for item in items}
         del verifier
@@ -775,15 +955,22 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
     if unknown:
         raise ValueError(f"{len(unknown)} ordered items are not in the train split, first {unknown[:3]}")
     stats = StreamStats()
+    if auto is not None:
+        stats.receipt_extra["max_num_seqs_auto"] = {"candidates": auto, "chosen": seqs}
     stream = (_vllm_stream_builder if vllm else _hf_stream_builder)(args, stats)
     options = dict(S=seqs, B=args.max_num_batched_tokens, engine=args.engine, stop_after=args.stop_after_seconds)
     load = lambda actor: load_images(actor, build_root / "images")  # noqa: E731
     with VerifierService(build_root / "train", forbidden_roots=forbidden) as service, ResourceLog(out / "resource.jsonl"):
         if stage == "solve":
             receipt = run_solve(items, actors, load, stream, stats, _grader(service), out, **options)
+        elif stage == "resolve":  # gold-blind like solve: lessons.json, never note.jsonl
+            t1 = read_jsonl_done(out / "t1.jsonl", repair=False)
+            receipt = run_resolve(items, actors, t1, read_lessons(out), load, stream, stats, _grader(service), out,
+                                  **options)
         else:
             t1 = read_jsonl_done(out / "t1.jsonl", repair=False)
-            receipt = run_note(items, actors, t1, gold, load, stream, stats, _grader(service), out, **options)
+            receipt = run_note(items, actors, t1, gold, load, stream, stats, _grader(service), out, **options,
+                               version=args.note_version)
     print(json.dumps(receipt))
     return 0
 
@@ -798,10 +985,17 @@ def _rows(args: argparse.Namespace) -> int:
     destination.mkdir(parents=True, exist_ok=True)
     items = _prefix(args)
     actors = {actor.problem_id: actor for actor in read_actors(Path(args.build_root) / "train")}
-    records = make_records(items, actors, read_jsonl_done(out / "t1.jsonl", repair=False),
-                           read_jsonl_done(out / "note.jsonl", repair=False))
+    t1, note = read_jsonl_done(out / "t1.jsonl", repair=False), read_jsonl_done(out / "note.jsonl", repair=False)
     tokenizer = AutoTokenizer.from_pretrained(str(args.tokenizer_path), local_files_only=True)
-    rows, drops, summary = collect_rows(records, lambda text: tokenizer.encode(text, add_special_tokens=False))
+    tokenize = lambda text: tokenizer.encode(text, add_special_tokens=False)  # noqa: E731
+    if args.rows_version == "v2":
+        resolve = read_jsonl_done(out / "resolve.jsonl", repair=False)
+        ids = {item["problem_id"] for item in items}
+        outputs = {name: {pid: row for pid, row in rows_.items() if pid in ids}
+                   for name, rows_ in (("t1", t1), ("note", note), ("resolve", resolve))}
+        rows, drops, summary = collect_rows_v2(make_records_v2(items, actors, t1, note, resolve), tokenize, outputs)
+    else:
+        rows, drops, summary = collect_rows(make_records(items, actors, t1, note), tokenize)
     write_atomic(destination / "rows.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     write_atomic(destination / "drops.jsonl", "".join(json.dumps(d, ensure_ascii=False) + "\n" for d in drops))
     write_json(destination / "rows_summary.json", summary)
@@ -815,6 +1009,15 @@ def _kv_arg(text: str) -> float | str:
     value = float(text)
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError("must be a positive number or 'auto'")
+    return value
+
+
+def _seqs_arg(text: str) -> int | str:
+    if text == "auto":
+        return text
+    value = int(text)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'auto'")
     return value
 
 
@@ -836,22 +1039,26 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--gpu-memory-utilization", type=float, default=0.9)
 
     def run_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--max-num-seqs", type=int, default=32)
+        p.add_argument("--max-num-seqs", type=_seqs_arg, default=32,
+                       help="concurrent sequences, or auto (the middle sweep candidate for the KV size)")
         p.add_argument("--stop-after-seconds", type=float, default=None)
 
-    for name in ("solve", "note", "sweep"):
+    for name in ("solve", "note", "sweep", "resolve"):
         p = sub.add_parser(name)
         common(p)
         engine(p)
         if name != "sweep":
             run_options(p)
-    sub.choices["note"].add_argument("--max-num-seqs-from", type=Path, default=None)
+    for name in ("note", "resolve"):
+        sub.choices[name].add_argument("--max-num-seqs-from", type=Path, default=None)
+    sub.choices["note"].add_argument("--note-version", choices=("v1", "v2"), default="v1")
     sub.choices["sweep"].add_argument("--seqs", required=True, help="comma list of --max-num-seqs values, or auto")
     sub.choices["sweep"].add_argument("--seconds", type=float, default=300.0)
     rows = sub.add_parser("rows")
     common(rows)
     rows.add_argument("--tokenizer-path", type=Path, required=True)
     rows.add_argument("--rows-output", type=Path, default=None)
+    rows.add_argument("--rows-version", choices=("v1", "v2"), default="v1")
     return parser
 
 

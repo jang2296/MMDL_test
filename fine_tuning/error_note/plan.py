@@ -1,6 +1,6 @@
 """Plan the error-note stages as pod/chain.py specs (`pod-chain-spec-v1`).
 
-CLI: python -m fine_tuning.error_note.plan plan --stage {note-300,note-3417}
+CLI: python -m fine_tuning.error_note.plan plan --stage {note-300,note-3417,note-v2}
          --params PARAMS.json --output STEPS.json
 Writes STEPS.json once (an existing file is refused) and prints its sha256. Same params -> same bytes.
 Executes nothing; the job's main argv runs the steps with `pod.chain run --spec STEPS.json`.
@@ -10,6 +10,12 @@ pilot_limit 0 omits the pilot steps. kv_cache_gib is a positive number or "auto"
 integers or "auto". Both reach collect as given, and collect sizes the KV cache and the sweep from the GPU's memory.
 Step timeouts by kind: pin-order and the collect steps -> collect;
 train-* and pilot-train -> train; reload-* and pilot-reload -> reload; pilot-export -> export.
+
+Stage note-v2 (claudedocs/plan_self_note_v2_20261102.md) takes `error-note-plan-params-v2`: the v1 keys without
+pilot_limit and arms (no pilot; arm note only) plus volume_root and reuse_t1_sha256. Steps: pin-order (item_order_v2.json)
+-> sweep (T1), or with reuse_t1_sha256 a pin of the copied <out_root>/collect/t1.jsonl instead -> note (v2) ->
+resolve -> rows (v2) -> train-note (protocol v2) -> reload-note -> export to <volume_root>/eval-data/proof/export-note-v2.
+Without the sweep, note and resolve take --max-num-seqs auto (the middle sweep candidate for the KV size).
 """
 from __future__ import annotations
 
@@ -26,13 +32,15 @@ from fine_tuning.notebook_rl.pod.common import HEX40, HEX64, sha256_bytes
 
 PARAMS_VERSION = "error-note-plan-params-v1"
 SPEC_VERSION = "pod-chain-spec-v1"
-STAGES = ("note-300", "note-3417")
+PARAMS_VERSION_V2 = "error-note-plan-params-v2"
+STAGES = ("note-300", "note-3417", "note-v2")
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
 PATH_KEYS = ("python", "repo_root", "build_root", "model_path", "out_root")
 PARAM_KEYS = {"version", "commit", "order_sha256", "limit", "pilot_limit", "seqs", "sweep_seconds",
               "kv_cache_gib", "max_num_batched_tokens", "token_budget", "gradient_checkpointing", "arms",
               "timeouts", *PATH_KEYS}
+PARAM_KEYS_V2 = (PARAM_KEYS - {"pilot_limit", "arms"}) | {"volume_root", "reuse_t1_sha256"}
 COLLECT = "fine_tuning.error_note.collect"
 TRAIN = "fine_tuning.error_note.train"
 CHAIN = "fine_tuning.notebook_rl.pod.chain"
@@ -50,16 +58,18 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"stage must be one of {STAGES}")
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
-    missing, unknown = sorted(PARAM_KEYS - set(params)), sorted(set(params) - PARAM_KEYS)
+    v2 = stage == "note-v2"
+    keys, version = (PARAM_KEYS_V2, PARAMS_VERSION_V2) if v2 else (PARAM_KEYS, PARAMS_VERSION)
+    missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys)
     if missing or unknown:
         raise ValueError(f"params keys: missing {missing}, unknown {unknown}")
-    if params["version"] != PARAMS_VERSION:
-        raise ValueError(f"version must be {PARAMS_VERSION}")
+    if params["version"] != version:
+        raise ValueError(f"version must be {version}")
     if not isinstance(params["commit"], str) or not HEX40.fullmatch(params["commit"]):
         raise ValueError("commit must be 40 lowercase hex characters")
     if not isinstance(params["order_sha256"], str) or not HEX64.fullmatch(params["order_sha256"]):
         raise ValueError("order_sha256 must be 64 lowercase hex characters")
-    for key in PATH_KEYS:
+    for key in (*PATH_KEYS, "volume_root") if v2 else PATH_KEYS:
         value = params[key]
         if (not isinstance(value, str) or not value.startswith("/") or value == "/"
                 or posixpath.normpath(value) != value):
@@ -67,7 +77,12 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     if posixpath.basename(params["model_path"]) != BASE_REVISION:  # load_base and export refuse anything else, but only after GPU time
         raise ValueError(f"model_path must be the pinned snapshot directory {BASE_REVISION}")
     _positive_int(params, "limit", 1)
-    _positive_int(params, "pilot_limit", 0)
+    if v2:
+        reuse = params["reuse_t1_sha256"]
+        if reuse is not None and (not isinstance(reuse, str) or not HEX64.fullmatch(reuse)):
+            raise ValueError("reuse_t1_sha256 must be null or 64 lowercase hex characters")
+    else:
+        _positive_int(params, "pilot_limit", 0)
     _positive_int(params, "sweep_seconds", 1)
     _positive_int(params, "max_num_batched_tokens", 1)
     _positive_int(params, "token_budget", 1)
@@ -79,7 +94,7 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError('seqs must be a non-empty list of positive integers or "auto"')
     if params["gradient_checkpointing"] not in ("on", "off"):
         raise ValueError('gradient_checkpointing must be "on" or "off"')
-    arms = params["arms"]
+    arms = params.get("arms", ["note"])
     if not isinstance(arms, list) or not arms or any(a not in ARMS for a in arms) or len(set(arms)) != len(arms):
         raise ValueError(f"arms must be a non-empty list of unique values from {ARMS}")
     timeouts = params["timeouts"]
@@ -95,8 +110,51 @@ def _step(name: str, argv: list[str], expect: list[str], kind: str, timeouts: di
     return {"name": name, "argv": argv, "expect_files": expect, "timeout_seconds": timeouts[kind]}
 
 
+def _plan_v2(p: dict[str, Any]) -> list[dict[str, Any]]:
+    py, out, model, build, commit = p["python"], p["out_root"], p["model_path"], p["build_root"], p["commit"]
+    order = f"{p['repo_root']}/fine_tuning/error_note/item_order_v2.json"
+    collect_cmd, train_cmd, chain_cmd = [py, "-m", COLLECT], [py, "-m", TRAIN], [py, "-m", CHAIN]
+    collect_dir, limit, timeouts = f"{out}/collect", str(p["limit"]), p["timeouts"]
+    run, export = f"{out}/train-note", f"{p['volume_root']}/eval-data/proof/export-note-v2"
+    common = ["--build-root", build, "--order", order, "--model-path", model, "--kv-cache-gib", str(p["kv_cache_gib"]),
+              "--max-num-batched-tokens", str(p["max_num_batched_tokens"]), "--engine", "vllm",
+              "--limit", limit, "--output", collect_dir]
+    steps = [_step("pin-order", [*chain_cmd, "pin", "--file", order, "--sha256", p["order_sha256"]], [], "collect", timeouts)]
+    if p["reuse_t1_sha256"] is None:
+        seqs = p["seqs"] if p["seqs"] == "auto" else ",".join(str(s) for s in p["seqs"])
+        steps.append(_step("sweep", [*collect_cmd, "sweep", *common, "--seqs", seqs, "--seconds", str(p["sweep_seconds"])],
+                           [f"{collect_dir}/sweep.json"], "collect", timeouts))
+        concurrency = ["--max-num-seqs-from", f"{collect_dir}/sweep.json"]
+    else:  # T1 copied from the v1 run (same ids, seeds and image budget): bound by its sha256, no sweep
+        steps.append(_step("pin-t1", [*chain_cmd, "pin", "--file", f"{collect_dir}/t1.jsonl", "--sha256",
+                                      p["reuse_t1_sha256"]], [], "collect", timeouts))
+        concurrency = ["--max-num-seqs", "auto"]
+    return steps + [
+        _step("note", [*collect_cmd, "note", *common, *concurrency, "--note-version", "v2"],
+              [f"{collect_dir}/note.jsonl", f"{collect_dir}/lessons.json"], "collect", timeouts),
+        _step("resolve", [*collect_cmd, "resolve", *common, *concurrency],
+              [f"{collect_dir}/receipt-resolve.json"], "collect", timeouts),
+        _step("rows", [*collect_cmd, "rows", "--build-root", build, "--order", order, "--limit", limit,
+                       "--tokenizer-path", model, "--output", collect_dir, "--rows-version", "v2"],
+              [f"{collect_dir}/rows.jsonl"], "collect", timeouts),
+        _step("train-note", [*train_cmd, "train", "--rows", f"{collect_dir}/rows.jsonl", "--build-root", build,
+                             "--order", order, "--limit", limit, "--arm", "note", "--precision", "bf16",
+                             "--model-path", model, "--output", run, "--code-commit", commit,
+                             "--token-budget", str(p["token_budget"]), "--gradient-checkpointing",
+                             p["gradient_checkpointing"], "--resume", "--protocol-version", "v2"],
+              [f"{run}/checkpoint-final/metadata.json", f"{run}/result.json"], "train", timeouts),
+        _step("reload-note", [*train_cmd, "reload", "--run", run, "--model-path", model, "--precision", "bf16",
+                              "--protocol-version", "v2"], [f"{run}/reload.json"], "reload", timeouts),
+        _step("export", [py, "-m", PROOF, "export", "--checkpoint", f"{run}/checkpoint-final",
+                         "--binding", f"{run}/binding.json", "--base", model, "--output", export, "--code-commit", commit],
+              [f"{export}/model_ref.json", f"{export}/model/export_manifest.json"], "export", timeouts),
+    ]
+
+
 def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     p = _check(stage, params)
+    if stage == "note-v2":
+        return _spec(stage, p, _plan_v2(p))
     py, out, model, build, commit = p["python"], p["out_root"], p["model_path"], p["build_root"], p["commit"]
     order = f"{p['repo_root']}/fine_tuning/error_note/item_order.json"
     collect_cmd, train_cmd, chain_cmd = [py, "-m", COLLECT], [py, "-m", TRAIN], [py, "-m", CHAIN]
@@ -162,6 +220,10 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
         steps.append(_step(f"train-{arm}", train_run(f"{collect_dir}/rows.jsonl", limit, arm, run),
                            [f"{run}/checkpoint-final/metadata.json", f"{run}/result.json"], "train", timeouts))
         steps.append(_step(f"reload-{arm}", reload_run(run), [f"{run}/reload.json"], "reload", timeouts))
+    return _spec(stage, p, steps)
+
+
+def _spec(stage: str, p: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
     canonical = json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return {"version": SPEC_VERSION,
             "meta": {"stage": stage, "job_stage": stage, "params_sha256": sha256_bytes(canonical.encode()),

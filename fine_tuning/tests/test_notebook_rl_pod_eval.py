@@ -689,5 +689,83 @@ class EvalStagePlanTests(unittest.TestCase):
                                       args['sample_id']))
 
 
+class ErrorNoteV2EvalStageTests(unittest.TestCase):
+    """Error-note version 2: arm FT-V2 (seed 3407, in-process vLLM) and the optional vllm_inprocess env prefix."""
+    setUp = EvalStagePlanTests.setUp
+    params = EvalStagePlanTests.params
+    VARIANT = 'mmmu-val-v8-8k-seed3407-v2'
+    ENV = 'VLLM_ENABLE_V1_MULTIPROCESSING=0'
+
+    def split(self, stage, **changes):
+        steps = eval_stage.plan(stage, self.params(stage, **changes))['steps']
+        return ([s for s in steps if s['name'].startswith('ledger-')], [s for s in steps if s['name'].startswith('eval-')])
+
+    def test_ft_v2_plans_seed_3407_under_the_inprocess_vllm_env(self):
+        python = f'{self.volume}/venv-0123456789abcdef/bin/python'
+        head = ['-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval']
+        for tag in ('wrong', 'rest'):
+            ledgers, evals = self.split('eval-ft', arm='FT-V2', seeds=[3407], vllm_inprocess=True, subset_tag=tag)
+            rid = f'nbrl-proof-v1-ft-v2-8k-s3407-{tag}-evaluation'
+            self.assertEqual([f'ledger-{rid}'], [s['name'] for s in ledgers])
+            self.assertEqual([f'eval-{rid}'], [s['name'] for s in evals])
+            argv = ledgers[0]['argv']
+            self.assertEqual(('FT-V2', self.VARIANT, tag, rid),
+                             tuple(argv[argv.index(k)+1] for k in ('--arm', '--variant', '--subset', '--run-id')))
+            self.assertEqual(['/usr/bin/env', self.ENV, python, *head], evals[0]['argv'][:6])
+            self.assertEqual(rid, evals[0]['argv'][evals[0]['argv'].index('--run-id')+1])
+        spec = eval_stage.plan('eval-ft', self.params('eval-ft', arm='FT-V2', seeds=[3407], vllm_inprocess=True,
+                                                      eval_slots='auto'))
+        chain.check_spec(spec)
+        evals = [s for s in spec['steps'] if s['name'].startswith('eval-')]
+        self.assertEqual(['/usr/bin/env', 'MMDL_EVAL_SLOTS=auto', self.ENV, python, *head], evals[0]['argv'][:7])
+        ledger = next(s for s in spec['steps'] if s['name'].startswith('ledger-'))
+        with mock.patch.object(proof_eval, 'ledger_start', return_value={
+                'arm': 'FT-V2', 'variant': self.VARIANT, 'subset': 'wrong', 'run_id': 'R'}) as called, \
+                mock.patch('sys.stdout', new=io.StringIO()):
+            self.assertEqual(0, proof_eval.main(ledger['argv'][3:]))  # the real argparse accepts --arm FT-V2
+        self.assertEqual(('FT-V2', self.VARIANT, 'wrong'), tuple(called.call_args.args[i] for i in (1, 2, 5)))
+
+    def test_ft_v2_and_vllm_inprocess_refusals(self):
+        ok = {'arm': 'FT-V2', 'seeds': [3407], 'vllm_inprocess': True}
+        eval_stage.plan('eval-ft', self.params('eval-ft', **ok))
+        for seeds in ([3408], [3407, 3408], [3409], []):
+            with self.assertRaises(ValueError, msg=seeds):
+                eval_stage.plan('eval-ft', self.params('eval-ft', **ok | {'seeds': seeds}))
+        with self.assertRaisesRegex(ValueError, 'seed 3407 only'):
+            eval_stage.plan('eval-ft', self.params('eval-ft', **ok | {'seeds': [3408]}))
+        without = self.params('eval-ft', **ok)
+        del without['vllm_inprocess']
+        with self.assertRaisesRegex(ValueError, 'needs vllm_inprocess true'):
+            eval_stage.plan('eval-ft', without)
+        with self.assertRaisesRegex(ValueError, 'arm of eval-f0 must be one of'):  # FT-V2 is not an F0 arm
+            eval_stage.plan('eval-f0', self.params('eval-f0', **ok))
+        for stage, arm in (('eval-ft', 'FT-V2'), ('eval-f0', 'F0')):
+            for bad in (False, 'yes', 1, None):
+                with self.assertRaisesRegex(ValueError, 'vllm_inprocess must be true', msg=(stage, bad)):
+                    eval_stage.plan(stage, self.params(stage, arm=arm, seeds=[3407], vllm_inprocess=bad))
+
+    def test_f0_vllm_inprocess_prefixes_only_the_run_eval_argv(self):
+        plain = eval_stage.plan('eval-f0', self.params('eval-f0'))
+        self.assertNotIn('vllm_inprocess', json.dumps(plain))
+        for step in plain['steps']:
+            if step['name'].startswith('eval-'):  # unchanged: no env prefix unless eval_slots is given
+                self.assertEqual(['-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval'], step['argv'][1:4])
+        for extra, prefix in (({}, ['/usr/bin/env', self.ENV]),
+                              ({'eval_slots': 48}, ['/usr/bin/env', 'MMDL_EVAL_SLOTS=48', self.ENV])):
+            spec = eval_stage.plan('eval-f0', self.params('eval-f0', vllm_inprocess=True, **extra))
+            chain.check_spec(spec)
+            self.assertNotEqual(plain['meta']['params_sha256'], spec['meta']['params_sha256'])
+            self.assertEqual(len(plain['steps']), len(spec['steps']))
+            evals = 0
+            for old, new in zip(plain['steps'], spec['steps']):
+                if new['name'].startswith('eval-'):
+                    evals += 1
+                    self.assertEqual([*prefix, *old['argv']], new['argv'])
+                    self.assertEqual(old['expect_files'], new['expect_files'])
+                else:
+                    self.assertEqual(old, new)
+            self.assertEqual(3, evals)
+
+
 if __name__ == '__main__':
     unittest.main()

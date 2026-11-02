@@ -6,7 +6,10 @@ Loss covers target tokens and the end token only: a wrong solution inside a note
 CLI: python -m fine_tuning.error_note.train train --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
          --arm {note,solution} --precision {bf16,nf4} --model-path M --output DIR --code-commit 40HEX
          [--token-budget T] [--gradient-checkpointing {on,off}] [--save-every 50] [--max-row-tokens K] [--resume]
-     python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4}
+         [--protocol-version {v1,v2}]
+     python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4} [--protocol-version {v1,v2}]
+Protocol v2 (claudedocs/plan_self_note_v2_20261102.md section 4): 16 items per update and a linear LR decay whose end is
+the number of non-empty update groups of the rows file, so the protocol (and its binding) follows the rows.
 """
 from __future__ import annotations
 
@@ -35,9 +38,9 @@ from fine_tuning.notebook_rl.policy import PolicyBundle, assert_base_unchanged, 
 from fine_tuning.notebook_rl.prompts import user_message
 from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_unchanged, build_quantized_policy
 
-from .contract import IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, select_rows, update_groups
+from .contract import IMAGE, MASTER_SEED, PER_UPDATE_ITEMS, ROUTE_FULL, ROUTE_LM, select_rows, update_groups
 from .order import read_order
-from .protocol import ARM, GRAD_CLIP, plain_protocol
+from .protocol import ARM, GRAD_CLIP, PER_UPDATE_ITEMS_V2, VERSION_V2, plain_protocol, plain_protocol_v2
 
 END_TOKEN = "<|im_end|>"
 PROJECTION_CHUNK = 1024
@@ -229,7 +232,8 @@ def _keep_before(path: Path, position: int) -> None:
     os.replace(tmp, path)
 
 
-def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str) -> list[list[dict]]:
+def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str,
+                 per_update: int = PER_UPDATE_ITEMS) -> list[list[dict]]:
     """Groups come from the order, so both arms get the same updates; a group may be empty."""
     ids = [item["problem_id"] for item in read_order(order_path)["items"]]
     if not 1 <= limit <= len(ids):
@@ -240,7 +244,8 @@ def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str) -> lis
     by_id: dict[str, list[dict]] = {}
     for row in sorted(rows, key=lambda row: row["kind"]):
         by_id.setdefault(row["problem_id"], []).append(row)
-    return [[row for problem_id in group for row in by_id.get(problem_id, [])] for group in update_groups(ids[:limit])]
+    return [[row for problem_id in group for row in by_id.get(problem_id, [])]
+            for group in update_groups(ids[:limit], per_update)]
 
 
 def _encode_or_drop(row: dict, encode: Callable[[dict], dict], max_row_tokens: int | None) -> dict:
@@ -391,14 +396,16 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
     if args.gradient_checkpointing == "off" and args.precision == "nf4":
         raise SystemExit("train: --gradient-checkpointing off is bf16 only")
     out: Path = args.output
-    protocol = plain_protocol(args.precision)
+    v2 = getattr(args, "protocol_version", "v1") == "v2"
+    groups = _read_groups(args.rows, args.order, args.limit, args.arm, PER_UPDATE_ITEMS_V2 if v2 else PER_UPDATE_ITEMS)
+    protocol = plain_protocol_v2(args.precision, max(1, sum(1 for group in groups if group))) if v2 \
+        else plain_protocol(args.precision)
     binding = {"protocol_sha256": protocol["sha256"], "prompts_sha256": protocol["prompts_sha256"],
                "data_sha256": ckpt.file_hash(args.rows), "code_sha256": hashlib.sha256(args.code_commit.encode()).hexdigest()}
     # token_budget and checkpointing are left out on purpose: they change memory use, not the gradient, so an OOM can resume smaller.
     run = {"arm": args.arm, "precision": args.precision, "limit": args.limit, "max_row_tokens": args.max_row_tokens,
            "order_sha256": ckpt.file_hash(args.order)}
     _check_output(args, binding, run)
-    groups = _read_groups(args.rows, args.order, args.limit, args.arm)
     out.mkdir(parents=True, exist_ok=True)
     (out / "result.json").unlink(missing_ok=True)
     assert_base = assert_quantized_base_unchanged if args.precision == "nf4" else assert_base_unchanged
@@ -430,6 +437,7 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         if not encoded:
             _append_jsonl(updates_path, {"step": step, "group": index, "rows": 0, "skipped": True})
             continue
+        lrs = {group["name"]: group["lr"] for group in optimizer.param_groups}
         try:
             stats = run_update(bundle, optimizer, scheduler, encoded, args.token_budget)
         except NonFiniteStop as exc:
@@ -437,7 +445,7 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
                                               "group": index, "step": step, "detail": str(exc)})
             return 1
         step += 1
-        _append_jsonl(updates_path, {"step": step, "group": index, **stats})
+        _append_jsonl(updates_path, {"step": step, "group": index, **stats, **({"lr": lrs} if v2 else {})})
         if args.save_every and step % args.save_every == 0:
             _save(bundle, optimizer, scheduler, step, index + 1, out / f"checkpoint-{step}", protocol, binding)
     summary = _summary(_read_jsonl(updates_path))
@@ -458,7 +466,8 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
     _write_json(out / "result.json", {
         "status": STATUS_COMPLETE, "arm": args.arm, "precision": args.precision, **summary, "changed_tensors": changed,
         "total_tensors": _tensor_counts(bundle), "gradient_checkpointing": args.gradient_checkpointing,
-        "token_budget": args.token_budget, "checkpoint": str(out / "checkpoint-final")})
+        "token_budget": args.token_budget, "checkpoint": str(out / "checkpoint-final"),
+        **({"protocol_version": VERSION_V2, "total_steps": protocol["optimizer"]["total_steps"]} if v2 else {})})
     return 0
 
 
@@ -468,8 +477,12 @@ def run_reload(args: argparse.Namespace, *, policy_factory: Callable | None = No
     try:
         final = args.run / "checkpoint-final"
         binding = json.loads((args.run / "binding.json").read_text(encoding="utf-8"))
-        protocol = plain_protocol(args.precision)
-        if ckpt.read_metadata(final, binding=binding)["protocol"] != json.loads(json.dumps(protocol)):
+        recorded = ckpt.read_metadata(final, binding=binding)["protocol"]
+        if getattr(args, "protocol_version", "v1") == "v2":  # only the step count comes from the run; the rest is code
+            protocol = plain_protocol_v2(args.precision, recorded.get("optimizer", {}).get("total_steps"))
+        else:
+            protocol = plain_protocol(args.precision)
+        if recorded != json.loads(json.dumps(protocol)):
             raise ValueError(f"reload: the checkpoint protocol differs from the {args.precision} protocol")
         bundle, _, _, step, _ = ckpt.load_resume(args.model_path, final, protocol, binding=binding, device=device,
                                                  policy_factory=policy_factory)
@@ -511,10 +524,12 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--save-every", type=int, default=50)
     train.add_argument("--max-row-tokens", type=int, default=None, help="local 8GB only; never set on the rented GPU")
     train.add_argument("--resume", action="store_true")
+    train.add_argument("--protocol-version", choices=("v1", "v2"), default="v1")
     reload = sub.add_parser("reload")
     reload.add_argument("--run", type=Path, required=True)
     reload.add_argument("--model-path", type=Path, required=True)
     reload.add_argument("--precision", choices=("bf16", "nf4"), required=True)
+    reload.add_argument("--protocol-version", choices=("v1", "v2"), default="v1")
     return parser
 
 

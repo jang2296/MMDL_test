@@ -160,5 +160,149 @@ class ErrorNotePlanTests(unittest.TestCase):
                                  sum(step["timeout_seconds"] for step in spec["steps"]))
 
 
+class NoteV2PlanTests(unittest.TestCase):
+    COLLECT = "fine_tuning.error_note.collect"
+    TRAIN = "fine_tuning.error_note.train"
+    PROOF = "fine_tuning.notebook_rl.proof_eval"
+    ORDER = "/volume/clone/fine_tuning/error_note/item_order_v2.json"
+    COLLECT_DIR = "/volume/error-note/out/collect"
+    RUN = "/volume/error-note/out/train-note"
+    EXPORT = "/volume/eval-data/proof/export-note-v2"
+    TIMEOUTS = {"collect": 111, "train": 222, "reload": 333, "export": 444}
+    SWEEP_NAMES = ["pin-order", "sweep", "note", "resolve", "rows", "train-note", "reload-note", "export"]
+    REUSE_NAMES = ["pin-order", "pin-t1", "note", "resolve", "rows", "train-note", "reload-note", "export"]
+
+    @staticmethod
+    def v2_params(**changes: object) -> dict:
+        value = copy.deepcopy(BASE)
+        del value["pilot_limit"]
+        del value["arms"]
+        value.update(version="error-note-plan-params-v2", volume_root="/volume", reuse_t1_sha256=None)
+        value.update(changes)
+        return value
+
+    @staticmethod
+    def value_after(argv: list[str], flag: str) -> str:
+        return argv[argv.index(flag) + 1]
+
+    def assert_shared_steps(self, steps: dict[str, dict]) -> None:
+        pin = steps["pin-order"]["argv"]
+        self.assertEqual(self.value_after(pin, "--file"), self.ORDER)
+        self.assertEqual(self.value_after(pin, "--sha256"), "b" * 64)
+        self.assertEqual(self.value_after(steps["note"]["argv"], "--note-version"), "v2")
+        self.assertEqual(steps["note"]["expect_files"],
+                         [f"{self.COLLECT_DIR}/note.jsonl", f"{self.COLLECT_DIR}/lessons.json"])
+        self.assertEqual(steps["resolve"]["expect_files"], [f"{self.COLLECT_DIR}/receipt-resolve.json"])
+        self.assertEqual(self.value_after(steps["rows"]["argv"], "--rows-version"), "v2")
+        train = steps["train-note"]["argv"]
+        self.assertEqual(self.value_after(train, "--protocol-version"), "v2")
+        self.assertEqual(self.value_after(train, "--arm"), "note")
+        self.assertIn("--resume", train)
+        self.assertEqual(self.value_after(steps["reload-note"]["argv"], "--protocol-version"), "v2")
+        export = steps["export"]["argv"]
+        self.assertEqual(export[1:4], ["-m", self.PROOF, "export"])
+        self.assertEqual(self.value_after(export, "--output"), self.EXPORT)
+        self.assertEqual(steps["export"]["expect_files"],
+                         [f"{self.EXPORT}/model_ref.json", f"{self.EXPORT}/model/export_manifest.json"])
+
+    def assert_collect_and_train_order(self, spec: dict, names: list[str]) -> None:
+        seen = []
+        for step in spec["steps"]:
+            argv = step["argv"]
+            if argv[1:3] in (["-m", self.COLLECT], ["-m", self.TRAIN]) and argv[3] != "reload":
+                seen.append(step["name"])
+                self.assertEqual(self.value_after(argv, "--order"), self.ORDER, step["name"])
+        self.assertEqual(seen, names)
+        self.assertNotIn("item_order.json", json.dumps(spec))
+
+    def test_step_names_without_reuse(self) -> None:
+        spec = planner.plan("note-v2", self.v2_params())
+        self.assertEqual([step["name"] for step in spec["steps"]], self.SWEEP_NAMES)
+
+    def test_step_names_with_reuse(self) -> None:
+        spec = planner.plan("note-v2", self.v2_params(reuse_t1_sha256="c" * 64))
+        self.assertEqual([step["name"] for step in spec["steps"]], self.REUSE_NAMES)
+
+    def test_argv_without_reuse(self) -> None:
+        spec = planner.plan("note-v2", self.v2_params())
+        steps = {step["name"]: step for step in spec["steps"]}
+        self.assert_shared_steps(steps)
+        self.assert_collect_and_train_order(spec, ["sweep", "note", "resolve", "rows", "train-note"])
+        self.assertEqual(self.value_after(steps["note"]["argv"], "--max-num-seqs-from"),
+                         f"{self.COLLECT_DIR}/sweep.json")
+        self.assertEqual(self.value_after(steps["resolve"]["argv"], "--max-num-seqs-from"),
+                         f"{self.COLLECT_DIR}/sweep.json")
+        self.assertEqual(steps["sweep"]["expect_files"], [f"{self.COLLECT_DIR}/sweep.json"])
+
+    def test_argv_with_reuse(self) -> None:
+        spec = planner.plan("note-v2", self.v2_params(reuse_t1_sha256="c" * 64))
+        steps = {step["name"]: step for step in spec["steps"]}
+        self.assert_shared_steps(steps)
+        self.assert_collect_and_train_order(spec, ["note", "resolve", "rows", "train-note"])
+        self.assertEqual(self.value_after(steps["pin-t1"]["argv"], "--file"), f"{self.COLLECT_DIR}/t1.jsonl")
+        self.assertEqual(self.value_after(steps["pin-t1"]["argv"], "--sha256"), "c" * 64)
+        for name in ("note", "resolve"):
+            with self.subTest(step=name):
+                argv = steps[name]["argv"]
+                self.assertEqual(self.value_after(argv, "--max-num-seqs"), "auto")
+                self.assertNotIn("--max-num-seqs-from", argv)
+
+    def test_timeout_kind_per_step(self) -> None:
+        tail = {"train-note": 222, "reload-note": 333, "export": 444}
+        collect = {"pin-order": 111, "note": 111, "resolve": 111, "rows": 111}
+        for changes, first in (({}, {"sweep": 111}), ({"reuse_t1_sha256": "c" * 64}, {"pin-t1": 111})):
+            with self.subTest(changes=changes):
+                spec = planner.plan("note-v2", self.v2_params(timeouts=self.TIMEOUTS, **changes))
+                timeouts = {step["name"]: step["timeout_seconds"] for step in spec["steps"]}
+                self.assertEqual(timeouts, {**collect, **first, **tail})
+
+    def test_spec_passes_chain_check_spec(self) -> None:
+        for changes in ({}, {"reuse_t1_sha256": "c" * 64}):
+            with self.subTest(changes=changes):
+                spec = planner.plan("note-v2", self.v2_params(**changes))
+                self.assertIs(chain.check_spec(spec), spec)
+                self.assertEqual(spec["meta"]["stage"], "note-v2")
+                self.assertEqual(spec["meta"]["job_stage"], "note-v2")
+
+    def test_same_params_same_json_bytes(self) -> None:
+        first = json.dumps(planner.plan("note-v2", self.v2_params()), sort_keys=True)
+        second = json.dumps(planner.plan("note-v2", self.v2_params()), sort_keys=True)
+        self.assertEqual(first, second)
+
+    def test_v2_refusals(self) -> None:
+        cases = {
+            "v1 version": lambda p: p.__setitem__("version", "error-note-plan-params-v1"),
+            "pilot_limit present": lambda p: p.__setitem__("pilot_limit", 0),
+            "arms present": lambda p: p.__setitem__("arms", ["note"]),
+            "volume_root missing": lambda p: p.pop("volume_root"),
+            "volume_root relative": lambda p: p.__setitem__("volume_root", "relative/path"),
+            "reuse short sha": lambda p: p.__setitem__("reuse_t1_sha256", "abc"),
+            "reuse not str": lambda p: p.__setitem__("reuse_t1_sha256", 5),
+        }
+        for name, change in cases.items():
+            with self.subTest(case=name):
+                changed = self.v2_params()
+                change(changed)
+                with self.assertRaises(ValueError):
+                    planner.plan("note-v2", changed)
+        with self.assertRaises(ValueError):
+            planner.plan("note-300", self.v2_params())
+
+    def test_note_v2_registered_and_cli_writes_spec(self) -> None:
+        from fine_tuning.notebook_rl.pod import job as pod_job
+
+        self.assertIn("note-v2", pod_job.TRAINING_STAGES)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            params_path = root / "params.json"
+            params_path.write_text(json.dumps(self.v2_params()), encoding="utf-8")
+            output = root / "steps.json"
+            code, message = run_cli("plan", "--stage", "note-v2", "--params", str(params_path),
+                                    "--output", str(output))
+            self.assertEqual(code, 0, message)
+            self.assertEqual(message.strip(), hashlib.sha256(output.read_bytes()).hexdigest())
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["meta"]["stage"], "note-v2")
+
+
 if __name__ == "__main__":
     unittest.main()

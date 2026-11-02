@@ -15,6 +15,10 @@ checkpoint. ``analyze`` re-scores preserved raw responses with the frozen V8 sco
 reduces several seeds only as means (CLAUDE.md §2.8): no reducer argument, no repeated (arm, variant, subset) run,
 no per-item seed choice, no best seed. ``gate`` applies the preregistered 300-item decision rule to the "wrong"
 subset; it is a threshold for spending more, not proof of improvement.
+Error-note version 2 (claudedocs/plan_self_note_v2_20261102.md section 1): ``preregister --format v4`` writes a
+separate preregistration (format notebook-rl-proof-prereg-v4) with arms F0 and FT-V2 on the existing
+mmmu-val-v8-8k-seed3407-v2 variant, wrong + rest subsets (900 items). ``gate-62`` passes iff the FT-V2 900-item V8
+correct count of that one seed exceeds B2's 558; one run, so not proof of improvement.
 
 Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --subset S
 --run-id R --ledger L`` must precede every evaluation run (``run-eval`` or the plain course ``scripts/eval.sh``; R is
@@ -57,6 +61,12 @@ FORMAT = "notebook-rl-proof-prereg-v3"
 SUBSET_VERSION = "proof-eval-subset-v1"
 REST_SUBSET_VERSION = "proof-eval-subset-rest-v1"
 ARMS = ("F0", "FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417")
+FORMAT_V4 = "notebook-rl-proof-prereg-v4"  # error-note version 2: arms F0 and FT-V2
+ARM_V2 = "FT-V2"
+ARMS_V4 = ("F0", ARM_V2)
+ALL_ARMS = ARMS + (ARM_V2,)
+B2_CORRECT = 558
+VLLM_INPROCESS_ENV = "VLLM_ENABLE_V1_MULTIPROCESSING"
 # subset tag -> (file version, B2 key it must equal)
 SUBSETS = {"wrong": (SUBSET_VERSION, "wrong_ids"), "rest": (REST_SUBSET_VERSION, "right_ids")}
 SEEDS = (3407, 3408, 3409)
@@ -64,6 +74,12 @@ SEEDS = (3407, 3408, 3409)
 GATE_PASS_DIFF = 6.5
 GATE_COLLAPSE_TOKEN_RATIO = 0.5
 GATE_COLLAPSE_COUNT_RATIO = 1.10
+# gate-62 (claudedocs/plan_self_note_v2_20261102.md section 1): one seed, wrong + rest = 900 items, vs B2's 558
+GATE_62_VARIANT = "mmmu-val-v8-8k-seed3407-v2"
+GATE_62_NOTE = ("one run per arm: a 900-item accuracy near 62% has a run-to-run standard error of about 1.6 points "
+                "(sqrt(0.62 * 0.38 / 900)), so exceeding 558 by 1-2 points (9-18 items) is not distinguishable from "
+                "chance; PASS is not proof of improvement. The run also differs from B2 in the 8192-token cap, the "
+                "262144..1310720 image budget, the slots and the GPU")
 # The evaluator's summary status of a run that finished every planned item: full runs end COMPLETE, partial
 # (--sample-id) runs end PARTIAL; anything else (INCOMPLETE, RUNNING, absent) is not finished.
 FINISHED = {"course": "COMPLETE", "statistical": "PARTIAL"}
@@ -233,7 +249,9 @@ def variant_registration(protocol_id: str, resolved: dict | None = None) -> dict
     from mmdl.runtime import contracts
 
     resolved = resolve_slots() if resolved is None else resolved
+    inprocess = os.environ.get(VLLM_INPROCESS_ENV)
     return {
+        **({"vllm_env": {VLLM_INPROCESS_ENV: inprocess}} if inprocess is not None else {}),
         "format": "proof-eval-variant-registration-v1", "protocol_id": protocol_id,
         "protocol_file_sha256": sha256_file(VARIANTS[protocol_id][0]),
         **resolved,
@@ -431,17 +449,38 @@ def make_subset(kind: str, output: Path, b2_predictions: Path = B2_PREDICTIONS) 
     return value
 
 
+def _variant_entry(vid: str) -> dict:
+    path, seed, concurrency, role = VARIANTS[vid]
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if (cfg["protocol_id"] != vid or cfg["generation"]["seed"] != seed or cfg["parser"] != PARSER
+            or cfg["execution"]["batch_size"] != concurrency or cfg["status"] != "FROZEN"):
+        raise ValueError(f"proof_eval: variant file disagrees with its declaration: {vid}")
+    return {"path": _rel(path), "sha256": sha256_file(path), "config_digest": digest(cfg),
+            "seed": seed, "concurrency": concurrency, "role": role}
+
+
+def _paired_run_rules(n: int, m: int) -> list[str]:
+    return [f"each (arm, variant, subset) run at most once with --mode partial and one --sample-id "
+            f"per subset ID; status {FINISHED['statistical']}; run_manifest expected_ids, "
+            f"identity.ids_sha256 and predictions are exactly the {n} (wrong) or {m} (rest) subset "
+            "IDs; a stage runs only the requested seeds, the rest of the listed runs may never exist",
+            "all arms of one variant share identity.protocol_sha256",
+            "all statistical runs share identity.code_sha256",
+            "every record seed equals sample_seed(variant seed, id)",
+            "stored V8 correctness/parse_status must equal the re-score",
+            "each arm evaluates one checkpoint; the arms evaluate different checkpoints"]
+
+
+def _scorer() -> dict:
+    return {"parser": PARSER, "files": _scorer_files(),
+            "only_scorer": "strict team-final-answer-v8 re-score; proof_eval has no second (Qwen-style) "
+                           "score: Qwen's published MMMU scoring uses an LLM-assisted judge, which is not "
+                           "used without approval (CLAUDE.md §7.3)"}
+
+
 def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
-    variants = {}
-    for vid, (path, seed, concurrency, role) in VARIANTS.items():
-        if role != "statistical":  # the course run is not in the proof plan
-            continue
-        cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if (cfg["protocol_id"] != vid or cfg["generation"]["seed"] != seed or cfg["parser"] != PARSER
-                or cfg["execution"]["batch_size"] != concurrency or cfg["status"] != "FROZEN"):
-            raise ValueError(f"proof_eval: variant file disagrees with its declaration: {vid}")
-        variants[vid] = {"path": _rel(path), "sha256": sha256_file(path), "config_digest": digest(cfg),
-                         "seed": seed, "concurrency": concurrency, "role": role}
+    variants = {vid: _variant_entry(vid) for vid, row in VARIANTS.items()
+                if row[3] == "statistical"}  # the course run is not in the proof plan
     statistical = list(variants)
     runs = [{"arm": arm, "variant": v, "subset": tag, "role": "statistical"}
             for arm in ARMS for v in statistical for tag in SUBSETS]
@@ -470,19 +509,8 @@ def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path 
         "evaluation_subsets": items,
         "protocol_variants": variants,
         "runs": runs,
-        "paired_run_rules": [f"each (arm, variant, subset) run at most once with --mode partial and one --sample-id "
-                             f"per subset ID; status {FINISHED['statistical']}; run_manifest expected_ids, "
-                             f"identity.ids_sha256 and predictions are exactly the {n} (wrong) or {m} (rest) subset "
-                             "IDs; a stage runs only the requested seeds, the rest of the listed runs may never exist",
-                             "all arms of one variant share identity.protocol_sha256",
-                             "all statistical runs share identity.code_sha256",
-                             "every record seed equals sample_seed(variant seed, id)",
-                             "stored V8 correctness/parse_status must equal the re-score",
-                             "each arm evaluates one checkpoint; the arms evaluate different checkpoints"],
-        "scorer": {"parser": PARSER, "files": _scorer_files(),
-                   "only_scorer": "strict team-final-answer-v8 re-score; proof_eval has no second (Qwen-style) "
-                                  "score: Qwen's published MMMU scoring uses an LLM-assisted judge, which is not "
-                                  "used without approval (CLAUDE.md §7.3)"},
+        "paired_run_rules": _paired_run_rules(n, m),
+        "scorer": _scorer(),
         "primary_endpoint": {
             "statistic": f"wrong subset ({n} items): mean over the seeds both finished of (FT-NOTE strict V8 correct "
                          "count - F0 correct count); per-seed counts, gains, losses and exact McNemar are reported "
@@ -539,10 +567,64 @@ def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path 
     }
 
 
-def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> str:
-    """Write-once preregistration plus ``<output>.sha256``; returns the file hash."""
+def build_preregistration_v4(subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
+    """Error-note version 2: arms F0 and FT-V2, the existing 8k seed-3407 variant, wrong + rest (900 items)."""
+    variants = {GATE_62_VARIANT: _variant_entry(GATE_62_VARIANT)}
+    runs = [{"arm": arm, "variant": GATE_62_VARIANT, "subset": tag, "role": "statistical"}
+            for arm in ARMS_V4 for tag in SUBSETS]
+    base_ref = json.loads(BASE_MODEL_REF.read_text(encoding="utf-8"))
+    b2 = _b2_split(b2_predictions)
+    items = {"wrong": _subset(subset, b2, "wrong"), "rest": _subset(rest_subset, b2, "rest")}
+    n, m = items["wrong"]["count"], items["rest"]["count"]
+    return {
+        "format": FORMAT_V4, "status": "FROZEN",
+        "arms": {
+            "F0": {"definition": f"untrained BF16 base {MODEL_ID}@{MODEL_REVISION}, re-run on the subsets "
+                                 "(optional in this ledger; the stored B2 answers are not F0)",
+                   "model_ref": _rel(BASE_MODEL_REF), "model_sha256": digest(base_ref["files"])},
+            ARM_V2: {"definition": "merged BF16 export of the single checkpoint of error-note version 2 (v2 note "
+                                   "without a corrected solution, one lesson-hinted gold-blind re-solve, protocol "
+                                   "error-note-protocol-v2, item_order_v2.json, arm note); fixed in advance",
+                     "model_ref": "bound at analysis by --ft-v2-model-ref; all FT-V2 runs share its model_sha256"},
+        },
+        "evaluation_subsets": items,
+        "protocol_variants": variants,
+        "runs": runs,
+        "paired_run_rules": _paired_run_rules(n, m),
+        "scorer": _scorer(),
+        "gate_62": {
+            "arm": ARM_V2, "variant": GATE_62_VARIANT, "items": n + m,
+            "statistic": f"FT-V2 strict V8 correct count over wrong ({n}) + rest ({m}) runs of seed 3407",
+            "PASS": f"correct > {B2_CORRECT} (the B2 + team-final-answer-v8 baseline, 62.00%)", "FAIL": "otherwise",
+            "f0": "reported beside FT-V2 when this ledger has both F0 runs; never changes the status",
+            "not_proof_of_improvement": True, "note": GATE_62_NOTE,
+        },
+        "disciplines": DISCIPLINES,
+        "single_answer_rule": SINGLE_ANSWER_RULE,
+        "mmmu_val_budget": {"checkpoints_per_arm": 1, "runs": len(runs), "items_per_run": {"wrong": n, "rest": m},
+                            "rule": "no other MMMU-val runs, seeds, items or checkpoints; MMMU-val never selects a "
+                                    "checkpoint"},
+        "course_facing_run": {"status": "DROPPED", "variant": COURSE,
+                              "rule": "user decision 2026-11-02: one 8k run of 900 items (wrong + rest), compared "
+                                      "with B2's 558"},
+        "limitations": [
+            GATE_62_NOTE,
+            "B2's 558 is a stored run of another protocol (32768 tokens, official pixels, 2 concurrent, RTX 3090); "
+            "an F0 re-run under this variant is the paired comparator when it exists",
+        ],
+        "notes": ["user decision 2026-11-02: one run of 900 items, PASS iff above 62.00% (558); the 8k variant and "
+                  "the 262144..1310720 image budget of the training are kept (no high-resolution variant)",
+                  f"separate from {FORMAT} (its own ledger); arms of one ledger are never mixed with another's"],
+        "b2_reference": b2,
+    }
+
+
+def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS,
+                fmt: str = "v3") -> str:
+    """Write-once preregistration plus ``<output>.sha256``; returns the file hash. fmt "v4": error-note version 2."""
     output = Path(output)
-    _write_once(output, json.dumps(build_preregistration(subset, rest_subset, b2_predictions), indent=2,
+    build = {"v3": build_preregistration, "v4": build_preregistration_v4}[fmt]
+    _write_once(output, json.dumps(build(subset, rest_subset, b2_predictions), indent=2,
                                    sort_keys=True) + "\n")
     value = sha256_file(output)
     _write_once(output.with_name(output.name + ".sha256"), value + "\n")
@@ -556,7 +638,7 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
     if not sidecar.exists() or sidecar.read_text(encoding="ascii").strip() != value:
         raise ValueError("proof_eval: preregistration hash sidecar missing or mismatched")
     prereg = json.loads(path.read_text(encoding="utf-8"))
-    if prereg.get("format") != FORMAT or prereg.get("status") != "FROZEN":
+    if prereg.get("format") not in (FORMAT, FORMAT_V4) or prereg.get("status") != "FROZEN":
         raise ValueError("proof_eval: not a frozen proof preregistration")
     if prereg["scorer"]["files"] != _scorer_files():
         raise ValueError("proof_eval: V8 scorer source changed since preregistration")
@@ -585,7 +667,7 @@ def _check_event(events: list[dict], event: dict) -> None:
         return
     if not _RUN_ID.fullmatch(str(event["run_id"])) or event["run_id"] in starts:
         raise ValueError(f"proof_eval: ledger run_id invalid or already started: {event['run_id']}")
-    if event["arm"] not in ARMS or event["subset"] not in SUBSETS:
+    if event["arm"] not in ALL_ARMS or event["subset"] not in SUBSETS:
         raise ValueError(f"proof_eval: ledger arm {event['arm']!r} or subset {event['subset']!r} is not known")
     if any(e["preregistration_sha256"] != event["preregistration_sha256"] for e in starts.values()):
         raise ValueError("proof_eval: one ledger serves one preregistration")
@@ -810,6 +892,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
     if any(e["preregistration_sha256"] != prereg_sha for e in starts.values()):
         raise ValueError("proof_eval: the ledger belongs to another preregistration")
     allowed = {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}
+    arms = [arm for arm in ALL_ARMS if arm in prereg["arms"]]
     base_sha = prereg["arms"]["F0"]["model_sha256"]
     runs: dict[tuple[str, str, str], dict] = {}
     seen: set[str] = set()
@@ -841,7 +924,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
         raise ValueError(f"proof_eval: ledger run {omitted[0]} is not among the analyzed runs (omitted or replaced run)")
     if not runs:
         raise ValueError("proof_eval: no finished run to analyze")
-    shas = {arm: {r["identity"]["model_sha256"] for key, r in runs.items() if key[0] == arm} for arm in ARMS}
+    shas = {arm: {r["identity"]["model_sha256"] for key, r in runs.items() if key[0] == arm} for arm in arms}
     if any(len(v) > 1 for v in shas.values()):
         raise ValueError("proof_eval: every run of an arm must evaluate its one bound export (one checkpoint per arm)")
     bound = [next(iter(v)) for v in shas.values() if v]
@@ -849,7 +932,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
         raise ValueError("proof_eval: the arms must evaluate different checkpoints (one checkpoint per arm)")
     refs = {}
     for arm, ref_path in (ft_model_refs or {}).items():
-        if arm not in ARMS or arm == "F0":
+        if arm not in arms or arm == "F0":
             raise ValueError(f"proof_eval: {arm} is not a fine-tuned arm")
         ref = json.loads(Path(ref_path).read_text(encoding="utf-8"))
         if shas[arm] and shas[arm] != {digest(ref["files"])}:
@@ -872,11 +955,11 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
         raise ValueError("proof_eval: statistical runs must share one registration (src and proof_eval bytes)")
 
     subsets = {tag: _subset_report(sorted(row["ids"]), {
-        arm: {str(r["seed"]): r for key, r in runs.items() if key[0] == arm and key[2] == tag} for arm in ARMS
+        arm: {str(r["seed"]): r for key, r in runs.items() if key[0] == arm and key[2] == tag} for arm in arms
         if any(key[0] == arm and key[2] == tag for key in runs)}) for tag, row in prereg["evaluation_subsets"].items()}
     total = subsets["wrong"]["n"] + subsets["rest"]["n"]
     full_900: dict[str, Any] = {}
-    for arm in ARMS:
+    for arm in arms:
         wrong = subsets["wrong"]["arms"].get(arm, {"seeds": {}})["seeds"]
         rest = subsets["rest"]["arms"].get(arm, {"seeds": {}})["seeds"]
         cells = {s: {"correct": wrong[s]["correct"] + rest[s]["correct"], "accuracy": (wrong[s]["correct"] + rest[s]["correct"]) / total,
@@ -944,6 +1027,35 @@ def gate_300(results: dict) -> dict:
     }
 
 
+def gate_62(results: dict, f0_reference: int | None = None) -> dict:
+    """The preregistered version-2 rule on an analyze report of a v4 preregistration: PASS iff the FT-V2 900-item V8
+    correct count (wrong + rest runs of the one seed) > 558. F0 of the same ledger and an F0 reference number from
+    another ledger are shown beside it and never change the status."""
+    _require_same_slots_and_gpu(results.get("runs", []))
+    seed = str(VARIANTS[GATE_62_VARIANT][1])
+    ft = results["full_900"].get(ARM_V2, {"seeds": {}})["seeds"].get(seed)
+    if ft is None:
+        raise ValueError(f"proof_eval: gate-62 needs finished FT-V2 wrong and rest runs of seed {seed}")
+    f0 = results["full_900"].get("F0", {"seeds": {}})["seeds"].get(seed)
+    total = results["full_900"][ARM_V2]["items"]
+    if f0_reference is not None and (type(f0_reference) is not int or not 0 <= f0_reference <= total):
+        raise ValueError(f"proof_eval: --f0-reference must be a correct count between 0 and {total}")
+    return {
+        "format": "error-note-gate-62-v1", "not_proof_of_improvement": True,
+        "preregistration_sha256": results.get("preregistration_sha256"), "variant": GATE_62_VARIANT, "seed": int(seed),
+        "status": "PASS" if ft["correct"] > B2_CORRECT else "FAIL",
+        "rule": f"PASS iff the FT-V2 900-item V8 correct count > {B2_CORRECT} (B2, 62.00%)",
+        "ft_v2": ft, "b2_correct": B2_CORRECT, "margin_vs_b2": ft["correct"] - B2_CORRECT,
+        "f0": (dict(f0, ft_v2_minus_f0=ft["correct"] - f0["correct"]) if f0 is not None
+               else "not run in this ledger"),
+        "f0_reference": (None if f0_reference is None else {
+            "correct": f0_reference, "accuracy": f0_reference / total,
+            "source": f"F0 x {GATE_62_VARIANT} wrong + rest of the v2 ledger ({FORMAT}); display only, another "
+                      "ledger and another registration, never part of the rule"}),
+        "note": GATE_62_NOTE,
+    }
+
+
 def render_markdown(report: dict) -> str:
     pct = lambda x: f"{100 * x:.2f}"  # noqa: E731
     lines = ["# Notebook-RL MMMU-val proof report", "", f"Preregistration sha256 `{report['preregistration_sha256']}`",
@@ -1006,10 +1118,12 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
     pre.add_argument("--rest-subset", type=Path, required=True, help="proof-eval-subset-rest-v1 JSON: the B2 V8 right IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
+    pre.add_argument("--format", choices=("v3", "v4"), default="v3",
+                     help=f"v3 = {FORMAT} (FT-NOTE proof), v4 = {FORMAT_V4} (error-note version 2: F0, FT-V2)")
     start = sub.add_parser("ledger-start", help="append the START of one evaluation run (before run-eval/eval.sh); "
                            "refused when that (arm, variant, subset) has a started run not recorded as FAILED")
     start.add_argument("--prereg", type=Path, required=True)
-    start.add_argument("--arm", choices=ARMS, required=True)
+    start.add_argument("--arm", choices=ALL_ARMS, required=True)
     start.add_argument("--variant", required=True, help="a preregistered protocol variant id")
     start.add_argument("--subset", choices=tuple(SUBSETS), required=True)
     start.add_argument("--run-id", required=True, help="the run directory name artifact_root/runs/<run-id>")
@@ -1021,7 +1135,9 @@ def main(argv: list[str] | None = None) -> int:
     fail.add_argument("--artifact-root", type=Path, default=None, help="default: MMDL_ARTIFACT_ROOT, as run-eval")
     ana = sub.add_parser("analyze", help="score the finished runs of the ledger; writes <output>.json and <output>.md")
     gate = sub.add_parser("gate", help="apply the preregistered 300-item gate (wrong subset, FT-NOTE vs F0); writes --output")
-    for command in (ana, gate):
+    gate62 = sub.add_parser("gate-62", help="v4 preregistration: PASS iff the FT-V2 900-item V8 correct count > 558; "
+                                            "writes --output")
+    for command in (ana, gate, gate62):
         command.add_argument("--prereg", type=Path, required=True)
         command.add_argument("--ledger", type=Path, required=True, help="the run ledger: every run dir of it is passed "
                              "(a live started run left out is refused)")
@@ -1030,8 +1146,12 @@ def main(argv: list[str] | None = None) -> int:
     ana.add_argument("--ft-note-model-ref", type=Path, default=None)
     ana.add_argument("--ft-solution-model-ref", type=Path, default=None)
     ana.add_argument("--ft-note-3417-model-ref", type=Path, default=None)
+    ana.add_argument("--ft-v2-model-ref", type=Path, default=None)
     ana.add_argument("--output", type=Path, required=True, help="report path; .json and .md are written")
     gate.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
+    gate62.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
+    gate62.add_argument("--f0-reference", type=int, default=None,
+                        help="F0 900-item correct count from the v2 ledger, shown for display only")
     args = parser.parse_args(argv)
     if args.command == "export":
         ref = export_for_eval(args.checkpoint, args.binding, args.base, args.output, args.code_commit)
@@ -1042,7 +1162,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset)
         print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['subset']} {event['run_id']}")
@@ -1055,10 +1175,15 @@ def main(argv: list[str] | None = None) -> int:
         result = gate_300(analyze(args.prereg, args.runs, None, args.ledger))
         _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
         print(f"GATE {result['status']} mean_diff={result['mean_diff']:.3f} collapse_alert={result['collapse_alert']}")
+    elif args.command == "gate-62":
+        result = gate_62(analyze(args.prereg, args.runs, None, args.ledger), args.f0_reference)
+        _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
+        print(f"GATE62 {result['status']} ft_v2={result['ft_v2']['correct']} b2={B2_CORRECT}")
     else:
         refs = {arm: path for arm, path in (("FT-NOTE", args.ft_note_model_ref),
                                             ("FT-SOLUTION", args.ft_solution_model_ref),
-                                            ("FT-NOTE-3417", args.ft_note_3417_model_ref)) if path}
+                                            ("FT-NOTE-3417", args.ft_note_3417_model_ref),
+                                            (ARM_V2, args.ft_v2_model_ref)) if path}
         report = analyze(args.prereg, args.runs, refs, args.ledger)
         _write_once(args.output.with_suffix(".json"), json.dumps(report, indent=2, sort_keys=True) + "\n")
         _write_once(args.output.with_suffix(".md"), render_markdown(report))

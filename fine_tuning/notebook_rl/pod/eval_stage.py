@@ -31,6 +31,11 @@ params (`eval-stage-params-v1`), absolute canonical paths:
                earlier stage, so the export step is skipped and <ft_export>/model_ref.json is pinned by that sha
   all stages   optional: eval_slots ("auto" or a positive int): the run-eval steps run under `/usr/bin/env
                MMDL_EVAL_SLOTS=<value>` (proof_eval.resolve_slots); absent = the environment of the job runner
+  all stages   optional: vllm_inprocess (true): the run-eval steps run under `/usr/bin/env
+               VLLM_ENABLE_V1_MULTIPROCESSING=0` (vLLM engine core in the evaluator's process). The protocol files and
+               config digests are unchanged; the run's variant_registration.json records the value, so analyze
+               refuses to pool runs with and without it. Required for arm FT-V2 (error-note version 2, prereg v4:
+               seed 3407 only); its F0 runs in the same ledger must set it too.
   eval-course  + ft_export, ft_model_ref_sha256 (sha256 of <ft_export>/model_ref.json written by eval-ft)
 """
 from __future__ import annotations
@@ -58,15 +63,16 @@ HARDWARE = "fine_tuning/notebook_rl/eval_configs/hardware/a40_48gb.yaml"
 BASE_REF = "manifests/models/baseline.json"
 COMMON = {"version", "commit", "repo_root", "python", "volume_root", "artifact_root", "prereg",
           "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256", "arm", "seeds", "subset_tag"}
-NOT_PATHS = {"version", "run_prefix", "arm", "seeds", "subset_tag", "reuse_export", "eval_slots"}
-ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417")}
+NOT_PATHS = {"version", "run_prefix", "arm", "seeds", "subset_tag", "reuse_export", "eval_slots", "vllm_inprocess"}
+ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417", proof_eval.ARM_V2)}
 STAGES = ("eval-f0", "eval-ft")  # planned; eval-course is dropped from the proof (user decision 2026-10-31)
 MMMU_ID = re.compile(r"validation_[A-Za-z_]+_[0-9]{1,3}\Z")
 EXTRA = {"eval-f0": set(),
          "eval-ft": {"checkpoint", "checkpoint_metadata_sha256", "binding", "binding_sha256",
                      "training_commit", "ft_export"},
          "eval-course": {"ft_export", "ft_model_ref_sha256"}}
-OPTIONAL = {"eval-f0": {"eval_slots"}, "eval-ft": {"reuse_export", "ft_model_ref_sha256", "eval_slots"}}
+OPTIONAL = {"eval-f0": {"eval_slots", "vllm_inprocess"},
+            "eval-ft": {"reuse_export", "ft_model_ref_sha256", "eval_slots", "vllm_inprocess"}}
 PREFIX = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,40}\Z")
 VENV_PYTHON = re.compile(r"/venv-[0-9a-f]{16}/bin/python\Z")
 # Raw responses (with MMMU questions and gold), the ledger and the prereg live under <volume_root>/eval-data,
@@ -92,6 +98,12 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError('eval_slots must be "auto" or a positive integer')
     if params["arm"] not in ARM_OF[stage]:
         raise ValueError(f"arm of {stage} must be one of {ARM_OF[stage]}")
+    if "vllm_inprocess" in params and params["vllm_inprocess"] is not True:
+        raise ValueError("vllm_inprocess must be true when given")
+    if params["arm"] == proof_eval.ARM_V2 and (params["seeds"] != [proof_eval.VARIANTS[proof_eval.GATE_62_VARIANT][1]]
+                                               or params.get("vllm_inprocess") is not True):
+        raise ValueError(f"arm {proof_eval.ARM_V2} runs seed 3407 only ({proof_eval.GATE_62_VARIANT}) "
+                         "and needs vllm_inprocess true")
     seeds = params["seeds"]
     if (not isinstance(seeds, list) or not seeds or any(type(x) is not int or x not in proof_eval.SEEDS for x in seeds)
             or len(set(seeds)) != len(seeds)):
@@ -203,8 +215,10 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
             argv = ["/usr/bin/env", f"MMDL_PYTHON={py}", "bash", f"{repo}/scripts/eval.sh", *flags]
         else:
             argv = [py, "-m", PROOF, "run-eval", *flags]
-            if "eval_slots" in p:
-                argv = ["/usr/bin/env", f"{proof_eval.SLOTS_ENV}={p['eval_slots']}", *argv]
+            env = ([f"{proof_eval.SLOTS_ENV}={p['eval_slots']}"] if "eval_slots" in p else []) + (
+                [f"{proof_eval.VLLM_INPROCESS_ENV}=0"] if p.get("vllm_inprocess") else [])
+            if env:
+                argv = ["/usr/bin/env", *env, *argv]
             expect.append(f"{run_dir}/{proof_eval.REGISTRATION_FILE}")
         steps.append(_step(f"eval-{rid}", argv, expect))
     canonical = json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=True)

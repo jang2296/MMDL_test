@@ -1022,5 +1022,204 @@ class ProofRunEvalTests(unittest.TestCase):
                     pe.run_eval(["--protocol", str(protocol), "--run-id", "refused"])
 
 
+class ErrorNoteV2ProofTests(unittest.TestCase):
+    """Error-note version 2: prereg v4 (arms F0 and FT-V2 on one 8k seed-3407 variant, wrong + rest = 900 items),
+    its ledger and analysis, the gate-62 rule (FT-V2 900-item correct count > B2's 558) and the vllm_env key."""
+
+    VARIANT = "mmmu-val-v8-8k-seed3407-v2"
+    # FT-V2: 1 of 342 wrong + 558 of 558 rest = 559; F0: 171 + 372 = 543
+    ft_wrong = staticmethod(lambda i: i < 1)
+    ft_rest = staticmethod(lambda i: True)
+    f0_wrong = staticmethod(lambda i: i % 2 == 0)
+    f0_rest = staticmethod(lambda i: i % 3 != 0)
+
+    @classmethod
+    def setUpClass(cls):
+        """Four runs go through the evaluator's RunWriter once; setUp copies them."""
+        tmp = tempfile.TemporaryDirectory(prefix="proof-eval-v2-class-")
+        cls.addClassCleanup(tmp.cleanup)
+        root = cls.template = Path(tmp.name)
+        b2 = root / "b2.jsonl"
+        b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
+        wrong, rest = write_subset(root / "subset.json", b2), write_subset(root / "rest.json", b2, kind="rest")
+        pe.preregister(root / "prereg-v3.json", wrong, rest, b2_predictions=b2)
+        pe.preregister(root / "prereg-v4.json", wrong, rest, b2_predictions=b2, fmt="v4")
+        (root / "model_ref.json").write_text(json.dumps({
+            "files": [{"path": "model.safetensors", "bytes": 1, "sha256": "b" * 64}],
+            "export": {"unmerged_inference_bit_equivalent": False}}))
+        f0 = json.loads((root / "prereg-v4.json").read_text())["arms"]["F0"]["model_sha256"]
+        v2 = digest(json.loads((root / "model_ref.json").read_text())["files"])
+        cfg = variant_cfg(cls.VARIANT)
+        write_run(root, "ft-v2-wrong", cfg, v2, cls.ft_wrong)
+        write_run(root, "ft-v2-rest", cfg, v2, cls.ft_rest, ids=REST)
+        write_run(root, "f0-wrong", cfg, f0, cls.f0_wrong)
+        write_run(root, "f0-rest", cfg, f0, cls.f0_rest, ids=REST)
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="proof-eval-v2-")
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name) / "case"
+        shutil.copytree(self.template, self.root)
+        self.prereg, self.v3, self.ref = self.root / "prereg-v4.json", self.root / "prereg-v3.json", self.root / "model_ref.json"
+        self.v2_sha = digest(json.loads(self.ref.read_text())["files"])
+        self.ledger = self.root / "ledger.jsonl"
+        self.ft = [self.root / "ft-v2-wrong", self.root / "ft-v2-rest"]
+        self.f0 = [self.root / "f0-wrong", self.root / "f0-rest"]
+
+    def start(self, run, ledger=None):
+        """ledger-start the run directory under the arm its name declares and the (variant, subset) its content has."""
+        loaded = pe.load_run(run, json.loads(self.prereg.read_text()))
+        arm = "F0" if run.name.startswith("f0") else pe.ARM_V2
+        return pe.ledger_start(self.prereg, arm, loaded["variant"], run.name, ledger or self.ledger, loaded["subset"])
+
+    def analyze(self, runs, ledger=None):
+        return pe.analyze(self.prereg, runs, {pe.ARM_V2: self.ref}, ledger or self.ledger)
+
+    def test_v4_preregistration_is_one_variant_with_arms_f0_and_ft_v2(self):
+        prereg, _ = pe.load_preregistration(self.prereg)
+        v3, _ = pe.load_preregistration(self.v3)
+        self.assertEqual(prereg["format"], "notebook-rl-proof-prereg-v4")
+        self.assertEqual(set(prereg["arms"]), {"F0", "FT-V2"})
+        self.assertEqual(set(prereg["protocol_variants"]), {self.VARIANT})
+        self.assertEqual(prereg["protocol_variants"][self.VARIANT], v3["protocol_variants"][self.VARIANT])  # same identity
+        self.assertEqual(prereg["protocol_variants"][self.VARIANT]["config_digest"],
+                         digest(variant_cfg(self.VARIANT)))
+        self.assertEqual(prereg["runs"], [{"arm": a, "variant": self.VARIANT, "subset": t, "role": "statistical"}
+                                          for a in ("F0", "FT-V2") for t in ("wrong", "rest")])
+        gate = prereg["gate_62"]
+        self.assertIn("558", gate["PASS"])
+        self.assertIs(gate["not_proof_of_improvement"], True)
+        self.assertEqual((prereg["mmmu_val_budget"]["runs"], prereg["mmmu_val_budget"]["items_per_run"]),
+                         (4, {"wrong": 342, "rest": 558}))
+        # the v3 preregistration (fmt default) is unchanged
+        self.assertEqual(v3["format"], "notebook-rl-proof-prereg-v3")
+        self.assertEqual(set(v3["arms"]), {"F0", "FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417"})
+        # the CLI writes the same kind of file
+        cli = self.root / "cli-prereg.json"
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(pe.main(["preregister", "--output", str(cli), "--subset", str(self.root / "subset.json"),
+                                      "--rest-subset", str(self.root / "rest.json"),
+                                      "--b2-predictions", str(self.root / "b2.jsonl"), "--format", "v4"]), 0)
+        self.assertIn("PREREGISTERED", printed.call_args.args[0])
+        self.assertEqual(json.loads(cli.read_text())["format"], pe.FORMAT_V4)
+
+    def test_ledger_serves_ft_v2_only_on_the_v4_preregistration(self):
+        event = pe.ledger_start(self.prereg, "FT-V2", self.VARIANT, "ft-v2-a", self.ledger, "wrong")
+        self.assertEqual((event["arm"], event["variant"], event["subset"]), ("FT-V2", self.VARIANT, "wrong"))
+        with self.assertRaisesRegex(ValueError, "not a preregistered run"):  # FT-NOTE is not an arm of v4
+            pe.ledger_start(self.prereg, "FT-NOTE", self.VARIANT, "ft-note-a", self.ledger, "wrong")
+        with self.assertRaisesRegex(ValueError, "not a preregistered run"):  # only seed 3407 is preregistered
+            pe.ledger_start(self.prereg, "FT-V2", "mmmu-val-v8-8k-seed3408-v2", "ft-v2-b", self.ledger, "wrong")
+        with self.assertRaisesRegex(ValueError, "not a preregistered run"):  # FT-V2 is not an arm of v3
+            pe.ledger_start(self.v3, "FT-V2", self.VARIANT, "ft-v2-c", self.ledger, "wrong")
+        self.assertEqual([e["run_id"] for e in pe.read_ledger(self.ledger)[0]], ["ft-v2-a"])
+        cli = self.root / "cli.jsonl"
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(pe.main(["ledger-start", "--prereg", str(self.prereg), "--ledger", str(cli), "--arm", "FT-V2",
+                                      "--variant", self.VARIANT, "--subset", "rest", "--run-id", "ft-v2-cli"]), 0)
+        self.assertIn(f"LEDGER_STARTED FT-V2 {self.VARIANT} rest ft-v2-cli", printed.call_args.args[0])
+
+    def test_gate_62_passes_above_558_and_shows_f0_only_as_reference(self):
+        for run in self.ft:
+            self.start(run)
+        report = self.analyze(self.ft)
+        self.assertEqual(report["full_900"]["FT-V2"]["seeds"]["3407"]["correct"], 559)
+        self.assertEqual(set(report["ft_model_refs"]), {"FT-V2"})
+        result = pe.gate_62(report)
+        self.assertEqual((result["status"], result["margin_vs_b2"], result["b2_correct"]), ("PASS", 1, 558))
+        self.assertEqual((result["f0"], result["f0_reference"]), ("not run in this ledger", None))
+        self.assertIs(result["not_proof_of_improvement"], True)
+        self.assertIn("1.6", result["note"])
+        reference = pe.gate_62(report, f0_reference=541)
+        self.assertEqual((reference["status"], reference["f0_reference"]["correct"]), ("PASS", 541))
+        self.assertIn(pe.FORMAT, reference["f0_reference"]["source"])
+        for bad in (1000, -1, "x", True):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pe.gate_62(report, f0_reference=bad)
+
+    def test_gate_62_fails_at_exactly_558(self):
+        zero = write_run(self.root, "ft-v2-zero-wrong", variant_cfg(self.VARIANT), self.v2_sha, lambda i: False)
+        ledger = self.root / "ledger-fail.jsonl"
+        for run in (zero, self.ft[1]):
+            self.start(run, ledger)
+        report = self.analyze([zero, self.ft[1]], ledger)
+        self.assertEqual(report["full_900"]["FT-V2"]["seeds"]["3407"]["correct"], 558)
+        result = pe.gate_62(report)
+        self.assertEqual((result["status"], result["margin_vs_b2"]), ("FAIL", 0))
+
+    def test_gate_62_reports_f0_when_the_ledger_has_both_f0_runs(self):
+        for run in self.ft + self.f0:
+            self.start(run)
+        report = self.analyze(self.ft + self.f0)
+        f0_correct = sum(self.f0_wrong(i) for i in range(342)) + sum(self.f0_rest(i) for i in range(558))
+        self.assertEqual(f0_correct, 543)
+        result = pe.gate_62(report)
+        self.assertEqual(result["status"], "PASS")  # F0 never changes the status
+        self.assertEqual((result["f0"]["correct"], result["f0"]["ft_v2_minus_f0"]), (543, 16))
+
+    def test_gate_62_ignores_f0_with_only_one_subset(self):
+        for run in self.ft + self.f0[:1]:
+            self.start(run)
+        result = pe.gate_62(self.analyze(self.ft + self.f0[:1]))
+        self.assertEqual((result["status"], result["f0"]), ("PASS", "not run in this ledger"))
+
+    def test_gate_62_needs_both_ft_v2_runs(self):
+        self.start(self.ft[0])
+        report = self.analyze(self.ft[:1])
+        self.assertNotIn("FT-V2", report["full_900"])
+        with self.assertRaisesRegex(ValueError, "needs finished FT-V2 wrong and rest runs"):
+            pe.gate_62(report)
+
+    def test_analyze_binds_ft_v2_to_its_model_ref_and_refuses_v3_arms(self):
+        for run in self.ft:
+            self.start(run)
+        other = self.root / "other_ref.json"
+        other.write_text(json.dumps({"files": [{"path": "model.safetensors", "bytes": 1, "sha256": "e" * 64}]}))
+        with self.assertRaisesRegex(ValueError, "FT-V2 run must evaluate the one bound export"):
+            pe.analyze(self.prereg, self.ft, {"FT-V2": other}, self.ledger)
+        with self.assertRaisesRegex(ValueError, "not a fine-tuned arm"):  # FT-NOTE is not an arm of v4
+            pe.analyze(self.prereg, self.ft, {"FT-NOTE": self.ref}, self.ledger)
+
+    def test_runs_with_and_without_vllm_env_are_not_pooled(self):
+        for run in self.ft + self.f0:
+            self.start(run)
+        path = self.f0[0] / pe.REGISTRATION_FILE
+        path.write_text(json.dumps(json.loads(path.read_text()) | {"vllm_env": {"VLLM_ENABLE_V1_MULTIPROCESSING": "0"}}))
+        with self.assertRaisesRegex(ValueError, "share one registration"):
+            self.analyze(self.ft + self.f0)
+
+    def test_gate_62_and_analyze_cli_read_the_ledger_and_write_once(self):
+        for run in self.ft:
+            self.start(run)
+        runs = list(map(str, self.ft))
+        out, report = self.root / "gate62.json", self.root / "report"
+        argv = ["gate-62", "--prereg", str(self.prereg), "--ledger", str(self.ledger), "--runs", *runs,
+                "--output", str(out), "--f0-reference", "541"]
+        with mock.patch("builtins.print") as printed:
+            self.assertEqual(pe.main(argv), 0)
+            self.assertEqual(pe.main(["analyze", "--prereg", str(self.prereg), "--ledger", str(self.ledger), "--runs", *runs,
+                                      "--ft-v2-model-ref", str(self.ref), "--output", str(report)]), 0)
+        result = json.loads(out.read_text())
+        self.assertEqual((result["status"], result["ft_v2"]["correct"], result["f0_reference"]["correct"]),
+                         ("PASS", 559, 541))
+        self.assertIn("GATE62 PASS", printed.call_args_list[0].args[0])
+        with self.assertRaises(FileExistsError):
+            pe.main(argv)
+        self.assertEqual(json.loads(report.with_suffix(".json").read_text())["ft_model_refs"]["FT-V2"]["model_sha256"],
+                         self.v2_sha)
+        self.assertIn("| FT-V2 | 3407 | 559 | 62.11% |", report.with_suffix(".md").read_text())
+
+    def test_vllm_env_is_registered_only_when_the_variable_is_set(self):
+        self.assertEqual(pe.VLLM_INPROCESS_ENV, "VLLM_ENABLE_V1_MULTIPROCESSING")
+        with mock.patch.dict(os.environ):
+            os.environ.pop("VLLM_ENABLE_V1_MULTIPROCESSING", None)
+            plain = pe.variant_registration(self.VARIANT)
+        with mock.patch.dict(os.environ, {"VLLM_ENABLE_V1_MULTIPROCESSING": "0"}):
+            inprocess = pe.variant_registration(self.VARIANT)
+        self.assertNotIn("vllm_env", plain)
+        self.assertEqual(inprocess["vllm_env"], {"VLLM_ENABLE_V1_MULTIPROCESSING": "0"})
+        self.assertEqual({k: v for k, v in inprocess.items() if k != "vllm_env"}, plain)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,7 +17,7 @@ from transformers import Qwen2TokenizerFast, Qwen2VLImageProcessor, Qwen3VLProce
 from fine_tuning.error_note import train as trainer
 from fine_tuning.error_note.contract import KIND_NOTE, KIND_SOLUTION, PER_UPDATE_ITEMS, ROUTE_FULL, ROUTE_LM
 from fine_tuning.error_note.order import VERSION, _ids_sha256
-from fine_tuning.error_note.protocol import ARM, plain_protocol
+from fine_tuning.error_note.protocol import ARM, PER_UPDATE_ITEMS_V2, VERSION_V2, _digest, plain_protocol, plain_protocol_v2
 from fine_tuning.modules import tensor_sha256
 from fine_tuning.notebook_rl import checkpoint as ckpt
 from fine_tuning.notebook_rl.policy import assert_base_unchanged, configure_policy
@@ -429,6 +429,228 @@ class TrainTests(unittest.TestCase):
         args.limit = files.count + 1
         with self.assertRaisesRegex(ValueError, "limit"):
             trainer.run_train(args, policy_factory=tiny_factory, device="cpu")
+
+
+LR_BASE = {"L": 5e-5, "M": 1e-5, "V": 1e-5}
+
+
+def v2_multiplier(step, total, warmup=10):
+    """The v2 LR multiplier written out independently of checkpoint._linear_decay_multiplier."""
+    fall = (total - step) / (total - warmup) if total > warmup else 1.0
+    return min((step + 1) / warmup, 1.0, max(0.0, fall))
+
+
+class RunFilesV2(RunFiles):
+    """RunFiles for 16-item groups: items 16g and 16g+9 (one LM routed, one Vision routed) in each non-empty group g."""
+
+    def __init__(self, root, groups=2, empty_groups=()):
+        self.root = Path(root)
+        count = groups * PER_UPDATE_ITEMS_V2
+        ids = [f"item-{i}" for i in range(count)]
+        self.order = self.root / "order.json"
+        self.order.write_text(json.dumps({"version": VERSION, "items": [{"problem_id": i} for i in ids], "count": count,
+                                          "ids_sha256": _ids_sha256(ids)}))
+        chosen = [g * PER_UPDATE_ITEMS_V2 + k for g in range(groups) if g not in empty_groups for k in (0, 9)]
+        self.rows = self.root / "rows.jsonl"
+        self.rows.write_text("".join(json.dumps(row) + "\n" for i in chosen for row in rows_for(i)))
+        self.count = count
+
+
+class ProtocolV2Tests(unittest.TestCase):
+    """Protocol v2: 16 items per update, linear LR decay to 0 after a 10-step warmup (plan_self_note_v2 section 4)."""
+
+    V2 = ("--protocol-version", "v2")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.threads = torch.get_num_threads()
+        torch.set_num_threads(2)
+
+    @classmethod
+    def tearDownClass(cls):
+        torch.set_num_threads(cls.threads)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+
+    def _updates(self, run):
+        return [json.loads(line) for line in (self.tmp / run / "updates.jsonl").read_text().splitlines()]
+
+    def _assert_lrs_follow_schedule(self, rows, total):
+        real = [row for row in rows if not row["skipped"]]
+        self.assertEqual([row["step"] for row in real], list(range(1, len(real) + 1)))  # no repeated step
+        for index, row in enumerate(real):
+            self.assertEqual(set(row["lr"]), {"L", "M", "V"})
+            for group, base in LR_BASE.items():
+                self.assertAlmostEqual(row["lr"][group], base * v2_multiplier(index, total), delta=1e-15)
+
+    def test_protocol_v2_values_and_schedule(self):
+        v1, p = plain_protocol("bf16"), plain_protocol_v2("bf16", 214)
+        self.assertEqual((VERSION_V2, PER_UPDATE_ITEMS_V2), ("error-note-protocol-v2", 16))
+        self.assertEqual((p["version"], p["per_update_items"]), ("error-note-protocol-v2", 16))
+        opt = p["optimizer"]
+        self.assertEqual((opt["schedule"], opt["total_steps"], opt["warmup_steps"]), ("linear_decay_after_warmup", 214, 10))
+        for key in ("type", "lr", "betas", "eps", "weight_decay", "grad_clip_per_group"):
+            self.assertEqual(opt[key], v1["optimizer"][key])
+        self.assertEqual(p["model"], v1["model"])
+        self.assertEqual(p["expected_trainable"], v1["expected_trainable"])
+        self.assertNotEqual(p["sha256"], v1["sha256"])
+        self.assertNotEqual(p["prompts_sha256"], v1["prompts_sha256"])
+        self.assertEqual(p["sha256"], _digest({k: v for k, v in p.items() if k != "sha256"}))
+        self.assertEqual(p, plain_protocol_v2("bf16", 214))
+        self.assertNotEqual(p["sha256"], plain_protocol_v2("bf16", 215)["sha256"])  # the step count is bound
+
+        f = ckpt._schedule(opt)
+        self.assertEqual([f(0), f(9), f(10), f(213), f(214)], [0.1, 1.0, 1.0, 1 / 204, 0.0])
+        self.assertEqual(ckpt._schedule(plain_protocol_v2("bf16", 1)["optimizer"])(0), 0.1)  # ends inside the warmup
+        for step in range(220):
+            self.assertAlmostEqual(f(step), v2_multiplier(step, 214), delta=1e-15)
+
+        # v1 is untouched: constant after the warmup.
+        g = ckpt._schedule(v1["optimizer"])
+        self.assertEqual((v1["optimizer"]["schedule"], v1["version"], "per_update_items" in v1), ("constant_after_warmup", "error-note-protocol-v1", False))
+        self.assertEqual([g(0), g(9), g(500)], [0.1, 1.0, 1.0])
+
+    def test_protocol_v2_refusals(self):
+        for bad in (0, -1, True, 2.5, None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                plain_protocol_v2("bf16", bad)
+        with self.assertRaises(ValueError):
+            plain_protocol_v2("fp16", 3)
+        opt = plain_protocol_v2("bf16", 20)["optimizer"]
+        with self.assertRaises(ValueError):
+            ckpt._schedule(opt | {"schedule": "cosine"})
+        for total in (0, True, 2.5):
+            with self.assertRaises(ValueError):
+                ckpt._schedule(opt | {"total_steps": total})
+        with self.assertRaises(ValueError):
+            ckpt._schedule(opt | {"warmup_steps": -1})
+
+    def _walk(self, protocol, steps):
+        bundle = tiny_factory(protocol=protocol)
+        optimizer, scheduler = ckpt.make_optimizer(bundle, protocol)
+        total = protocol["optimizer"]["total_steps"]
+        other = plain_protocol_v2("bf16", total + 1)
+        for k in range(steps + 1):
+            for group in optimizer.param_groups:
+                self.assertAlmostEqual(group["lr"], group["initial_lr"] * v2_multiplier(k, total), delta=1e-15)
+            ckpt._validate_optimizer(bundle, optimizer, scheduler, protocol, k)
+            with self.assertRaises(ValueError):  # a wrong step
+                ckpt._validate_optimizer(bundle, optimizer, scheduler, protocol, k + 1)
+            with self.assertRaises(ValueError):  # a scheduler of another total or of v1
+                ckpt._validate_optimizer(bundle, optimizer, scheduler, other, k)
+            with self.assertRaises(ValueError):
+                ckpt._validate_optimizer(bundle, optimizer, scheduler, plain_protocol("bf16"), k)
+            optimizer.step()  # no gradients: AdamW skips every parameter, the scheduler may step
+            scheduler.step()
+        return optimizer
+
+    def test_optimizer_scheduler_follows_v2_schedule_and_validates(self):
+        self._walk(plain_protocol_v2("bf16", 214), 13)  # warmup and the flat part
+        optimizer = self._walk(plain_protocol_v2("bf16", 14), 14)  # the decay down to 0
+        self.assertEqual([group["lr"] for group in optimizer.param_groups], [0.0] * len(optimizer.param_groups))
+
+    def test_train_v2_groups_of_16_and_linear_decay(self):
+        files = RunFilesV2(self.tmp, groups=14, empty_groups=(3, 7))
+        self.assertEqual(files.train("run", "note", "--protocol-version", "v2"), 0)
+        run = self.tmp / "run"
+        result = json.loads((run / "result.json").read_text())
+        total = 12
+        self.assertEqual((result["status"], result["updates"], result["skipped_updates"]), ("COMPLETE", total, 2))
+        self.assertEqual((result["protocol_version"], result["total_steps"]), ("error-note-protocol-v2", total))
+        self.assertEqual(result["rows_used"], 4 * total)  # two items, each a solution and a note, per update
+        self.assertEqual(result["rows_by_kind"], {KIND_SOLUTION: 2 * total, KIND_NOTE: 2 * total})
+        self.assertEqual(result["route_counts"], {ROUTE_LM: 2 * total, ROUTE_FULL: 2 * total})
+        rows = self._updates("run")
+        self.assertEqual([row["skipped"] for row in rows], [g in (3, 7) for g in range(14)])
+        self._assert_lrs_follow_schedule(rows, total)
+        real = [row for row in rows if not row["skipped"]]
+        self.assertAlmostEqual(real[0]["lr"]["L"], 0.1 * 5e-5, delta=1e-15)
+        self.assertEqual([round(row["lr"]["L"] / 5e-5, 9) for row in real[9:]], [1.0, 1.0, 0.5])  # the decay is inside the run
+        protocol = plain_protocol_v2("bf16", total)
+        binding = json.loads((run / "binding.json").read_text())
+        self.assertEqual(binding["protocol_sha256"], protocol["sha256"])
+        self.assertEqual(binding["prompts_sha256"], protocol["prompts_sha256"])
+        self.assertEqual(ckpt.read_metadata(run / "checkpoint-final", binding=binding)["protocol"], protocol)
+        metadata = json.loads((run / "checkpoint-final/metadata.json").read_text())
+        self.assertEqual(metadata["protocol"], protocol)
+        self.assertEqual(metadata["step"], total)
+
+    def test_train_v1_output_is_unchanged(self):
+        files = RunFilesV2(self.tmp, groups=3, empty_groups=(1,))
+        self.assertEqual(files.train("v1", "note"), 0)
+        self.assertEqual(files.train("v2", "note", *self.V2), 0)
+        result = json.loads((self.tmp / "v1/result.json").read_text())
+        self.assertNotIn("protocol_version", result)
+        self.assertNotIn("total_steps", result)
+        rows = self._updates("v1")
+        self.assertTrue(rows and all("lr" not in row for row in rows))
+        # v1 groups hold 8 items, so the same rows make twice the updates of v2.
+        self.assertEqual((result["updates"], result["rows_used"]), (4, 8))
+        v2 = json.loads((self.tmp / "v2/result.json").read_text())
+        self.assertEqual((v2["updates"], v2["rows_used"]), (2, 8))
+        binding = json.loads((self.tmp / "v1/binding.json").read_text())
+        self.assertEqual(ckpt.read_metadata(self.tmp / "v1/checkpoint-final", binding=binding)["protocol"], plain_protocol("bf16"))
+
+    def test_resume_restores_the_v2_scheduler(self):
+        total = 13
+        files = RunFilesV2(self.tmp, groups=total)
+        self.assertEqual(files.train("whole", "note", "--save-every", "1", *self.V2), 0)
+        whole = self.tmp / "whole"
+        # A crash after 11 updates (inside the decay), with a half-written checkpoint and a record past the last good one.
+        cut = self.tmp / "cut"
+        cut.mkdir()
+        for name in ("binding.json", "initial_state.json", "updates.jsonl", "drops_local.jsonl"):
+            shutil.copy(whole / name, cut / name)
+        with (cut / "updates.jsonl").open("a") as stream:
+            stream.write('{"step": 12, "gro')
+        shutil.copytree(whole / "checkpoint-11", cut / "checkpoint-11")
+        (cut / "checkpoint-12.tmp").mkdir()
+        with self.assertRaises(SystemExit):  # no silent restart over an existing run
+            files.train("cut", "note", "--save-every", "1", *self.V2)
+        with self.assertRaises(SystemExit):  # a v2 run cannot continue under the v1 protocol
+            files.train("cut", "note", "--save-every", "1", "--resume")
+        self.assertEqual(files.train("cut", "note", "--save-every", "1", "--resume", *self.V2), 0)
+        binding = json.loads((whole / "binding.json").read_text())
+        first = ckpt.read_metadata(whole / "checkpoint-final", binding=binding)
+        second = ckpt.read_metadata(cut / "checkpoint-final", binding=binding)
+        self.assertEqual(second["state_sha256"], first["state_sha256"])
+        self.assertEqual((second["step"], second["cursor"]), (first["step"], first["cursor"]))
+        self.assertEqual(second["protocol"], plain_protocol_v2("bf16", total))
+        self.assertEqual(first["step"], total)
+        whole_rows, cut_rows = self._updates("whole"), self._updates("cut")
+        self.assertEqual([row["lr"] for row in cut_rows], [row["lr"] for row in whole_rows])
+        self._assert_lrs_follow_schedule(cut_rows, total)
+        self.assertAlmostEqual(cut_rows[11]["lr"]["L"], 5e-5 * 2 / 3, delta=1e-15)  # the first update after the resume
+        cut_result = json.loads((cut / "result.json").read_text())
+        self.assertEqual((cut_result["updates"], cut_result["protocol_version"], cut_result["total_steps"]),
+                         (total, "error-note-protocol-v2", total))
+
+    def test_reload_checks_the_protocol_version(self):
+        files = RunFilesV2(self.tmp, groups=2)
+        self.assertEqual(files.train("v2", "note", *self.V2), 0)
+        self.assertEqual(files.train("v1", "note"), 0)
+
+        def reload(run, *flags):
+            args = trainer.build_parser().parse_args(["reload", "--run", str(self.tmp / run), "--model-path", str(self.tmp),
+                                                      "--precision", "bf16", *flags])
+            code = trainer.run_reload(args, policy_factory=tiny_factory, device="cpu")
+            return code, json.loads((self.tmp / run / "reload.json").read_text())
+
+        code, report = reload("v2", *self.V2)
+        self.assertEqual((code, report["status"], report["step"]), (0, "PASS", 2))
+        self.assertEqual(report["tensors"]["M"], 24)
+        self.assertTrue(report["greedy_equal"])
+        code, report = reload("v2")  # the v1 protocol does not match a v2 checkpoint
+        self.assertEqual((code, report["status"]), (1, "FAIL"))
+        self.assertIn("protocol", report["error"])
+        code, report = reload("v1")
+        self.assertEqual((code, report["status"]), (0, "PASS"))
+        code, report = reload("v1", *self.V2)  # a v1 checkpoint has no total_steps to rebuild v2 from
+        self.assertEqual((code, report["status"]), (1, "FAIL"))
+        self.assertIn("total_steps", report["error"])
 
 
 if __name__ == "__main__":

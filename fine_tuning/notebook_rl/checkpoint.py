@@ -92,21 +92,42 @@ def restore_rng(rng: dict) -> None:
 def make_optimizer(bundle: PolicyBundle, protocol: dict) -> tuple[torch.optim.AdamW, torch.optim.lr_scheduler.LambdaLR]:
     """Stable L/M/V order, including route-OFF parameters, with no implicit LR scaling."""
     cfg = protocol["optimizer"]
-    if cfg["type"] != "adamw" or cfg["schedule"] != "constant_after_warmup":
+    if cfg["type"] != "adamw":
         raise ValueError("checkpoint: unsupported optimizer/scheduler")
-    warmup = cfg["warmup_steps"]
-    if type(warmup) is not int or warmup < 0:
-        raise ValueError("checkpoint: invalid warmup")
+    multiplier = _schedule(cfg)
     groups = [{"params": bundle.params[g], "lr": cfg["lr"][g], "name": g}
               for g in ("L", "M", "V") if bundle.params[g]]
     optimizer = torch.optim.AdamW(groups, betas=tuple(cfg["betas"]), eps=cfg["eps"],
                                   weight_decay=cfg["weight_decay"])
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, partial(_warmup_multiplier, warmup=warmup))
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
     return optimizer, scheduler
+
+
+def _schedule(cfg: dict) -> partial:
+    """The LR multiplier of the protocol: constant_after_warmup, or linear_decay_after_warmup (error-note v2)."""
+    warmup = cfg["warmup_steps"]
+    if type(warmup) is not int or warmup < 0:
+        raise ValueError("checkpoint: invalid warmup")
+    if cfg["schedule"] == "constant_after_warmup":
+        return partial(_warmup_multiplier, warmup=warmup)
+    if cfg["schedule"] == "linear_decay_after_warmup":
+        total = cfg["total_steps"]
+        if type(total) is not int or total < 1:
+            raise ValueError("checkpoint: invalid total_steps")
+        return partial(_linear_decay_multiplier, warmup=warmup, total=total)
+    raise ValueError("checkpoint: unsupported optimizer/scheduler")
 
 
 def _warmup_multiplier(step: int, *, warmup: int) -> float:
     return min(1.0, (step + 1) / warmup) if warmup else 1.0
+
+
+def _linear_decay_multiplier(step: int, *, warmup: int, total: int) -> float:
+    """(step + 1) / warmup during the warmup, then linear from 1 at step `warmup` to 0 at step `total`, one past the
+    last update (the last update keeps 1 / (total - warmup), so no update runs at LR 0). A run of total <= warmup
+    steps ends inside the warmup."""
+    fall = max(0.0, (total - step) / (total - warmup)) if total > warmup else 1.0
+    return min(_warmup_multiplier(step, warmup=warmup), fall)
 
 
 def _parameters(bundle: PolicyBundle) -> dict[str, torch.nn.Parameter]:
@@ -163,12 +184,11 @@ def _validate_optimizer(bundle: PolicyBundle, optimizer: torch.optim.AdamW,
             raise ValueError("checkpoint: optimizer hyperparameters differ from protocol")
     state, initial = scheduler.state_dict(), expected_sched.state_dict()
     variable = {"last_epoch", "_step_count", "_last_lr"}
-    warmup = protocol["optimizer"]["warmup_steps"]
-    if any(not isinstance(fn, partial) or fn.func is not _warmup_multiplier
-           or fn.args or fn.keywords != {"warmup": warmup} for fn in scheduler.lr_lambdas):
+    multiplier = _schedule(protocol["optimizer"])
+    if any(not isinstance(fn, partial) or fn.func is not multiplier.func
+           or fn.args or fn.keywords != multiplier.keywords for fn in scheduler.lr_lambdas):
         raise ValueError("checkpoint: scheduler must be constructed by make_optimizer")
-    expected_lr = [g["initial_lr"] * (min(1., (step + 1) / warmup) if warmup else 1.)
-                   for g in optimizer.param_groups]
+    expected_lr = [g["initial_lr"] * multiplier(step) for g in optimizer.param_groups]
     if (set(state) != set(initial) or state["last_epoch"] != step or state["_step_count"] != step + 1
             or {k: v for k, v in state.items() if k not in variable} != {
                 k: v for k, v in initial.items() if k not in variable}
