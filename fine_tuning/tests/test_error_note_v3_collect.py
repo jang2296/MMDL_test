@@ -10,6 +10,7 @@ from unittest import mock
 
 from fine_tuning.error_note import collect, collect_v3
 from fine_tuning.error_note.audit import validate_row_audits
+from fine_tuning.error_note.contract import NOTE_INSTRUCTION_V3, note_prompt_v3
 from fine_tuning.notebook_rl.prompts import p0_eval_text
 from fine_tuning.modules import BASE_REVISION
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE, example, review_for, tokenize
@@ -24,6 +25,8 @@ class CollectionFixture:
         self.actor = SimpleNamespace(problem_id=self.pid, question="Compare these curves.", choices=("red", "blue"),
                                      image_paths=("fixture.png",), mode="plain")
         self.record["p0_text"] = p0_eval_text(self.actor.question, self.actor.choices)
+        self.record["note"]["prompt"] = note_prompt_v3(self.record["p0_text"], self.record["t1"]["text"],
+                                                      self.record["t1"]["status"], "B")
         self.items = [{k: self.record[k] for k in ("problem_id", "subject", "source")}]
         order = {"version": "error-note-order-v1", "master_seed": 3407, "count": 1, "items": self.items,
                  "ids_sha256": collect_v3.text_sha256(self.pid)}
@@ -41,6 +44,7 @@ class CollectionFixture:
         collect_v3.bind_collection(self.args, self.items)
         collect.append_jsonl(self.out / "t1.jsonl", {"problem_id": self.pid, **self.record["t1"]})
         collect.append_jsonl(self.out / "note.jsonl", {"problem_id": self.pid, "note_version": "v2",
+                                                       "note_instruction_sha256": collect_v3.text_sha256(NOTE_INSTRUCTION_V3),
                                                        **self.record["note"]})
         collect.write_json(self.args.source_provenance, {"version": "note-source-provenance-v1",
                                                         "items": {self.pid: PROVENANCE}})

@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 from .audit import FILE_VERSION, audit_note, digest, read_audits, text_sha256
-from .contract import IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V2, RESOLVE_HEADER, parse_note_v2
+from .contract import IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V3, RESOLVE_HEADER, note_prompt_v3, parse_note_v2
 
 ANSWER_CONTRACT = "training-answer-v1"
 COLLECTION_VERSION = "error-note-collection-v3"
@@ -99,7 +99,7 @@ def bind_collection(args, items: list[dict]) -> dict:
             "training_rules_sha256": rules_sha, "order_sha256": file_sha(args.order),
             "items_sha256": digest(items), "limit": len(items), "model_id": BASE_ID, "revision": BASE_REVISION,
             "max_new_tokens": MAX_NEW_TOKENS, "image": IMAGE,
-            "note_prompt_sha256": text_sha256(NOTE_INSTRUCTION_V2),
+            "note_prompt_sha256": text_sha256(NOTE_INSTRUCTION_V3),
             "resolve_header_sha256": text_sha256(RESOLVE_HEADER),
             "source_sha256": source_identity(), "generation": generation}
     if not path.exists() and any((Path(args.output) / name).exists()
@@ -118,8 +118,9 @@ def _items_file(path: Path, version: str) -> dict:
 
 
 def records_and_sources(args) -> tuple[list[dict], dict, dict]:
-    from fine_tuning.notebook_rl.vault import read_actors
-    from .collect import _prefix, make_records_v2, read_jsonl_done
+    from fine_tuning.notebook_rl.prompts import p0_eval_text
+    from fine_tuning.notebook_rl.vault import read_actors, read_verifier
+    from .collect import SKIPPED_T1_STATUSES, _prefix, make_records_v2, read_jsonl_done
 
     items, out = _prefix(args), Path(args.output)
     bind_collection(args, items)
@@ -129,6 +130,19 @@ def records_and_sources(args) -> tuple[list[dict], dict, dict]:
     missing = [i["problem_id"] for i in items if i["problem_id"] not in notes]
     if missing:
         raise ValueError(f"v3 audit needs closed note rows for every item: {missing[:3]}")
+    gold = read_verifier(Path(args.build_root) / "train")
+    for item in items:
+        pid, row = item["problem_id"], notes[item["problem_id"]]
+        if row.get("note_instruction_sha256") != text_sha256(NOTE_INSTRUCTION_V3):
+            raise ValueError("v3 note instruction binding mismatch")
+        if str(row.get("status", "")).startswith("SKIPPED_"):
+            if t1[pid]["status"] not in SKIPPED_T1_STATUSES or row["status"] != "SKIPPED_" + t1[pid]["status"]:
+                raise ValueError("v3 skipped note binding mismatch")
+            continue
+        if row.get("prompt") != note_prompt_v3(
+                p0_eval_text(actors[pid].question, actors[pid].choices), t1[pid].get("text", ""), t1[pid]["status"],
+                gold[pid].gold):
+            raise ValueError("v3 note prompt binding mismatch")
     records = make_records_v2(items, actors, t1, notes, {})
     sources = _items_file(args.source_provenance, "note-source-provenance-v1")
     if not {r["problem_id"] for r in records} <= set(sources):

@@ -12,7 +12,7 @@ import json
 from fine_tuning.modules import BASE_ID, BASE_REVISION
 
 from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
-                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, RESOLVE_HEADER)
+                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, RESOLVE_HEADER)
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
 MERGERS = ["model.visual.merger", "model.visual.deepstack_merger_list.0",
@@ -74,6 +74,7 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
         raise ValueError("protocol v3: rows/order/audit/sidecar/admission SHA256 bindings required")
     body = {key: value for key, value in plain_protocol_v2(precision, total_steps).items() if key != "sha256"}
     body |= {"version": VERSION_V3,
+             "prompts_sha256": _digest({"note": NOTE_INSTRUCTION_V3, "resolve_header": RESOLVE_HEADER}),
              "training_contract": {"arm": arm, "hashes": dict(contracts), "master_seed": MASTER_SEED,
                                    "answer_contract": "training-answer-v1", "audit_contract": "note-audit-v1",
                                    "admission": ADMISSION_VERSION_V3, "active_group": "at_least_one_encoded_A",

@@ -14,6 +14,7 @@ import argparse
 import collections
 import concurrent.futures
 import contextlib
+import hashlib
 import itertools
 import json
 import math
@@ -31,8 +32,9 @@ from typing import Any, Callable, Iterable, Iterator
 
 from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
 
-from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, TURN1_ANSWER_CONTRACT, build_rows, build_rows_v2, hint_leak,
-                       is_loop, note_prompt, note_prompt_v2, parse_note, parse_note_v2, resolve_prompt, sample_seed)
+from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V3, TURN1_ANSWER_CONTRACT,
+                       build_rows, build_rows_v2, hint_leak, is_loop, note_prompt, note_prompt_v2, note_prompt_v3,
+                       parse_note, parse_note_v2, resolve_prompt, sample_seed)
 from .order import read_order
 
 PREFETCH_WORKERS = 8
@@ -432,13 +434,17 @@ def run_solve(items: list[dict], actors: dict, load: Callable, stream: Stream, s
 def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[str, str], load: Callable, stream: Stream,
              stats: StreamStats, grade: Callable, out: Path, *, S: int, B: int, engine: str,
              stop_after: float | None = None, every: float = THROUGHPUT_EVERY, gpu_probe: Callable | None = None,
-             version: str = "v1") -> dict:
+             version: str = "v1", answer_contract: str = TURN1_ANSWER_CONTRACT) -> dict:
     """Turn 2: the note prompt shows the gold. Items without a usable T1 get a SKIPPED row and no generation.
 
     version "v2": the note has no corrected solution; its lesson is checked for hints (contract.hint_leak) here, where
     the gold is known, and lessons.json is rewritten from note.jsonl at the end, also after a stop deadline."""
     if version not in ("v1", "v2"):
         raise ValueError(f"unknown note version {version!r}")
+    v3 = answer_contract == "training-answer-v1"
+    if v3 and version != "v2":
+        raise ValueError("training-answer-v1 requires the v2 note schema")
+    instruction = {"note_instruction_sha256": hashlib.sha256(NOTE_INSTRUCTION_V3.encode()).hexdigest()} if v3 else {}
     out = Path(out)
     ids = [item["problem_id"] for item in items]
     missing = [pid for pid in ids if pid not in t1]
@@ -447,9 +453,23 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
     done = read_jsonl_done(out / "note.jsonl")
     if any(("note_version" in row) != (version == "v2") for row in done.values() if "status" not in row):
         raise ValueError(f"note.jsonl holds notes of another version than {version}")
+    if any((row.get("note_instruction_sha256") != instruction["note_instruction_sha256"] if v3
+            else "note_instruction_sha256" in row) for row in done.values()):
+        raise ValueError("note.jsonl instruction differs; use a new output directory")
+    if v3:
+        for pid, row in done.items():
+            if pid not in ids:
+                continue
+            if str(row.get("status", "")).startswith("SKIPPED_"):
+                if t1[pid]["status"] not in SKIPPED_T1_STATUSES or row["status"] != "SKIPPED_" + t1[pid]["status"]:
+                    raise ValueError("note.jsonl skipped status differs from its T1 input")
+                continue
+            if row.get("prompt") != note_prompt_v3(
+                    p0_eval_text(actors[pid].question, actors[pid].choices), t1[pid].get("text", ""), t1[pid]["status"], gold[pid]):
+                raise ValueError("note.jsonl prompt differs from the bound v3 instruction/input")
     for pid in ids:
         if pid not in done and t1[pid]["status"] in SKIPPED_T1_STATUSES:
-            done[pid] = {"problem_id": pid, "stage": "note", "status": "SKIPPED_" + t1[pid]["status"]}
+            done[pid] = {"problem_id": pid, "stage": "note", "status": "SKIPPED_" + t1[pid]["status"], **instruction}
             append_jsonl(out / "note.jsonl", done[pid])
     todo = [pid for pid in ids if pid not in done]
 
@@ -457,7 +477,7 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
         for actor, images in bounded_map(lambda pid: (actors[pid], load(actors[pid])), todo,
                                          workers=PREFETCH_WORKERS, buffer=2 * S):
             pid = actor.problem_id
-            make = note_prompt_v2 if version == "v2" else note_prompt
+            make = note_prompt_v3 if v3 else note_prompt_v2 if version == "v2" else note_prompt
             prompt = make(p0_eval_text(actor.question, actor.choices), t1[pid]["text"], t1[pid]["status"], gold[pid])
             yield {"request_id": pid, "messages": [user_message(prompt, len(images))], "images": images,
                    "seed": sample_seed(pid, "note"), "max_tokens": MAX_NEW_TOKENS, "prompt": prompt, "mode": actor.mode,
@@ -465,7 +485,7 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
 
     def handle(request: dict, output: dict) -> dict:
         pid = request["request_id"]
-        row = {"problem_id": pid, "stage": "note", "seed": request["seed"]}
+        row = {"problem_id": pid, "stage": "note", "seed": request["seed"], **instruction}
         if version == "v2":
             row["note_version"] = "v2"
         if output.get("blocked"):
@@ -1009,7 +1029,7 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
             assert gold is not None
             t1 = read_jsonl_done(out / "t1.jsonl", repair=False)
             receipt = run_note(items, actors, t1, gold, load, stream, stats, grade, out, **options,
-                               version=args.note_version)
+                               version=args.note_version, answer_contract=answer_contract)
     print(json.dumps(receipt))
     return 0
 

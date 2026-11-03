@@ -253,6 +253,14 @@ Image reading: CORRECT, MISREAD or UNSURE. Write MISREAD if your earlier solutio
 Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION, NO_FINAL_ANSWER or NONE.
 What went wrong: the exact step and why. If nothing went wrong, say what was done properly.
 Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option."""
+NOTE_INSTRUCTION_V3 = """Review your own work against the question, image and given answer. A wrong final answer does not by itself establish why you were wrong.
+Use these headings in this order, each starting on a new line. Keep the whole note short, about 200 words at most, and do not write a solution.
+
+What the image shows: record only relevant directly visible details. Distinguish these from outside knowledge; say when a needed fact cannot be read from the image.
+Image reading: CORRECT, MISREAD or UNSURE. Use MISREAD only for a concrete contradiction between an earlier visual claim and the image. An unsupported claim about outside knowledge is not an image misreading. Use UNSURE when the relevant visible details cannot be checked.
+Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION, NO_FINAL_ANSWER or NONE. Choose only a supported cause. Use NONE if no specific error is established, and explain any uncertainty below.
+What went wrong: quote an exact false claim from your earlier solution and explicitly correct that claim. State whether the correction is supported by the question/image or outside knowledge. If the claim or its correction cannot be established, say what remains uncertain. Do not invent motives, assumptions or causes that the earlier solution does not support. If no error is established, say so without fabricating one.
+Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option."""
 # The 3,417 run (2026-11-03) with "Apply it silently: do not mention, quote or refer to this lesson" got bare answers
 # (median 8 tokens, 1,071 of 1,255 under 32), so the plain header is back. A re-solve that echoes the lesson is still
 # dropped by RESOLVE_LEAK_PHRASES, never edited.
@@ -281,6 +289,11 @@ def note_prompt_v2(p0_text: str, t1_text: str, status: str, gold: str) -> str:
         raise ValueError("gold is blank")
     return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {verdict_label(status)}\n"
             f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V2}")
+
+
+def note_prompt_v3(p0_text: str, t1_text: str, status: str, gold: str) -> str:
+    """The v2 note schema with the source-aware instruction, used only by training-answer-v1."""
+    return note_prompt_v2(p0_text, t1_text, status, gold).removesuffix(NOTE_INSTRUCTION_V2) + NOTE_INSTRUCTION_V3
 
 
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)

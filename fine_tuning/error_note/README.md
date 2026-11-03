@@ -86,6 +86,7 @@ v1/v2의 기본 동작은 유지한다. v3는 `training-answer-v1`, `rows-versio
    출처 설명을 모델의 입력이나 학습 target에 넣지 않는다. 원래 adapter의 수치 허용오차는 출처 저자 주석과 구분한다.
 2. `collect solve`/`sweep`, `collect note --note-version v2`에
    `--answer-contract training-answer-v1 --training-rules RULES --training-rules-sha256 SHA`를 붙인다.
+   v2 제목 형식은 재사용하되 지시문은 v3다. 실제 틀린 주장의 교정·근거·불확실성을 쓰고, 이미지 관측과 외부 지식을 구분한다.
    원본 모델 파일·실제 코드·엔진·정밀도·환경·순서가 `collection.json`에 고정되므로 다른 조건으로 결과를 이어 쓰지 못한다.
 3. 생성된 노트를 원문/이미지/출처와 검토하고 private `note-reviews-v1` 원장을 만든다.
    `audit.review_bindings`가 원문과 근거를 결합한다. `ai_review`는 반드시 `human_verified=false`다.
