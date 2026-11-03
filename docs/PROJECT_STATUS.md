@@ -195,6 +195,18 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
   빠진 비교: 300문항 모델의 558 평가 없음(300 모델의 오답 342 이득이 정답 문항 손실로 상쇄되는지 모름). 중간 체크포인트는 평가하지 않음(선택 금지), Pod와 함께 삭제.
   회수: `hf-pool-v3/pod-note3417/final/final.tgz` sha `348d6f7e…`, `checkpoints/ckpt-note-3417.tar` sha `07e2730c…`(로컬 해시 일치·압축 해제 확인: 실행 12개, t1/note 3,417, rows 5,476).
   Pod `gag25bdr1z59gj` 03:13Z 삭제, 목록 0. 청구 합계 17.74달러(10-31 2.18, 11-01 13.28, 11-02 2.28; 반영 지연 가능), 잔액 약 32.7달러.
+- **실패 분석·버전 2 결정(2026-11-02)**: `claudedocs/analysis_self_note_failure_20261102.md`. 사용자 결정은 다음과 같다(계획 `claudedocs/plan_self_note_v2_20261102.md`).
+  - 고쳐 쓴 풀이를 빼고 노트를 새로 쓴다. 토큰 한도는 8192를 유지한다.
+  - 교훈만 보고 정답 없이 1회 다시 푼다.
+  - 이미지는 1판 값을 유지한다("고해상도일 필요는 없어").
+  - 판정은 900문항 1회가 558을 넘는지 본다.
+- **버전 2 구현·검증(11-02~03)**:
+  - 구현: `fine_tuning/error_note` v2, prereg v4(`note-eval-v4/prereg.json` sha `32778ebe…`).
+  - 독립 검토(Fable) PASS: 짧은 정답 보기를 누설 검사에서 빼던 결함을 고쳤고, 단독 정답 기호 검사를 추가했다.
+  - CPU 시험 255개 통과.
+  - 로컬 NF4 2·10문항 전 단계 통과(재로딩 차이 0, 교훈 누설 0). 다시 풀기는 2문항에서 1/2, 10문항에서 1/4이 정답이었고, 정답 1건은 반복 끝에 찍은 답이라 반복 기준으로 제외됐다.
+  - MMDL_test `1c8e95d` push(문서의 MMMU 정답·응답 인용은 §5.2에 맞게 요약으로 바꿈).
+  - 11-02 17:50Z 조회 결과: RTX 6000 Ada·A40·L40(S)·RTX A6000 모두 재고 없음. 48GB 이상은 RTX PRO 6000(96GB, 1.69달러/시)부터 있어 1달러 상한을 넘으므로 사용자 결정 대기.
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후

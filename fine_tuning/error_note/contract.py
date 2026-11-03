@@ -252,7 +252,10 @@ Image reading: CORRECT, MISREAD or UNSURE. Write MISREAD if your earlier solutio
 Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION, NO_FINAL_ANSWER or NONE.
 What went wrong: the exact step and why. If nothing went wrong, say what was done properly.
 Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option."""
-RESOLVE_HEADER = "Lesson from your own review of a similar problem:\n"
+# The 16-bit pod check (2026-11-03) re-solve wrote "**Lesson applied:** ..." and its row was dropped as a leak, so the
+# header asks the model to apply the lesson without referring to it.
+RESOLVE_HEADER = ("Lesson from your own review of a similar problem. Apply it silently: do not mention, quote or refer to "
+                  "this lesson in your answer.\n")
 # Phrases a re-solve must not contain: at evaluation there is no hint to refer to. Bare "note" is left out on
 # purpose: music items use it as a word of the subject.
 RESOLVE_LEAK_PHRASES = ("lesson", "my review", "the hint", "as noted in", "earlier attempt", "previous attempt",
