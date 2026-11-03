@@ -485,7 +485,7 @@ class CliV2Tests(unittest.TestCase):
         for argv in (["resolve", *self.BASE, *self.ENGINE, "--max-num-seqs", "0"],
                      ["resolve", *self.BASE, *self.ENGINE, "--max-num-seqs", "fast"],
                      ["note", *self.BASE, *self.ENGINE, "--note-version", "v3"],
-                     ["rows", *self.BASE, "--tokenizer-path", "t", "--rows-version", "v3"]):
+                     ["rows", *self.BASE, "--tokenizer-path", "t", "--rows-version", "v4"]):
             with self.subTest(argv=argv[-2:]), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parser.parse_args(argv)
 

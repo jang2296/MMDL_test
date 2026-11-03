@@ -4,12 +4,16 @@ Plan: claudedocs/research_self_note_finetuning_plan_20261101.md sections 3.4, 5.
 Loss covers target tokens and the end token only: a wrong solution inside a note prompt and all image tokens are input.
 
 CLI: python -m fine_tuning.error_note.train train --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
-         --arm {note,solution} --precision {bf16,nf4} --model-path M --output DIR --code-commit 40HEX
+         --arm {note,solution,no-note} --precision {bf16,nf4} --model-path M --output DIR --code-commit 40HEX
          [--token-budget T] [--gradient-checkpointing {on,off}] [--save-every 50] [--max-row-tokens K] [--resume]
-         [--protocol-version {v1,v2}]
-     python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4} [--protocol-version {v1,v2}]
+         [--protocol-version {v1,v2,v3}] [--admission ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json]
+     python -m fine_tuning.error_note.train admit --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
+         --precision {bf16,nf4} --model-path M --output ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json --code-commit 40HEX
+     python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4} [--protocol-version {v1,v2,v3}]
 Protocol v2 (claudedocs/plan_self_note_v2_20261102.md section 4): 16 items per update and a linear LR decay whose end is
 the number of non-empty update groups of the rows file, so the protocol (and its binding) follows the rows.
+Version 3 admits both arms before training, preserves the common A routes, and uses .9 mean(A) + .1 mean(B).
+Its no-note arm omits B without renormalizing A; solution remains a legacy-only arm.
 """
 from __future__ import annotations
 
@@ -38,9 +42,11 @@ from fine_tuning.notebook_rl.policy import PolicyBundle, assert_base_unchanged, 
 from fine_tuning.notebook_rl.prompts import user_message
 from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_unchanged, build_quantized_policy
 
-from .contract import IMAGE, MASTER_SEED, PER_UPDATE_ITEMS, ROUTE_FULL, ROUTE_LM, select_rows, update_groups
+from .contract import (CONTEXT_LIMIT, IMAGE, KIND_NOTE, KIND_SOLUTION, MASTER_SEED, MAX_NEW_TOKENS,
+                       PER_UPDATE_ITEMS, ROUTE_FULL, ROUTE_LM, select_rows, update_groups)
 from .order import read_order
-from .protocol import ARM, GRAD_CLIP, PER_UPDATE_ITEMS_V2, VERSION_V2, plain_protocol, plain_protocol_v2
+from .protocol import (ADMISSION_VERSION_V3, ARM, GRAD_CLIP, PER_UPDATE_ITEMS_V2, VERSION_V2, VERSION_V3,
+                       _digest, plain_protocol, plain_protocol_v2, plain_protocol_v3)
 
 END_TOKEN = "<|im_end|>"
 PROJECTION_CHUNK = 1024
@@ -59,6 +65,10 @@ class NonFiniteStop(RuntimeError):
 
 class DropRow(Exception):
     """A row that must not be trained on; the argument is the recorded reason."""
+
+
+class AdmissionChanged(RuntimeError):
+    """An encoded group differs from the preflight; no row may silently leave a v3 run."""
 
 
 def plan_microbatches(lengths: list[int], routes: list[str], token_budget: int = 0) -> list[list[int]]:
@@ -170,18 +180,28 @@ def _peak_gib() -> float:
 
 
 def run_update(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler: Any, encoded: list[dict],
-               token_budget: int = 0) -> dict:
+               token_budget: int = 0, *, kind_weights: dict[str, float] | None = None) -> dict:
     """One optimizer step over every row of one order group. Raises NonFiniteStop before any parameter changes."""
     started = time.perf_counter()
     if torch.cuda.is_initialized():
         torch.cuda.reset_peak_memory_stats()
+    kinds = Counter(row["kind"] for row in encoded)
+    if kind_weights is not None and (not kinds[KIND_SOLUTION] or set(kinds) - {KIND_SOLUTION, KIND_NOTE}
+                                    or set(kind_weights) != {KIND_SOLUTION, KIND_NOTE}
+                                    or any(not math.isfinite(w) or w < 0 for w in kind_weights.values())):
+        raise ValueError("train v3: a group needs A rows and finite nonnegative A/B weights")
+    coefficients = [kind_weights[row["kind"]] / kinds[row["kind"]] if kind_weights is not None else 1 / len(encoded)
+                    for row in encoded]
     plan = plan_microbatches([row["input_ids"].numel() for row in encoded], [row["route"] for row in encoded], token_budget)
     loss_by_kind: dict[str, float] = defaultdict(float)
     for indices in plan:
         rows = [encoded[index] for index in indices]
         bundle.route.apply(rows[0]["route"] == ROUTE_FULL)
         row_losses = [-values.mean() for values in batch_logprobs(bundle, rows)]
-        (torch.stack(row_losses).sum() / len(encoded)).backward()
+        if kind_weights is None:
+            (torch.stack(row_losses).sum() / len(encoded)).backward()
+        else:
+            torch.stack([loss * coefficients[index] for index, loss in zip(indices, row_losses, strict=True)]).sum().backward()
         for row, value in zip(rows, row_losses, strict=True):
             loss_by_kind[row["kind"]] += float(value.detach())
     grad_norms = _clip_groups(bundle)
@@ -189,12 +209,20 @@ def run_update(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler: An
     scheduler.step()
     optimizer.zero_grad(set_to_none=True)
     bundle.route.apply(True)
-    kinds = Counter(row["kind"] for row in encoded)
+    means = {k: loss_by_kind[k] / n for k, n in kinds.items()}
+    weighted = {k: kind_weights[k] * means.get(k, 0.0) for k in kind_weights} if kind_weights is not None else {}
     return {"rows": len(encoded), "rows_by_kind": dict(kinds), "routes": dict(Counter(row["route"] for row in encoded)),
             "tokens": sum(row["input_ids"].numel() for row in encoded), "target_tokens": sum(row["target_len"] for row in encoded),
-            "loss": sum(loss_by_kind.values()) / len(encoded), "loss_by_kind": {k: loss_by_kind[k] / n for k, n in kinds.items()},
+            "loss": sum(weighted.values()) if kind_weights is not None else sum(loss_by_kind.values()) / len(encoded),
+            "loss_by_kind": means,
             "grad_norms": grad_norms, "seconds": time.perf_counter() - started, "peak_allocated_gib": _peak_gib(),
-            "microbatches": len(plan), "skipped": False}
+            "microbatches": len(plan), "skipped": False,
+            **({"denominators": {k: kinds[k] for k in kind_weights}, "weighted_loss_by_kind": weighted,
+                "row_coefficients": {row["row_id"]: coefficients[i] for i, row in enumerate(encoded)},
+                "tokens_by_kind": {k: sum(row["input_ids"].numel() for row in encoded if row["kind"] == k)
+                                   for k in kind_weights},
+                "routes_by_kind": {k: dict(Counter(row["route"] for row in encoded if row["kind"] == k))
+                                   for k in kind_weights}} if kind_weights is not None else {})}
 
 
 def _write_json(path: Path, value: Any) -> None:
@@ -233,12 +261,24 @@ def _keep_before(path: Path, position: int) -> None:
 
 
 def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str,
-                 per_update: int = PER_UPDATE_ITEMS) -> list[list[dict]]:
+                 per_update: int = PER_UPDATE_ITEMS, *, v3: bool = False, audit_path: Path | None = None) -> list[list[dict]]:
     """Groups come from the order, so both arms get the same updates; a group may be empty."""
     ids = [item["problem_id"] for item in read_order(order_path)["items"]]
     if not 1 <= limit <= len(ids):
         raise ValueError(f"train: limit {limit} is outside the order of {len(ids)} items")
-    rows = select_rows(_read_jsonl(rows_path), arm)
+    if v3:
+        from .audit import validate_row_audits
+        from .contract import select_rows_v3
+
+        rows = _read_jsonl(rows_path)
+        if audit_path is None:
+            raise ValueError("train v3: --audit is required")
+        validate_row_audits(rows, audit_path)
+        rows = select_rows_v3(rows, arm)
+        if any(row["problem_id"] not in ids or row["kind"] not in (KIND_SOLUTION, KIND_NOTE) for row in rows):
+            raise ValueError("train v3: an unknown problem_id or row kind in the rows file")
+    else:
+        rows = select_rows(_read_jsonl(rows_path), arm)
     if len({row["row_id"] for row in rows}) != len(rows) or any(row["route"] not in (ROUTE_FULL, ROUTE_LM) for row in rows):
         raise ValueError("train: duplicate row_id or unknown route in the rows file")
     by_id: dict[str, list[dict]] = {}
@@ -270,11 +310,14 @@ def encoded_groups(groups: list[list[dict]], encode: Callable[[dict], dict], max
 
 
 def _vault_encoder(bundle: PolicyBundle, build_root: Path) -> Callable[[dict], dict]:
+    return _actor_encoder(bundle.processor, bundle.model.get_base_model().config, build_root)
+
+
+def _actor_encoder(processor: Any, config: Any, build_root: Path) -> Callable[[dict], dict]:
     from fine_tuning.notebook_rl.dataset import load_images
     from fine_tuning.notebook_rl.vault import read_actors
 
     actors = {actor.problem_id: actor for actor in read_actors(Path(build_root) / "train")}
-    config = bundle.model.get_base_model().config
 
     def encode(row: dict) -> dict:
         actor = actors[row["problem_id"]]
@@ -282,11 +325,99 @@ def _vault_encoder(bundle: PolicyBundle, build_root: Path) -> Callable[[dict], d
             raise ValueError(f"train: row {row['row_id']} images differ from the vault")
         images = load_images(actor, Path(build_root) / "images")
         try:
-            return encode_row(bundle.processor, config, row, images)
+            return encode_row(processor, config, row, images)
         finally:
             for image in images:
                 image.close()
     return encode
+
+
+def _admission_inputs(args: argparse.Namespace) -> dict:
+    if args.max_row_tokens is not None and (args.precision != "nf4" or type(args.max_row_tokens) is not int
+                                           or not 0 < args.max_row_tokens <= CONTEXT_LIMIT):
+        raise ValueError("train v3: --max-row-tokens is a predeclared NF4 functional-check limit only")
+    if args.audit is None or args.sidecar is None:
+        raise ValueError("train v3: --audit and --sidecar are required")
+    return {"hashes": {name: ckpt.file_hash(getattr(args, name)) for name in ("rows", "order", "audit", "sidecar")},
+            "code_sha256": hashlib.sha256(args.code_commit.encode()).hexdigest(),
+            "precision": args.precision, "limit": args.limit,
+            "encoding": {"version": ADMISSION_VERSION_V3, "image": dict(IMAGE), "context_limit": CONTEXT_LIMIT,
+                         "max_new_tokens": MAX_NEW_TOKENS, "end_token": END_TOKEN,
+                         "max_row_tokens": args.max_row_tokens}}
+
+
+def _encoded_record(row: dict) -> dict:
+    length, target = row["input_ids"].numel(), row["target_len"]
+    if type(target) is not int or not 0 < target < length:
+        raise ValueError("train v3: a nonempty prompt and target are required")
+    return {"row_id": row["row_id"], "kind": row["kind"], "route": row["route"], "tokens": length,
+            "target_tokens": target, "encoded_sha256": _digest({key: {"sha256": tensor_sha256(row[key]),
+                "shape": list(row[key].shape), "dtype": str(row[key].dtype)}
+                for key in PROBE_TENSORS if row.get(key) is not None})}
+
+
+def run_admit(args: argparse.Namespace, *, encode: Callable[[dict], dict] | None = None,
+              map_fn: Callable[..., Iterable] = map) -> int:
+    """CPU-only processor preflight for both arms. No model weights or CUDA initialization are needed."""
+    if args.output.exists():
+        raise ValueError(f"admit: refusing to overwrite {args.output}")
+    inputs = _admission_inputs(args)
+    groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2, v3=True, audit_path=args.audit)
+    if encode is None:
+        from transformers import AutoConfig, AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(str(args.model_path), local_files_only=True,
+            min_pixels=IMAGE["min_pixels"], max_pixels=IMAGE["max_pixels"])
+        processor.image_processor.size = {"shortest_edge": IMAGE["min_pixels"], "longest_edge": IMAGE["max_pixels"]}
+        encode = _actor_encoder(processor, AutoConfig.from_pretrained(str(args.model_path), local_files_only=True),
+                                args.build_root)
+    admitted: list[dict] = []
+    for index, (encoded, drops) in enumerate(encoded_groups(groups, encode, args.max_row_tokens or CONTEXT_LIMIT, map_fn)):
+        records = [_encoded_record(row) for row in encoded]
+        kinds = Counter(row["kind"] for row in records)
+        active = kinds[KIND_SOLUTION] > 0
+        admitted.append({"group": index, "active": active, "nA": kinds[KIND_SOLUTION], "nB": kinds[KIND_NOTE],
+                         "rows": records, "drops": drops, "inactive_reason": None if active else "NO_ENCODED_A"})
+    body = {"version": ADMISSION_VERSION_V3, "inputs": inputs, "groups": admitted,
+            "total_steps": sum(group["active"] for group in admitted)}
+    # Recheck source bytes after encoding, so a concurrent edit cannot receive the earlier identity.
+    if _admission_inputs(args) != inputs:
+        raise ValueError("admit: inputs changed during encoding")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(args.output, body | {"sha256": _digest(body)})
+    return 0 if body["total_steps"] else 1
+
+
+def _read_admission(args: argparse.Namespace, groups: list[list[dict]]) -> dict:
+    if args.admission is None:
+        raise ValueError("train v3: --admission is required")
+    admission = json.loads(args.admission.read_text(encoding="utf-8"))
+    if (admission.get("version") != ADMISSION_VERSION_V3
+            or admission.get("sha256") != _digest({k: v for k, v in admission.items() if k != "sha256"})
+            or admission.get("inputs") != _admission_inputs(args) or len(admission.get("groups", [])) != len(groups)):
+        raise ValueError("train v3: admission identity differs from rows/order/audit/sidecar/code/precision/limit")
+    for index, (raw, group) in enumerate(zip(groups, admission["groups"], strict=True)):
+        kept = [row["row_id"] for row in group["rows"]]
+        dropped = [row["row_id"] for row in group["drops"]]
+        raw_ids = [row["row_id"] for row in raw]
+        kinds = Counter(row["kind"] for row in group["rows"])
+        active = kinds[KIND_SOLUTION] > 0
+        if (group["group"] != index or len(kept + dropped) != len(set(kept + dropped))
+                or set(kept + dropped) != set(raw_ids) or kept != [rid for rid in raw_ids if rid in kept]
+                or group["active"] is not active or group["nA"] != kinds[KIND_SOLUTION]
+                or group["nB"] != kinds[KIND_NOTE]
+                or group["inactive_reason"] != (None if active else "NO_ENCODED_A")):
+            raise ValueError("train v3: admission group membership, order or A/B counts differ")
+    if type(admission["total_steps"]) is not int or admission["total_steps"] != sum(g["active"] for g in admission["groups"]):
+        raise ValueError("train v3: admission total_steps differs from active groups")
+    if admission["total_steps"] < 1:
+        raise ValueError("train v3: admission has no A-present update groups")
+    return admission
+
+
+def _verify_admitted_group(admitted: dict, encoded: list[dict], drops: list[dict]) -> None:
+    if [_encoded_record(row) for row in encoded] != admitted["rows"] or drops != admitted["drops"]:
+        raise AdmissionChanged(f"train v3: group {admitted['group']} changed after admission (drop or encoded input)")
 
 
 def _trainable_hashes(bundle: PolicyBundle) -> dict[str, str]:
@@ -396,10 +527,20 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
     if args.gradient_checkpointing == "off" and args.precision == "nf4":
         raise SystemExit("train: --gradient-checkpointing off is bf16 only")
     out: Path = args.output
-    v2 = getattr(args, "protocol_version", "v1") == "v2"
-    groups = _read_groups(args.rows, args.order, args.limit, args.arm, PER_UPDATE_ITEMS_V2 if v2 else PER_UPDATE_ITEMS)
-    protocol = plain_protocol_v2(args.precision, max(1, sum(1 for group in groups if group))) if v2 \
-        else plain_protocol(args.precision)
+    version = getattr(args, "protocol_version", "v1")
+    v2, v3 = version == "v2", version == "v3"
+    if args.arm == "no-note" and not v3 or args.arm == "solution" and v3:
+        raise ValueError("train: v3 uses note/no-note; solution is a legacy route-changing arm")
+    groups = _read_groups(args.rows, args.order, args.limit, "note" if v3 else args.arm,
+                          PER_UPDATE_ITEMS_V2 if v2 or v3 else PER_UPDATE_ITEMS, v3=v3,
+                          audit_path=getattr(args, "audit", None))
+    admission = _read_admission(args, groups) if v3 else None
+    if admission is not None:
+        contracts = admission["inputs"]["hashes"] | {"admission": ckpt.file_hash(args.admission)}
+        protocol = plain_protocol_v3(args.precision, admission["total_steps"], arm=args.arm, contracts=contracts)
+    else:
+        protocol = plain_protocol_v2(args.precision, max(1, sum(1 for group in groups if group))) if v2 \
+            else plain_protocol(args.precision)
     binding = {"protocol_sha256": protocol["sha256"], "prompts_sha256": protocol["prompts_sha256"],
                "data_sha256": ckpt.file_hash(args.rows), "code_sha256": hashlib.sha256(args.code_commit.encode()).hexdigest()}
     # token_budget and checkpointing are left out on purpose: they change memory use, not the gradient, so an OOM can resume smaller.
@@ -407,6 +548,15 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
            "order_sha256": ckpt.file_hash(args.order)}
     _check_output(args, binding, run)
     out.mkdir(parents=True, exist_ok=True)
+    if admission is not None:
+        saved_admission = out / "admission.json"
+        bound_run = any((out / name).exists() for name in ("binding.json", "initial_state.json", "checkpoint-final")) \
+            or _newest_checkpoint(out) is not None
+        if args.resume and bound_run:
+            if not saved_admission.exists() or ckpt.file_hash(saved_admission) != contracts["admission"]:
+                raise ValueError("train v3: the run's saved admission is missing or changed")
+        else:
+            shutil.copyfile(args.admission, saved_admission)
     (out / "result.json").unlink(missing_ok=True)
     assert_base = assert_quantized_base_unchanged if args.precision == "nf4" else assert_base_unchanged
     torch.manual_seed(MASTER_SEED)  # before building, so both arms start from the same adapter init
@@ -423,6 +573,9 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         bundle, optimizer, scheduler, step, cursor = ckpt.load_resume(
             args.model_path, newest, protocol, binding=binding, device=device, policy_factory=policy_factory)
         position = cursor["position"]
+        if admission is not None and (not 0 <= position <= len(groups)
+                or step != sum(group["active"] for group in admission["groups"][:position])):
+            raise ValueError("train v3: checkpoint cursor/step differs from the admitted update schedule")
     if args.gradient_checkpointing == "off":
         bundle.model.gradient_checkpointing_disable()
     updates_path, drops_path = out / "updates.jsonl", out / "drops_local.jsonl"
@@ -430,22 +583,42 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         _keep_before(path, position)
         path.touch()
     encode = make_encoder(bundle, args.build_root)
-    stream = encoded_groups(groups[position:], encode, args.max_row_tokens, map_fn)
+    stream = encoded_groups(groups[position:], encode, (args.max_row_tokens or CONTEXT_LIMIT) if v3 else args.max_row_tokens, map_fn)
     for index, (encoded, drops) in enumerate(stream, start=position):
+        if admission is not None:
+            try:
+                _verify_admitted_group(admission["groups"][index], encoded, drops)
+            except AdmissionChanged as exc:
+                _write_json(out / "result.json", {"status": "ADMISSION_CHANGED", "group": index, "step": step,
+                                                  "detail": str(exc)})
+                return 1
+            if not admission["groups"][index]["active"]:
+                encoded = []
+            elif args.arm == "no-note":
+                encoded = [row for row in encoded if row["kind"] == KIND_SOLUTION]
         for drop in drops:
             _append_jsonl(drops_path, {"group": index, **drop})
         if not encoded:
-            _append_jsonl(updates_path, {"step": step, "group": index, "rows": 0, "skipped": True})
+            _append_jsonl(updates_path, {"step": step, "group": index, "rows": 0, "skipped": True,
+                **({"reason": "NO_ENCODED_A", "nA": 0, "nB": admission["groups"][index]["nB"],
+                    "inactive_row_ids": [row["row_id"] for row in admission["groups"][index]["rows"]]}
+                   if admission is not None else {})})
             continue
         lrs = {group["name"]: group["lr"] for group in optimizer.param_groups}
         try:
-            stats = run_update(bundle, optimizer, scheduler, encoded, args.token_budget)
+            if v3:
+                stats = run_update(bundle, optimizer, scheduler, encoded, args.token_budget,
+                                   kind_weights={KIND_SOLUTION: 0.9, KIND_NOTE: 0.1 if args.arm == "note" else 0.0})
+            else:
+                stats = run_update(bundle, optimizer, scheduler, encoded, args.token_budget)
         except NonFiniteStop as exc:
             _write_json(out / "result.json", {"status": STATUS_NONFINITE, "arm": args.arm, "precision": args.precision,
                                               "group": index, "step": step, "detail": str(exc)})
             return 1
         step += 1
-        _append_jsonl(updates_path, {"step": step, "group": index, **stats, **({"lr": lrs} if v2 else {})})
+        _append_jsonl(updates_path, {"step": step, "group": index, **stats, **({"lr": lrs} if v2 or v3 else {}),
+            **({"nA": admission["groups"][index]["nA"], "nB": admission["groups"][index]["nB"]}
+               if admission is not None else {})})
         if args.save_every and step % args.save_every == 0:
             _save(bundle, optimizer, scheduler, step, index + 1, out / f"checkpoint-{step}", protocol, binding)
     summary = _summary(_read_jsonl(updates_path))
@@ -453,12 +626,18 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         _write_json(out / "result.json", {"status": STATUS_NO_UPDATES, "arm": args.arm, "precision": args.precision, **summary})
         return 1
     assert_base(bundle)
+    if admission is not None and step != admission["total_steps"]:
+        raise ValueError("train v3: optimizer steps differ from the admitted update schedule")
     initial = json.loads((out / "initial_state.json").read_text(encoding="utf-8"))["sha256"]
     changed = _changed_counts(bundle, initial)
     _save(bundle, optimizer, scheduler, step, len(groups), out / "checkpoint-final", protocol, binding)
     probe_rows: list[dict] = []
-    for row in (row for group in groups for row in group):
-        item = _encode_or_drop(row, encode, args.max_row_tokens)
+    probe_ids = ({row["row_id"]: row for group in admission["groups"] if group["active"] for row in group["rows"]
+                  if args.arm == "note" or row["kind"] == KIND_SOLUTION} if admission is not None else None)
+    for row in (row for group in groups for row in group if probe_ids is None or row["row_id"] in probe_ids):
+        item = _encode_or_drop(row, encode, (args.max_row_tokens or CONTEXT_LIMIT) if v3 else args.max_row_tokens)
+        if probe_ids is not None and ("input_ids" not in item or _encoded_record(item) != probe_ids[row["row_id"]]):
+            raise AdmissionChanged("train v3: probe input changed after admission")
         probe_rows += [item] if "input_ids" in item else []
         if len(probe_rows) == PROBE_ROWS:
             break
@@ -467,7 +646,8 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         "status": STATUS_COMPLETE, "arm": args.arm, "precision": args.precision, **summary, "changed_tensors": changed,
         "total_tensors": _tensor_counts(bundle), "gradient_checkpointing": args.gradient_checkpointing,
         "token_budget": args.token_budget, "checkpoint": str(out / "checkpoint-final"),
-        **({"protocol_version": VERSION_V2, "total_steps": protocol["optimizer"]["total_steps"]} if v2 else {})})
+        **({"protocol_version": VERSION_V3 if v3 else VERSION_V2, "total_steps": protocol["optimizer"]["total_steps"]}
+           if v2 or v3 else {})})
     return 0
 
 
@@ -477,8 +657,28 @@ def run_reload(args: argparse.Namespace, *, policy_factory: Callable | None = No
     try:
         final = args.run / "checkpoint-final"
         binding = json.loads((args.run / "binding.json").read_text(encoding="utf-8"))
-        recorded = ckpt.read_metadata(final, binding=binding)["protocol"]
-        if getattr(args, "protocol_version", "v1") == "v2":  # only the step count comes from the run; the rest is code
+        metadata = ckpt.read_metadata(final, binding=binding)
+        recorded = metadata["protocol"]
+        if getattr(args, "protocol_version", "v1") == "v3":
+            contract = recorded.get("training_contract", {})
+            protocol = plain_protocol_v3(args.precision, recorded.get("optimizer", {}).get("total_steps"),
+                                         arm=contract.get("arm"), contracts=contract.get("hashes", {}))
+            admission = json.loads((args.run / "admission.json").read_text(encoding="utf-8"))
+            state = json.loads((args.run / "initial_state.json").read_text(encoding="utf-8"))["run"]
+            hashes = contract["hashes"]
+            if (ckpt.file_hash(args.run / "admission.json") != hashes["admission"]
+                    or admission.get("sha256") != _digest({k: v for k, v in admission.items() if k != "sha256"})
+                    or admission["inputs"]["hashes"] != {k: v for k, v in hashes.items() if k != "admission"}
+                    or admission["inputs"]["code_sha256"] != binding["code_sha256"]
+                    or admission["inputs"]["precision"] != args.precision
+                    or binding["data_sha256"] != hashes["rows"] or state["arm"] != contract["arm"]
+                    or state["precision"] != args.precision
+                    or state["max_row_tokens"] != admission["inputs"]["encoding"]["max_row_tokens"]
+                    or state["order_sha256"] != hashes["order"] or state["limit"] != admission["inputs"]["limit"]
+                    or metadata["step"] != admission["total_steps"]
+                    or metadata["cursor"]["position"] != len(admission["groups"])):
+                raise ValueError("reload v3: admission, arm or common schedule binding differs")
+        elif getattr(args, "protocol_version", "v1") == "v2":  # only the step count comes from the run; the rest is code
             protocol = plain_protocol_v2(args.precision, recorded.get("optimizer", {}).get("total_steps"))
         else:
             protocol = plain_protocol(args.precision)
@@ -516,7 +716,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("rows", "build-root", "order", "model-path", "output"):
         train.add_argument(f"--{name}", type=Path, required=True)
     train.add_argument("--limit", type=int, required=True)
-    train.add_argument("--arm", choices=("note", "solution"), required=True)
+    train.add_argument("--arm", choices=("note", "solution", "no-note"), required=True)
     train.add_argument("--precision", choices=("bf16", "nf4"), required=True)
     train.add_argument("--code-commit", type=_commit, required=True)
     train.add_argument("--token-budget", type=int, default=0)
@@ -524,12 +724,21 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--save-every", type=int, default=50)
     train.add_argument("--max-row-tokens", type=int, default=None, help="local 8GB only; never set on the rented GPU")
     train.add_argument("--resume", action="store_true")
-    train.add_argument("--protocol-version", choices=("v1", "v2"), default="v1")
+    train.add_argument("--protocol-version", choices=("v1", "v2", "v3"), default="v1")
+    for name in ("admission", "audit", "sidecar"):
+        train.add_argument(f"--{name}", type=Path)
+    admit = sub.add_parser("admit", help="CPU-only common v3 row encoding and update admission")
+    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar"):
+        admit.add_argument(f"--{name}", type=Path, required=True)
+    admit.add_argument("--limit", type=int, required=True)
+    admit.add_argument("--precision", choices=("bf16", "nf4"), required=True)
+    admit.add_argument("--code-commit", type=_commit, required=True)
+    admit.add_argument("--max-row-tokens", type=int, default=None, help="predeclared NF4 functional-check admission only")
     reload = sub.add_parser("reload")
     reload.add_argument("--run", type=Path, required=True)
     reload.add_argument("--model-path", type=Path, required=True)
     reload.add_argument("--precision", choices=("bf16", "nf4"), required=True)
-    reload.add_argument("--protocol-version", choices=("v1", "v2"), default="v1")
+    reload.add_argument("--protocol-version", choices=("v1", "v2", "v3"), default="v1")
     return parser
 
 
@@ -544,6 +753,8 @@ def main(argv: list[str] | None = None) -> int:
     from .collect import ResourceLog, bounded_map, install_training_guards
 
     install_training_guards(args.build_root)
+    if args.command == "admit":
+        return run_admit(args, map_fn=partial(bounded_map, workers=ENCODE_WORKERS, buffer=ENCODE_BUFFER))
     args.output.mkdir(parents=True, exist_ok=True)
     with ResourceLog(args.output / "resource.jsonl"):
         return run_train(args, policy_factory=_factory(args.precision),

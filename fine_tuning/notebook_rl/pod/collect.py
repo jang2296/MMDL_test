@@ -3,7 +3,8 @@ confirms every remote action, this module only records evidence.
 
 pack      (on the Pod)  tar of CLOSED run dirs only + sha256 manifest; --unclosed-dead-owner also
                         takes a hard-killed run (dead owner, no process env names the run dir),
-                        labelled UNCLOSED in the manifest
+                        labelled UNCLOSED in the manifest. Successful chains need their approved spec,
+                        complete verified history and expected files; an external spec is included.
 pack-eval (on the Pod)  one MMMU evaluation stage (eval-f0|eval-ft; eval-course is not planned): its run dir
                         plus exactly what `proof_eval analyze` reads (the stage's planned run dirs under
                         artifact_root, the ledger, the prereg and, for FT, model_ref.json; never model
@@ -145,18 +146,78 @@ def _check_name(name: str) -> None:
         raise CollectError("archive name must match [A-Za-z0-9._-]+")
 
 
+def _completed_chain_spec(run_dir: Path) -> Path:
+    """A successful chain is its own completion evidence; never manufacture a training result."""
+    from . import chain, job
+
+    try:
+        recorded = read_json(run_dir / "job.json")
+        argv = recorded["main"]
+        if (recorded.get("version") != job.VERSION or recorded.get("run_dir") != str(run_dir.absolute())
+                or recorded.get("approval", {}).get("approved_by_user") is not True
+                or recorded["approval"].get("approved_sha256") != job.content_sha256(recorded)
+                or not isinstance(argv, list) or len(argv) != 8
+                or argv[1:5] != ["-m", "fine_tuning.notebook_rl.pod.chain", "run", "--spec"]
+                or argv[6] != "--spec-sha256" or not HEX64.fullmatch(argv[7])):
+            raise ValueError("recorded job does not bind the chain spec")
+        source = Path(argv[5])
+        raw = source.read_bytes()
+        if not source.is_absolute() or sha256_bytes(raw) != argv[7]:
+            raise ValueError("chain spec SHA256 differs from the recorded job")
+        spec = chain.check_spec(json.loads(raw))
+        if spec.get("meta", {}).get("job_stage") != recorded["stage"]:
+            raise ValueError("chain spec stage differs from the recorded job")
+        if not any(step["expect_files"] for step in spec["steps"]):
+            raise ValueError("chain spec declares no stage outputs")
+        log = chain.verify_log(run_dir / chain.LOG_NAME, argv[7])
+        if (len(log) != 2 + 2 * len(spec["steps"]) or log[0].get("event") != "CHAIN_START"
+                or log[0].get("spec_sha256") != argv[7]
+                or log[0].get("steps") != [step["name"] for step in spec["steps"]]
+                or (log[-1].get("event"), log[-1].get("status"), log[-1].get("exit_code")) != ("CHAIN_END", "COMPLETE", 0)):
+            raise ValueError("successful run lacks its complete chain history")
+        for index, step in enumerate(spec["steps"]):
+            start, end = log[1 + 2 * index:3 + 2 * index]
+            if (start.get("event") != "STEP_START" or start.get("name") != step["name"] or start.get("argv") != step["argv"]
+                    or end.get("event") != "STEP_END" or end.get("name") != step["name"]
+                    or end.get("status") != "OK" or end.get("exit_code") != 0
+                    or end.get("expect_files") != {path: True for path in step["expect_files"]}):
+                raise ValueError(f"chain step {step['name']} did not complete as planned")
+            for expected in step["expect_files"]:
+                _plain_file(Path(expected), Path(expected).parent)
+        return _plain_file(source, source.parent)
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
+        raise CollectError(f"{run_dir.name}: successful chain cannot be recovered ({exc})") from exc
+
+
 def pack(run_dirs: list[Path], out_dir: Path, name: str,
          unclosed_dead_owner: bool = False) -> dict[str, Any]:
     _check_name(name)
     names = [path.name for path in run_dirs]
     if not run_dirs or len(set(names)) != len(names):
         raise CollectError("one or more run dirs with distinct names required")
-    unclosed = [path.name for path in run_dirs
-                if closed_run(path, unclosed_dead_owner) == "UNCLOSED"]
+    unclosed, specs = [], []
+    for path in run_dirs:
+        closure = closed_run(path, unclosed_dead_owner, results=(*RESULT_FILES, "chain.jsonl"))
+        if closure == "UNCLOSED":
+            unclosed.append(path.name)
+        if read_json(path / "run_state.json")["state"] == "MAIN_EXIT 0":
+            recorded = read_json(path / "job.json") if (path / "job.json").is_file() else {}
+            if not any((path / item).is_file() for item in RESULT_FILES) or recorded.get("stage") in ("note-v3-collect", "note-v3-train"):
+                source = _completed_chain_spec(path)
+                if not source.is_relative_to(path.absolute()):
+                    if (path / "_recovery").exists():
+                        raise CollectError(f"{path}: reserved _recovery archive path already exists")
+                    specs.append((path, source, sha256_file(source)))
 
     def fill(tar: tarfile.TarFile, records: list[dict[str, Any]]) -> None:
         for run_dir in run_dirs:
             _tar_run_dir(tar, run_dir, records)
+        for run_dir, source, expected_sha in specs:
+            if sha256_file(source) != expected_sha:
+                raise CollectError(f"{source}: chain spec changed while packing")
+            _add_member(tar, source, f"{run_dir.name}/_recovery/chain-spec.json", records)
+            if records[-1]["sha256"] != expected_sha:
+                raise CollectError(f"{source}: chain spec changed while packing")
 
     return _seal(out_dir, name, fill, runs=names, closure="UNCLOSED" if unclosed else "CLOSED",
                  unclosed_runs=unclosed)

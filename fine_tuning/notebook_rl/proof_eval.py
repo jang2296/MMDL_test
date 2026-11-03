@@ -19,6 +19,9 @@ Error-note version 2 (claudedocs/plan_self_note_v2_20261102.md section 1): ``pre
 separate preregistration (format notebook-rl-proof-prereg-v4) with arms F0 and FT-V2 on the existing
 mmmu-val-v8-8k-seed3407-v2 variant, wrong + rest subsets (900 items). ``gate-62`` passes iff the FT-V2 900-item V8
 correct count of that one seed exceeds B2's 558; one run, so not proof of improvement.
+Error-note version 3 uses ``preregister --format v5 --ft-v3-model-ref REF``: one declared FT-NOTE-V3 checkpoint,
+seed 3407 and the same 8k variant, wrong + rest exactly once. ``gate-62`` checks >=559; ``gate-67.4`` checks >=607.
+Only F0 runs with the same evaluation code, registration and hardware are paired; historical counts are display only.
 
 Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --subset S
 --run-id R --ledger L`` must precede every evaluation run (``run-eval`` or the plain course ``scripts/eval.sh``; R is
@@ -64,7 +67,10 @@ ARMS = ("F0", "FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417")
 FORMAT_V4 = "notebook-rl-proof-prereg-v4"  # error-note version 2: arms F0 and FT-V2
 ARM_V2 = "FT-V2"
 ARMS_V4 = ("F0", ARM_V2)
-ALL_ARMS = ARMS + (ARM_V2,)
+FORMAT_V5 = "notebook-rl-proof-prereg-v5"
+ARM_V3 = "FT-NOTE-V3"
+ARMS_V5 = ("F0", ARM_V3)
+ALL_ARMS = ARMS + (ARM_V2, ARM_V3)
 B2_CORRECT = 558
 VLLM_INPROCESS_ENV = "VLLM_ENABLE_V1_MULTIPROCESSING"
 # subset tag -> (file version, B2 key it must equal)
@@ -152,6 +158,15 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
     binding = loaded["binding"] if isinstance(loaded, dict) and "binding" in loaded else loaded
     checkpoint, output = Path(checkpoint), Path(output)
     metadata = read_metadata(checkpoint, binding=binding)
+    v3_protocol = metadata["protocol"] if metadata["protocol"].get("version") == "error-note-protocol-v3" else None
+    if v3_protocol is not None:
+        from fine_tuning.error_note.protocol import plain_protocol_v3
+
+        contract = v3_protocol.get("training_contract", {})
+        expected = plain_protocol_v3("bf16", v3_protocol.get("optimizer", {}).get("total_steps"),
+                                     arm=contract.get("arm"), contracts=contract.get("hashes", {}))
+        if v3_protocol != expected or metadata["step"] != expected["optimizer"]["total_steps"]:
+            raise ValueError("proof_eval: v3 export requires the final BF16 checkpoint of its fixed protocol")
     output.mkdir(parents=True, exist_ok=False)
     model_dir = output / "model"
     export = export_merged(checkpoint, Path(base), model_dir, metadata["arm"], binding=binding,
@@ -174,10 +189,62 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
             "mergers": export["mergers"], "base_manifest_sha256": export["base_manifest_sha256"],
             "precision_policy": export["precision_policy"],
             "unmerged_inference_bit_equivalent": export["precision_policy"]["unmerged_inference_bit_equivalent"],
+            **({"training_protocol": v3_protocol} if v3_protocol is not None else {}),
         },
     }
     _write_once(output / "model_ref.json", json.dumps(model_ref, indent=2, sort_keys=True) + "\n")
     return model_ref
+
+
+def _v3_model_ref(path: Path) -> tuple[dict, dict]:
+    """Validate the declared final NOTE export's metadata; evaluator verify_model checks the actual model files."""
+    from fine_tuning.error_note.protocol import ARM, plain_protocol_v3
+
+    ref = json.loads(Path(path).read_text(encoding="utf-8"))
+    export = ref.get("export", {})
+    protocol = export.get("training_protocol", {})
+    contract = protocol.get("training_contract", {})
+    expected = plain_protocol_v3("bf16", protocol.get("optimizer", {}).get("total_steps"),
+                                 arm=contract.get("arm"), contracts=contract.get("hashes", {}))
+    binding = export.get("binding", {})
+    if (ref.get("kind") != "merged" or ref.get("dtype") != "bfloat16" or not ref.get("files")
+            or ref.get("base") != {"id": MODEL_ID, "revision": MODEL_REVISION}
+            or ref.get("processor_revision") != MODEL_REVISION or export.get("arm") != ARM
+            or contract.get("arm") != "note" or protocol != expected
+            or ref.get("train_config_sha256") != digest(protocol)
+            or binding.get("protocol_sha256") != protocol["sha256"]
+            or binding.get("prompts_sha256") != protocol["prompts_sha256"]
+            or binding.get("data_sha256") != contract["hashes"]["rows"]
+            or ref.get("data_manifest_sha256") != binding["data_sha256"]
+            or export.get("step") != protocol["optimizer"]["total_steps"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(export.get("checkpoint_files", {}).get("metadata.json", "")))):
+        raise ValueError("proof_eval: v3 evaluation requires its one final BF16 NOTE export and matching protocol binding")
+    declared = {"model_ref": str(Path(path).resolve()), "model_ref_sha256": sha256_file(path),
+                "model_sha256": digest(ref["files"]), "checkpoint_metadata_sha256": export["checkpoint_files"]["metadata.json"],
+                "train_config_sha256": ref["train_config_sha256"]}
+    return ref, declared
+
+
+def verify_v3_export(model_ref: Path, checkpoint: Path, binding_file: Path, prereg_path: Path) -> None:
+    """Before ledger START, connect the declared model reference to the pinned source checkpoint."""
+    from fine_tuning.notebook_rl.checkpoint import read_metadata
+    from fine_tuning.notebook_rl.export import validate_export_reference
+
+    ref, declared = _v3_model_ref(model_ref)
+    prereg, _ = load_preregistration(prereg_path)
+    if prereg["format"] != FORMAT_V5 or any(prereg["arms"][ARM_V3].get(k) != v for k, v in declared.items() if k != "model_ref"):
+        raise ValueError("proof_eval: v3 export differs from the declared final checkpoint")
+    loaded = json.loads(Path(binding_file).read_text(encoding="utf-8"))
+    binding = loaded["binding"] if "binding" in loaded else loaded
+    metadata = read_metadata(checkpoint, binding=binding)
+    manifest = validate_export_reference(Path(model_ref).parent / "model", ref)
+    if (sha256_file(Path(checkpoint) / "metadata.json") != declared["checkpoint_metadata_sha256"]
+            or metadata["protocol"] != ref["export"]["training_protocol"] or metadata["binding"] != ref["export"]["binding"]
+            or metadata["resolved_protocol_sha256"] != declared["train_config_sha256"]
+            or metadata["arm"] != ref["export"]["arm"] or metadata["step"] != ref["export"]["step"]
+            or manifest["checkpoint_files"] != {p.name: sha256_file(p) for p in Path(checkpoint).iterdir()}
+            or manifest["checkpoint_state_sha256"] != metadata["state_sha256"]):
+        raise ValueError("proof_eval: v3 export checkpoint metadata or binding differs")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -619,13 +686,36 @@ def build_preregistration_v4(subset: Path, rest_subset: Path, b2_predictions: Pa
     }
 
 
+def build_preregistration_v5(subset: Path, rest_subset: Path, b2_predictions: Path, ft_model_ref: Path) -> dict:
+    """Final v3 NOTE checkpoint, declared before its single 900-item seed-3407 evaluation."""
+    _, declared = _v3_model_ref(ft_model_ref)
+    value = build_preregistration_v4(subset, rest_subset, b2_predictions)
+    value["format"] = FORMAT_V5
+    value["arms"] = {"F0": value["arms"]["F0"], ARM_V3: {
+        "definition": "single final BF16 NOTE checkpoint of error-note-protocol-v3, fixed before MMMU evaluation",
+        **declared}}
+    value["runs"] = [{"arm": arm, "variant": GATE_62_VARIANT, "subset": tag, "role": "statistical"}
+                     for arm in ARMS_V5 for tag in SUBSETS]
+    value["gate_62"] = {"arm": ARM_V3, "variant": GATE_62_VARIANT, "items": 900,
+                        "minimum_correct": 559, "not_proof_of_improvement": True}
+    value["gate_67.4"] = {"arm": ARM_V3, "variant": GATE_62_VARIANT, "items": 900,
+                          "minimum_correct": 607, "not_proof_of_improvement": True}
+    value["course_facing_run"]["rule"] = "one final FT-NOTE-V3 8k pass over the 900 original IDs (wrong + rest)"
+    value["notes"] = ["one final NOTE checkpoint, one seed (3407), no additional MMMU seeds or checkpoint selection",
+                      "wrong and rest are disjoint storage shards of one 900-item evaluation, not a 342-item pilot gate",
+                      "optional current F0 has the same protocol, code, registration and hardware; historical F0 is display only"]
+    return value
+
+
 def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS,
-                fmt: str = "v3") -> str:
-    """Write-once preregistration plus ``<output>.sha256``; returns the file hash. fmt "v4": error-note version 2."""
+                fmt: str = "v3", ft_v3_model_ref: Path | None = None) -> str:
+    """Write-once preregistration plus ``<output>.sha256``; v5 pins a previously exported v3 NOTE model reference."""
     output = Path(output)
-    build = {"v3": build_preregistration, "v4": build_preregistration_v4}[fmt]
-    _write_once(output, json.dumps(build(subset, rest_subset, b2_predictions), indent=2,
-                                   sort_keys=True) + "\n")
+    if (fmt == "v5") != (ft_v3_model_ref is not None):
+        raise ValueError("proof_eval: --format v5 requires --ft-v3-model-ref; the flag is v5-only")
+    value = (build_preregistration_v5(subset, rest_subset, b2_predictions, ft_v3_model_ref) if ft_v3_model_ref is not None
+             else {"v3": build_preregistration, "v4": build_preregistration_v4}[fmt](subset, rest_subset, b2_predictions))
+    _write_once(output, json.dumps(value, indent=2, sort_keys=True) + "\n")
     value = sha256_file(output)
     _write_once(output.with_name(output.name + ".sha256"), value + "\n")
     return value
@@ -638,10 +728,24 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
     if not sidecar.exists() or sidecar.read_text(encoding="ascii").strip() != value:
         raise ValueError("proof_eval: preregistration hash sidecar missing or mismatched")
     prereg = json.loads(path.read_text(encoding="utf-8"))
-    if prereg.get("format") not in (FORMAT, FORMAT_V4) or prereg.get("status") != "FROZEN":
+    if prereg.get("format") not in (FORMAT, FORMAT_V4, FORMAT_V5) or prereg.get("status") != "FROZEN":
         raise ValueError("proof_eval: not a frozen proof preregistration")
     if prereg["scorer"]["files"] != _scorer_files():
         raise ValueError("proof_eval: V8 scorer source changed since preregistration")
+    if prereg["format"] == FORMAT_V5:
+        expected_runs = [{"arm": arm, "variant": GATE_62_VARIANT, "subset": tag, "role": "statistical"}
+                         for arm in ARMS_V5 for tag in SUBSETS]
+        subsets = prereg["evaluation_subsets"]
+        if (set(prereg["arms"]) != set(ARMS_V5) or prereg["runs"] != expected_runs
+                or prereg["protocol_variants"] != {GATE_62_VARIANT: _variant_entry(GATE_62_VARIANT)}
+                or set(subsets) != set(SUBSETS)
+                or any(subsets[tag]["ids"] != prereg["b2_reference"][key] or subsets[tag]["count"] != n
+                       for tag, key, n in (("wrong", "wrong_ids", 342), ("rest", "right_ids", 558)))
+                or len(set(subsets["wrong"]["ids"]) | set(subsets["rest"]["ids"])) != 900):
+            raise ValueError("proof_eval: v5 requires one declared NOTE checkpoint, seed 3407 and all 900 disjoint original IDs")
+        for key in ("model_ref_sha256", "model_sha256", "checkpoint_metadata_sha256", "train_config_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(prereg["arms"][ARM_V3].get(key, ""))):
+                raise ValueError("proof_eval: v5 final NOTE model reference is not bound")
     return prereg, value
 
 
@@ -700,12 +804,16 @@ def _parse(raw: bytes) -> tuple[list[dict], str]:
     return events, head
 
 
-def _append(path: Path, kind: str, **fields: str) -> dict:
+def _append(path: Path, kind: str, *, single_attempt: bool = False, **fields: str) -> dict:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600), "r+b") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
         events, head = _parse(stream.read())
+        if single_attempt and any(e["event"] == "START" and
+                                  all(e[key] == fields[key] for key in ("arm", "variant", "subset"))
+                                  for e in events):
+            raise ValueError("proof_eval: v5 forbids replacing a started run, including a failed run")
         event = {"format": LEDGER_FORMAT, "event": kind, "prev": head, "time": datetime.now(timezone.utc).isoformat(),
                  **fields}
         _check_event(events, event)
@@ -719,7 +827,8 @@ def ledger_start(prereg_path: Path, arm: str, variant: str, run_id: str, ledger:
     prereg, prereg_sha = load_preregistration(prereg_path)
     if (arm, variant, subset) not in {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}:
         raise ValueError(f"proof_eval: {(arm, variant, subset)} is not a preregistered run")
-    return _append(ledger, "START", arm=arm, variant=variant, subset=subset, run_id=run_id,
+    return _append(ledger, "START", single_attempt=prereg["format"] == FORMAT_V5,
+                   arm=arm, variant=variant, subset=subset, run_id=run_id,
                    preregistration_sha256=prereg_sha)
 
 
@@ -889,6 +998,9 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
     events, head = read_ledger(ledger)
     starts = {e["run_id"]: e for e in events if e["event"] == "START"}
     failed = {e["run_id"] for e in events if e["event"] == "FAIL"}
+    keys = [(e["arm"], e["variant"], e["subset"]) for e in starts.values()]
+    if prereg["format"] == FORMAT_V5 and len(keys) != len(set(keys)):
+        raise ValueError("proof_eval: v5 ledger contains repeated attempts, including failed runs")
     if any(e["preregistration_sha256"] != prereg_sha for e in starts.values()):
         raise ValueError("proof_eval: the ledger belongs to another preregistration")
     allowed = {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}
@@ -930,15 +1042,23 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
     bound = [next(iter(v)) for v in shas.values() if v]
     if len(set(bound)) != len(bound):
         raise ValueError("proof_eval: the arms must evaluate different checkpoints (one checkpoint per arm)")
+    if prereg["format"] == FORMAT_V5 and shas[ARM_V3] and shas[ARM_V3] != {prereg["arms"][ARM_V3]["model_sha256"]}:
+        raise ValueError("proof_eval: FT-NOTE-V3 run differs from the checkpoint declared before evaluation")
     refs = {}
     for arm, ref_path in (ft_model_refs or {}).items():
         if arm not in arms or arm == "F0":
             raise ValueError(f"proof_eval: {arm} is not a fine-tuned arm")
         ref = json.loads(Path(ref_path).read_text(encoding="utf-8"))
+        if arm == ARM_V3:
+            ref, declared = _v3_model_ref(ref_path)
+            if any(prereg["arms"][ARM_V3].get(k) != v for k, v in declared.items() if k != "model_ref"):
+                raise ValueError("proof_eval: FT-NOTE-V3 model reference differs from its preregistration")
         if shas[arm] and shas[arm] != {digest(ref["files"])}:
             raise ValueError(f"proof_eval: every {arm} run must evaluate the one bound export (one checkpoint per arm)")
         refs[arm] = {"sha256": sha256_file(Path(ref_path)), "model_sha256": digest(ref["files"]),
                      "export": ref.get("export")}
+    if prereg["format"] == FORMAT_V5 and ARM_V3 not in refs:
+        refs[ARM_V3] = dict(prereg["arms"][ARM_V3])
     if len({r["identity"]["code_sha256"] for r in runs.values()}) != 1:
         raise ValueError("proof_eval: statistical runs must share one evaluation code hash")
     for variant in {r["variant"] for r in runs.values()}:
@@ -969,6 +1089,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
             full_900[arm] = {"items": total, "seeds": cells, "mean_correct": _mean(c["correct"] for c in cells.values())}
     return {
         "format": "notebook-rl-proof-report-v2", "preregistration_sha256": prereg_sha,
+        **({"preregistration_format": FORMAT_V5} if prereg["format"] == FORMAT_V5 else {}),
         "single_answer_rule": prereg["single_answer_rule"],
         "ledger": {"file_sha256": sha256_file(ledger), "head": head, "starts": len(starts),
                    "failed_run_ids": sorted(failed), "unfinished_run_ids": sorted(unfinished)},
@@ -985,6 +1106,8 @@ def gate_300(results: dict) -> dict:
     Seeds are the ones both F0 and FT-NOTE finished and are combined only as means. Token statistics and the
     no-parse / length-finish counts of the collapse alert are the seed means of the per-seed values. A threshold for
     spending more, never proof of improvement."""
+    if results.get("preregistration_format") == FORMAT_V5:
+        raise ValueError("proof_eval: v3 final evaluation has no 342-item pilot gate")
     _require_same_slots_and_gpu(results.get("runs", []))
     wrong = results["subsets"]["wrong"]
     f0, note = wrong["arms"].get("F0"), wrong["arms"].get("FT-NOTE")
@@ -1031,6 +1154,8 @@ def gate_62(results: dict, f0_reference: int | None = None) -> dict:
     """The preregistered version-2 rule on an analyze report of a v4 preregistration: PASS iff the FT-V2 900-item V8
     correct count (wrong + rest runs of the one seed) > 558. F0 of the same ledger and an F0 reference number from
     another ledger are shown beside it and never change the status."""
+    if results.get("preregistration_format") == FORMAT_V5:
+        return gate_v3(results, 62, f0_reference)
     _require_same_slots_and_gpu(results.get("runs", []))
     seed = str(VARIANTS[GATE_62_VARIANT][1])
     ft = results["full_900"].get(ARM_V2, {"seeds": {}})["seeds"].get(seed)
@@ -1054,6 +1179,42 @@ def gate_62(results: dict, f0_reference: int | None = None) -> dict:
                       "ledger and another registration, never part of the rule"}),
         "note": GATE_62_NOTE,
     }
+
+
+def gate_v3(results: dict, target_percent: float, f0_reference: int | None = None) -> dict:
+    """One final v3 pass: numeric targets, current paired F0 and explicitly unpaired historical references."""
+    if results.get("preregistration_format") != FORMAT_V5 or target_percent not in (62, 67.4):
+        raise ValueError("proof_eval: v3 final gates require a v5 preregistration and target 62 or 67.4")
+    _require_same_slots_and_gpu(results.get("runs", []))
+    seed = "3407"
+    block = results["full_900"].get(ARM_V3, {})
+    if block.get("items") != 900 or set(block.get("seeds", {})) != {seed}:
+        raise ValueError("proof_eval: v3 final gate requires both FT-NOTE-V3 subsets, exactly 900 items and seed 3407 only")
+    ft = block["seeds"][seed]
+    minimum = 559 if target_percent == 62 else 607
+    if f0_reference is not None and (type(f0_reference) is not int or not 0 <= f0_reference <= 900):
+        raise ValueError("proof_eval: --f0-reference must be a correct count between 0 and 900")
+    f0 = results["full_900"].get("F0", {}).get("seeds", {}).get(seed)
+    paired = None
+    if f0 is not None:
+        truth: dict[str, dict[str, bool]] = {"F0": {}, ARM_V3: {}}
+        for sub in results["subsets"].values():
+            for arm in truth:
+                correct = set(sub["arms"][arm]["seeds"][seed]["correct_ids"])
+                truth[arm].update({sid: sid in correct for sid in sub["ids"]})
+        paired = {"correct": f0["correct"], "accuracy": f0["accuracy"], "ft_minus_f0": ft["correct"] - f0["correct"],
+                  "mcnemar": mcnemar_exact(truth["F0"], truth[ARM_V3]), "conditions": "same current evaluation registration"}
+    return {"format": "error-note-final-gate-v3", "not_proof_of_improvement": True,
+            "preregistration_sha256": results.get("preregistration_sha256"), "variant": GATE_62_VARIANT, "seed": 3407,
+            "arm": ARM_V3, "items": 900, "target_percent": target_percent, "minimum_correct": minimum,
+            "status": "PASS" if ft["correct"] >= minimum else "FAIL", "ft_note_v3": ft,
+            "rule": f"PASS iff the one final FT-NOTE-V3 900-item V8 correct count >= {minimum} (> {target_percent}%)",
+            "paired_f0": paired,
+            "f0_reference": None if f0_reference is None else {
+                "correct": f0_reference, "accuracy": f0_reference / 900,
+                "source": "historical F0 under different conditions/registration; display only, never paired or part of the rule"},
+            "b2_correct": B2_CORRECT, "margin_vs_b2": ft["correct"] - B2_CORRECT,
+            "note": GATE_62_NOTE}
 
 
 def render_markdown(report: dict) -> str:
@@ -1109,6 +1270,9 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("--base", type=Path, required=True, help="pinned BF16 snapshot directory")
     exp.add_argument("--output", type=Path, required=True, help="new directory: model/ + model_ref.json")
     exp.add_argument("--code-commit", required=True, help="40-hex Git commit of the training code")
+    check_export = sub.add_parser("verify-v3-export", help="connect the declared v3 NOTE export to its source checkpoint")
+    for flag in ("model-ref", "checkpoint", "binding", "prereg"):
+        check_export.add_argument(f"--{flag}", type=Path, required=True)
     mk = sub.add_parser("make-subset", help="write the wrong (342) or rest (558) evaluation subset file from the B2 file")
     mk.add_argument("--kind", choices=tuple(SUBSETS), required=True)
     mk.add_argument("--output", type=Path, required=True)
@@ -1118,8 +1282,9 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
     pre.add_argument("--rest-subset", type=Path, required=True, help="proof-eval-subset-rest-v1 JSON: the B2 V8 right IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
-    pre.add_argument("--format", choices=("v3", "v4"), default="v3",
-                     help=f"v3 = {FORMAT} (FT-NOTE proof), v4 = {FORMAT_V4} (error-note version 2: F0, FT-V2)")
+    pre.add_argument("--format", choices=("v3", "v4", "v5"), default="v3",
+                     help=f"v3 = {FORMAT}, v4 = {FORMAT_V4}, v5 = {FORMAT_V5} (final FT-NOTE-V3, declared checkpoint)")
+    pre.add_argument("--ft-v3-model-ref", type=Path, help="required for v5; final NOTE export fixed before evaluation")
     start = sub.add_parser("ledger-start", help="append the START of one evaluation run (before run-eval/eval.sh); "
                            "refused when that (arm, variant, subset) has a started run not recorded as FAILED")
     start.add_argument("--prereg", type=Path, required=True)
@@ -1136,8 +1301,9 @@ def main(argv: list[str] | None = None) -> int:
     ana = sub.add_parser("analyze", help="score the finished runs of the ledger; writes <output>.json and <output>.md")
     gate = sub.add_parser("gate", help="apply the preregistered 300-item gate (wrong subset, FT-NOTE vs F0); writes --output")
     gate62 = sub.add_parser("gate-62", help="v4 preregistration: PASS iff the FT-V2 900-item V8 correct count > 558; "
-                                            "writes --output")
-    for command in (ana, gate, gate62):
+                                            "v5: FT-NOTE-V3 >=559; writes --output")
+    gate674 = sub.add_parser("gate-67.4", help="v5 only: final FT-NOTE-V3 900-item V8 correct count >=607")
+    for command in (ana, gate, gate62, gate674):
         command.add_argument("--prereg", type=Path, required=True)
         command.add_argument("--ledger", type=Path, required=True, help="the run ledger: every run dir of it is passed "
                              "(a live started run left out is refused)")
@@ -1147,22 +1313,28 @@ def main(argv: list[str] | None = None) -> int:
     ana.add_argument("--ft-solution-model-ref", type=Path, default=None)
     ana.add_argument("--ft-note-3417-model-ref", type=Path, default=None)
     ana.add_argument("--ft-v2-model-ref", type=Path, default=None)
+    ana.add_argument("--ft-v3-model-ref", type=Path, default=None)
     ana.add_argument("--output", type=Path, required=True, help="report path; .json and .md are written")
     gate.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
     gate62.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
     gate62.add_argument("--f0-reference", type=int, default=None,
                         help="F0 900-item correct count from the v2 ledger, shown for display only")
+    gate674.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
+    gate674.add_argument("--f0-reference", type=int, default=None, help="historical F0 correct count, display only")
     args = parser.parse_args(argv)
     if args.command == "export":
         ref = export_for_eval(args.checkpoint, args.binding, args.base, args.output, args.code_commit)
         print(f"EXPORTED {args.output / 'model_ref.json'} unmerged_inference_bit_equivalent="
               f"{ref['export']['unmerged_inference_bit_equivalent']}")
+    elif args.command == "verify-v3-export":
+        verify_v3_export(args.model_ref, args.checkpoint, args.binding, args.prereg)
+        print(f"V3_EXPORT_VERIFIED {args.model_ref}")
     elif args.command == "make-subset":
         value = make_subset(args.kind, args.output, args.b2_predictions)
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset)
         print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['subset']} {event['run_id']}")
@@ -1178,12 +1350,17 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "gate-62":
         result = gate_62(analyze(args.prereg, args.runs, None, args.ledger), args.f0_reference)
         _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
-        print(f"GATE62 {result['status']} ft_v2={result['ft_v2']['correct']} b2={B2_CORRECT}")
+        arm_key = "ft_note_v3" if "ft_note_v3" in result else "ft_v2"
+        print(f"GATE62 {result['status']} {arm_key}={result[arm_key]['correct']} b2={B2_CORRECT}")
+    elif args.command == "gate-67.4":
+        result = gate_v3(analyze(args.prereg, args.runs, None, args.ledger), 67.4, args.f0_reference)
+        _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
+        print(f"GATE67.4 {result['status']} ft_note_v3={result['ft_note_v3']['correct']} minimum=607")
     else:
         refs = {arm: path for arm, path in (("FT-NOTE", args.ft_note_model_ref),
                                             ("FT-SOLUTION", args.ft_solution_model_ref),
                                             ("FT-NOTE-3417", args.ft_note_3417_model_ref),
-                                            (ARM_V2, args.ft_v2_model_ref)) if path}
+                                            (ARM_V2, args.ft_v2_model_ref), (ARM_V3, args.ft_v3_model_ref)) if path}
         report = analyze(args.prereg, args.runs, refs, args.ledger)
         _write_once(args.output.with_suffix(".json"), json.dumps(report, indent=2, sort_keys=True) + "\n")
         _write_once(args.output.with_suffix(".md"), render_markdown(report))

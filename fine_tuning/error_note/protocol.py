@@ -11,7 +11,8 @@ import json
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION
 
-from .contract import CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, RESOLVE_HEADER
+from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
+                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, RESOLVE_HEADER)
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
 MERGERS = ["model.visual.merger", "model.visual.deepstack_merger_list.0",
@@ -20,6 +21,9 @@ FORBIDDEN = {"additional_sft": False, "teacher_or_upper_model_labels": True, "be
 GRAD_CLIP = 1.0
 VERSION_V2 = "error-note-protocol-v2"
 PER_UPDATE_ITEMS_V2 = 16
+VERSION_V3 = "error-note-protocol-v3"
+ADMISSION_VERSION_V3 = "error-note-admission-v3"
+V3_CONTRACT_HASHES = frozenset(("rows", "order", "audit", "sidecar", "admission"))
 
 
 def _digest(value: object) -> str:
@@ -57,4 +61,26 @@ def plain_protocol_v2(precision: str, total_steps: int) -> dict:
     body |= {"version": VERSION_V2, "per_update_items": PER_UPDATE_ITEMS_V2,
              "optimizer": body["optimizer"] | {"schedule": "linear_decay_after_warmup", "total_steps": total_steps},
              "prompts_sha256": _digest({"note": NOTE_INSTRUCTION_V2, "resolve_header": RESOLVE_HEADER})}
+    return body | {"sha256": _digest(body)}
+
+
+def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: dict[str, str]) -> dict:
+    """The common admitted update schedule, with arm-specific loss and immutable input receipts."""
+    if arm not in ("note", "no-note"):
+        raise ValueError("protocol v3: arm must be note or no-note")
+    if set(contracts) != V3_CONTRACT_HASHES or any(
+            not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+            for value in contracts.values()):
+        raise ValueError("protocol v3: rows/order/audit/sidecar/admission SHA256 bindings required")
+    body = {key: value for key, value in plain_protocol_v2(precision, total_steps).items() if key != "sha256"}
+    body |= {"version": VERSION_V3,
+             "training_contract": {"arm": arm, "hashes": dict(contracts), "master_seed": MASTER_SEED,
+                                   "answer_contract": "training-answer-v1", "audit_contract": "note-audit-v1",
+                                   "admission": ADMISSION_VERSION_V3, "active_group": "at_least_one_encoded_A",
+                                   "route": "preserve_same_A_in_both_arms", "unexpected_drop": "STOP",
+                                   "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS,
+                                                     "max_target_tokens": MAX_TARGET_TOKENS,
+                                                     "loop_window": LOOP_WINDOW, "loop_ratio": LOOP_RATIO},
+                                   "loss": {"row": "mean_target_and_eos_nll", "A": 0.9,
+                                            "B": 0.1 if arm == "note" else 0.0, "renormalize_missing_kind": False}}}
     return body | {"sha256": _digest(body)}

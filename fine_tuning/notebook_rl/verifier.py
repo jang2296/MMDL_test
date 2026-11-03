@@ -4,8 +4,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .answers import (RETRY_OUT_OF_CHOICE, TURN1_EVAL_CONTRACT, VERSION as ANSWER_VERSION, compare, extract_eval_aligned,
-                      extract_final, is_ambiguous, mcq_out_of_choice)
+from .answers import (RETRY_OUT_OF_CHOICE, TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT,
+                      VERSION as ANSWER_VERSION, compare, compare_training, extract_eval_aligned,
+                      extract_final, extract_training, is_ambiguous, mcq_out_of_choice)
 from .observations import compare_slots, native_absent_relations, parse_observations, slot_id
 from .repair_contract import parse_retry_sections, project_solution
 from .schema import DiagTarget, Mode, VerifierResult, to_json
@@ -26,9 +27,20 @@ def diagnosis_fields(text: str) -> tuple[str, str] | None:
 
 
 class Verifier:
-    def __init__(self, vault_root: Path):
+    def __init__(self, vault_root: Path, *, training_rules_path: Path | None = None,
+                 training_rules_sha256: str | None = None):
+        if (training_rules_path is None) != (training_rules_sha256 is None):
+            raise ValueError("verifier: training rules path and SHA256 must be provided together")
         self.items = read_verifier(vault_root)
         self.actors = {actor.problem_id: actor for actor in read_actors(vault_root)}
+        self.training_rules: dict[str, dict] = {}
+        if training_rules_path is not None:
+            assert training_rules_sha256 is not None
+            from fine_tuning.error_note.answer_contract import load_training_rules
+            from .vault import read_lineage
+
+            self.training_rules = load_training_rules(training_rules_path, training_rules_sha256,
+                vault_root=vault_root, actors=self.actors, items=self.items, lineages=read_lineage(vault_root))
 
     def trace(self, problem_id: str, text: str, finish_reason: str, *,
               response_contract: str | None = None) -> dict:
@@ -56,8 +68,9 @@ class Verifier:
               retry_out_of_choice: str | None = None) -> VerifierResult:
         if mode not in ("obs", "plain"):
             raise ValueError("verifier: unsupported observation mode")
-        if answer_contract is not None and (answer_contract != TURN1_EVAL_CONTRACT or response_contract is not None):
-            raise ValueError("verifier: the eval-aligned answer contract grades only an unwrapped first attempt")
+        if answer_contract is not None and (answer_contract not in (TURN1_EVAL_CONTRACT, TRAINING_ANSWER_CONTRACT)
+                                            or response_contract is not None):
+            raise ValueError("verifier: answer contracts grade only an unwrapped attempt")
         if retry_out_of_choice is not None and (retry_out_of_choice != RETRY_OUT_OF_CHOICE or response_contract is None):
             raise ValueError("verifier: the out-of-choice rule grades only a typed retry")
         version = VERSION
@@ -72,8 +85,8 @@ class Verifier:
             extracted = extract_final(text, finish_reason)
         else:
             version += "+" + answer_contract
-            extracted = extract_eval_aligned(text, finish_reason, self.actors[problem_id].question, item.choices,
-                                             item.answer_type)
+            extractor = extract_training if answer_contract == TRAINING_ANSWER_CONTRACT else extract_eval_aligned
+            extracted = extractor(text, finish_reason, self.actors[problem_id].question, item.choices, item.answer_type)
         slots = compare_slots(parse_observations(text), item) if mode == "obs" and item.slots else None
         if extracted.status != "OK":
             result = VerifierResult(extracted.status, extracted.answer, 0.0, slots, version)
@@ -82,8 +95,9 @@ class Verifier:
         elif answer_contract is None and is_ambiguous(extracted.answer, item):
             result = VerifierResult("INVALID_MULTIPLE", extracted.answer, 0.0, slots, version)
         else:
-            matched = compare(extracted.answer, item)
-            if matched is None and answer_contract is not None and compare(item.gold, item) is not None:
+            matched = (compare_training(extracted.answer, item, self.training_rules.get(problem_id))
+                       if answer_contract == TRAINING_ANSWER_CONTRACT else compare(extracted.answer, item))
+            if matched is None and answer_contract == TURN1_EVAL_CONTRACT and compare(item.gold, item) is not None:
                 # V8 committed exactly one answer; one the typed comparison cannot match is a mismatch,
                 # as evaluation scores it. An item whose own gold is uncomparable stays UNVERIFIABLE.
                 matched = False

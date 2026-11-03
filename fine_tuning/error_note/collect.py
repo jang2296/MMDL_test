@@ -179,7 +179,8 @@ class ResourceLog:
     """Background thread: one JSON line per interval (GPU, CPU, load, free RAM), plus one at start and one at exit."""
 
     def __init__(self, path: Path, every: float = 60.0):
-        self.path, self.every, self._prev = Path(path), every, None
+        self.path, self.every = Path(path), every
+        self._prev: tuple[int, int] | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -215,7 +216,8 @@ class ResourceLog:
 
 # ------------------------------------------------------------------ guards (build-root mode of passrate._install_guards)
 
-def install_training_guards(build_root: Path, *, vllm_schema: dict | None = None) -> list[Path]:
+def install_training_guards(build_root: Path, *, vllm_schema: dict | None = None,
+                            private_files: Iterable[Path] = ()) -> list[Path]:
     """Lock checks, optional vLLM schema step, HF imports, then the file guards. Returns the forbidden benchmark roots.
 
     vllm_schema: a dict that receives "schema_dependency_guard" (pass {} when vLLM will be imported); None for no vLLM.
@@ -241,6 +243,7 @@ def install_training_guards(build_root: Path, *, vllm_schema: dict | None = None
     forbidden = [Path.home() / "mmdl-data/evaluation",
                  *(hub / name for hub in sorted(hubs) for name in ("datasets--MMMU--MMMU", "datasets--MMMU--MMMU_Pro"))]
     vaults = [Path(build_root) / split / name for split in SPLITS for name in ("verifier_private.jsonl", "lineage.jsonl")]
+    vaults.extend(Path(path) for path in private_files)
     install_guards(forbidden_roots=forbidden, vault_files=vaults, allow_vault=False, allow_benchmark=False)
     return forbidden
 
@@ -259,7 +262,10 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
     if limit < 1:
         raise ValueError("limit must be at least 1")
     stop_at = None if stop_after is None else clock() + stop_after
-    iterator, active, blocked, seen = iter(requests), {}, collections.deque(), set()
+    iterator = iter(requests)
+    active: dict[str, dict] = {}
+    blocked: collections.deque[tuple[dict, dict]] = collections.deque()
+    seen: set[str] = set()
     exhausted = False
 
     def fill() -> None:
@@ -297,8 +303,8 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
             stats.steps += 1
             stats.step_seconds += elapsed
             stats.active_sum += count
-            for state in active.values():
-                state["seconds"] += elapsed / count
+            for running_state in active.values():
+                running_state["seconds"] += elapsed / count
             for output in outputs:
                 state = active.get(output.request_id)
                 if state is None:
@@ -368,7 +374,8 @@ def run_generation(stage: str, out: Path, requests: Iterable[dict], stream: Stre
         iterator = iter(requests)
         first = next(iterator, None)
         if first is not None:  # nothing to generate means no engine is ever built
-            with contextlib.closing(stream(itertools.chain([first], iterator), stats, stop_after)) as outputs:
+            output_stream: Any = stream(itertools.chain([first], iterator), stats, stop_after)
+            with contextlib.closing(output_stream) as outputs:
                 for request, output in outputs:
                     row = handle(request, output)
                     append_jsonl(out / f"{stage}.jsonl", row)
@@ -752,6 +759,11 @@ def _child_command(args: argparse.Namespace, seqs: int, stop_after: float | None
                "--model-path", str(args.model_path), "--output", str(args.output), "--engine", args.engine,
                "--kv-cache-gib", str(args.kv_cache_gib), "--max-num-batched-tokens", str(args.max_num_batched_tokens),
                "--gpu-memory-utilization", str(args.gpu_memory_utilization), "--max-num-seqs", str(seqs)]
+    if getattr(args, "answer_contract", TURN1_ANSWER_CONTRACT) != TURN1_ANSWER_CONTRACT:
+        command += ["--answer-contract", args.answer_contract, "--training-rules", str(args.training_rules),
+                    "--training-rules-sha256", args.training_rules_sha256]
+        if getattr(args, "code_commit", None):
+            command += ["--code-commit", args.code_commit]
     return command + ([] if stop_after is None else ["--stop-after-seconds", str(stop_after)])
 
 
@@ -829,8 +841,8 @@ def summarize(records: list[dict], rows: list[dict], drops: list[dict], parse: C
         "rows_by_route": dict(Counter(r["route"] for r in rows)),
         "rows_by_subject": dict(Counter(r["subject"] for r in rows)),
         "drops": len(drops), "drops_by_reason": dict(Counter(d["reason"] for d in drops)),
-        "image_reading": dict(Counter(p if p == "NO_NOTE" else "UNPARSED" if p is None else p.image_reading for p in parsed)),
-        "cause": dict(Counter(p if p == "NO_NOTE" else "UNPARSED" if p is None else p.cause for p in parsed)),
+        "image_reading": dict(Counter(p if isinstance(p, str) else "UNPARSED" if p is None else p.image_reading for p in parsed)),
+        "cause": dict(Counter(p if isinstance(p, str) else "UNPARSED" if p is None else p.cause for p in parsed)),
         "t1_status": dict(Counter(r["t1"]["status"] for r in records)),
         "mean_target_tokens": {kind: round(sum(v) / len(v), 1) for kind, v in by_kind.items()},
     }
@@ -919,9 +931,9 @@ def _prefix(args: argparse.Namespace) -> list[dict]:
     return items[:args.limit]
 
 
-def _grader(service: Any) -> Callable:
+def _grader(service: Any, answer_contract: str = TURN1_ANSWER_CONTRACT) -> Callable:
     def grade(problem_id: str, text: str, finish_reason: str, mode: str) -> tuple[str, str | None]:
-        result = service.grade(problem_id, text, finish_reason, mode, answer_contract=TURN1_ANSWER_CONTRACT)
+        result = service.grade(problem_id, text, finish_reason, mode, answer_contract=answer_contract)
         return result.status, result.extracted
     return grade
 
@@ -934,6 +946,25 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
     build_root, out, vllm = Path(args.build_root), Path(args.output), args.engine == "vllm"
     out.mkdir(parents=True, exist_ok=True)
     items = _prefix(args)
+    answer_contract = getattr(args, "answer_contract", TURN1_ANSWER_CONTRACT)
+    v3 = answer_contract == "training-answer-v1"
+    lessons = None
+    service_options = {}
+    private_files = []
+    if v3:
+        from .collect_v3 import bind_collection, verified_lessons_for_actor
+
+        bind_collection(args, items)
+        if stage == "note" and args.note_version != "v2":
+            raise ValueError("v3 requires the note-only v2 prompt")
+        service_options = {"training_rules_path": args.training_rules,
+                           "training_rules_sha256": args.training_rules_sha256}
+        private_files = [args.training_rules, out / "note.jsonl", out / "audit.json"]
+        private_files += [p for p in (args.source_provenance, args.audit, args.reviews) if p is not None]
+        if stage == "resolve":
+            if args.source_provenance is None:
+                raise ValueError("v3 resolve requires source provenance")
+            lessons = verified_lessons_for_actor(args)
     seqs = args.max_num_seqs
     gold = None
     if stage in ("note", "resolve") and args.max_num_seqs_from:
@@ -949,7 +980,11 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
         verifier = read_verifier(build_root / "train")  # the gold is read before any guard, in this process only
         gold = {item["problem_id"]: verifier[item["problem_id"]].gold for item in items}
         del verifier
-    forbidden = install_training_guards(build_root, vllm_schema={} if vllm else None)
+    guard_options = {"private_files": private_files} if v3 else {}
+    # The note writer is explicitly gold-aware; solve and resolve may not open its files.
+    if v3 and stage == "note":
+        guard_options["private_files"] = [p for p in private_files if p != out / "note.jsonl"]
+    forbidden = install_training_guards(build_root, vllm_schema={} if vllm else None, **guard_options)
     actors = {actor.problem_id: actor for actor in read_actors(build_root / "train")}
     unknown = [item["problem_id"] for item in items if item["problem_id"] not in actors]
     if unknown:
@@ -960,16 +995,20 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
     stream = (_vllm_stream_builder if vllm else _hf_stream_builder)(args, stats)
     options = dict(S=seqs, B=args.max_num_batched_tokens, engine=args.engine, stop_after=args.stop_after_seconds)
     load = lambda actor: load_images(actor, build_root / "images")  # noqa: E731
-    with VerifierService(build_root / "train", forbidden_roots=forbidden) as service, ResourceLog(out / "resource.jsonl"):
+    with VerifierService(build_root / "train", forbidden_roots=forbidden, **service_options) as service, ResourceLog(out / "resource.jsonl"):
+        grade = _grader(service, answer_contract)
         if stage == "solve":
-            receipt = run_solve(items, actors, load, stream, stats, _grader(service), out, **options)
+            receipt = run_solve(items, actors, load, stream, stats, grade, out, **options)
         elif stage == "resolve":  # gold-blind like solve: lessons.json, never note.jsonl
             t1 = read_jsonl_done(out / "t1.jsonl", repair=False)
-            receipt = run_resolve(items, actors, t1, read_lessons(out), load, stream, stats, _grader(service), out,
+            approved_lessons = lessons if v3 else read_lessons(out)
+            assert approved_lessons is not None
+            receipt = run_resolve(items, actors, t1, approved_lessons, load, stream, stats, grade, out,
                                   **options)
         else:
+            assert gold is not None
             t1 = read_jsonl_done(out / "t1.jsonl", repair=False)
-            receipt = run_note(items, actors, t1, gold, load, stream, stats, _grader(service), out, **options,
+            receipt = run_note(items, actors, t1, gold, load, stream, stats, grade, out, **options,
                                version=args.note_version)
     print(json.dumps(receipt))
     return 0
@@ -988,7 +1027,11 @@ def _rows(args: argparse.Namespace) -> int:
     t1, note = read_jsonl_done(out / "t1.jsonl", repair=False), read_jsonl_done(out / "note.jsonl", repair=False)
     tokenizer = AutoTokenizer.from_pretrained(str(args.tokenizer_path), local_files_only=True)
     tokenize = lambda text: tokenizer.encode(text, add_special_tokens=False)  # noqa: E731
-    if args.rows_version == "v2":
+    if args.rows_version == "v3":
+        from .collect_v3 import collect_rows_v3
+
+        rows, drops, summary = collect_rows_v3(args, tokenize)
+    elif args.rows_version == "v2":
         resolve = read_jsonl_done(out / "resolve.jsonl", repair=False)
         ids = {item["problem_id"] for item in items}
         outputs = {name: {pid: row for pid, row in rows_.items() if pid in ids}
@@ -1030,6 +1073,14 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--order", type=Path, required=True)
         p.add_argument("--limit", type=int, required=True)
         p.add_argument("--output", type=Path, required=True)
+        p.add_argument("--answer-contract", choices=(TURN1_ANSWER_CONTRACT, "training-answer-v1"),
+                       default=TURN1_ANSWER_CONTRACT)
+        p.add_argument("--training-rules", type=Path)
+        p.add_argument("--training-rules-sha256")
+        p.add_argument("--source-provenance", type=Path)
+        p.add_argument("--audit", type=Path)
+        p.add_argument("--reviews", type=Path)
+        p.add_argument("--code-commit", help="declared source commit; production source bytes are independently bound")
 
     def engine(p: argparse.ArgumentParser) -> None:
         p.add_argument("--model-path", type=Path, required=True)
@@ -1058,7 +1109,9 @@ def _parser() -> argparse.ArgumentParser:
     common(rows)
     rows.add_argument("--tokenizer-path", type=Path, required=True)
     rows.add_argument("--rows-output", type=Path, default=None)
-    rows.add_argument("--rows-version", choices=("v1", "v2"), default="v1")
+    rows.add_argument("--rows-version", choices=("v1", "v2", "v3"), default="v1")
+    for name in ("audit", "verify-lessons"):
+        common(sub.add_parser(name))
     return parser
 
 
@@ -1068,6 +1121,14 @@ def main(argv: list[str] | None = None) -> int:
         return sweep(args)
     if args.command == "rows":
         return _rows(args)
+    if args.command in ("audit", "verify-lessons"):
+        from .collect_v3 import audit_collection, verify_lessons
+
+        if args.source_provenance is None or (args.command == "audit" and args.reviews is None):
+            raise ValueError("audit needs source provenance and explicit review receipts")
+        value = audit_collection(args) if args.command == "audit" else verify_lessons(args)
+        print(json.dumps(value))
+        return 0
     return _generate(args, args.command)
 
 

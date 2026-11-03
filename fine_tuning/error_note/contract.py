@@ -171,6 +171,7 @@ def build_rows(record: dict, tokenize: Callable[[str], list[int]]) -> tuple[list
         drop(KIND_SOLUTION, reason)
         drop(KIND_NOTE, reason)
         return [], drops
+    assert note is not None
 
     route = ROUTE_FULL if parsed.image_reading == "MISREAD" else ROUTE_LM
 
@@ -443,6 +444,7 @@ def build_rows_v2(record: dict, tokenize: Callable[[str], list[int]]) -> tuple[l
     if parsed is None:
         drop(KIND_NOTE, note_reason)
         return rows, drops
+    assert note is not None
     note_ids = tokenize(parsed.note_text)
     if len(note_ids) < MIN_TARGET_TOKENS:
         drop(KIND_NOTE, "NOTE_EMPTY")
@@ -451,6 +453,62 @@ def build_rows_v2(record: dict, tokenize: Callable[[str], list[int]]) -> tuple[l
     else:
         rows.append(make_row(KIND_NOTE, note["prompt"], parsed.note_text, "NOTE", len(note_ids)))
     return rows, drops
+
+
+def build_rows_v3(record: dict, tokenize: Callable[[str], list[int]]) -> tuple[list[dict], list[dict]]:
+    """The unchanged v2 targets/routes with source-bound whole-note and lesson review gates.
+
+    Extra record keys: audit (note-audit-v1), source_provenance (the private source dict).
+    A re-solve additionally carries its exact prompt and lesson_sha256. Missing review is a drop;
+    a present but stale/forged binding is an error. No review text ever becomes a target.
+    """
+    from .audit import text_sha256, validate_audit
+
+    audit = record.get("audit")
+    if audit is not None:
+        if "source_provenance" not in record:
+            raise ValueError("rows v3: source provenance required for audit validation")
+        validate_audit(audit, record, record["source_provenance"])
+    rows, drops = build_rows_v2(record, tokenize)
+    admitted = []
+    for row in rows:
+        reason = None
+        content_ok = (audit is not None and audit["content"]["result"] == "PASS" and
+                      audit["content"]["scope"] == "entire_note")
+        if row["kind"] == KIND_NOTE and not content_ok:
+            reason = "NOTE_CONTENT_UNKNOWN" if audit is None else f"NOTE_CONTENT_{audit['content']['result']}"
+        if row["target_source"] == "RESOLVE":
+            clear = (audit is not None and audit["leak"]["result"] == "CLEAR" and
+                     audit["leak"]["scope"] == "entire_lesson")
+            if not clear or not content_ok:
+                reason = "RESOLVE_LESSON_NOT_AUTHORIZED"
+            else:
+                parsed = parse_note_v2(record["note"]["text"])
+                if parsed is None:
+                    raise ValueError("rows v3: authorized audit requires a parsed note")
+                resolve = record["resolve"]
+                if (resolve.get("prompt") != resolve_prompt(record["p0_text"], parsed.lesson) or
+                        resolve.get("lesson_sha256") != text_sha256(parsed.lesson)):
+                    raise ValueError("rows v3: resolve prompt/lesson binding mismatch")
+        if reason is None:
+            row |= {"prompt_sha256": text_sha256(row["prompt"]), "target_sha256": text_sha256(row["target"]),
+                    "audit_sha256": audit["sha256"] if audit is not None else None,
+                    "source_sha256": audit["bindings"]["source_sha256"] if audit is not None else None}
+            if row["target_source"] == "RESOLVE":
+                row["lesson_sha256"] = record["resolve"]["lesson_sha256"]
+            admitted.append(row)
+        else:
+            drops.append({"problem_id": record["problem_id"], "kind": row["kind"], "reason": reason})
+    return admitted, drops
+
+
+def select_rows_v3(rows: list[dict], arm: str) -> list[dict]:
+    """Both arms retain identical A targets, order and FULL/LM routes; no-note removes only B."""
+    if arm == "note":
+        return list(rows)
+    if arm == "no-note":
+        return [row for row in rows if row["kind"] == KIND_SOLUTION]
+    raise ValueError(f"unknown v3 arm: {arm!r}")
 
 
 def spread_order(items: list[dict], base_ids: list[str]) -> list[str]:

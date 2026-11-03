@@ -73,6 +73,27 @@ def _validate_base(model_path: Path, manifest_path: Path) -> tuple[dict, dict[st
     return manifest, files
 
 
+def validate_export_reference(model_path: Path, reference: dict) -> dict:
+    """Bind the evaluated files to their declared checkpoint, not just a file inventory."""
+    root, export = Path(model_path), reference["export"]
+    identity = validate_export_identity(root, export["arm"])
+    manifest_path = root / "export_manifest.json"
+    manifest = json.loads(_read(manifest_path), object_pairs_hook=_unique)
+    artifact_sha = file_hash(manifest_path)
+    files = manifest["files"] | {"export_manifest.json": artifact_sha}
+    inventory = [{"path": name, "bytes": (root / name).stat().st_size, "sha256": sha}
+                 for name, sha in sorted(files.items())]
+    if (set(p.name for p in root.iterdir()) != set(files) or reference.get("files") != inventory
+            or reference.get("artifact_revision") != artifact_sha
+            or export.get("export_manifest_sha256") != identity["manifest_sha256"]
+            or reference.get("train_config_sha256") != manifest["resolved_protocol_sha256"]
+            or export.get("checkpoint_state_sha256") != digest(manifest["checkpoint_state_sha256"])
+            or any(export.get(key) != manifest[key] for key in
+                   ("checkpoint_files", "binding", "base_manifest_sha256", "mergers", "precision_policy"))):
+        raise ValueError("export: evaluated files and declared checkpoint reference differ")
+    return manifest
+
+
 def export_merged(ckpt: Path, model_path: Path, out: Path, arm: str, *, binding: dict,
                   max_shard_size: int = 2_000_000_000,
                   _test_policy_factory: PolicyFactory | None = None,

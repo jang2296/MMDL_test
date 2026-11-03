@@ -5,6 +5,7 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Literal
@@ -14,6 +15,7 @@ from .schema import VerifierItem
 VERSION = "strict-final-v1"
 # Opt-in first-attempt contract: MMMU P0 prompt bytes and team-final-answer-v8 extraction (v8_parser.py).
 TURN1_EVAL_CONTRACT = "p0-eval-aligned-v1"
+TRAINING_ANSWER_CONTRACT = "training-answer-v1"
 # Opt-in retry rule bound only with that T1 contract: a committed MCQ retry answer naming no option is INCORRECT.
 RETRY_OUT_OF_CHOICE = "incorrect-v1"
 _FINAL = re.compile(r"^[ \t]*final answer[ \t]*:[ \t]*(.*?)[ \t]*$", re.I | re.M)
@@ -94,6 +96,96 @@ def extract_eval_aligned(text: str, finish_reason: str, question: str, choices: 
     if found["status"] != v8_parser.PARSED:
         return Extraction("INVALID_NO_FINAL", None)
     return Extraction("OK", found["answer"])
+
+
+def extract_training(text: str, finish_reason: str, question: str, choices: tuple[str, ...],
+                     answer_type: str) -> Extraction:
+    """One committed answer, with no reference/alias/rule access during extraction."""
+    if not isinstance(text, str) or finish_reason not in ("stop", "length") or not isinstance(question, str):
+        raise ValueError("answer: text, question and stop/length finish reason required")
+    if finish_reason == "length":
+        return Extraction("TRUNCATED", None)
+    header = r"(?:(?:the\s+)?(?:final|correct)\s+answer|(?:the\s+)?answer)"
+    prefix = r"^[ \t]*(?:(?:therefore|thus|hence)[,:]?\s+)?"
+    text = re.sub(r"(" + prefix + r")\*\*(" + header + r"\s*(?::|=|\bis\b)?)\*\*",
+                  r"\1\2", text, flags=re.I | re.M)
+    text = re.sub(r"^[ \t]*\*\*((?:(?!\*\*).)+)\*\*[ \t]*$", r"\1", text, flags=re.M)
+    declarations = list(re.finditer(r"\b(?:final\s+answer|answer)\s*(?::|=|is\b)", text, re.I))
+    if len(declarations) > 1:
+        return Extraction("INVALID_MULTIPLE", None)
+    if answer_type == "mcq":
+        return extract_eval_aligned(text, finish_reason, question, choices, answer_type)
+    marker = re.search(prefix + header + r"\s*(?::|=|\bis\b)\s*(.*)$", text, re.I | re.M)
+    if marker:
+        value = marker[1].strip()
+        tail = text[marker.end():].strip()
+        if tail or not value:
+            return Extraction("INVALID_MULTIPLE" if tail else "INVALID_NO_FINAL", None)
+    else:
+        from . import v8_parser
+        boxes = list(v8_parser._BOX.finditer(text))
+        if boxes:
+            if len(boxes) != 1 or text[boxes[0].end():].strip(" \t\n.$"):
+                return Extraction("INVALID_MULTIPLE", None)
+            if v8_parser._span_attributed(text, boxes[0].start()):
+                return Extraction("INVALID_NO_FINAL", None)
+            value = boxes[0].group(0)
+        else:
+            # A standalone short answer is itself a declaration; never search a derivation for numbers.
+            value = text.strip()
+            if "\n" in value or re.search(r"\b(?:answer|actually|instead|correction)\b", value, re.I):
+                return Extraction("INVALID_NO_FINAL", None)
+    if not value or len(value) > 200 or len(value.split()) > 20:
+        return Extraction("INVALID_NO_FINAL", None)
+    value = _clean(value)
+    normalized = training_value(value)
+    if (re.search(r"\bor\b|;|\d\s+and\s+[+-]?\d", normalized, re.I)
+            or "," in normalized and number(normalized) is None):
+        return Extraction("INVALID_MULTIPLE", None)
+    return Extraction("OK", value)
+
+
+def training_value(value: str, *, variable: str | None = None) -> str:
+    """Normalize whole mathematical wrappers, preserving signs, ranges and every unit."""
+    value = unicodedata.normalize("NFKC", value).strip().removesuffix(".").strip()
+    for _ in range(8):
+        before = value
+        value = _clean(value)
+        for left, right in ((r"\(", r"\)"), (r"\[", r"\]"), ("`", "`")):
+            if value.startswith(left) and value.endswith(right) and len(value) > len(left) + len(right):
+                value = value[len(left):-len(right)].strip()
+        if variable is not None:
+            value = re.sub(rf"^{re.escape(variable)}\s*=\s*", "", value)
+        match = re.fullmatch(r"\\(?:boxed|text|mathrm)\s*\{(.*)\}", value)
+        if match:
+            value = match[1].strip()
+        if value == before:
+            break
+    value = re.sub(r"\^\s*(?:\{\s*\\circ\s*\}|\\circ)", "°", value)
+    value = re.sub(r"\\(?:text|mathrm)\s*\{([^{}]*)\}", r"\1", value)
+    value = re.sub(r"\^\{([23])\}", r"^\1", value)
+    fraction = re.fullmatch(r"\\(?:d?frac)\s*\{\s*(" + _INT + r")\s*\}\s*\{\s*(" + _INT
+                            + r")\s*\}(\s*(?:[A-Za-z°%µΩ][A-Za-z0-9°%µΩ^ /.*-]*)?)", value)
+    if fraction:
+        value = f"{fraction[1]}/{fraction[2]}{fraction[3]}"
+    return value.replace("−", "-").strip()
+
+
+def compare_training(answer: str, item: VerifierItem, rule: dict | None = None) -> bool | None:
+    """Use only a declared typed rule; unsupported math/units are never guessed."""
+    kind, accept = (item.answer_type, {}) if rule is None else (rule["answer_type"], rule["accept"])
+    variable = accept.get("variable")
+    answer, gold = (training_value(value, variable=variable) for value in (answer, item.gold))
+    if kind == "range":
+        def endpoints(value: str):
+            match = re.fullmatch(rf"({_RATIONAL})\s*(?:-|–|—|to)\s*({_RATIONAL})", value)
+            if match is None:
+                return None
+            left, right = number(match[1]), number(match[2])
+            return None if left is None or right is None or left > right else (left, right)
+        a, g = endpoints(answer), endpoints(gold)
+        return None if a is None or g is None else a == g
+    return compare(answer, replace(item, answer_type=kind, gold=gold, accept=accept))
 
 
 def number(value: str) -> Fraction | None:

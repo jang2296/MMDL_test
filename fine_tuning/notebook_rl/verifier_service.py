@@ -27,7 +27,7 @@ from pathlib import Path
 from .reasoning_trace import validate_trace_report
 from .repair_contract import RepairContractError, parse_retry_sections, project_solution
 from .schema import DiagTarget, VerifierResult, from_json, to_json
-from .answers import extract_eval_aligned
+from .answers import TRAINING_ANSWER_CONTRACT, extract_eval_aligned, extract_training
 from .verifier import RETRY_OUT_OF_CHOICE_TAG, VERSION as VERIFIER_VERSION
 
 VERSION = "notebook-rl-verifier-service-v5"
@@ -45,6 +45,7 @@ _VERIFIER_SOURCES = ("verifier_service.py", "verifier.py", "answers.py", "v8_par
                      "generators/graph.py", "generators/graph_pair.py", "generators/circuit.py",
                      "generators/common.py", "../nvw.py", "../circuit_bridge.py", "../graph_bridge.py",
                      "../ablation.py")
+_TRAINING_SOURCES = ("../error_note/answer_contract.py",)
 
 
 class VerifierServiceError(RuntimeError):
@@ -185,11 +186,14 @@ def _dispatch(verifier, issued: _Issued, request: dict):
         _result(result)
         # An extracted answer must come from the submitted response, never the vault.
         if answer_contract is not None:
-            # V8 normalises its answer, so re-extract it gold-blind from the response instead of a substring test.
+            # Re-extract from public input: neither the reference nor the private rules enter this operation.
             item = verifier.items[pid]
-            extracted = extract_eval_aligned(args["text"], args["finish_reason"], verifier.actors[pid].question,
-                                             item.choices, item.answer_type).answer
-            if (result.extracted != extracted
+            extractor = extract_training if answer_contract == TRAINING_ANSWER_CONTRACT else extract_eval_aligned
+            extracted = extractor(args["text"], args["finish_reason"], verifier.actors[pid].question,
+                                  item.choices, item.answer_type)
+            if (result.extracted != extracted.answer
+                    or answer_contract == TRAINING_ANSWER_CONTRACT and extracted.status != "OK"
+                    and result.status != extracted.status
                     or result.verifier_version != VERIFIER_VERSION + "+" + answer_contract):
                 raise _Rejected("VERIFIER_ERROR")
         else:
@@ -254,7 +258,8 @@ def _send(stream, payload: dict) -> None:
     stream.flush()
 
 
-def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
+def _worker(vault_root: Path, forbidden_roots: list[Path], training_rules_path: Path | None = None,
+            training_rules_sha256: str | None = None) -> int:
     output = sys.stdout.buffer
     try:
         # Trusted imports precede the one-shot guard: distribution stdlib files can
@@ -264,13 +269,19 @@ def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
         from .guards import install_guards
         from .schema import load_protocol
         from .verifier import Verifier
+        if training_rules_path is not None:
+            from fine_tuning.error_note import answer_contract
+            del answer_contract
         del attribution, circuit_trace, reasoning_trace, repair_contract, v8_parser, circuit, graph, graph_pair
-        install_guards(forbidden_roots=forbidden_roots,
-                       vault_files=[vault_root / "verifier_private.jsonl", vault_root / "lineage.jsonl"],
+        private = [vault_root / "verifier_private.jsonl", vault_root / "lineage.jsonl"]
+        if training_rules_path is not None:
+            private.append(training_rules_path)
+        install_guards(forbidden_roots=forbidden_roots, vault_files=private,
                        allow_vault=True, allow_benchmark=False)
         vault_root = vault._safe_root(vault_root)
         manifest_sha = hashlib.sha256(vault._read(vault_root / "manifest.yaml")).hexdigest()
-        verifier = Verifier(vault_root)
+        verifier = Verifier(vault_root, training_rules_path=training_rules_path,
+                            training_rules_sha256=training_rules_sha256)
         actors, lineages = list(verifier.actors.values()), vault.read_lineage(vault_root)
         if set(verifier.items) != {a.problem_id for a in actors} or set(verifier.items) != set(lineages):
             raise ValueError("vault identities differ")
@@ -282,11 +293,14 @@ def _worker(vault_root: Path, forbidden_roots: list[Path]) -> int:
         if hashlib.sha256(vault._read(vault_root / "manifest.yaml")).hexdigest() != manifest_sha:
             raise ValueError("vault manifest changed during startup")
         here = Path(__file__).resolve().parent
+        sources = _VERIFIER_SOURCES + (_TRAINING_SOURCES if training_rules_path is not None else ())
         metadata = {"version": VERSION, "pid": os.getpid(), "item_count": len(verifier.items),
                     "vault_manifest_sha256": manifest_sha,
                     "max_frame_bytes": MAX_FRAME_BYTES, "python_guards_installed": True,
                     "os_sandbox": False, "protocol_sha256": load_protocol(here / "protocol_v1.yaml")["sha256"],
-                    "code_sha256": {name: hashlib.sha256((here / name).read_bytes()).hexdigest() for name in _VERIFIER_SOURCES}}
+                    "code_sha256": {name: hashlib.sha256((here / name).read_bytes()).hexdigest() for name in sources}}
+        if training_rules_path is not None:
+            metadata["training_rules_sha256"] = training_rules_sha256
         _send(output, {"id": 0, "ok": True, "result": metadata})
     except Exception:
         _send(output, {"id": 0, "ok": False, "error": "VAULT_UNAVAILABLE"})
@@ -346,15 +360,25 @@ def _stop_process(process: subprocess.Popen) -> None:
 class VerifierService:
     """Synchronous, thread-serialized verifier interface used by rollout.build_tree."""
     def __init__(self, vault_root: Path, *, forbidden_roots: list[Path], timeout: float = 30.0,
-                 max_request_bytes: int = MAX_FRAME_BYTES):
+                 max_request_bytes: int = MAX_FRAME_BYTES, training_rules_path: Path | None = None,
+                 training_rules_sha256: str | None = None):
         if (type(timeout) not in (float, int) or not math.isfinite(timeout) or not 0 < timeout <= 120
                 or type(max_request_bytes) is not int or not 128 <= max_request_bytes <= MAX_FRAME_BYTES
                 or type(forbidden_roots) is not list or any(not isinstance(p, Path) for p in forbidden_roots)):
             raise ValueError("verifier service: invalid explicit bounds/benchmark roots")
+        if ((training_rules_path is None) != (training_rules_sha256 is None)
+                or training_rules_path is not None and (not isinstance(training_rules_path, Path)
+                    or not isinstance(training_rules_sha256, str) or len(training_rules_sha256) != 64
+                    or set(training_rules_sha256) - set("0123456789abcdef"))):
+            raise ValueError("verifier service: training rules require an explicit path and SHA256")
         self._timeout, self._limit = float(timeout), max_request_bytes
         self._sequence, self._closed, self._lock = 0, False, threading.Lock()
         command = [sys.executable, "-B", "-m", "fine_tuning.notebook_rl.verifier_service", "--worker",
                    "--vault-root", str(Path(vault_root).absolute())]
+        if training_rules_path is not None:
+            assert training_rules_sha256 is not None
+            command.extend(["--training-rules", str(training_rules_path.absolute()),
+                            "--training-rules-sha256", training_rules_sha256])
         for root in forbidden_roots:
             command.extend(["--forbidden-root", str(root.absolute())])
         self._process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -366,8 +390,12 @@ class VerifierService:
         os.set_blocking(self._process.stdout.fileno(), False)
         try:
             metadata = self._response(0, time.monotonic() + self._timeout)
-            if (type(metadata) is not dict or set(metadata) != {"version", "pid", "item_count", "max_frame_bytes",
-                    "python_guards_installed", "os_sandbox", "protocol_sha256", "code_sha256", "vault_manifest_sha256"}
+            fields = {"version", "pid", "item_count", "max_frame_bytes", "python_guards_installed", "os_sandbox",
+                      "protocol_sha256", "code_sha256", "vault_manifest_sha256"}
+            if training_rules_path is not None:
+                fields.add("training_rules_sha256")
+            if (type(metadata) is not dict or set(metadata) != fields
+                    or training_rules_path is not None and metadata["training_rules_sha256"] != training_rules_sha256
                     or metadata["version"] != VERSION or type(metadata["pid"]) is not int
                     or metadata["pid"] != self._process.pid or metadata["pid"] == os.getpid()
                     or type(metadata["item_count"]) is not int or metadata["item_count"] < 1
@@ -378,7 +406,7 @@ class VerifierService:
                     or metadata["python_guards_installed"] is not True or metadata["os_sandbox"] is not False):
                 raise VerifierServiceError("verifier service: INVALID_RESPONSE")
             here = Path(__file__).resolve().parent
-            expected = _VERIFIER_SOURCES
+            expected = _VERIFIER_SOURCES + (_TRAINING_SOURCES if training_rules_path is not None else ())
             # Code files are public; no actor-side private vault open is needed.
             if (type(metadata["code_sha256"]) is not dict or set(metadata["code_sha256"]) != set(expected)
                     or any(metadata["code_sha256"][name] != hashlib.sha256((here / name).read_bytes()).hexdigest()
@@ -557,8 +585,10 @@ def main() -> int:
     parser.add_argument("--worker", action="store_true", required=True)
     parser.add_argument("--vault-root", type=Path, required=True)
     parser.add_argument("--forbidden-root", type=Path, action="append", default=[])
+    parser.add_argument("--training-rules", type=Path)
+    parser.add_argument("--training-rules-sha256")
     args = parser.parse_args()
-    return _worker(args.vault_root, args.forbidden_root)
+    return _worker(args.vault_root, args.forbidden_root, args.training_rules, args.training_rules_sha256)
 
 
 if __name__ == "__main__":
