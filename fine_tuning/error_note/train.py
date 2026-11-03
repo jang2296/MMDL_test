@@ -10,6 +10,8 @@ CLI: python -m fine_tuning.error_note.train train --rows ROWS.jsonl --build-root
      python -m fine_tuning.error_note.train admit --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
          --precision {bf16,nf4} --model-path M --output ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json --code-commit 40HEX
      python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4} [--protocol-version {v1,v2,v3}]
+     python -m fine_tuning.error_note.train dry-run --rows R --build-root V --order O --limit 1 --model-path M
+         --output DIR --precision nf4 --code-commit 40HEX --audit A --sidecar S --admission P [--token-budget T]
 Protocol v2 (claudedocs/plan_self_note_v2_20261102.md section 4): 16 items per update and a linear LR decay whose end is
 the number of non-empty update groups of the rows file, so the protocol (and its binding) follows the rows.
 Version 3 admits both arms before training, preserves the common A routes, and uses .9 mean(A) + .1 mean(B).
@@ -179,6 +181,23 @@ def _peak_gib() -> float:
     return torch.cuda.max_memory_allocated() / 2**30 if torch.cuda.is_initialized() else 0.0
 
 
+def _backward_rows(bundle: PolicyBundle, encoded: list[dict], plan: list[list[int]],
+                   coefficients: list[float] | None = None) -> dict[str, float]:
+    """Shared target/EOS NLL backward only; never constructs an optimizer or changes parameters."""
+    loss_by_kind: dict[str, float] = defaultdict(float)
+    for indices in plan:
+        rows = [encoded[index] for index in indices]
+        bundle.route.apply(rows[0]["route"] == ROUTE_FULL)
+        row_losses = [-values.mean() for values in batch_logprobs(bundle, rows)]
+        if coefficients is None:
+            (torch.stack(row_losses).sum() / len(encoded)).backward()
+        else:
+            torch.stack([loss * coefficients[index] for index, loss in zip(indices, row_losses, strict=True)]).sum().backward()
+        for row, value in zip(rows, row_losses, strict=True):
+            loss_by_kind[row["kind"]] += float(value.detach())
+    return loss_by_kind
+
+
 def run_update(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler: Any, encoded: list[dict],
                token_budget: int = 0, *, kind_weights: dict[str, float] | None = None) -> dict:
     """One optimizer step over every row of one order group. Raises NonFiniteStop before any parameter changes."""
@@ -193,17 +212,7 @@ def run_update(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler: An
     coefficients = [kind_weights[row["kind"]] / kinds[row["kind"]] if kind_weights is not None else 1 / len(encoded)
                     for row in encoded]
     plan = plan_microbatches([row["input_ids"].numel() for row in encoded], [row["route"] for row in encoded], token_budget)
-    loss_by_kind: dict[str, float] = defaultdict(float)
-    for indices in plan:
-        rows = [encoded[index] for index in indices]
-        bundle.route.apply(rows[0]["route"] == ROUTE_FULL)
-        row_losses = [-values.mean() for values in batch_logprobs(bundle, rows)]
-        if kind_weights is None:
-            (torch.stack(row_losses).sum() / len(encoded)).backward()
-        else:
-            torch.stack([loss * coefficients[index] for index, loss in zip(indices, row_losses, strict=True)]).sum().backward()
-        for row, value in zip(rows, row_losses, strict=True):
-            loss_by_kind[row["kind"]] += float(value.detach())
+    loss_by_kind = _backward_rows(bundle, encoded, plan, coefficients if kind_weights is not None else None)
     grad_norms = _clip_groups(bundle)
     optimizer.step()
     scheduler.step()
@@ -423,6 +432,116 @@ def _verify_admitted_group(admitted: dict, encoded: list[dict], drops: list[dict
 def _trainable_hashes(bundle: PolicyBundle) -> dict[str, str]:
     parameters = dict(bundle.model.named_parameters())
     return {row["name"]: tensor_sha256(parameters[row["name"]]) for row in bundle.inventory["trainable"]}
+
+
+def _all_parameter_hashes(bundle: PolicyBundle) -> dict:
+    return {name: {"sha256": tensor_sha256(parameter), "shape": list(parameter.shape), "dtype": str(parameter.dtype)}
+            for name, parameter in bundle.model.named_parameters()}
+
+
+def _gradient_norms(bundle: PolicyBundle) -> dict[str, float | None]:
+    norms = {}
+    for group, parameters in bundle.params.items():
+        values = [float(torch.linalg.vector_norm(parameter.grad.detach().float()))
+                  for parameter in parameters if parameter.grad is not None]
+        if any(not math.isfinite(value) for value in values):
+            raise NonFiniteStop(f"nonfinite dry-run gradient in group {group}")
+        norms[group] = math.sqrt(sum(value * value for value in values)) if values else None
+    return norms
+
+
+def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = None, device: str = "cuda:0",
+                make_encoder: Callable[[PolicyBundle, Path], Callable[[dict], dict]] = _vault_encoder,
+                map_fn: Callable[..., Iterable] = map) -> int:
+    """Small predeclared prefix: encode and backpropagate A/B separately, with no optimizer or weight save."""
+    from .collect_v3 import source_identity
+
+    if not 1 <= args.limit <= 10:
+        raise ValueError("dry-run: limit must be a predeclared prefix of 1..10 items")
+    out = args.output
+    if (out / "dry_run.json").exists():
+        raise ValueError("dry-run: refusing to overwrite an existing diagnostic")
+    out.mkdir(parents=True, exist_ok=True)
+    inputs = _admission_inputs(args)
+    report: dict[str, Any] = {"status": "FAIL", "optimizer_steps": 0, "scheduler_steps": 0, "weights_saved": False,
+        "scope": "diagnostic only: finite A/B backward with unchanged weights; no training or learning claim",
+        "weights_unchanged": None, "precision": args.precision, "limit": args.limit,
+        "source_sha256": source_identity(), "inputs": inputs, "components": {}}
+    groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2,
+                          v3=True, audit_path=args.audit)
+    report["rows_by_kind"] = dict(Counter(row["kind"] for group in groups for row in group))
+    if not any(row["kind"] == KIND_SOLUTION for group in groups for row in group):
+        report.update(status="NO_USABLE_SUPERVISION", reason="NO_A_ROWS")
+        _write_json(out / "dry_run.json", report)
+        return 1
+    try:
+        admission = _read_admission(args, groups)
+    except ValueError as exc:
+        if "no A-present update groups" not in str(exc):
+            raise
+        report.update(status="NO_USABLE_SUPERVISION", reason="NO_ENCODED_A")
+        _write_json(out / "dry_run.json", report)
+        return 1
+    if not any(group["nB"] for group in admission["groups"] if group["active"]):
+        report.update(status="NO_USABLE_SUPERVISION", reason="NO_ADMITTED_B")
+        _write_json(out / "dry_run.json", report)
+        return 1
+    contracts = admission["inputs"]["hashes"] | {"admission": ckpt.file_hash(args.admission)}
+    protocol = plain_protocol_v3(args.precision, admission["total_steps"], arm="note", contracts=contracts)
+    report.update(protocol_sha256=protocol["sha256"], admission_sha256=contracts["admission"])
+    torch.manual_seed(MASTER_SEED)
+    bundle = (policy_factory or build_policy)(args.model_path, ARM, protocol)
+    if args.precision == "bf16":  # CPU test fixtures; the public dry-run CLI accepts NF4 only.
+        bundle.model.to(device)
+    assert_base = assert_quantized_base_unchanged if args.precision == "nf4" else assert_base_unchanged
+    assert_base(bundle)
+    before = _all_parameter_hashes(bundle)
+    report["parameter_hashes_before"] = before
+    try:
+        encoded = []
+        encode = make_encoder(bundle, args.build_root)
+        for admitted, (kept, drops) in zip(admission["groups"], encoded_groups(
+                groups, encode, args.max_row_tokens or CONTEXT_LIMIT, map_fn), strict=True):
+            _verify_admitted_group(admitted, kept, drops)
+            if admitted["active"]:
+                encoded.extend(kept)
+        report["encoded_rows_by_kind"] = dict(Counter(row["kind"] for row in encoded))
+        report["loss_mask"] = {row["row_id"]: {"input_tokens": row["input_ids"].numel(),
+            "prompt_tokens_excluded": row["input_ids"].numel() - row["target_len"],
+            "target_and_eos_tokens": row["target_len"]} for row in encoded}
+        for kind, weight in ((KIND_SOLUTION, .9), (KIND_NOTE, .1)):
+            bundle.model.zero_grad(set_to_none=True)
+            rows = [row for row in encoded if row["kind"] == kind]
+            plan = plan_microbatches([row["input_ids"].numel() for row in rows],
+                                     [row["route"] for row in rows], args.token_budget)
+            losses = _backward_rows(bundle, rows, plan, [weight / len(rows)] * len(rows))
+            mean_loss = losses[kind] / len(rows)
+            if not math.isfinite(mean_loss):
+                raise NonFiniteStop(f"nonfinite dry-run {kind} loss")
+            norms = _gradient_norms(bundle)
+            report["components"][kind] = {"rows": len(rows), "row_nll_mean": mean_loss,
+                "coefficient": weight, "weighted_loss": weight * mean_loss, "grad_norms": norms,
+                "nonzero_gradient": any(value is not None and value > 0 for value in norms.values()),
+                "routes": dict(Counter(row["route"] for row in rows)), "microbatches": len(plan)}
+            bundle.model.zero_grad(set_to_none=True)
+        report["status"] = "PASS" if all(row["nonzero_gradient"] for row in report["components"].values()) else "NO_GRADIENT_SIGNAL"
+    except (NonFiniteStop, AdmissionChanged, ValueError, RuntimeError) as exc:
+        report.update(status="FAIL", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        bundle.model.zero_grad(set_to_none=True)
+        bundle.route.apply(True)
+        after = _all_parameter_hashes(bundle)
+        report.update(parameter_hashes_after=after, weights_unchanged=before == after,
+                      gradients_cleared=all(parameter.grad is None for parameter in bundle.model.parameters()))
+        try:
+            assert_base(bundle)
+            report["frozen_base_verified"] = True
+        except ValueError as exc:
+            report.update(status="FAIL", frozen_base_verified=False, error=str(exc))
+        if before != after or source_identity() != report["source_sha256"] or _admission_inputs(args) != inputs:
+            report.update(status="FAIL", error="dry-run parameters, inputs or source changed")
+        _write_json(out / "dry_run.json", report)
+    return 0 if report["status"] == "PASS" else 1
 
 
 def _tensor_counts(bundle: PolicyBundle) -> dict[str, int]:
@@ -734,6 +853,14 @@ def build_parser() -> argparse.ArgumentParser:
     admit.add_argument("--precision", choices=("bf16", "nf4"), required=True)
     admit.add_argument("--code-commit", type=_commit, required=True)
     admit.add_argument("--max-row-tokens", type=int, default=None, help="predeclared NF4 functional-check admission only")
+    dry = sub.add_parser("dry-run", help="v3 forward/backward diagnostics only; no optimizer or weight saving")
+    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar", "admission"):
+        dry.add_argument(f"--{name}", type=Path, required=True)
+    dry.add_argument("--limit", type=int, required=True, help="predeclared first 1..10 items")
+    dry.add_argument("--precision", choices=("nf4",), required=True)
+    dry.add_argument("--code-commit", type=_commit, required=True)
+    dry.add_argument("--token-budget", type=int, default=0)
+    dry.add_argument("--max-row-tokens", type=int, default=None, help="must equal the predeclared NF4 admission limit")
     reload = sub.add_parser("reload")
     reload.add_argument("--run", type=Path, required=True)
     reload.add_argument("--model-path", type=Path, required=True)
@@ -757,6 +884,9 @@ def main(argv: list[str] | None = None) -> int:
         return run_admit(args, map_fn=partial(bounded_map, workers=ENCODE_WORKERS, buffer=ENCODE_BUFFER))
     args.output.mkdir(parents=True, exist_ok=True)
     with ResourceLog(args.output / "resource.jsonl"):
+        if args.command == "dry-run":
+            return run_dry_run(args, policy_factory=_factory(args.precision),
+                               map_fn=partial(bounded_map, workers=ENCODE_WORKERS, buffer=ENCODE_BUFFER))
         return run_train(args, policy_factory=_factory(args.precision),
                          map_fn=partial(bounded_map, workers=ENCODE_WORKERS, buffer=ENCODE_BUFFER))
 

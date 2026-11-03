@@ -113,6 +113,13 @@ RunPod 계획은 `plan --stage note-v3-collect|note-v3-train --params PARAMS --o
 검사: `python -m unittest discover -s fine_tuning/tests -p 'test_error_note*.py'`와 공유 채점/Pod/체크포인트 호출자의 회귀 검사를 실행한다.
 실제 학습/평가 결과는 별도 실행 receipt가 필요하다. 상위 모델 풀이·벤치마크 학습·다중 답 선택은 계속 금지한다.
 
+가중치를 바꾸지 않는 로컬 기능 확인은 같은 `admit` 결과에 `train dry-run`을 사용한다.
+필수 인자는 `--rows --build-root --order --limit --model-path --output --precision nf4 --code-commit --audit --sidecar --admission`이다.
+`--limit`은 사전 고정한 첫 1~10문항이며, `--max-row-tokens`를 썼다면 admission과 같아야 한다.
+실제 A/B 손실과 각각의 기울기를 계산하고 모두 비운 뒤, 전체 파라미터와 동결 NF4 상태가 그대로인지 검사한다.
+optimizer/scheduler를 만들거나 step을 실행하지 않고 가중치도 저장하지 않는다. `dry_run.json`의 PASS는
+손실·기울기 연결과 가중치 미변경을 뜻한다. 실제 학습·재로딩·정확도 향상 증거가 아니며, A나 검토된 B가 없으면 통과하지 않는다.
+
 외부 dev 비교는 `source_evidence prepare-dev --build-root V --manifest MANIFEST --output EVIDENCE`로
 별도 dev 채점 규칙을 준비한 뒤 `evaluate preregister`로 고정한다. 학습용 train 규칙을 dev에 재사용하지 않는다.
 등록에는 `--manifest`, `--vault-root`, `--train-order`, `--train-rows`, `--train-limit`, `--models`,
