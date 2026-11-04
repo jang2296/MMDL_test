@@ -120,6 +120,13 @@ def read_groups_v4(rows_path: Path, order_path: Path, start: int, limit: int, ar
     return [[row for pid in group for row in by_id.get(pid, [])] for group in update_groups(ids, PER_UPDATE_ITEMS_V2)]
 
 
+def schedule_v4(rows_path: Path, order_path: Path, start: int, limit: int) -> tuple[int, list[bool]]:
+    """The update schedule of both arms: one scheduler step per order group that has a hybrid row. The rl-only arm
+    advances the scheduler without a weight change where only note-derived rows were, so LR and step count match."""
+    scheduled = [bool(group) for group in read_groups_v4(rows_path, order_path, start, limit, "hybrid")]
+    return sum(scheduled), scheduled
+
+
 def _reference(bundle: PolicyBundle, rows: list[dict]) -> list[torch.Tensor]:
     try:
         with torch.no_grad(), bundle.model.disable_adapter():
@@ -238,7 +245,7 @@ def run_train_v4(args: argparse.Namespace, *, policy_factory: Callable | None = 
         raise SystemExit("train v4: --gradient-checkpointing off is bf16 only")
     out: Path = args.output
     groups = read_groups_v4(args.rows, args.order, args.start, args.limit, args.arm)
-    total_steps = sum(1 for group in groups if group)
+    total_steps, scheduled = schedule_v4(args.rows, args.order, args.start, args.limit)
     contracts, init = _contracts(args)
     protocol = _protocol(args, total_steps, contracts)
     contract = protocol["training_contract"]
@@ -274,7 +281,13 @@ def run_train_v4(args: argparse.Namespace, *, policy_factory: Callable | None = 
         for drop in drops:
             _append_jsonl(drops_path, {"group": index, **drop})
         if not encoded:
-            _append_jsonl(updates_path, {"step": step, "group": index, "rows": 0, "skipped": True})
+            if scheduled[index]:  # the hybrid arm steps here: keep both arms on one LR schedule (no weight change)
+                optimizer.zero_grad(set_to_none=True)
+                optimizer.step()  # every gradient is None: AdamW leaves every parameter and moment unchanged
+                scheduler.step()
+                step += 1
+            _append_jsonl(updates_path, {"step": step, "group": index, "rows": 0, "skipped": True,
+                                         "scheduler_only": scheduled[index]})
             continue
         lrs = {group["name"]: group["lr"] for group in optimizer.param_groups}
         try:
@@ -287,9 +300,11 @@ def run_train_v4(args: argparse.Namespace, *, policy_factory: Callable | None = 
         if args.save_every and step % args.save_every == 0:
             _save(bundle, optimizer, scheduler, step, index + 1, out / f"checkpoint-{step}", protocol, binding)
     summary = _summary(_read_jsonl(updates_path))
-    if not step:
+    if not summary["updates"]:
         _write_json(out / "result.json", {"status": STATUS_NO_UPDATES, "arm": args.arm, **summary})
         return 1
+    if step != total_steps:
+        raise ValueError(f"train v4: {step} scheduler steps differ from the scheduled {total_steps}")
     assert_base(bundle)
     initial = json.loads((out / "initial_state.json").read_text(encoding="utf-8"))["sha256"]
     changed = _changed_counts(bundle, initial)
@@ -322,7 +337,7 @@ def run_dry_run_v4(args: argparse.Namespace, *, policy_factory: Callable | None 
     out.mkdir(parents=True, exist_ok=True)
     groups = read_groups_v4(args.rows, args.order, args.start, args.limit, args.arm)
     contracts, init = _contracts(args)
-    protocol = _protocol(args, sum(1 for group in groups if group), contracts)
+    protocol = _protocol(args, schedule_v4(args.rows, args.order, args.start, args.limit)[0], contracts)
     report: dict[str, Any] = {"status": "FAIL", "optimizer_steps": 0, "scheduler_steps": 0, "weights_saved": False,
                               "scope": "diagnostic only: finite per-kind backward with unchanged weights; no learning claim",
                               "protocol_sha256": protocol["sha256"], "components": {}, "weights_unchanged": None,
@@ -392,8 +407,9 @@ def run_reload_v4(args: argparse.Namespace, *, policy_factory: Callable | None =
                                      arm=contract.get("arm"), round_index=contract.get("round"),
                                      start=contract.get("start"), limit=contract.get("limit"),
                                      contracts=contract.get("hashes", {}))
-        if recorded != json.loads(json.dumps(protocol)) or binding["data_sha256"] != contract["hashes"]["rows"]:
-            raise ValueError("reload v4: the checkpoint protocol or rows binding differs")
+        if (recorded != json.loads(json.dumps(protocol)) or binding["data_sha256"] != contract["hashes"]["rows"]
+                or metadata["step"] != protocol["optimizer"]["total_steps"]):
+            raise ValueError("reload v4: the checkpoint protocol, rows binding or final step differs")
         bundle, _, _, step, _ = ckpt.load_resume(args.model_path, final, protocol, binding=binding, device=device,
                                                  policy_factory=policy_factory)
         (assert_quantized_base_unchanged if args.precision == "nf4" else assert_base_unchanged)(bundle)

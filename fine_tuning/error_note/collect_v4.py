@@ -202,10 +202,27 @@ def write_gates(out: Path, ids: list[str], gold: dict[str, str], actors: dict, r
         else:
             gate["lesson"] = None
         items[pid] = gate
-    body = {"version": VERSION, "round": round_index, "note_sha256": _file_sha(out / "note.jsonl"), "items": items}
+    note_file = out / "note.jsonl"
+    body = {"version": VERSION, "round": round_index,
+            "note_sha256": _file_sha(note_file) if note_file.exists() else None, "items": items}
     value = body | {"sha256": _digest(body)}
     write_json(out / GATES_FILE, value)
     return value
+
+
+def run_note_v4(items: list[dict], actors: dict, gold: dict[str, str], load: Callable, stream: Stream,
+                stats: StreamStats, grade: Callable, out: Path, *, round_index: int, answer_contract: str,
+                leak_terms: dict[str, dict] | None = None, **options: Any) -> dict:
+    """Gold-aware notes for the ALL_WRONG groups only, then the program gate in this same process. No ALL_WRONG
+    group (or none with a gradable first rollout) means no generation and an empty gates file."""
+    out = Path(out)
+    chosen = note_inputs(rollouts_of(out), [item["problem_id"] for item in items])
+    wrong = [item for item in items if item["problem_id"] in chosen]
+    receipt = (run_note(wrong, actors, chosen, gold, load, stream, stats, grade, out, **options, version="v2",
+                        answer_contract=answer_contract) if wrong else None)
+    gates = write_gates(out, [item["problem_id"] for item in wrong], gold, actors, round_index, leak_terms)
+    return {"note": receipt, "all_wrong_groups": len(wrong), "gates_sha256": gates["sha256"],
+            "passed": sum(g["result"] == "PASS" for g in gates["items"].values())}
 
 
 def read_gates(out: Path) -> dict[str, dict]:
@@ -409,13 +426,8 @@ def _generate_v4(args: argparse.Namespace, stage: str) -> int:
                                        reuse_t1=reuse, **options)
         elif stage == "note":
             assert gold is not None
-            chosen = note_inputs(rollouts_of(out), ids)
-            wrong = [item for item in items if item["problem_id"] in chosen]
-            receipt = run_note(wrong, actors, chosen, gold, load, stream, stats, grade, out, **options, version="v2",
-                               answer_contract=args.answer_contract)
-            gates = write_gates(out, [item["problem_id"] for item in wrong], gold, actors, args.round, leak_terms)
-            receipt = {"note": receipt, "gates_sha256": gates["sha256"],
-                       "passed": sum(g["result"] == "PASS" for g in gates["items"].values())}
+            receipt = run_note_v4(items, actors, gold, load, stream, stats, grade, out, round_index=args.round,
+                                  answer_contract=args.answer_contract, leak_terms=leak_terms, **options)
         elif stage == "selfcheck":
             receipt = run_selfcheck(items, actors, read_gates(out), load, stream, stats, out, round_index=args.round,
                                     **options)

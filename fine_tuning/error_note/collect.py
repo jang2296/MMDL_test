@@ -42,6 +42,24 @@ from .v4 import BlockRepetition
 LOOP_STOP_FINISH = "loop_stop"  # finish_reason of a version-4 training rollout stopped by v4.BlockRepetition
 WAIT = object()  # a request iterator's "nothing to add until the next engine step" (version-4 adaptive rollouts)
 
+def loop_stop_info(input_tokens: int) -> dict:
+    """Per-request state of a version-4 loop-stopped vLLM request (RequestOutputKind.DELTA outputs)."""
+    return {"input_tokens": input_tokens, "ids": [], "detector": BlockRepetition()}
+
+
+def observe_delta(output: Any, info: dict) -> bool:
+    """An unfinished DELTA output carries only its new tokens (vLLM 0.11 output_processor): collect them and report
+    whether the generation now only repeats one block."""
+    piece = list(output.outputs[0].token_ids)
+    info["ids"].extend(piece)
+    return info["detector"].feed(piece)
+
+
+def delta_ids(output: Any, info: dict) -> list[int]:
+    """All completion ids of a finished DELTA request: the collected pieces plus the final piece."""
+    return info["ids"] + list(output.outputs[0].token_ids)
+
+
 PREFETCH_WORKERS = 8
 THROUGHPUT_EVERY = 60.0
 SKIPPED_T1_STATUSES = ("UNVERIFIABLE", "CONTEXT_BLOCKED")
@@ -710,8 +728,7 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
                                     presence_penalty=QWEN_OFFICIAL.presence_penalty, max_tokens=request["max_tokens"],
                                     seed=request["seed"],
                                     output_kind=RequestOutputKind.DELTA if loop_stop else RequestOutputKind.FINAL_ONLY)
-            info = ({"input_tokens": item["input_tokens"], "ids": [], "detector": BlockRepetition()} if loop_stop
-                    else item["input_tokens"])
+            info = loop_stop_info(item["input_tokens"]) if loop_stop else item["input_tokens"]
             return {"prompt": item["chat_prompt"], "multi_modal_data": {"image": images}}, params, info
 
         def finish(output: Any, request: dict, info: Any) -> dict:
@@ -719,7 +736,7 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
                 raise RuntimeError("vLLM did not return exactly one sampled completion")
             completion = output.outputs[0]
             if loop_stop:  # DELTA outputs: the earlier pieces were collected by observe
-                ids = info["ids"] + list(completion.token_ids)
+                ids = delta_ids(output, info)
                 prompt_tokens = info["input_tokens"]
             else:
                 ids = list(completion.token_ids)
@@ -728,11 +745,6 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
                     "finish_reason": completion.finish_reason or "unknown",
                     "prompt_tokens": prompt_tokens, "completion_tokens": len(ids)}
 
-        def observe(output: Any, info: dict) -> bool:
-            piece = list(output.outputs[0].token_ids)
-            info["ids"].extend(piece)
-            return info["detector"].feed(piece)
-
         def partial(output: Any, request: dict, info: dict) -> dict:
             return {"text": processor.tokenizer.decode(info["ids"], skip_special_tokens=True,
                                                        clean_up_tokenization_spaces=False),
@@ -740,7 +752,7 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
                     "completion_tokens": len(info["ids"])}
 
         yield from continuous_stream(llm.llm_engine, requests, args.max_num_seqs, prepare, finish, stats_,
-                                     stop_after=stop_after, observe=observe if loop_stop else None,
+                                     stop_after=stop_after, observe=observe_delta if loop_stop else None,
                                      partial=partial if loop_stop else None)
 
     return stream

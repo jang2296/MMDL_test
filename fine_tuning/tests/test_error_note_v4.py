@@ -331,3 +331,61 @@ class StreamHooks(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VllmDeltaOutputs(unittest.TestCase):
+    """The loop stop against real vllm 0.11 RequestOutput/CompletionOutput objects in DELTA form (skipped without vllm)."""
+
+    def setUp(self):
+        try:
+            from vllm.outputs import CompletionOutput, RequestOutput
+        except ImportError:  # pragma: no cover - vllm is pinned in env/requirements-vllm.lock
+            self.skipTest("vllm is not installed")
+        self.RequestOutput, self.CompletionOutput = RequestOutput, CompletionOutput
+
+    def engine(self, pieces):
+        """step() returns one DELTA RequestOutput per active request, its last piece finished like vLLM's processor."""
+        test = self
+
+        class Engine:
+            def __init__(self):
+                self.active, self.aborted = {}, []
+
+            def add_request(self, request_id, prompt, params):
+                self.active[request_id] = 0
+
+            def abort_request(self, ids):
+                self.aborted += ids
+                for request_id in ids:
+                    self.active.pop(request_id)
+
+            def step(self):
+                outputs = []
+                for request_id in list(self.active):
+                    index = self.active[request_id]
+                    finished = index == len(pieces[request_id]) - 1
+                    completion = test.CompletionOutput(0, "", pieces[request_id][index], None, None,
+                                                       finish_reason="stop" if finished else None)
+                    outputs.append(test.RequestOutput(request_id, None, [1, 2], None, [completion], finished))
+                    self.active[request_id] = index + 1
+                    if finished:
+                        del self.active[request_id]
+                return outputs
+        return Engine()
+
+    def test_pieces_are_joined_and_a_loop_is_aborted(self):
+        from fine_tuning.error_note.collect import delta_ids, loop_stop_info, observe_delta
+
+        block = list(range(64))
+        pieces = {"ok": [[5, 6], [7], [8, 9]], "loop": [block] * 20}
+        engine = self.engine(pieces)
+        rows = list(continuous_stream(engine, iter([{"request_id": "ok"}, {"request_id": "loop"}]), 2,
+                                      lambda r: ("p", None, loop_stop_info(3)),
+                                      lambda o, r, i: {"ids": delta_ids(o, i), "finish": "stop"}, StreamStats(),
+                                      observe=observe_delta,
+                                      partial=lambda o, r, i: {"ids": list(i["ids"]), "finish": "loop_stop"}))
+        by_id = {request["request_id"]: row for request, row in rows}
+        self.assertEqual(by_id["ok"]["ids"], [5, 6, 7, 8, 9])
+        self.assertEqual(by_id["loop"]["finish"], "loop_stop")
+        self.assertEqual(len(by_id["loop"]["ids"]), 64 * 8)  # stopped at the eighth non-overlapping repeat
+        self.assertEqual(engine.aborted, ["loop"])

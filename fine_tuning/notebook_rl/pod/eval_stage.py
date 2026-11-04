@@ -66,7 +66,9 @@ BASE_REF = "manifests/models/baseline.json"
 COMMON = {"version", "commit", "repo_root", "python", "volume_root", "artifact_root", "prereg",
           "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256", "arm", "seeds", "subset_tag"}
 NOT_PATHS = {"version", "run_prefix", "arm", "seeds", "subset_tag", "reuse_export", "eval_slots", "vllm_inprocess"}
-ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417", proof_eval.ARM_V2, proof_eval.ARM_V3)}
+ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417", proof_eval.ARM_V2, proof_eval.ARM_V3,
+                                          proof_eval.ARM_V4)}
+FINAL_ARMS = (proof_eval.ARM_V3, proof_eval.ARM_V4)  # declared before evaluation: reuse_export + verify-v<n>-export
 STAGES = ("eval-f0", "eval-ft")  # planned; eval-course is dropped from the proof (user decision 2026-10-31)
 MMMU_ID = re.compile(r"validation_[A-Za-z_]+_[0-9]{1,3}\Z")
 EXTRA = {"eval-f0": set(),
@@ -102,12 +104,12 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"arm of {stage} must be one of {ARM_OF[stage]}")
     if "vllm_inprocess" in params and params["vllm_inprocess"] is not True:
         raise ValueError("vllm_inprocess must be true when given")
-    if params["arm"] in (proof_eval.ARM_V2, proof_eval.ARM_V3) and (
+    if params["arm"] in (proof_eval.ARM_V2, *FINAL_ARMS) and (
             params["seeds"] != [proof_eval.VARIANTS[proof_eval.GATE_62_VARIANT][1]] or params.get("vllm_inprocess") is not True):
         raise ValueError(f"arm {params['arm']} runs seed 3407 only ({proof_eval.GATE_62_VARIANT}) "
                          "and needs vllm_inprocess true")
-    if params["arm"] == proof_eval.ARM_V3 and params.get("reuse_export") is not True:
-        raise ValueError("FT-NOTE-V3 requires reuse_export true: its final export must be declared before evaluation")
+    if params["arm"] in FINAL_ARMS and params.get("reuse_export") is not True:
+        raise ValueError(f"{params['arm']} requires reuse_export true: its final export must be declared before evaluation")
     seeds = params["seeds"]
     if (not isinstance(seeds, list) or not seeds or any(type(x) is not int or x not in proof_eval.SEEDS for x in seeds)
             or len(set(seeds)) != len(seeds)):
@@ -197,8 +199,9 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
             py, "-m", PROOF, "export", "--checkpoint", p["checkpoint"], "--binding", p["binding"],
             "--base", snapshot, "--output", p["ft_export"], "--code-commit", p["training_commit"]],
             [model_ref, f"{model_path}/export_manifest.json"]))
-    if p["arm"] == proof_eval.ARM_V3:
-        steps.append(_step("verify-v3-export", [py, "-m", PROOF, "verify-v3-export", "--model-ref", model_ref,
+    if p["arm"] in FINAL_ARMS:
+        command = "verify-v3-export" if p["arm"] == proof_eval.ARM_V3 else "verify-v4-export"
+        steps.append(_step(command, [py, "-m", PROOF, command, "--model-ref", model_ref,
                                                 "--checkpoint", p["checkpoint"], "--binding", p["binding"],
                                                 "--prereg", p["prereg"]]))
     runs = [(arm, variant, run_id(p["run_prefix"], arm, variant, p["subset_tag"])) for arm, variant in _runs(stage, p)]

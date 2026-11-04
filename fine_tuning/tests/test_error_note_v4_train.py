@@ -123,6 +123,29 @@ class TrainV4(unittest.TestCase):
         protocol = json.loads((self.root / "control/checkpoint-final/metadata.json").read_text())["protocol"]
         self.assertEqual(protocol["training_contract"]["sft_weights"]["B"], 0.0)
 
+    def test_rl_only_keeps_the_hybrid_schedule_where_only_note_rows_were(self):
+        rows = [rl_row("item-0", 0, "9 10", .5), rl_row("item-0", 1, "11 12", -.5),
+                row("item-16", "A2", "0", "13 14", ROUTE_FULL), row("item-16", KIND_NOTE, "note", "12 13 14", ROUTE_FULL,
+                                                                      prompt="7 8 8 8 11")]
+        self.rows.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        self.assertEqual(t4.schedule_v4(self.rows, self.order, 0, N), (2, [True, True]))
+        self.assertEqual(self.train(self.args(output="hyb")), 0)
+        self.assertEqual(self.train(self.args(output="ctl", arm="rl-only")), 0)
+        hybrid = [json.loads(line) for line in (self.root / "hyb/updates.jsonl").read_text().splitlines()]
+        control = [json.loads(line) for line in (self.root / "ctl/updates.jsonl").read_text().splitlines()]
+        self.assertEqual([u["skipped"] for u in hybrid], [False, False])
+        self.assertEqual([(u["skipped"], u.get("scheduler_only")) for u in control], [(False, None), (True, True)])
+        self.assertEqual([u["step"] for u in control], [1, 2])
+        for name in ("hyb", "ctl"):
+            result = json.loads((self.root / name / "result.json").read_text())
+            self.assertEqual(result["total_steps"], 2)
+            self.assertEqual(json.loads((self.root / name / "checkpoint-final/metadata.json").read_text())["step"], 2)
+        self.assertEqual(json.loads((self.root / "ctl/result.json").read_text())["updates"], 1)
+        protocols = [json.loads((self.root / n / "checkpoint-final/metadata.json").read_text())["protocol"]["optimizer"]
+                     for n in ("hyb", "ctl")]
+        self.assertEqual(protocols[0], protocols[1])  # one LR schedule for both arms
+        self.assertEqual(self.reload("ctl"), 0)
+
     def test_zero_advantage_without_kl_has_no_rl_gradient(self):
         protocol = plain_protocol_v4("bf16", 1, arm="hybrid", round_index=1, start=0, limit=N,
                                      contracts={"rows": "a" * 64, "order": "b" * 64, "init": None})

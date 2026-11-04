@@ -18,7 +18,7 @@ def params(**change):
              "base_model_path": BASE, "rollout_model_path": BASE, "out_root": "/vol/out", "volume_root": "/vol",
              "order_path": "/vol/private/order.json", "training_rules_path": "/vol/private/rules.json",
              "order_sha256": "b" * 64, "training_rules_sha256": "c" * 64, "init_run": None,
-             "reuse_t1_path": None, "reuse_t1_sha256": None}
+             "reuse_t1_path": None, "reuse_t1_sha256": None, "shared_rows_sha256": None}
     return value | change
 
 
@@ -44,6 +44,27 @@ class PlanV4(unittest.TestCase):
         self.assertEqual(train[train.index("--init-run") + 1], "/vol/out/train-r1-hybrid")
         reused = plan_v4.plan_v4(params(reuse_t1_path="/vol/private/t1.jsonl", reuse_t1_sha256="d" * 64))
         self.assertEqual([s["name"] for s in reused["steps"]][2], "pin-reuse-t1")
+
+    def test_control_arm_collection(self):
+        first = plan_v4.plan_v4(params(arm="rl-only", lesson_control=False, shared_rows_sha256="e" * 64))
+        names = [step["name"] for step in first["steps"]]
+        self.assertEqual(names, ["pin-order", "pin-training-rules", "pin-shared-rows", "train", "reload", "export"])
+        self.assertEqual(first["steps"][2]["argv"][-3], "/vol/out/collect-r1/rows.jsonl")
+        later = plan_v4.plan_v4(params(arm="rl-only", lesson_control=False, round=2, start=500, limit=3000,
+                                       init_run="/vol/out/train-r1-rl-only",
+                                       rollout_model_path="/vol/eval-data/proof/export-v4-r1-rl-only/model"))
+        names = [step["name"] for step in later["steps"]]
+        self.assertEqual(names, ["pin-order", "pin-training-rules", "rollout", "rows", "train", "reload", "export"])
+        rollout = later["steps"][names.index("rollout")]["argv"]
+        self.assertEqual(rollout[rollout.index("--output") + 1], "/vol/out/collect-r2-rl-only")
+        hybrid = plan_v4.plan_v4(params(round=2, start=500, limit=3000, init_run="/vol/out/train-r1-hybrid",
+                                        rollout_model_path="/vol/eval-data/proof/export-v4-r1-hybrid/model"))
+        rollout = next(step for step in hybrid["steps"] if step["name"] == "rollout")["argv"]
+        self.assertEqual(rollout[rollout.index("--output") + 1], "/vol/out/collect-r2-hybrid")
+        for change in (dict(arm="rl-only", lesson_control=False), dict(shared_rows_sha256="e" * 64),
+                       dict(arm="rl-only", shared_rows_sha256="e" * 64)):
+            with self.assertRaises(ValueError, msg=str(change)):
+                plan_v4.plan_v4(params(**change))
 
     def test_refusals(self):
         bad = [dict(version="x"), dict(commit="A" * 40), dict(round=2), dict(init_run="/vol/out/r1"),

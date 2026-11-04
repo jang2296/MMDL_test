@@ -185,6 +185,16 @@ python -m fine_tuning.error_note.train_v4 train --rows OUT/rows.jsonl --build-ro
 python -m fine_tuning.error_note.train_v4 reload --run RUN --model-path SNAP --precision bf16
 ```
 
+라운드와 대조군: 1라운드는 F0로 한 번만 수집(`collect-r1`)하고 두 arm이 같은 행으로 학습한다(rl-only는 `shared_rows_sha256`로 그 행을 고정).
+2라운드부터는 arm마다 자기 이전 export로 rollout한다(`collect-r<k>-<arm>`). rl-only는 노트·자기검증·재풀이를 생성하지 않는다.
+rl-only에서 노트 행만 있던 그룹은 가중치를 바꾸지 않고 스케줄러만 한 칸 진행한다(`scheduler_only`). 그래서 두 arm의 학습률과 총 step 수가 같다.
+
+평가 연결:
+- `proof_eval export`는 v4 최종 체크포인트(step = total_steps)만 받고, model_ref에 `training_protocol`을 기록한다.
+- 외부 dev(`evaluate preregister`)는 NOTE = hybrid, NO-NOTE = rl-only 마지막 라운드 export를 받는다. 두 arm은 rows·order·optimizer·라운드가 같아야 하며, init만 다를 수 있다.
+- 최종 MMMU는 `proof_eval preregister --format v6 --ft-v4-model-ref REF`로 FT-HYB-V4 하나를 고정하고, `verify-v4-export` 후 seed 3407·8K·V8로 900문항을 한 번 평가한다.
+  `gate-62`/`gate-67.4`의 최소 정답 수는 559/607이다. `pod.eval_stage`의 `eval-ft`가 FT-HYB-V4를 v3와 같은 규칙으로 계획한다.
+
 CPU 검사: `python -m unittest discover -s fine_tuning/tests -p 'test_error_note_v4*.py'`(작은 무작위 모델·가짜 엔진. 4B 학습 효과의 증거가 아니다).
 
 ## 격리 원칙

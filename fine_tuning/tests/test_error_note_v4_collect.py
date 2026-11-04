@@ -41,11 +41,13 @@ def tok(text):
 class FakeStream:
     """Yields one output per request; `answers(request)` decides the text. Records the requests it saw."""
 
-    def __init__(self, answers):
-        self.answers, self.requests = answers, []
+    def __init__(self, answers, fail_after=None):
+        self.answers, self.requests, self.fail_after = answers, [], fail_after
 
     def __call__(self, requests, stats, stop_after):
         for request in requests:
+            if self.fail_after is not None and len(self.requests) >= self.fail_after:
+                raise RuntimeError("killed")
             self.requests.append(request)
             stats.steps += 1
             stats.step_seconds += .1
@@ -204,6 +206,67 @@ class NotePath(unittest.TestCase):
         receipt = c4.run_resolve_v4(items(), actors(), gates, c4.read_selfcheck(self.out), load, stream, StreamStats(),
                                     grader([]), self.out, round_index=1, **KW)
         self.assertEqual(receipt["eligible"], 0)
+
+
+class EdgeCases(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = Path(self._tmp.name)
+
+    def test_killed_rollout_resumes_to_the_same_groups(self):
+        with self.assertRaises(RuntimeError):
+            c4.run_rollout(items(), actors(), load, FakeStream(rollout_answers, fail_after=5), StreamStats(), grader([]),
+                           self.out, round_index=1, **KW)
+        partial = read_jsonl_done(self.out / "rollouts.jsonl")
+        self.assertEqual(len(partial), 5)
+        resumed = FakeStream(rollout_answers)
+        c4.run_rollout(items(), actors(), load, resumed, StreamStats(), grader([]), self.out, round_index=1, **KW)
+        self.assertTrue(set(partial).isdisjoint(r["request_id"] for r in resumed.requests))
+        self.assertEqual({pid: len(rows) for pid, rows in c4.rollouts_of(self.out).items()},
+                         {"p0": 2, "p1": 4, "p2": 4, "p3": 4})
+
+    def test_round_without_all_wrong_groups_has_an_empty_note_path(self):
+        right = FakeStream(lambda r: (words(40) + " RIGHT", "stop"))
+        c4.run_rollout(items(), actors(), load, right, StreamStats(), grader([]), self.out, round_index=1, **KW)
+        receipt = c4.run_note_v4(items(), actors(), GOLD, load, FakeStream(lambda r: self.fail("note generated")),
+                                 StreamStats(), grader([]), self.out, round_index=1, answer_contract="p0-eval-aligned-v1",
+                                 **KW)
+        self.assertEqual((receipt["note"], receipt["all_wrong_groups"], receipt["passed"]), (None, 0, 0))
+        self.assertEqual(c4.read_gates(self.out), {})
+        c4.run_selfcheck(items(), actors(), {}, load, FakeStream(lambda r: self.fail("probed")), StreamStats(), self.out,
+                         round_index=1, **KW)
+        c4.run_resolve_v4(items(), actors(), {}, c4.read_selfcheck(self.out), load, FakeStream(lambda r: self.fail("resolved")),
+                          StreamStats(), grader([]), self.out, round_index=1, control=True, **KW)
+        rows, _, summary = c4.collect_rows_v4(c4.make_records_v4(items(), actors(), self.out), tok)
+        self.assertEqual(summary["rows_by_kind"], {"A1": 4})
+
+    def test_selfcheck_and_resolve_resume_without_regeneration(self):
+        c4.run_rollout(items(), actors(), load, FakeStream(rollout_answers), StreamStats(), grader([]), self.out,
+                       round_index=1, **KW)
+        note = ("What the image shows: The figure has 3 bars on the left side. The title is short.\n"
+                "Image reading: CORRECT\nCause: REASONING\nWhat went wrong: I misread a bar.\n"
+                "Lesson: Compare each bar with the axis before choosing.")
+        c4.run_note_v4(items(), actors(), GOLD, load, FakeStream(lambda r: (note, "stop")), StreamStats(), grader([]),
+                       self.out, round_index=1, answer_contract="p0-eval-aligned-v1", **KW)
+        gates = c4.read_gates(self.out)
+        with self.assertRaises(RuntimeError):
+            c4.run_selfcheck(items(), actors(), gates, load, FakeStream(lambda r: ("TRUE.", "stop"), fail_after=3),
+                             StreamStats(), self.out, round_index=1, **KW)
+        rest = FakeStream(lambda r: ("TRUE.", "stop"))
+        c4.run_selfcheck(items(), actors(), gates, load, rest, StreamStats(), self.out, round_index=1, **KW)
+        self.assertEqual(len(rest.requests), 2 * v4.PROBE_SEEDS - 3)
+        self.assertEqual(c4.read_selfcheck(self.out)["p2"]["result"], v4.SELF_CONSISTENT)
+        first = FakeStream(lambda r: (words(40) + " wrong", "stop"))
+        c4.run_resolve_v4(items(), actors(), gates, c4.read_selfcheck(self.out), load, first, StreamStats(), grader([]),
+                          self.out, round_index=1, control=True, **KW)
+        again = FakeStream(lambda r: self.fail("regenerated"))
+        c4.run_resolve_v4(items(), actors(), gates, c4.read_selfcheck(self.out), load, again, StreamStats(), grader([]),
+                          self.out, round_index=1, control=True, **KW)
+        self.assertEqual(len(first.requests), 2 * v4.RESOLVE_M)
+        (self.out / c4.GATES_FILE).write_text((self.out / c4.GATES_FILE).read_text().replace("short", "long"))
+        with self.assertRaises(ValueError):  # an edited gates file breaks its digest
+            c4.read_gates(self.out)
 
 
 class CLI(unittest.TestCase):

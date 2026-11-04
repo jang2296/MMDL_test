@@ -36,7 +36,7 @@ from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, MAX_NEW_TOKENS, sample_
 from .answer_contract import _ACCEPT, _FIELDS, _PROVENANCE
 from .collect_v3 import source_identity
 from .order import read_order
-from .protocol import plain_protocol_v3
+from .protocol import plain_protocol_v3, plain_protocol_v4
 
 VERSION = "error-note-external-dev-v1"
 ARMS = ("F0", "NOTE", "NO-NOTE")
@@ -121,8 +121,14 @@ def _models(path: Path, rows_sha256: str) -> dict:
             export = ref.get("export", {})
             protocol = export.get("training_protocol", {})
             contract = protocol.get("training_contract", {})
-            expected = plain_protocol_v3("bf16", protocol.get("optimizer", {}).get("total_steps"),
-                arm="note" if arm == "NOTE" else "no-note", contracts=contract.get("hashes", {}))
+            if protocol.get("version") == "error-note-protocol-v4":  # NOTE = hybrid, NO-NOTE = rl-only (same RL rows)
+                expected = plain_protocol_v4("bf16", protocol.get("optimizer", {}).get("total_steps"),
+                                             arm="hybrid" if arm == "NOTE" else "rl-only",
+                                             round_index=contract.get("round"), start=contract.get("start"),
+                                             limit=contract.get("limit"), contracts=contract.get("hashes", {}))
+            else:
+                expected = plain_protocol_v3("bf16", protocol.get("optimizer", {}).get("total_steps"),
+                    arm="note" if arm == "NOTE" else "no-note", contracts=contract.get("hashes", {}))
             binding = export.get("binding", {})
             if (ref.get("kind") != "merged" or ref.get("base") != {"id": BASE_ID, "revision": BASE_REVISION}
                     or protocol != expected or export.get("step") != expected["optimizer"]["total_steps"]
@@ -137,8 +143,14 @@ def _models(path: Path, rows_sha256: str) -> dict:
         result[arm] = {"model_path": str(model_path), "model_ref": str(model_ref),
                        "model_ref_sha256": file_hash(model_ref), "files_sha256": digest(ref["files"])}
     note, control = (read_json(Path(result[arm]["model_ref"]))["export"]["training_protocol"] for arm in ARMS[1:])
-    if (note["training_contract"]["hashes"] != control["training_contract"]["hashes"]
-            or note["optimizer"] != control["optimizer"]):
+    # v4: each arm chains its own earlier rounds, so only the init checkpoint may differ between the two exports.
+    def shared(protocol: dict) -> dict:
+        hashes = protocol["training_contract"]["hashes"]
+        return {k: v for k, v in hashes.items() if k != "init"} if protocol.get("version") == "error-note-protocol-v4" else hashes
+
+    if (note.get("version") != control.get("version") or shared(note) != shared(control)
+            or note["optimizer"] != control["optimizer"]
+            or any(note["training_contract"].get(k) != control["training_contract"].get(k) for k in ("round", "start", "limit"))):
         raise ValueError("external eval: NOTE and NO-NOTE must share rows/admission/order/optimizer")
     return result
 

@@ -2,7 +2,9 @@
 
 CLI: python -m fine_tuning.error_note.plan_v4 plan --params PARAMS.json --output STEPS.json
 Steps: pin order/rules (and a reused F0 T1) -> rollout -> note -> selfcheck -> resolve -> rows -> train -> reload ->
-export to <volume_root>/eval-data/proof/export-v4-r<round>-<arm>. Generation uses auto KV/concurrency, vLLM prefix
+export to <volume_root>/eval-data/proof/export-v4-r<round>-<arm>. Round 1 collects once (collect-r1, F0) for both arms:
+the rl-only control of round 1 only pins those rows (shared_rows_sha256) and trains. A later round collects per arm
+(collect-r<k>-<arm>) with that arm's previous export; the rl-only control then skips note/selfcheck/resolve. Generation uses auto KV/concurrency, vLLM prefix
 caching and the training-only loop stop (plan section 10.3). The next round's rollout_model_path is this export's model.
 
 params (`error-note-plan-params-v4`): exactly PARAM_KEYS; paths are canonical absolute paths; private inputs
@@ -32,7 +34,8 @@ PATHS = ("python", "repo_root", "build_root", "base_model_path", "rollout_model_
 OPTIONAL_PATHS = ("init_run", "reuse_t1_path")
 HASHES = ("order_sha256", "training_rules_sha256")
 PARAM_KEYS = {"version", "commit", "round", "start", "limit", "arm", "lesson_control", "max_num_batched_tokens",
-              "token_budget", "gradient_checkpointing", "timeouts", "reuse_t1_sha256", *PATHS, *OPTIONAL_PATHS, *HASHES}
+              "token_budget", "gradient_checkpointing", "timeouts", "reuse_t1_sha256", "shared_rows_sha256",
+              *PATHS, *OPTIONAL_PATHS, *HASHES}
 
 
 def _path(value: Any, key: str) -> str:
@@ -76,6 +79,12 @@ def check(params: Any) -> dict[str, Any]:
         raise ValueError("reuse_t1_path and reuse_t1_sha256 go together, in round 1 only")
     if params["arm"] not in ARMS or type(params["lesson_control"]) is not bool:
         raise ValueError(f"arm must be one of {ARMS}; lesson_control a boolean")
+    shared = params["shared_rows_sha256"]
+    first_control = params["arm"] == "rl-only" and params["round"] == 1
+    if first_control != (shared is not None) or (shared is not None and not HEX64.fullmatch(str(shared))):
+        raise ValueError("shared_rows_sha256 pins the round-1 hybrid rows; it is required for rl-only round 1 only")
+    if params["arm"] == "rl-only" and (params["lesson_control"] or params["reuse_t1_path"] is not None):
+        raise ValueError("the rl-only control collects no notes: lesson_control false and no reused T1")
     if params["gradient_checkpointing"] not in ("on", "off"):
         raise ValueError('gradient_checkpointing must be "on" or "off"')
     timeouts = params["timeouts"]
@@ -87,7 +96,9 @@ def check(params: Any) -> dict[str, Any]:
 
 def steps_v4(p: dict[str, Any]) -> list[dict[str, Any]]:
     py, out, timeouts = p["python"], p["out_root"], p["timeouts"]
-    collect_dir, run = f"{out}/collect-r{p['round']}", f"{out}/train-r{p['round']}-{p['arm']}"
+    # Round 1 rolls out F0 once for both arms; later rounds roll out each arm's own previous model.
+    collect_dir = f"{out}/collect-r1" if p["round"] == 1 else f"{out}/collect-r{p['round']}-{p['arm']}"
+    run = f"{out}/train-r{p['round']}-{p['arm']}"
     export = f"{p['volume_root']}/eval-data/proof/export-v4-r{p['round']}-{p['arm']}"
     collect, train, chain = [py, "-m", COLLECT_V4], [py, "-m", TRAIN_V4], [py, "-m", CHAIN]
     slice_args = ["--round", str(p["round"]), "--build-root", p["build_root"], "--order", p["order_path"],
@@ -103,6 +114,8 @@ def steps_v4(p: dict[str, Any]) -> list[dict[str, Any]]:
     if p["reuse_t1_path"] is not None:
         pins.append(("reuse-t1", p["reuse_t1_path"], p["reuse_t1_sha256"]))
         reuse = ["--reuse-t1", p["reuse_t1_path"], "--reuse-t1-sha256", p["reuse_t1_sha256"]]
+    if p["shared_rows_sha256"] is not None:
+        pins.append(("shared-rows", f"{collect_dir}/rows.jsonl", p["shared_rows_sha256"]))
     steps = [_step(f"pin-{name}", [*chain, "pin", "--file", path, "--sha256", digest], [], "collect", timeouts)
              for name, path, digest in pins]
     train_args = ["--rows", f"{collect_dir}/rows.jsonl", "--build-root", p["build_root"], "--order", p["order_path"],
@@ -110,17 +123,24 @@ def steps_v4(p: dict[str, Any]) -> list[dict[str, Any]]:
                   "--arm", p["arm"], "--precision", "bf16", "--model-path", p["base_model_path"], "--output", run,
                   "--code-commit", p["commit"], "--token-budget", str(p["token_budget"]),
                   *(["--init-run", p["init_run"]] if p["init_run"] is not None else [])]
-    return steps + [
-        _step("rollout", [*collect, "rollout", *slice_args, *engine, *reuse],
-              [f"{collect_dir}/rollouts.jsonl", f"{collect_dir}/receipt-rollouts.json"], "collect", timeouts),
+    rollout = _step("rollout", [*collect, "rollout", *slice_args, *engine, *reuse],
+                    [f"{collect_dir}/rollouts.jsonl", f"{collect_dir}/receipt-rollouts.json"], "collect", timeouts)
+    notes = [
         _step("note", [*collect, "note", *slice_args, *engine], [f"{collect_dir}/gates-v4.json"], "collect", timeouts),
         _step("selfcheck", [*collect, "selfcheck", *slice_args, *engine], [f"{collect_dir}/selfcheck-v4.json"],
               "collect", timeouts),
         _step("resolve", [*collect, "resolve", *slice_args, *engine,
                           *(["--lesson-control"] if p["lesson_control"] else [])],
-              [f"{collect_dir}/receipt-resolve.json"], "collect", timeouts),
-        _step("rows", [*collect, "rows", *slice_args, "--tokenizer-path", p["base_model_path"]],
-              [f"{collect_dir}/rows.jsonl", f"{collect_dir}/rows_summary.json"], "collect", timeouts),
+              [f"{collect_dir}/receipt-resolve.json"], "collect", timeouts)]
+    rows = _step("rows", [*collect, "rows", *slice_args, "--tokenizer-path", p["base_model_path"]],
+                 [f"{collect_dir}/rows.jsonl", f"{collect_dir}/rows_summary.json"], "collect", timeouts)
+    if p["shared_rows_sha256"] is not None:
+        collection: list[dict[str, Any]] = []  # rl-only round 1 trains on the pinned F0 rows of the hybrid round 1
+    elif p["arm"] == "rl-only":
+        collection = [rollout, rows]  # its rows keep RL and A1 only, so no note, self-check or re-solve is generated
+    else:
+        collection = [rollout, *notes, rows]
+    return steps + collection + [
         _step("train", [*train, "train", *train_args, "--gradient-checkpointing", p["gradient_checkpointing"], "--resume"],
               [f"{run}/checkpoint-final/metadata.json", f"{run}/result.json"], "train", timeouts),
         _step("reload", [*train, "reload", "--run", run, "--model-path", p["base_model_path"], "--precision", "bf16"],
