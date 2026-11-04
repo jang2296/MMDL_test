@@ -37,6 +37,10 @@ from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V3
                        build_rows, build_rows_v2, hint_leak, is_loop, note_prompt, note_prompt_v2, note_prompt_v3,
                        parse_note, parse_note_v2, resolve_prompt, sample_seed)
 from .order import read_order
+from .v4 import BlockRepetition
+
+LOOP_STOP_FINISH = "loop_stop"  # finish_reason of a version-4 training rollout stopped by v4.BlockRepetition
+WAIT = object()  # a request iterator's "nothing to add until the next engine step" (version-4 adaptive rollouts)
 
 PREFETCH_WORKERS = 8
 THROUGHPUT_EVERY = 60.0
@@ -255,13 +259,19 @@ def install_training_guards(build_root: Path, *, vllm_schema: dict | None = None
 
 def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare: Callable, finish: Callable,
                       stats: StreamStats, *, stop_after: float | None = None,
-                      clock: Callable[[], float] = time.monotonic) -> Iterator[tuple[dict, dict]]:
+                      clock: Callable[[], float] = time.monotonic, observe: Callable | None = None,
+                      partial: Callable | None = None) -> Iterator[tuple[dict, dict]]:
     """Keep `limit` requests active on `engine` (add_request/abort_request/step), yield (request, output dict) per finish.
 
     prepare(request) -> (prompt, params, info), raising InputTooLong to record the item without generating.
     finish(engine_output, request, info) -> output dict. Request dicts need a unique "request_id".
     After `stop_after` seconds the active requests are aborted and the stream ends with stats.stopped_early.
+    Optional (version 4 training rollouts only): observe(engine_output, info) -> True aborts that unfinished request,
+    which is then yielded as partial(engine_output, request, info). Without observe every output is unchanged.
+    The request iterator may yield WAIT while requests are active: filling resumes after the next engine step.
     """
+    if (observe is None) != (partial is None):
+        raise ValueError("observe and partial go together")
     if limit < 1:
         raise ValueError("limit must be at least 1")
     stop_at = None if stop_after is None else clock() + stop_after
@@ -277,6 +287,10 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
             request = next(iterator, None)
             if request is None:
                 exhausted = True
+                return
+            if request is WAIT:
+                if not active and not blocked:
+                    raise RuntimeError("request iterator waits with nothing active")
                 return
             request_id = request["request_id"]
             if request_id in seen:
@@ -296,7 +310,12 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
             while blocked:
                 yield blocked.popleft()
             if not active:
-                break
+                if exhausted:
+                    break
+                fill()  # only after WAIT: the iterator may have waited on the rows just yielded
+                if not active and not blocked:
+                    break
+                continue
             if stop_at is not None and clock() >= stop_at:
                 stats.stopped_early = True
                 break
@@ -315,6 +334,12 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
                 if output.finished:
                     del active[output.request_id]
                     row = finish(output, state["request"], state["info"])
+                    row["seconds"] = state["seconds"]
+                    yield state["request"], row
+                elif observe is not None and partial is not None and observe(output, state["info"]):
+                    engine.abort_request([output.request_id])
+                    del active[output.request_id]
+                    row = partial(output, state["request"], state["info"])
                     row["seconds"] = state["seconds"]
                     yield state["request"], row
             if stats.on_step is not None:
@@ -660,8 +685,12 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
             raise RuntimeError("collect: vllm==0.11.0 required")
         began = time.monotonic()
         model_path = str(args.model_path)
+        loop_stop = bool(getattr(args, "loop_stop", False))
         kwargs = vllm_kwargs(Path(model_path), IMAGE, int(kv["kv_cache_gib_resolved"] * 2**30), args.max_num_seqs, CONTEXT_LIMIT,
-                             gpu_memory_utilization=float(args.gpu_memory_utilization))
+                             gpu_memory_utilization=float(args.gpu_memory_utilization),
+                             enable_prefix_caching=bool(getattr(args, "prefix_caching", False)))
+        if kwargs["enable_prefix_caching"] or loop_stop:  # version-4 options only; earlier receipts are unchanged
+            stats_.receipt_extra |= {"prefix_caching": kwargs["enable_prefix_caching"], "loop_stop": loop_stop}
         kwargs |= {"max_num_batched_tokens": args.max_num_batched_tokens, "disable_log_stats": False}
         processor = AutoProcessor.from_pretrained(model_path, local_files_only=True, min_pixels=IMAGE["min_pixels"],
                                                   max_pixels=IMAGE["max_pixels"])
@@ -671,7 +700,7 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
         stats.startup_seconds = time.monotonic() - began
         stats.metrics = lambda: vllm_metrics(llm)
 
-        def prepare(request: dict) -> tuple[dict, Any, int]:
+        def prepare(request: dict) -> tuple[dict, Any, Any]:
             item, images = prepare_protocol_inputs(processor, config, request["messages"], request["images"], IMAGE)
             if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
                 raise InputTooLong(f"{item['input_tokens']} input + {request['max_tokens']} output tokens exceed {CONTEXT_LIMIT}")
@@ -679,20 +708,40 @@ def _vllm_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream
             params = SamplingParams(n=1, temperature=QWEN_OFFICIAL.temperature, top_p=QWEN_OFFICIAL.top_p,
                                     top_k=QWEN_OFFICIAL.top_k, repetition_penalty=QWEN_OFFICIAL.repetition_penalty,
                                     presence_penalty=QWEN_OFFICIAL.presence_penalty, max_tokens=request["max_tokens"],
-                                    seed=request["seed"], output_kind=RequestOutputKind.FINAL_ONLY)
-            return {"prompt": item["chat_prompt"], "multi_modal_data": {"image": images}}, params, item["input_tokens"]
+                                    seed=request["seed"],
+                                    output_kind=RequestOutputKind.DELTA if loop_stop else RequestOutputKind.FINAL_ONLY)
+            info = ({"input_tokens": item["input_tokens"], "ids": [], "detector": BlockRepetition()} if loop_stop
+                    else item["input_tokens"])
+            return {"prompt": item["chat_prompt"], "multi_modal_data": {"image": images}}, params, info
 
-        def finish(output: Any, request: dict, info: int) -> dict:
+        def finish(output: Any, request: dict, info: Any) -> dict:
             if len(output.outputs) != 1:
                 raise RuntimeError("vLLM did not return exactly one sampled completion")
             completion = output.outputs[0]
-            ids = list(completion.token_ids)
+            if loop_stop:  # DELTA outputs: the earlier pieces were collected by observe
+                ids = info["ids"] + list(completion.token_ids)
+                prompt_tokens = info["input_tokens"]
+            else:
+                ids = list(completion.token_ids)
+                prompt_tokens = len(output.prompt_token_ids)
             return {"text": processor.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False),
                     "finish_reason": completion.finish_reason or "unknown",
-                    "prompt_tokens": len(output.prompt_token_ids), "completion_tokens": len(ids)}
+                    "prompt_tokens": prompt_tokens, "completion_tokens": len(ids)}
+
+        def observe(output: Any, info: dict) -> bool:
+            piece = list(output.outputs[0].token_ids)
+            info["ids"].extend(piece)
+            return info["detector"].feed(piece)
+
+        def partial(output: Any, request: dict, info: dict) -> dict:
+            return {"text": processor.tokenizer.decode(info["ids"], skip_special_tokens=True,
+                                                       clean_up_tokenization_spaces=False),
+                    "finish_reason": LOOP_STOP_FINISH, "prompt_tokens": info["input_tokens"],
+                    "completion_tokens": len(info["ids"])}
 
         yield from continuous_stream(llm.llm_engine, requests, args.max_num_seqs, prepare, finish, stats_,
-                                     stop_after=stop_after)
+                                     stop_after=stop_after, observe=observe if loop_stop else None,
+                                     partial=partial if loop_stop else None)
 
     return stream
 
@@ -720,7 +769,7 @@ def _hf_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream:
     """Local NF4 functional runs: one sequence at a time, like pod/gpu_smoke.py."""
     def stream(requests: Iterable[dict], stats_: StreamStats, stop_after: float | None) -> Iterator[tuple[dict, dict]]:
         import torch
-        from transformers import GenerationConfig, LogitsProcessorList
+        from transformers import GenerationConfig, LogitsProcessorList, StoppingCriteria, StoppingCriteriaList
 
         from fine_tuning.error_note.protocol import ARM, plain_protocol
         from fine_tuning.notebook_rl.engines import QWEN_OFFICIAL as SAMPLING
@@ -735,6 +784,8 @@ def _hf_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream:
         eos_ids = set(base.eos_token_id) if isinstance(base.eos_token_id, list) else {base.eos_token_id}
         stop_at = None if stop_after is None else time.monotonic() + stop_after
         for request in requests:
+            if request is WAIT:  # one sequence at a time: every earlier request is already finished and handled
+                raise RuntimeError("the sequential HF engine cannot wait for unfinished requests")
             if stop_at is not None and time.monotonic() >= stop_at:
                 stats_.stopped_early = True
                 return
@@ -749,15 +800,27 @@ def _hf_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream:
                 eos_token_id=base.eos_token_id, pad_token_id=base.pad_token_id, use_cache=True)
             torch.manual_seed(request["seed"])
             began = time.monotonic()
+            detector = BlockRepetition() if getattr(args, "loop_stop", False) else None
+
+            class _LoopStop(StoppingCriteria):  # version-4 training rollouts only
+                def __call__(self, input_ids, scores, **kwargs):  # type: ignore[no-untyped-def]
+                    assert detector is not None
+                    return torch.full((input_ids.shape[0],), detector.feed([int(input_ids[0, -1])]),
+                                      dtype=torch.bool, device=input_ids.device)
+
+            stopping = StoppingCriteriaList([_LoopStop()]) if detector is not None else None
             # The Merger masters are FP32 while the frozen base computes in BF16 (policy._logprobs uses the same autocast).
             with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                 generated = model.generate(
                     **item["inputs"].to("cuda:0"), generation_config=config, use_model_defaults=False,
-                    logits_processor=LogitsProcessorList([GeneratedOnlyPresencePenalty(length, SAMPLING.presence_penalty)]))
+                    logits_processor=LogitsProcessorList([GeneratedOnlyPresencePenalty(length, SAMPLING.presence_penalty)]),
+                    **({"stopping_criteria": stopping} if stopping is not None else {}))
             torch.cuda.synchronize()
             seconds = time.monotonic() - began
             ids = getattr(generated, "sequences", generated)[0, length:].tolist()
             finish_reason = "stop" if ids and ids[-1] in eos_ids else "length"
+            if detector is not None and detector.found and finish_reason == "length" and len(ids) < request["max_tokens"]:
+                finish_reason = LOOP_STOP_FINISH
             if finish_reason == "stop":
                 ids = ids[:-1]
             stats_.steps += len(ids)

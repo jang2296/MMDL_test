@@ -151,6 +151,42 @@ v3 Pod의 `out_root`는 해당 job `run_dir` 안에 둔다. `pod.collect pack`�
 chain·필수 산출물을 확인하고 수집/학습/체크포인트를 함께 회수한다. 밖에 저장된 merged export는 별도로 회수해야 한다.
 실패 결과는 실패 상태로 보존하고, 로컬 무결성 확인 뒤에만 이 작업이 만든 Pod와 저장소를 삭제한다.
 
+## 버전 4: RL + 오답노트 SFT (`claudedocs/plan_rl_sft_hybrid_v4_20261104.md`)
+
+v1–v3 명령·출력·protocol hash는 그대로다. v4는 별도 모듈(`v4.py`, `rl.py`, `collect_v4.py`, `train_v4.py`, `plan_v4.py`)로만 실행한다.
+한 라운드는 순서 파일의 `--start`/`--limit` 구간이다. 1라운드는 F0에서, 다음 라운드는 이전 라운드의 `checkpoint-final`(`--init-run`)과 그 export 모델로 rollout한다.
+
+1. `collect_v4 rollout`: 정답 없이 P0로 j=0,1을 풀고, 둘 다 맞지 않은 문항만 j=2,3을 더 푼다(엔진 1회, `rollouts.jsonl`).
+   `--reuse-t1`(1라운드만)은 F0 첫 풀이를 j=0으로 쓰고 현재 계약으로 다시 채점한다. `--loop-stop`은 같은 64토큰 블록이 8회 반복되는 학습 표본을
+   멈추고 보상 0(`LOOP_STOPPED`)으로 둔다. 평가에는 쓰지 않으며 8192 상한은 그대로다. `--prefix-caching`은 vLLM prefix caching이다.
+2. `collect_v4 note`: 전부 틀린 그룹만 정답을 본 v2 노트를 쓴다. 같은 프로세스에서 프로그램 게이트(형식, MISREAD+NONE 모순, 보기 문자·정답 문구·
+   정답 보기 문장, `--leak-terms`의 별칭·약어, 압축 반복)를 적용해 `gates-v4.json`을 쓴다. 이 파일에는 통과한 교훈과 확인 가능한 이미지 주장만 있고
+   정답 문자열이나 실패한 교훈은 없다. **사람·AI 내용 검토를 학습 수용 조건으로 쓰지 않는다.**
+3. `collect_v4 selfcheck`: 정답 없이 이미지와 주장 한 문장만 보고 TRUE/FALSE/CANNOT_TELL로 2번 답한다. 하나라도 FALSE면 자기모순으로 노트를 쓰지 않는다.
+   같은 모델의 재확인이라 정확성 증명이 아니다(`reviewer_kind=program+self`).
+4. `collect_v4 resolve`: 교훈 + P0로 2회 다시 푼다. `--lesson-control`은 같은 seed로 교훈 없이 P0만 2회 더 풀어 교훈 효과를 비교한다(같은 파일, `lesson` 필드).
+5. `collect_v4 rows`: `v4.build_rows_v4`. MIXED 그룹 → RL 행(보상 − 그룹 평균, 잘리거나 멈춘 표본은 끝 토큰 없음),
+   ALL_CORRECT → 유지용 A1 1행, ALL_WRONG → 정답 재풀이 A2(입력은 교훈 없는 P0) + 노트 B(자기검증 일치 또는 A2가 있을 때).
+6. `train_v4 train`: 16문항당 1회 갱신. 손실 = RL 항(그룹 행동 토큰 정규화, old = 현재 정책 detach, F0 기준 k3 KL 0.02)
+   + 0.5·A2 + 0.05·B + 0.05·A1(행 평균 NLL). 없는 종류는 0이며 다시 정규화하지 않는다. `--arm rl-only`는 같은 RL·A1 행에서 A2·B만 뺀 대조군이다.
+   `train_v4 dry-run`(≤10문항)은 종류별 역전파·기울기 경로·가중치 불변만 확인한다. `train_v4 reload`는 새 프로세스 재로딩 검사다.
+7. `plan_v4 plan --params P --output STEPS`: 위 단계와 reload·export를 담은 라운드 하나의 Pod chain spec(`error-note-plan-params-v4`).
+
+```bash
+C="--round 1 --build-root V --order O --start 0 --limit 500 --output OUT --training-rules RULES --training-rules-sha256 SHA"
+E="--model-path SNAP --engine vllm --kv-cache-gib auto --max-num-seqs auto --prefix-caching --loop-stop"
+python -m fine_tuning.error_note.collect_v4 rollout $C $E [--reuse-t1 T1.jsonl --reuse-t1-sha256 H]
+python -m fine_tuning.error_note.collect_v4 note $C $E
+python -m fine_tuning.error_note.collect_v4 selfcheck $C $E
+python -m fine_tuning.error_note.collect_v4 resolve $C $E --lesson-control
+python -m fine_tuning.error_note.collect_v4 rows $C --tokenizer-path SNAP
+python -m fine_tuning.error_note.train_v4 train --rows OUT/rows.jsonl --build-root V --order O --round 1 --start 0 --limit 500 \
+  --arm hybrid --precision bf16 --model-path SNAP --output RUN --code-commit HEX --token-budget 24000 --resume
+python -m fine_tuning.error_note.train_v4 reload --run RUN --model-path SNAP --precision bf16
+```
+
+CPU 검사: `python -m unittest discover -s fine_tuning/tests -p 'test_error_note_v4*.py'`(작은 무작위 모델·가짜 엔진. 4B 학습 효과의 증거가 아니다).
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

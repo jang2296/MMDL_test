@@ -17,7 +17,7 @@ Pod 151개(비공개 데이터 부재 skip 2), V8 파서 20개 통과, Ruff·`er
 
 1. **방향**: 현재 v3(정답 노트 SFT 중심)를 **RL 주도 + 오답노트 SFT 보조**로 바꾼다. 학습 문제마다 Qwen이 정답 없이 여러 번(n=4) 풀고,
    프로그램이 채점해 맞은 풀이를 강화한다(GRPO 계열). **전부 틀린 문제에서만** Qwen이 정답을 보고 오답노트를 쓴다. 그 교훈만 보고
-   **같은 seed로** 다시 푼 정답을 힌트 없는 문제 입력의 학습 목표로 추가한다. 모든 생성은 Qwen 자신이 하고, 채점은 프로그램이 하며,
+   다시 푼 정답을 힌트 없는 문제 입력의 학습 목표로 추가한다(교훈 효과는 같은 새 seed의 교훈 없는 대조 샘플과 비교, §3.3). 모든 생성은 Qwen 자신이 하고, 채점은 프로그램이 하며,
    상위 AI 검토는 학습 수용 판단에서 뺀다.
 2. **왜 바꾸는가**: v2는 3,417문항 학습으로 900문항 +3(65 획득/62 손실, p=0.86)에 그쳤다 [확인]. 감독의 92.9%가 이미 맞히던 첫 풀이였고,
    오답을 교정한 재풀이 신호는 2.2%였다 [확인]. RL은 **스스로 맞힐 수 있는 문제의 성공률을 직접 올리고**, 출력이 잘리면 보상이 0이라
@@ -98,7 +98,7 @@ Pod 151개(비공개 데이터 부재 skip 2), V8 파서 20개 통과, Ruff·`er
 | MMMU/MMMU-Pro 모든 split·파생물 학습 | 금지 | 금지, 제외 인덱스로 차단 | 유지 |
 | 평가: 문항당 1회 생성·답 하나 | 유지 | 유지 (best-of-N·다수결·재순위 금지) | 유지 |
 | 학습 첫 풀이 | 1회 | **n=4회**(같은 문제를 여러 번 풀어 정오 비교) | **[결정 필요] D1** |
-| 교훈 재풀이 | 1회 | **m=2회**(첫 두 rollout과 같은 seed) | **[결정 필요] D1** |
+| 교훈 재풀이 | 1회 | **m=2회** + 선택적 교훈 없는 대조 m=2회(같은 새 seed) | **[결정 필요] D1** |
 | 노트·풀이 내용 수용 | 사람/AI 검토 receipt | **Qwen 자기검증 + 프로그램 검증**, AI 검토는 감사 표본에만 | **[결정 필요] D2** |
 | 학습 방식 | SFT (A 0.9 + B 0.1) | RL(GRPO) + SFT 보조(A2·B·소량 A1) | 이 계획의 핵심 |
 | 생성 상한 | 8,192 | 학습 8,192 유지 | 유지 |
@@ -124,7 +124,7 @@ F0(원본 BF16) ─▶ 라운드 1(파일럿 500문항) ─▶ gate ─▶ 라�
 각 라운드:
   ① 직전 체크포인트를 병합 export → vLLM으로 이번 라운드 문항 rollout 생성(정답 없음, n=4)
   ② 별도 프로세스 채점(training-answer-v2 확장)
-  ③ 전부 틀린 문항만: 노트 생성 → 자동 gate → Qwen 자기검증 → 교훈 재풀이(같은 seed, m=2) → 채점
+  ③ 전부 틀린 문항만: 노트 생성 → 자동 gate → Qwen 자기검증 → 교훈 재풀이(m=2, 선택적 교훈 없는 대조) → 채점
   ④ 학습 행 고정(admission) → PyTorch에서 RL 손실 + SFT 손실로 갱신(문항 16개당 1회)
   ⑤ 체크포인트 저장 → 새 프로세스 재로딩 검사 → 병합 export
 ```
@@ -167,8 +167,10 @@ RTX 6000 Ada에서 실제로 성공했다(갱신 428, 재로딩 차 0). v4는 �
      재확인에서는 3)를 걸러내는 장치다. `human_verified=false`, `reviewer_kind=program+self`로 기록한다.
    - **프로그램 대조 가능 출처**: Geometry3K/PGPS 도형 논리식, FinQA 표 셀, ChartQA 원본 표, MapQA 메타데이터, CircuitVQA 부품 주석,
      TriView2CAD 치수 주석이 있는 문항은 수치 주장을 제작자 주석과 프로그램으로 대조한다(`source_evidence.py` 확장).
-4. **교훈 재풀이(같은 seed 대조)**: `resolve_prompt(P0, lesson)`으로 **seed_0, seed_1을 그대로** 써서 2회 푼다.
-   같은 seed의 교훈 없는 결과(rollout j=0,1)는 이미 오답이다. 그래서 **교훈을 넣었을 때만 맞은 경우**가 같은 seed 대조로 바로 측정된다.
+4. **교훈 재풀이와 교훈 없는 대조**: `resolve_prompt(P0, lesson)`으로 새 seed `v4_seed(pid, r, "resolve", j)`를 써서 2회 푼다.
+   `--lesson-control`을 켜면 **같은 새 seed로 교훈 없이 P0만** 2회 더 푼다. 두 샘플은 교훈 블록만 다르다.
+   (2026-11-04 정정: 초판은 "rollout j=0,1과 같은 seed를 쓰면 교훈 효과가 바로 측정된다"고 썼다. 프롬프트가 다르면
+   seed가 같아도 생성 궤적이 달라지고, rollout은 "전부 오답"으로 골라진 표본이라 비교 기준이 될 수 없다. 그래서 대조 샘플을 따로 만든다.)
    [확인] v3에서는 재풀이 seed가 달라 교훈 효과와 재추첨 효과를 분리할 수 없었다(분석 §6).
 5. **수용 행**:
    - A2 = 정답이 된 재풀이 원문. 입력은 **교훈 없는 P0**이다. 길이·반복·누설 문구 gate를 적용한다. 32토큰 하한은 단답형 과제에서만
@@ -191,7 +193,7 @@ RTX 6000 Ada에서 실제로 성공했다(갱신 428, 재로딩 차 0). v4는 �
 L = L_RL + λ_A2 · mean(NLL_A2) + λ_B · mean(NLL_B) + λ_A1 · mean(NLL_A1)
 
 L_RL = (1/|G|) Σ_g group_loss(cur, old, ref, adv_g, mask, keep;
-                              eps_low=0.2, eps_high=0.28, beta=0.02, norm_const=n·L_cap)
+                              eps_low=0.2, eps_high=0.28, beta=0.02, norm_const=그룹 행동 토큰 수)
 ```
 
 | 기호 | 값(후보) | 근거 |
@@ -199,7 +201,7 @@ L_RL = (1/|G|) Σ_g group_loss(cur, old, ref, adv_g, mask, keep;
 | n, L_cap | 4, 8192 | 비용·현재 상한 |
 | eps_low / eps_high | 0.2 / 0.28 | PPO clip + 상한 확대(DAPO식). `losses.group_loss`가 지원 [확인] |
 | beta (k3 KL, F0 기준) | 0.02 | 기존 RL 경로 KL .01. v2의 62문항 손실을 줄이기 위해 소폭 상향 [추정] |
-| norm_const | n·L_cap | 기존 관례 "group sum / (n_g·L_cap)": 긴 출력이 손실을 더 받지 않음 [확인] |
+| norm_const | 그룹의 행동 토큰 수 합 | 토큰 평균(DAPO식). 초판의 n·L_cap(8,192)은 RL 항을 SFT 항보다 수십 배 작게 만들어 구현에서 바꿨다. 그룹 안에서 마이크로배치로 나눠도 합이 같다 |
 | λ_A2 | 0.5 | A2는 같은 문제에서 RL이 못 준 신호. NLL 0.95로 정보량이 큼(§17.10) [확인] |
 | λ_B | 0.05 | 노트 내용 미보증. v3의 0.1에서 하향 |
 | λ_A1 | 0.05 | 유지용. 이미 맞히던 풀이(NLL 0.23)는 정보량이 작음 |
@@ -301,7 +303,7 @@ v2의 손실 62문항이 이득 65를 상쇄했다 [확인]. v4는 다음을 함
 - `old_logprobs(bundle, encoded)`: 라운드 시작 체크포인트로 no-grad 계산 후 디스크 저장(라운드 학습 시작 전 1회).
 - `ref_logprobs(bundle, encoded)`: adapter 비활성 F0, no-grad.
 - `rl_group_loss(cur, old, ref, rewards, mask)`: `losses.group_advantages` → `losses.mis_mask`(vLLM 대비) →
-  `losses.group_loss(eps_low, eps_high, beta, norm_const=n·L_cap)`. 새 수식을 만들지 않는다.
+  `losses.group_loss(eps_low, eps_high, beta, norm_const=그룹 행동 토큰 수)`. 새 수식을 만들지 않는다.
 
 **(5) `error_note/train.py`**
 - `_read_groups_v4`: 순서 파일의 16문항 그룹마다 RL_SAMPLE·A2·B·A1_RETAIN을 모은다. RL 신호도 A2도 없는 그룹은 비활성으로 기록한다.
@@ -358,8 +360,8 @@ pool-v4 build ─(exclusion scan: registry→engines→assemble→apply)─▶ p
 |---|---|
 | seed 분리 | v4 rollout seed가 평가 seed·v3 seed와 겹치지 않음 |
 | 그룹 분류 | 0/4·1/4·4/4·UNVERIFIABLE 혼합 |
-| RL 손실 | advantage 0 그룹은 기울기 0, mis 제외, clip 경계, KL 0일 때 순수 PG와 일치, norm_const 길이 독립 |
-| 같은 seed 대조 | 재풀이 seed가 rollout j=0,1과 같음. 교훈 블록 외 입력 동일 |
+| RL 손실 | advantage 0 그룹은 기울기 0, KL 0일 때 순수 PG와 일치, 마이크로배치 분할 합 = 그룹 전체 |
+| 교훈 대조 | 재풀이와 대조 샘플의 seed가 같고 입력은 교훈 블록만 다름 |
 | 자기검증 | 주장 추출 결정성, 정답·노트 비노출, FALSE 하나면 기각, INVALID 처리 |
 | 행 수용 | A2 입력이 교훈 없는 P0, 누설 재풀이 거부, 블록 반복 거부, 단답 계약 상한 |
 | 손실 결합 | λ=0이면 해당 항 기울기 0, λ_B만 0일 때 RL-ONLY arm과 기울기 일치 |
@@ -535,7 +537,7 @@ MMMU 문항은 쓰지 않는다. 같은 **능력**을 요구하는 다른 문제
 |---|---|---|---|
 | 외부 dev(학습과 가족 분리) | 군집별 약 55문항 × 8 = 약 450(절약형). F0 / HYB(라운드 1 뒤) / HYB 최종 | 라운드 1 뒤, 최종 뒤 | 가족 단위 bootstrap 95% 구간. 0을 포함하면 HOLD |
 | 유지셋 | 강한 과목 계열 150문항 | 매 라운드 뒤 | F0 대비 2SE 이상 하락 시 중단 |
-| 교훈 효과 | 같은 seed 대조(§3.3)의 회복률 | 매 라운드 | 교훈 없는 회복률 대비 차이를 보고. 0에 가까우면 노트 경로 축소 검토 |
+| 교훈 효과 | 교훈 재풀이 회복률 vs 같은 seed의 교훈 없는 대조 회복률(§3.3) | 매 라운드 | 차이를 보고. 0에 가까우면 노트 경로 축소 검토 |
 | **MMMU validation 900** | 사전 등록 최종 체크포인트 1개, seed 3407, P0·V8, 문항당 1회 | 최종 | 559 / 607 / 630 문턱. **같은 조건 F0와 짝 비교** 함께 보고 |
 | MMMU-Pro Standard 10지 | 수업 지정 최종 평가(단계 F) | 예산이 남으면 | validation 선택 편향이 없는 확인 |
 
@@ -556,7 +558,7 @@ MMMU 문항은 쓰지 않는다. 같은 **능력**을 요구하는 다른 문제
 | **S0 결정** | 11/4–5 | §13의 D1–D5 결정 | 결정 기록(CLAUDE.md §2 갱신 포함) | 사용자 결정 | $0 |
 | **S1 데이터** | 11/5–8 | 출처 확정 → 어댑터 → 후보 추출 → 품질 필터 → 오염 검사 → 3,500 동결 → dev/sealed 분리 | `source_registry_v4`, `pool-v4` freeze, `order-v4.json`, 오염 receipt | 군집별 공급표, 제외 내역 전부 기록 | $0 (CPU; SSCD/SigLIP는 로컬 GPU 또는 CPU) |
 | **S2 코드** | 11/5–8 (S1과 병렬) | §4 구현, CPU 검사, Ruff·mypy, 독립 코드 검토 | 새 commit(MMDL_test feature branch) | 신규 검사 + 기존 584개 회귀 통과 | $0 |
-| **S3 로컬 NF4** | 11/8–9 | 고정 2문항 → 10문항: rollout n=4 → 그룹 분류 → 노트·gate·자기검증·같은 seed 재풀이 → RL+SFT dry-run → **실제 1회 갱신·저장·새 프로세스 재로딩** | dry_run/updates/reload receipt | MIXED 그룹 RL 기울기 비영, A2 1개 이상, 재로딩 일치 | $0 |
+| **S3 로컬 NF4** | 11/8–9 | 고정 2문항 → 10문항: rollout n=4 → 그룹 분류 → 노트·gate·자기검증·재풀이와 대조 → RL+SFT dry-run → **실제 1회 갱신·저장·새 프로세스 재로딩** | dry_run/updates/reload receipt | MIXED 그룹 RL 기울기 비영, A2 1개 이상, 재로딩 일치 | $0 |
 | **S4 RunPod 준비** | 11/9 | doctor, BF16 2문항 갱신·재로딩, 처리량 30분 측정 → 비용 재계산 | 처리량 receipt | 예산 안이면 진행 | 약 $1–2 |
 | **S5 라운드 1(파일럿 500)** | 11/9–10 | rollout→노트→학습→재로딩→export→dev 450·유지셋 평가(F0 포함) | ckpt-r1, dev 보고 | dev 점추정 ≥ F0이고 유지셋 하락 없음 → 계속. 하락이면 중단·보고 | 약 $3–4 |
 | **S6 라운드 2(3,000)** | 11/10–12 | 같은 절차 | ckpt-r2(최종 지정), dev·유지셋 보고 | 사전 등록 중단 규칙 | 약 $8–11 |
@@ -648,7 +650,7 @@ vLLM preemption 수가 많으면 내린다. KV 여유분(16 GiB 예약)을 줄�
 | 추측 보상 잡음(4지선다) | MIXED 그룹 비율은 높은데 dev 개선이 없음 | 10지·수치형 비중 확대(다음 protocol) |
 | 출력 길이 붕괴 또는 폭주 | 라운드별 rollout 중앙 토큰이 크게 변함 | 유지셋 하락 동반 시 중단 |
 | 망각 | 유지셋 2SE 하락 | 중단. KL·λ_A1을 높인 새 protocol은 별도 승인 |
-| 노트 경로 무효 | 같은 seed 대조에서 교훈 효과 ≈ 0 | 노트 B 비중 0으로 둔 RL-ONLY를 주 arm으로 바꿀지 사용자에게 보고(사후 교체가 아니라 사전 등록한 분기로) |
+| 노트 경로 무효 | 교훈 대조에서 교훈 효과 ≈ 0 | 노트 B 비중 0으로 둔 RL-ONLY를 주 arm으로 바꿀지 사용자에게 보고(사후 교체가 아니라 사전 등록한 분기로) |
 | 오염 | 사후 민감도에서 이웃 표시 문항에 이득 집중 | 결과에 경고, 해당 출처 조사 |
 | 공급 부족(C1) | 군집 quota 미달 | 부족 그대로 보고. 다른 군집 숫자로 채우지 않음 |
 | 예산 | 잔액·시간당 가격 watchdog | 회수 예약금 남기고 중단 |
@@ -681,6 +683,31 @@ vLLM preemption 수가 많으면 내린다. KV 여유분(16 GiB 예약)을 줄�
 결정이 나면 CLAUDE.md/AGENTS.md §2(§2.1·§2.8·§3.0)를 날짜와 지시 내용과 함께 갱신하고 `cmp`로 byte 동일성을 확인한다.
 
 ---
+
+## 15. S2 구현 상태 (2026-11-04, 브랜치 `claude/rl-sft-v4-code`)
+
+**[확인] 구현·CPU 검사 완료. 실제 Qwen 실행·GPU·RunPod는 하지 않았다.** 이 클라우드 세션에는 GPU가 없고 `huggingface.co` 접속이 네트워크 정책에 막혀 있어 실제 가중치를 받을 수 없다.
+
+| 파일 | 내용 |
+|---|---|
+| `error_note/v4.py` (신규) | seed, 그룹 분류·적응형 규칙, 64토큰 블록 반복 감지(증분), 프로그램 게이트, 주장 추출·probe·자기검증 판정, `build_rows_v4`, 요약 |
+| `error_note/rl.py` (신규) | `notebook_rl.losses.group_loss` 호출(old = 현재 정책 detach, 그룹 행동 토큰 정규화, F0 기준 k3 KL) |
+| `error_note/collect_v4.py` (신규) | rollout(적응형, 엔진 1회, T1 재사용) → note(+게이트, 정답 없는 `gates-v4.json`) → selfcheck → resolve(+교훈 없는 대조, 엔진 1회) → rows |
+| `error_note/train_v4.py` (신규) | RL+SFT 갱신, 라운드 연결(`--init-run`), rl-only 대조 arm, 무갱신 dry-run, 새 프로세스 reload |
+| `error_note/plan_v4.py` (신규) | 라운드 하나의 Pod chain spec(prefix caching·loop stop 포함) |
+| `error_note/protocol.py` | `plain_protocol_v4` 추가(기존 v1–v3 함수 불변) |
+| `error_note/collect.py` | 기본값 꺼짐 옵션만 추가: `continuous_stream`의 `WAIT`·`observe/partial`, vLLM `--prefix-caching`·`--loop-stop`, HF loop stop |
+| `fine_tuning/tests/test_error_note_v4*.py` (신규 5개) | 계약·손실·스트림 20, 수집 9, 학습 5, 계획 4, 단계 간 통합 1 |
+
+**계획(§4.1)과 달라진 점**: (1) v1–v3 경로를 건드리지 않으려고 `collect.py`·`train.py`·`plan.py`에 하위 명령을 넣는 대신 v4 전용 모듈로 분리했다.
+(2) v3식 별도 admission 파일은 만들지 않았다. v4는 arm이 하나(대조군 rl-only는 같은 RL·A1 행 사용)라 rows SHA와 protocol binding으로 대신한다.
+(3) 적응형 2차 풀이와 대조군 재풀이를 같은 엔진 실행 안에서 처리한다. 한 단계에서 vLLM을 두 번 띄우면 GPU 메모리가 제때 해제되지 않을 위험이 있기 때문이다.
+(4) RL 정규화를 n·L_cap에서 그룹 행동 토큰 수로 바꿨다(§3.5). (5) 교훈 효과 측정을 같은 새 seed의 교훈 없는 대조로 바꿨다(§3.3 정정).
+(6) 신규 출처 adapter(§4.2 (8))와 `training-answer-v3`는 실제 데이터 파일로 형식을 확인해야 하므로 S1(데이터) 단계로 넘겼다. 기존 학습 채점 계약이 이미 A–J 보기, 범위, 단위 수치를 지원한다 [확인].
+
+**검사 결과(이 세션, CPU)**: `test_error_note*.py` 324개 통과(기존 285 + 신규 39), 공유 채점·체크포인트·평가 128개 통과,
+Pod 151개 중 149개 통과·비공개 데이터 부재 skip 2, V8 파서 20개 통과, `error_note` Ruff·mypy(17개 파일) 통과.
+작은 무작위 모델 검사는 4B 학습 효과의 증거가 아니다. 다음 단계는 S3(로컬 RTX 5060 NF4에서 2→10문항 실제 생성·dry-run·1회 갱신·재로딩)이다.
 
 ## 14. 출처
 

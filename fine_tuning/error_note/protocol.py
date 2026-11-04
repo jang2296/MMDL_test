@@ -65,6 +65,42 @@ def plain_protocol_v2(precision: str, total_steps: int) -> dict:
     return body | {"sha256": _digest(body)}
 
 
+VERSION_V4 = "error-note-protocol-v4"
+V4_CONTRACT_HASHES = frozenset(("rows", "order", "init"))
+
+
+def plain_protocol_v4(precision: str, total_steps: int, *, arm: str, round_index: int, start: int, limit: int,
+                      contracts: dict[str, str | None]) -> dict:
+    """RL + note SFT (claudedocs/plan_rl_sft_hybrid_v4_20261104.md section 3.5). contracts: rows/order SHA256 and the
+    init checkpoint metadata SHA256 (None for a round that starts from F0). Every loss value is fixed here."""
+    from .v4 import ARMS, LR_V4, RL_SETTINGS, ROLLOUT_N, SFT_WEIGHTS, VERSION as COLLECTION_VERSION
+
+    if arm not in ARMS:
+        raise ValueError(f"protocol v4: arm must be one of {ARMS}")
+    if any(type(v) is not int for v in (round_index, start, limit)) or round_index < 1 or start < 0 or limit < 1:
+        raise ValueError("protocol v4: round >= 1, start >= 0 and limit >= 1 required")
+    if set(contracts) != V4_CONTRACT_HASHES or any(
+            value is not None and (not isinstance(value, str) or len(value) != 64
+                                   or any(c not in "0123456789abcdef" for c in value))
+            for value in contracts.values()) or contracts["rows"] is None or contracts["order"] is None:
+        raise ValueError("protocol v4: rows/order SHA256 and an init SHA256 or null required")
+    if (round_index == 1) != (contracts["init"] is None):
+        raise ValueError("protocol v4: round 1 starts from F0 and later rounds from an init checkpoint")
+    body = {key: value for key, value in plain_protocol_v2(precision, total_steps).items() if key != "sha256"}
+    weights = dict(SFT_WEIGHTS) if arm == "hybrid" else {**SFT_WEIGHTS, "A2": 0.0, "B": 0.0}
+    body |= {"version": VERSION_V4, "optimizer": body["optimizer"] | {"lr": dict(LR_V4)},
+             "prompts_sha256": _digest({"note": NOTE_INSTRUCTION_V3, "resolve_header": RESOLVE_HEADER,
+                                        "collection": COLLECTION_VERSION}),
+             "training_contract": {"arm": arm, "round": round_index, "start": start, "limit": limit,
+                                   "hashes": dict(contracts), "master_seed": MASTER_SEED, "rollout_n": ROLLOUT_N,
+                                   "rl": dict(RL_SETTINGS), "sft_weights": weights,
+                                   "sft_row": "mean_target_and_eos_nll", "renormalize_missing_kind": False,
+                                   "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS,
+                                                     "max_target_tokens": MAX_TARGET_TOKENS,
+                                                     "loop_window": LOOP_WINDOW, "loop_ratio": LOOP_RATIO}}}
+    return body | {"sha256": _digest(body)}
+
+
 def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: dict[str, str]) -> dict:
     """The common admitted update schedule, with arm-specific loss and immutable input receipts."""
     from .audit import SOLUTION_REVIEW_VERSION
