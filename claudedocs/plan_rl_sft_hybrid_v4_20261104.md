@@ -693,20 +693,32 @@ vLLM preemption 수가 많으면 내린다. KV 여유분(16 GiB 예약)을 줄�
 | `error_note/v4.py` (신규) | seed, 그룹 분류·적응형 규칙, 64토큰 블록 반복 감지(증분), 프로그램 게이트, 주장 추출·probe·자기검증 판정, `build_rows_v4`, 요약 |
 | `error_note/rl.py` (신규) | `notebook_rl.losses.group_loss` 호출(old = 현재 정책 detach, 그룹 행동 토큰 정규화, F0 기준 k3 KL) |
 | `error_note/collect_v4.py` (신규) | rollout(적응형, 엔진 1회, T1 재사용) → note(+게이트, 정답 없는 `gates-v4.json`) → selfcheck → resolve(+교훈 없는 대조, 엔진 1회) → rows |
-| `error_note/train_v4.py` (신규) | RL+SFT 갱신, 라운드 연결(`--init-run`), rl-only 대조 arm, 무갱신 dry-run, 새 프로세스 reload |
-| `error_note/plan_v4.py` (신규) | 라운드 하나의 Pod chain spec(prefix caching·loop stop 포함) |
+| `error_note/train_v4.py` (신규) | RL+SFT 갱신, 라운드 연결(`--init-run`), rl-only 대조 arm(스케줄 정렬), 무갱신 dry-run, 새 프로세스 reload |
+| `error_note/plan_v4.py` (신규) | 라운드 하나의 Pod chain spec. 1라운드는 두 arm이 같은 F0 수집을 공유, 이후 라운드는 arm별 수집 |
 | `error_note/protocol.py` | `plain_protocol_v4` 추가(기존 v1–v3 함수 불변) |
-| `error_note/collect.py` | 기본값 꺼짐 옵션만 추가: `continuous_stream`의 `WAIT`·`observe/partial`, vLLM `--prefix-caching`·`--loop-stop`, HF loop stop |
-| `fine_tuning/tests/test_error_note_v4*.py` (신규 5개) | 계약·손실·스트림 20, 수집 9, 학습 5, 계획 4, 단계 간 통합 1 |
+| `error_note/collect.py` | 기본값 꺼짐 옵션만 추가: `continuous_stream`의 `WAIT`·`observe/partial`, vLLM `--prefix-caching`·`--loop-stop`(DELTA 누적 helper), HF loop stop |
+| `error_note/evaluate.py` | 외부 dev가 v4 마지막 라운드 hybrid(NOTE)·rl-only(NO-NOTE) export를 받음 |
+| `notebook_rl/proof_eval.py` | v4 export 확인, FT-HYB-V4 모델 참조, 최종 등록 v6(559/607 gate). v5 경로·출력·오류 문구는 그대로 |
+| `notebook_rl/pod/eval_stage.py` | `eval-ft`가 FT-HYB-V4를 FT-NOTE-V3와 같은 규칙(seed 3407, export 재사용, `verify-v4-export`)으로 계획 |
+| `fine_tuning/tests/test_error_note_v4*.py` (신규 6개) | 계약·손실·스트림·vLLM DELTA 22, 수집 13(명령줄 5단계 포함), 학습 7, 계획 5, 단계 간 통합 1, 평가 연결 6 |
 
 **계획(§4.1)과 달라진 점**: (1) v1–v3 경로를 건드리지 않으려고 `collect.py`·`train.py`·`plan.py`에 하위 명령을 넣는 대신 v4 전용 모듈로 분리했다.
-(2) v3식 별도 admission 파일은 만들지 않았다. v4는 arm이 하나(대조군 rl-only는 같은 RL·A1 행 사용)라 rows SHA와 protocol binding으로 대신한다.
+(2) v3식 별도 admission 파일은 만들지 않았다. rl-only는 같은 RL·A1 행을 쓰고, 노트 행만 있던 그룹에서는 가중치를 바꾸지 않고 스케줄러만 진행한다. 그래서 두 arm의 학습률·총 step이 같다.
 (3) 적응형 2차 풀이와 대조군 재풀이를 같은 엔진 실행 안에서 처리한다. 한 단계에서 vLLM을 두 번 띄우면 GPU 메모리가 제때 해제되지 않을 위험이 있기 때문이다.
 (4) RL 정규화를 n·L_cap에서 그룹 행동 토큰 수로 바꿨다(§3.5). (5) 교훈 효과 측정을 같은 새 seed의 교훈 없는 대조로 바꿨다(§3.3 정정).
-(6) 신규 출처 adapter(§4.2 (8))와 `training-answer-v3`는 실제 데이터 파일로 형식을 확인해야 하므로 S1(데이터) 단계로 넘겼다. 기존 학습 채점 계약이 이미 A–J 보기, 범위, 단위 수치를 지원한다 [확인].
+(6) 단답 계약(§4.2 (1))은 따로 만들지 않았다. v4에서는 RL 행에 길이 하한이 없어서 짧은 정답 문항도 RL로 학습된다. 32토큰 하한은 SFT 보조 행(A1·A2)에만 남는다.
+(7) 신규 출처 adapter(§4.2 (8)), 분류형 10지 변환(§5.5), `training-answer-v3`는 실제 데이터 파일로 형식을 확인하고 오염 검사를 다시 해야 하므로 S1(데이터) 단계로 넘겼다.
+데이터 없이 만들면 지침 §2.4의 "빈 증강기·가짜 PASS 금지"에 걸린다. 기존 학습 채점 계약이 이미 A–J 보기, 범위, 단위 수치를 지원한다 [확인]. 기존 `hf_pool` 할당 형식(출처 × 과목 × split)으로 §5.4 배분을 표현할 수 있다.
 
-**검사 결과(이 세션, CPU)**: `test_error_note*.py` 324개 통과(기존 285 + 신규 39), 공유 채점·체크포인트·평가 128개 통과,
-Pod 151개 중 149개 통과·비공개 데이터 부재 skip 2, V8 파서 20개 통과, `error_note` Ruff·mypy(17개 파일) 통과.
+**실제 라이브러리로 확인한 가정 [확인]**:
+- vLLM 0.11.0 소스(`v1/engine/output_processor.py`): DELTA 모드는 끝나지 않은 요청도 step마다 새 토큰만 담아 반환하고, 마지막 출력은 마지막 조각만 담는다. 실제 `vllm.outputs.RequestOutput` 객체로 조각 연결과 반복 중단을 시험했다.
+- vLLM 0.11.0(`v1/engine/processor.py`): prefix caching을 켜면 이미지가 내용 해시로 식별되므로 4회 rollout의 같은 이미지 prefix가 재사용된다.
+- PEFT `disable_adapter()`는 LoRA와 Merger 복사본을 함께 끈다. LoRA·Merger를 바꾼 뒤에도 KL 기준 로그확률이 F0와 1e-6 이내로 같았다(작은 모델).
+
+**검사 결과(이 세션, CPU, vLLM 0.11.0·bitsandbytes 0.48.2 고정 버전 설치)**: `test_error_note*.py` 339개 통과(기존 285 + v4 신규 54),
+공유 채점·체크포인트·평가 128개 통과, Pod 151개 중 149개 통과·비공개 데이터 부재 skip 2, V8 파서 20개 통과, Ruff·mypy(19개 파일) 통과.
+`fine_tuning/tests` 전체 모듈을 파일별로 돌렸을 때(최종 코드 기준 244개 모듈 통과) `notebook_rl` 13개 모듈에서 실패가 났다. 원래 커밋 `13f34f8`에서도 같은 13개 모듈이 실패 테스트 이름까지 똑같이 실패한다
+(예: 코드에 고정된 protocol SHA가 이 환경과 다름, schema 의존성 guard). 따라서 v4 변경으로 생긴 실패는 0이다.
 작은 무작위 모델 검사는 4B 학습 효과의 증거가 아니다. 다음 단계는 S3(로컬 RTX 5060 NF4에서 2→10문항 실제 생성·dry-run·1회 갱신·재로딩)이다.
 
 ## 14. 출처

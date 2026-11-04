@@ -146,6 +146,26 @@ class TrainV4(unittest.TestCase):
         self.assertEqual(protocols[0], protocols[1])  # one LR schedule for both arms
         self.assertEqual(self.reload("ctl"), 0)
 
+    def test_kl_reference_is_f0_after_lora_and_merger_change(self):
+        """PEFT disable_adapter must switch off both LoRA and the Merger copies, or the KL anchor would drift."""
+        protocol = plain_protocol_v4("bf16", 1, arm="hybrid", round_index=1, start=0, limit=N,
+                                     contracts={"rows": "a" * 64, "order": "b" * 64, "init": None})
+        bundle = tiny_factory(protocol=protocol)
+        bundle.model.eval()
+        rows = [tiny_encode(row("item-2", "A2", "0", "13 14 15", ROUTE_FULL))]
+        with torch.no_grad():
+            before_ref = t4._reference(bundle, rows)[0]
+            before_cur = t4.batch_logprobs(bundle, rows)[0]
+            for group in ("L", "M", "V"):
+                for parameter in bundle.params[group]:
+                    parameter.add_(torch.randn_like(parameter) * 0.5)
+            after_ref = t4._reference(bundle, rows)[0]
+            after_cur = t4.batch_logprobs(bundle, rows)[0]
+        self.assertTrue(torch.allclose(before_ref, after_ref, atol=1e-6))
+        self.assertFalse(torch.allclose(before_cur, after_cur, atol=1e-4))
+        self.assertTrue(torch.allclose(before_ref, before_cur, atol=1e-6))  # F0: LoRA B starts at zero, Mergers copied
+        self.assertTrue(bundle.route.vision_on)
+
     def test_zero_advantage_without_kl_has_no_rl_gradient(self):
         protocol = plain_protocol_v4("bf16", 1, arm="hybrid", round_index=1, start=0, limit=N,
                                      contracts={"rows": "a" * 64, "order": "b" * 64, "init": None})

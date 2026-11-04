@@ -296,3 +296,91 @@ class CLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StageCLI(unittest.TestCase):
+    """collect_v4.main for all five stages with mocked vault, verifier service, guards and engine."""
+
+    class Service:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def grade(self, problem_id, text, finish_reason, mode, answer_contract=None):
+            return SimpleNamespace(status="CORRECT" if "RIGHT" in text else "INCORRECT", extracted="B")
+
+    class NoLog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    NOTE = ("What the image shows: The figure has 3 bars on the left side. The title is short.\n"
+            "Image reading: CORRECT\nCause: REASONING\nWhat went wrong: I misread a bar.\n"
+            "Lesson: Compare each bar with the axis before choosing.")
+
+    def answer(self, request):
+        prompt = request["prompt"]
+        if prompt.startswith("Look at the image. Is this statement"):
+            return "TRUE. It matches.", "stop"
+        if "Correct answer:" in prompt:
+            return self.NOTE, "stop"
+        if prompt.startswith("Lesson from your own review"):
+            return words(40) + (" RIGHT" if request["j"] == 0 else " wrong"), "stop"
+        return rollout_answers(request)
+
+    def test_five_stages_through_main(self):
+        import contextlib
+        import io
+        from unittest import mock
+
+        from fine_tuning.error_note.order import VERSION, _ids_sha256
+
+        with tempfile.TemporaryDirectory() as raw:
+            tmp = Path(raw)
+            out, order = tmp / "out", tmp / "order.json"
+            ids = [item["problem_id"] for item in items()]
+            order.write_text(json.dumps({"version": VERSION, "items": items(), "count": 4, "ids_sha256": _ids_sha256(ids)}))
+            base = ["--round", "1", "--build-root", str(tmp / "V"), "--order", str(order), "--start", "0", "--limit", "4",
+                    "--output", str(out), "--answer-contract", "p0-eval-aligned-v1"]
+            engine = ["--model-path", str(tmp), "--engine", "hf", "--kv-cache-gib", "20", "--loop-stop"]
+            stream = FakeStream(self.answer)
+            gold = {pid: SimpleNamespace(gold=value) for pid, value in GOLD.items()}
+            tokenizer = SimpleNamespace(encode=lambda text, add_special_tokens=False: tok(text))
+            with contextlib.ExitStack() as stack:
+                verifier = stack.enter_context(mock.patch("fine_tuning.notebook_rl.vault.read_verifier", return_value=gold))
+                stack.enter_context(mock.patch("fine_tuning.notebook_rl.vault.read_actors",
+                                               return_value=list(actors().values())))
+                stack.enter_context(mock.patch("fine_tuning.notebook_rl.dataset.load_images",
+                                               side_effect=lambda actor, root: [object()]))
+                stack.enter_context(mock.patch("fine_tuning.notebook_rl.verifier_service.VerifierService", self.Service))
+                guards = stack.enter_context(mock.patch.object(c4, "install_training_guards", return_value=[]))
+                stack.enter_context(mock.patch.object(c4, "_hf_stream_builder", return_value=stream))
+                stack.enter_context(mock.patch.object(c4, "ResourceLog", self.NoLog))
+                stack.enter_context(mock.patch("transformers.AutoTokenizer.from_pretrained", return_value=tokenizer))
+                stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                for stage in ("rollout", "note", "selfcheck", "resolve"):
+                    calls = verifier.call_count
+                    extra = ["--lesson-control"] if stage == "resolve" else []
+                    self.assertEqual(c4.main([stage, *base, *engine, *extra]), 0)
+                    self.assertEqual(verifier.call_count - calls, int(stage == "note"))  # the gold: note stage only
+                    private = guards.call_args.kwargs["private_files"]
+                    self.assertEqual(out / "note.jsonl" in private, stage != "note")
+                self.assertEqual(c4.main(["rows", *base, "--tokenizer-path", str(tmp)]), 0)
+            summary = json.loads((out / "rows_summary.json").read_text())
+            self.assertEqual(summary["rows_by_kind"], {"A1": 1, "RL": 8, "A2": 1, "B": 1})
+            self.assertEqual(summary["lesson_resolve"]["correct"], 1)
+            self.assertEqual(summary["loop_stopped_rollouts"], 1)
+            self.assertTrue(all(row["problem_id"] in ids for row in map(json.loads, (out / "rows.jsonl").read_text().splitlines())))
+            args = c4.build_parser().parse_args(["rows", *base[:-2], "--tokenizer-path", str(tmp)])
+            with self.assertRaises(ValueError):  # another answer contract than the round's binding
+                c4.bind_collection_v4(args)

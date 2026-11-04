@@ -328,6 +328,24 @@ class StreamHooks(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.run_stream(engine, iter([]), observe=observe)
 
+    def test_a_late_output_of_an_aborted_request_is_ignored(self):
+        class LateEngine(FakeEngine):
+            def abort_request(self, ids):  # keeps emitting once more, as an engine racing the abort might
+                self.aborted += list(ids)
+                for request_id in ids:
+                    self.active[request_id] = self.steps[request_id] - 1
+
+        engine = LateEngine({"loop": 10, "ok": 4})
+        rows = self.run_stream(engine, iter([{"request_id": "loop"}, {"request_id": "ok"}]),
+                               observe=lambda o, info: o.request_id == "loop",
+                               partial=lambda o, r, i: {"partial": r["request_id"]})
+        self.assertEqual([request["request_id"] for request, _ in rows], ["loop", "ok"])
+        ghost = FakeEngine({"ghost": 3, "a": 2})
+        ghost.active["ghost"] = 0  # an id this stream never added or stopped
+        with self.assertRaisesRegex(RuntimeError, "unknown request id"):
+            self.run_stream(ghost, iter([{"request_id": "a"}]))
+
+
 
 if __name__ == "__main__":
     unittest.main()

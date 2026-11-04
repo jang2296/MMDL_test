@@ -297,6 +297,7 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
     active: dict[str, dict] = {}
     blocked: collections.deque[tuple[dict, dict]] = collections.deque()
     seen: set[str] = set()
+    stopped: set[str] = set()  # aborted by observe: a late output of theirs is ignored, never misread as unknown
     exhausted = False
 
     def fill() -> None:
@@ -347,6 +348,8 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
                 running_state["seconds"] += elapsed / count
             for output in outputs:
                 state = active.get(output.request_id)
+                if state is None and output.request_id in stopped:
+                    continue
                 if state is None:
                     raise RuntimeError(f"engine returned an unknown request id: {output.request_id}")
                 if output.finished:
@@ -357,6 +360,7 @@ def continuous_stream(engine: Any, requests: Iterable[dict], limit: int, prepare
                 elif observe is not None and partial is not None and observe(output, state["info"]):
                     engine.abort_request([output.request_id])
                     del active[output.request_id]
+                    stopped.add(output.request_id)
                     row = partial(output, state["request"], state["info"])
                     row["seconds"] = state["seconds"]
                     yield state["request"], row
