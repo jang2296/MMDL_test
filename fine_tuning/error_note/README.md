@@ -120,6 +120,8 @@ RunPod 계획은 `plan --stage note-v3-collect|note-v3-train --params PARAMS --o
 실제 A/B 손실과 각각의 기울기를 계산하고 모두 비운 뒤, 전체 파라미터와 동결 NF4 상태가 그대로인지 검사한다.
 optimizer/scheduler를 만들거나 step을 실행하지 않고 가중치도 저장하지 않는다. `dry_run.json`의 PASS는
 손실·기울기 연결과 가중치 미변경을 뜻한다. 실제 학습·재로딩·정확도 향상 증거가 아니며, A나 검토된 B가 없으면 통과하지 않는다.
+각 손실에서 LLM·Merger 기울기가 유한한 양수인지, Vision 기울기가 행의 학습 경로와 일치하는지 따로 검사한다.
+전체 오답 교정 사이클은 추가로 `paired_resolve_note_problem_ids`의 같은 문항에 대해 원본 T1 오답 → 검토 통과 노트 → 정답 없는 재풀이 정답을 대조해야 한다. 첫 풀이 정답 행만으로는 이 사이클을 확인했다고 하지 않는다.
 
 외부 dev 비교는 `source_evidence prepare-dev --build-root V --manifest MANIFEST --output EVIDENCE`로
 별도 dev 채점 규칙을 준비한 뒤 `evaluate preregister`로 고정한다. 학습용 train 규칙을 dev에 재사용하지 않는다.

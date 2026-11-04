@@ -466,6 +466,9 @@ def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = N
     report: dict[str, Any] = {"status": "FAIL", "optimizer_steps": 0, "scheduler_steps": 0, "weights_saved": False,
         "scope": "diagnostic only: finite A/B backward with unchanged weights; no training or learning claim",
         "weights_unchanged": None, "precision": args.precision, "limit": args.limit,
+        "parameter_hashes_before": None, "parameter_hashes_after": None,
+        "frozen_base_verified": None, "gradients_cleared": None,
+        "rows_by_target_source": {}, "paired_resolve_note_problem_ids": [], "model_provenance": None,
         "source_sha256": source_identity(), "inputs": inputs, "components": {}}
     groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2,
                           v3=True, audit_path=args.audit)
@@ -489,15 +492,39 @@ def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = N
     contracts = admission["inputs"]["hashes"] | {"admission": ckpt.file_hash(args.admission)}
     protocol = plain_protocol_v3(args.precision, admission["total_steps"], arm="note", contracts=contracts)
     report.update(protocol_sha256=protocol["sha256"], admission_sha256=contracts["admission"])
-    torch.manual_seed(MASTER_SEED)
-    bundle = (policy_factory or build_policy)(args.model_path, ARM, protocol)
-    if args.precision == "bf16":  # CPU test fixtures; the public dry-run CLI accepts NF4 only.
-        bundle.model.to(device)
     assert_base = assert_quantized_base_unchanged if args.precision == "nf4" else assert_base_unchanged
-    assert_base(bundle)
-    before = _all_parameter_hashes(bundle)
-    report["parameter_hashes_before"] = before
+    bundle: PolicyBundle | None = None
+    before: dict | None = None
+    initial_base_verified = False
+    phase = "policy_initialization"
+
+    def fail(stage: str, exc: Exception) -> None:
+        message = f"{type(exc).__name__}: {exc}"
+        report.update(status="FAIL")
+        report.setdefault("error", message)
+        report.setdefault("errors", []).append({"phase": stage, "error": message})
+
     try:
+        torch.manual_seed(MASTER_SEED)
+        bundle = (policy_factory or build_policy)(args.model_path, ARM, protocol)
+        if args.precision == "bf16":  # CPU test fixtures; the public dry-run CLI accepts NF4 only.
+            bundle.model.to(device)
+        quantization = bundle.inventory.get("quantization")
+        report["model_provenance"] = {key: bundle.inventory[key] for key in
+            ("base_id", "base_revision", "arm", "trainable_counts") if key in bundle.inventory}
+        if quantization is not None:
+            report["model_provenance"]["quantization"] = {
+                key: quantization[key] for key in ("contract", "versions", "reference")}
+            report["model_provenance"]["quantization"].update(
+                module_count=len(quantization["modules"]), modules_sha256=_digest(quantization["modules"]),
+                state_sha256=_digest(quantization["state_sha256"]))
+        phase = "initial_frozen_base"
+        assert_base(bundle)
+        initial_base_verified = True
+        phase = "initial_parameter_hashes"
+        before = _all_parameter_hashes(bundle)
+        report["parameter_hashes_before"] = before
+        phase = "encoding"
         encoded = []
         encode = make_encoder(bundle, args.build_root)
         for admitted, (kept, drops) in zip(admission["groups"], encoded_groups(
@@ -506,10 +533,17 @@ def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = N
             if admitted["active"]:
                 encoded.extend(kept)
         report["encoded_rows_by_kind"] = dict(Counter(row["kind"] for row in encoded))
+        raw_by_id = {row["row_id"]: row for group in groups for row in group}
+        admitted_rows = [raw_by_id[row["row_id"]] for row in encoded]
+        report["rows_by_target_source"] = dict(Counter(row["target_source"] for row in admitted_rows))
+        report["paired_resolve_note_problem_ids"] = sorted(
+            {row["problem_id"] for row in admitted_rows if row["kind"] == KIND_SOLUTION and row["target_source"] == "RESOLVE"}
+            & {row["problem_id"] for row in admitted_rows if row["kind"] == KIND_NOTE and row["target_source"] == "NOTE"})
         report["loss_mask"] = {row["row_id"]: {"input_tokens": row["input_ids"].numel(),
             "prompt_tokens_excluded": row["input_ids"].numel() - row["target_len"],
             "target_and_eos_tokens": row["target_len"]} for row in encoded}
         for kind, weight in ((KIND_SOLUTION, .9), (KIND_NOTE, .1)):
+            phase = f"backward_{kind}"
             bundle.model.zero_grad(set_to_none=True)
             rows = [row for row in encoded if row["kind"] == kind]
             plan = plan_microbatches([row["input_ids"].numel() for row in rows],
@@ -519,27 +553,50 @@ def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = N
             if not math.isfinite(mean_loss):
                 raise NonFiniteStop(f"nonfinite dry-run {kind} loss")
             norms = _gradient_norms(bundle)
+            full = any(row["route"] == ROUTE_FULL for row in rows)
+            expected = {"L": "finite_positive", "M": "finite_positive",
+                        "V": "finite_positive" if full else "none"}
+            route_errors = []
+            for group, requirement in expected.items():
+                value = norms.get(group)
+                if requirement == "none":
+                    if value is not None:
+                        route_errors.append(f"UNEXPECTED_GRADIENT:{group}")
+                elif value is None or not math.isfinite(value) or value <= 0:
+                    route_errors.append(f"MISSING_OR_NONPOSITIVE_GRADIENT:{group}")
             report["components"][kind] = {"rows": len(rows), "row_nll_mean": mean_loss,
                 "coefficient": weight, "weighted_loss": weight * mean_loss, "grad_norms": norms,
                 "nonzero_gradient": any(value is not None and value > 0 for value in norms.values()),
+                "expected_gradient_groups": expected, "route_check_passed": not route_errors,
+                "route_check_reason": ";".join(route_errors) if route_errors else None,
                 "routes": dict(Counter(row["route"] for row in rows)), "microbatches": len(plan)}
             bundle.model.zero_grad(set_to_none=True)
-        report["status"] = "PASS" if all(row["nonzero_gradient"] for row in report["components"].values()) else "NO_GRADIENT_SIGNAL"
-    except (NonFiniteStop, AdmissionChanged, ValueError, RuntimeError) as exc:
-        report.update(status="FAIL", error=f"{type(exc).__name__}: {exc}")
+        report["status"] = "PASS" if all(row["route_check_passed"] for row in report["components"].values()) else "GRADIENT_ROUTE_MISMATCH"
+    except Exception as exc:
+        fail(phase, exc)
     finally:
-        bundle.model.zero_grad(set_to_none=True)
-        bundle.route.apply(True)
-        after = _all_parameter_hashes(bundle)
-        report.update(parameter_hashes_after=after, weights_unchanged=before == after,
-                      gradients_cleared=all(parameter.grad is None for parameter in bundle.model.parameters()))
+        if bundle is not None:
+            try:
+                phase = "clear_gradients"
+                bundle.model.zero_grad(set_to_none=True)
+                report["gradients_cleared"] = all(parameter.grad is None for parameter in bundle.model.parameters())
+                phase = "restore_route"
+                bundle.route.apply(True)
+                phase = "final_parameter_hashes"
+                after = _all_parameter_hashes(bundle)
+                report.update(parameter_hashes_after=after, weights_unchanged=before == after if before is not None else None)
+                phase = "final_frozen_base"
+                assert_base(bundle)
+                report["frozen_base_verified"] = True if initial_base_verified else None
+            except Exception as exc:
+                fail(phase, exc)
         try:
-            assert_base(bundle)
-            report["frozen_base_verified"] = True
-        except ValueError as exc:
-            report.update(status="FAIL", frozen_base_verified=False, error=str(exc))
-        if before != after or source_identity() != report["source_sha256"] or _admission_inputs(args) != inputs:
-            report.update(status="FAIL", error="dry-run parameters, inputs or source changed")
+            if (report["weights_unchanged"] is False or report["gradients_cleared"] is False
+                    or source_identity() != report["source_sha256"]
+                    or _admission_inputs(args) != inputs):
+                raise ValueError("dry-run parameters, gradients, inputs or source changed")
+        except Exception as exc:
+            fail("final_input_binding", exc)
         _write_json(out / "dry_run.json", report)
     return 0 if report["status"] == "PASS" else 1
 
