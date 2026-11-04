@@ -23,7 +23,8 @@ class V3ChainRecoveryTests(unittest.TestCase):
 
     def completed(self, name: str, *, stage: str = "note-v3-collect") -> tuple[Path, Path, Path]:
         run = make_run_dir(self.root, name, result=False)
-        output = run / ("collect/note.jsonl" if stage.endswith("collect") else "train-note/checkpoint-final/metadata.json")
+        output = run / {"note-v3-collect": "collect/note.jsonl", "note-v3-resolve": "collect/rows.jsonl",
+                        "note-v3-train": "train-note/checkpoint-final/metadata.json"}[stage]
         script = f"from pathlib import Path; p=Path({str(output)!r}); p.parent.mkdir(parents=True); p.write_text('synthetic output')"
         spec = {"version": chain.SPEC_VERSION, "meta": {"job_stage": stage}, "steps": [
             {"name": "stage", "argv": [sys.executable, "-c", script], "expect_files": [str(output)]}]}
@@ -37,8 +38,8 @@ class V3ChainRecoveryTests(unittest.TestCase):
             self.assertEqual(chain.run(source, spec_sha), 0)
         return run, source, output
 
-    def test_successful_collect_and_train_chain_pack_all_outputs_and_the_pinned_spec(self) -> None:
-        for stage in ("note-v3-collect", "note-v3-train"):
+    def test_successful_collect_resolve_and_train_chain_pack_all_outputs_and_the_pinned_spec(self) -> None:
+        for stage in ("note-v3-collect", "note-v3-resolve", "note-v3-train"):
             run, source, output = self.completed(stage, stage=stage)
             with mock.patch.dict(os.environ, {"RUNPOD_POD_ID": "fixture-v3"}):
                 manifest = collect.pack([run], self.root / "outbox", stage)

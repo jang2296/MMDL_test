@@ -1,6 +1,6 @@
 """Plan the error-note stages as pod/chain.py specs (`pod-chain-spec-v1`).
 
-CLI: python -m fine_tuning.error_note.plan plan --stage {note-300,note-3417,note-v2,note-v3-collect,note-v3-train}
+CLI: python -m fine_tuning.error_note.plan plan --stage {note-300,note-3417,note-v2,note-v3-collect,note-v3-resolve,note-v3-train}
          --params PARAMS.json --output STEPS.json
 Writes STEPS.json once (an existing file is refused) and prints its sha256. Same params -> same bytes.
 Executes nothing; the job's main argv runs the steps with `pod.chain run --spec STEPS.json`.
@@ -17,12 +17,13 @@ pilot_limit and arms (no pilot; arm note only) plus volume_root and reuse_t1_sha
 resolve -> rows (v2) -> train-note (protocol v2) -> reload-note -> export to <volume_root>/eval-data/proof/export-note-v2.
 Without the sweep, note and resolve take --max-num-seqs auto (the middle sweep candidate for the KV size).
 
-Stages note-v3-collect and note-v3-train take `error-note-plan-params-v3`. Both use external order_path,
+Stages note-v3-collect, note-v3-resolve and note-v3-train take `error-note-plan-params-v3`. All use external order_path,
 training_rules_path and source_provenance_path with their SHA256 pins, volume_root, auto KV/concurrency and
-token_budget 24000. The collect stage stops after fresh T1 and v2 notes; the train stage additionally requires
+token_budget 24000. The collect stage stops after fresh T1 and v2 notes; the resolve stage additionally requires
 reviews_path/reviews_sha256 and t1_sha256/note_sha256. It pins those collected files before audit -> resolve ->
-rows v3 -> common admission -> note/no-note training, reload and separate evaluation exports. No private file
-is read while planning. Review creation between the two stages is deliberately outside this executable spec.
+candidate rows v3, then stops. No private file is read while planning. Train requires closed rows_path/audit_path/solution_audit_path
+and their SHA256 pins, then performs admission and both training arms without regenerating targets. Shared generation
+settings remain schema fields for all stages. Note and solution reviews are created outside these executable specs.
 """
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ PARAMS_VERSION = "error-note-plan-params-v1"
 SPEC_VERSION = "pod-chain-spec-v1"
 PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
-V3_STAGES = ("note-v3-collect", "note-v3-train")
+V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
 STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES)
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
@@ -54,7 +55,9 @@ PARAM_KEYS_V2 = (PARAM_KEYS - {"pilot_limit", "arms"}) | {"volume_root", "reuse_
 V3_PRIVATE_PATHS = ("order_path", "training_rules_path", "source_provenance_path")
 V3_HASH_KEYS = ("training_rules_sha256", "source_provenance_sha256")
 PARAM_KEYS_V3 = (PARAM_KEYS_V2 - {"reuse_t1_sha256"}) | {*V3_PRIVATE_PATHS, *V3_HASH_KEYS}
-PARAM_KEYS_V3_TRAIN = PARAM_KEYS_V3 | {"reviews_path", "reviews_sha256", "t1_sha256", "note_sha256"}
+PARAM_KEYS_V3_RESOLVE = PARAM_KEYS_V3 | {"reviews_path", "reviews_sha256", "t1_sha256", "note_sha256"}
+PARAM_KEYS_V3_TRAIN = PARAM_KEYS_V3 | {"rows_path", "rows_sha256", "audit_path", "audit_sha256",
+                                     "solution_audit_path", "solution_audit_sha256"}
 COLLECT = "fine_tuning.error_note.collect"
 TRAIN = "fine_tuning.error_note.train"
 CHAIN = "fine_tuning.notebook_rl.pod.chain"
@@ -73,8 +76,17 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
     v2, v3 = stage == "note-v2", stage in V3_STAGES
+    extra_paths: tuple[str, ...] = ()
+    extra_hashes: tuple[str, ...] = ()
     if v3:
-        keys, version = (PARAM_KEYS_V3_TRAIN if stage == "note-v3-train" else PARAM_KEYS_V3), PARAMS_VERSION_V3
+        keys, version = PARAM_KEYS_V3, PARAMS_VERSION_V3
+        if stage == "note-v3-resolve":
+            keys = PARAM_KEYS_V3_RESOLVE
+            extra_paths, extra_hashes = ("reviews_path",), ("reviews_sha256", "t1_sha256", "note_sha256")
+        elif stage == "note-v3-train":
+            keys = PARAM_KEYS_V3_TRAIN
+            extra_paths = ("rows_path", "audit_path", "solution_audit_path")
+            extra_hashes = ("rows_sha256", "audit_sha256", "solution_audit_sha256")
     else:
         keys, version = (PARAM_KEYS_V2, PARAMS_VERSION_V2) if v2 else (PARAM_KEYS, PARAMS_VERSION)
     missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys)
@@ -86,9 +98,9 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError("commit must be 40 lowercase hex characters")
     if not isinstance(params["order_sha256"], str) or not HEX64.fullmatch(params["order_sha256"]):
         raise ValueError("order_sha256 must be 64 lowercase hex characters")
-    path_keys = (*PATH_KEYS, "volume_root") if v2 or v3 else PATH_KEYS
+    path_keys: tuple[str, ...] = (*PATH_KEYS, "volume_root") if v2 or v3 else PATH_KEYS
     if v3:
-        path_keys += (*V3_PRIVATE_PATHS, *(("reviews_path",) if stage == "note-v3-train" else ()))
+        path_keys += (*V3_PRIVATE_PATHS, *extra_paths)
     for key in path_keys:
         value = params[key]
         if (not isinstance(value, str) or not value.startswith("/") or value == "/"
@@ -98,11 +110,11 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"model_path must be the pinned snapshot directory {BASE_REVISION}")
     _positive_int(params, "limit", 1)
     if v3:
-        hash_keys = (*V3_HASH_KEYS, *(("reviews_sha256", "t1_sha256", "note_sha256") if stage == "note-v3-train" else ()))
+        hash_keys = (*V3_HASH_KEYS, *extra_hashes)
         for key in hash_keys:
             if not isinstance(params[key], str) or not HEX64.fullmatch(params[key]):
                 raise ValueError(f"{key} must be 64 lowercase hex characters")
-        for key in (*V3_PRIVATE_PATHS, "build_root", "out_root", *(("reviews_path",) if stage == "note-v3-train" else ())):
+        for key in (*V3_PRIVATE_PATHS, "build_root", "out_root", *extra_paths):
             if posixpath.commonpath((params["repo_root"], params[key])) == params["repo_root"]:
                 raise ValueError(f"{key} must be outside repo_root (private evidence is not repository content)")
         if params["seqs"] != "auto" or params["kv_cache_gib"] != "auto" or params["token_budget"] != 24000:
@@ -194,10 +206,14 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     pins = [("order", order, p["order_sha256"]),
             ("training-rules", p["training_rules_path"], p["training_rules_sha256"]),
             ("source-provenance", p["source_provenance_path"], p["source_provenance_sha256"])]
-    if stage == "note-v3-train":
+    if stage == "note-v3-resolve":
         pins += [("t1", f"{collect_dir}/t1.jsonl", p["t1_sha256"]),
                  ("note", f"{collect_dir}/note.jsonl", p["note_sha256"]),
                  ("reviews", p["reviews_path"], p["reviews_sha256"])]
+    elif stage == "note-v3-train":
+        pins += [("rows", p["rows_path"], p["rows_sha256"]),
+                 ("audit", p["audit_path"], p["audit_sha256"]),
+                 ("solution-audit", p["solution_audit_path"], p["solution_audit_sha256"])]
     steps = [_step(f"pin-{name}", [*chain_cmd, "pin", "--file", path, "--sha256", digest], [], "collect", timeouts)
              for name, path, digest in pins]
     if stage == "note-v3-collect":
@@ -207,20 +223,22 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
             _step("note", [*collect_cmd, "note", *common, *engine, "--max-num-seqs-from", f"{collect_dir}/sweep.json",
                            "--note-version", "v2"], [f"{collect_dir}/note.jsonl", f"{collect_dir}/lessons.json"], "collect", timeouts),
         ]
-    audit, rows, admission = f"{collect_dir}/audit.json", f"{collect_dir}/rows.jsonl", f"{out}/admission.json"
-    source = ["--source-provenance", p["source_provenance_path"]]
-    contracts = ["--audit", audit, "--sidecar", p["training_rules_path"]]
+    if stage == "note-v3-resolve":
+        audit, rows = f"{collect_dir}/audit.json", f"{collect_dir}/rows.jsonl"
+        source = ["--source-provenance", p["source_provenance_path"]]
+        return steps + [
+            _step("audit", [*collect_cmd, "audit", *common, *source, "--reviews", p["reviews_path"]],
+                  [audit, f"{collect_dir}/lessons-v3.json"], "collect", timeouts),
+            _step("resolve", [*collect_cmd, "resolve", *common, *engine, "--max-num-seqs", "auto", *source, "--audit", audit],
+                  [f"{collect_dir}/receipt-resolve.json"], "collect", timeouts),
+            _step("rows", [*collect_cmd, "rows", *common, "--tokenizer-path", model, "--rows-version", "v3", *source, "--audit", audit],
+                  [rows, f"{collect_dir}/rows_summary.json"], "collect", timeouts),
+        ]
+    audit, rows, admission = p["audit_path"], p["rows_path"], f"{out}/admission.json"
+    contracts = ["--audit", audit, "--sidecar", p["training_rules_path"], "--solution-audit", p["solution_audit_path"]]
     train_common = ["--rows", rows, "--build-root", build, "--order", order, "--limit", limit,
                     "--precision", "bf16", "--model-path", model, "--code-commit", commit, *contracts]
-    steps += [
-        _step("audit", [*collect_cmd, "audit", *common, *source, "--reviews", p["reviews_path"]],
-              [audit, f"{collect_dir}/lessons-v3.json"], "collect", timeouts),
-        _step("resolve", [*collect_cmd, "resolve", *common, *engine, "--max-num-seqs", "auto", *source, "--audit", audit],
-              [f"{collect_dir}/receipt-resolve.json"], "collect", timeouts),
-        _step("rows", [*collect_cmd, "rows", *common, "--tokenizer-path", model, "--rows-version", "v3", *source, "--audit", audit],
-              [rows, f"{collect_dir}/rows_summary.json"], "collect", timeouts),
-        _step("admit", [*train_cmd, "admit", *train_common, "--output", admission], [admission], "train", timeouts),
-    ]
+    steps.append(_step("admit", [*train_cmd, "admit", *train_common, "--output", admission], [admission], "train", timeouts))
     for arm in ("note", "no-note"):
         run, export = f"{out}/train-{arm}", f"{p['volume_root']}/eval-data/proof/export-{arm}-v3"
         steps += [

@@ -34,6 +34,7 @@ class DryRunTests(unittest.TestCase):
             "dry-run", "--rows", str(self.files.rows), "--build-root", str(self.root), "--order", str(self.files.order),
             "--limit", "1", "--model-path", str(self.root), "--output", str(self.root / output), "--precision", "nf4",
             "--code-commit", "a" * 40, "--audit", str(self.files.audit), "--sidecar", str(self.files.sidecar),
+            "--solution-audit", str(self.files.solution_audit),
             "--admission", str(self.files.admission)])
         args.precision = "bf16"  # Injected tiny CPU policy only; the public CLI remains NF4.
         return args
@@ -272,6 +273,7 @@ class DryRunTests(unittest.TestCase):
         rows = trainer._read_jsonl(self.files.rows)
         for missing, reason in (("A", "NO_A_ROWS"), ("B", "NO_ADMITTED_B")):
             self.files.rows.write_text("".join(json.dumps(row) + "\n" for row in rows if row["kind"] != missing))
+            self.files.review_solutions()
             self.files.admission.unlink(missing_ok=True)
             self.files.admit(v3_encode, "--limit", "1")
             with patch.object(trainer, "build_policy", side_effect=AssertionError("must not load model")):
@@ -280,6 +282,39 @@ class DryRunTests(unittest.TestCase):
             self.assertEqual((code, report["status"], report["reason"]), (1, "NO_USABLE_SUPERVISION", reason))
             self.assertIsNone(report["weights_unchanged"])
             self.assertEqual(report["optimizer_steps"], 0)
+
+    def test_rejected_solution_never_encodes_and_remaining_A_B_backward_preserves_weights(self):
+        self.files.review_solutions({"item-0:A": "FAIL"})
+
+        def checked_encode(row):
+            self.assertNotEqual(row["row_id"], "item-0:A")
+            return v3_encode(row)
+
+        self.assertEqual(self.files.admit(checked_encode, "--limit", "10"), 0)
+        args = self.args()
+        args.limit = 10
+        code, report, _ = self.run_diagnostic(args, encode=checked_encode)
+        self.assertEqual((code, report["status"]), (0, "PASS"))
+        self.assertEqual(report["encoded_rows_by_kind"], {"A": 1, "B": 2})
+        self.assertEqual(report["rows_by_target_source"], {"RESOLVE": 1, "NOTE": 2})
+        self.assertEqual(report["paired_resolve_note_problem_ids"], ["item-9"])
+        self.assertTrue(report["weights_unchanged"])
+        self.assertTrue(report["gradients_cleared"])
+        self.assertEqual((report["optimizer_steps"], report["scheduler_steps"], report["weights_saved"]), (0, 0, False))
+
+    def test_no_approved_solution_is_nonpass_without_model_initialization(self):
+        self.files.review_solutions({"item-0:A": "FAIL"})
+        self.assertEqual(self.files.admit(v3_encode, "--limit", "1"), 1)
+
+        def forbidden_factory(*args):
+            raise AssertionError("must not initialize")
+
+        code, report, _ = self.run_diagnostic(self.args(), policy_factory=forbidden_factory)
+        self.assertEqual((code, report["status"], report["reason"]),
+                         (1, "NO_USABLE_SUPERVISION", "NO_ENCODED_A"))
+        self.assertEqual(report["components"], {})
+        self.assertIsNone(report["weights_unchanged"])
+        self.assertEqual((report["optimizer_steps"], report["scheduler_steps"], report["weights_saved"]), (0, 0, False))
 
 
 if __name__ == "__main__":

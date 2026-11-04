@@ -14,6 +14,8 @@ from .contract import _has_words, hint_leak, parse_note_v2
 VERSION = "note-audit-v1"
 FILE_VERSION = "note-audit-file-v1"
 REVIEW_VERSION = "note-review-v1"
+SOLUTION_FILE_VERSION = "solution-audit-file-v1"
+SOLUTION_REVIEW_VERSION = "solution-review-v1"
 
 
 def digest(value: object) -> str:
@@ -218,3 +220,99 @@ def validate_row_audits(rows: list[dict], audit_path: Path) -> None:
                 raise ValueError("audit: invalid row kind/target_source")
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError("audit: missing or malformed row/audit linkage") from error
+
+
+def solution_review_bindings(row: dict, note_audit: dict) -> dict:
+    """Bind an independent solution review to the exact row and its existing source/image audit."""
+    try:
+        if row["kind"] != "A" or row["target_source"] not in ("T1", "RESOLVE"):
+            raise ValueError("solution audit: reviews are only for A solution rows")
+        return {"row_sha256": digest(row), "target_sha256": text_sha256(row["target"]),
+                "prompt_sha256": text_sha256(row["prompt"]),
+                "source_sha256": note_audit["bindings"]["source_sha256"],
+                "input_sha256": note_audit["bindings"]["input_sha256"],
+                "note_audit_sha256": note_audit["sha256"]}
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("solution audit: malformed row/note bindings") from error
+
+
+def _unique_json_pairs(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("solution audit: duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def solution_quality_reasons(rows: list[dict], note_audit_path: Path, solution_audit_path: Path, *,
+                             rows_sha256: str) -> dict[str, str]:
+    """Return only rejected A rows; note approval never certifies a solution's prose.
+
+    Missing reviews are explicit drops. Malformed or stale receipts are errors, including when no A rows remain.
+    """
+    if (not isinstance(rows_sha256, str) or len(rows_sha256) != 64 or
+            any(character not in "0123456789abcdef" for character in rows_sha256)):
+        raise ValueError("solution audit: explicit rows SHA256 required")
+    note_audit_path, solution_audit_path = Path(note_audit_path), Path(solution_audit_path)
+    note_raw = note_audit_path.read_bytes()
+    json.loads(note_raw, object_pairs_hook=_unique_json_pairs)
+    note_sha256 = hashlib.sha256(note_raw).hexdigest()
+    validate_row_audits(rows, note_audit_path)
+    audits = _read_items(note_audit_path, expected_sha256=note_sha256)
+    data = json.loads(solution_audit_path.read_bytes(), object_pairs_hook=_unique_json_pairs)
+    if (not isinstance(data, dict) or set(data) != {"version", "bindings", "items"} or
+            data["version"] != SOLUTION_FILE_VERSION or
+            data["bindings"] != {"rows_sha256": rows_sha256, "note_audit_sha256": note_sha256} or
+            not isinstance(data["items"], dict)):
+        raise ValueError("solution audit: invalid file wrapper or file bindings")
+    by_id: dict[str, dict] = {}
+    for row in rows:
+        row_id = row.get("row_id")
+        if not isinstance(row_id, str) or not row_id.strip() or row_id in by_id:
+            raise ValueError("solution audit: missing or duplicate row_id")
+        by_id[row_id] = row
+    solutions = {row_id: row for row_id, row in by_id.items() if row["kind"] == "A"}
+    if not set(data["items"]) <= set(solutions):
+        raise ValueError("solution audit: unknown or non-A review row_id")
+    reasons = {}
+    fields = {"version", "row_id", "problem_id", "target_source", "bindings", "reviewer_kind",
+              "human_verified", "method", "content"}
+    for row_id, row in solutions.items():
+        audit = audits[row["problem_id"]]
+        try:
+            input_sha256 = digest({"p0_text": row["prompt"],
+                                   **{key: row[key] for key in ("image_paths", "subject", "source")}})
+        except (KeyError, TypeError) as error:
+            raise ValueError("solution audit: missing or malformed solution input") from error
+        if input_sha256 != audit["bindings"]["input_sha256"]:
+            raise ValueError("solution audit: source/image input binding mismatch")
+        review = data["items"].get(row_id)
+        if row_id not in data["items"]:
+            reasons[row_id] = "SOLUTION_CONTENT_MISSING_REVIEW"
+            continue
+        if (not isinstance(review, dict) or set(review) != fields or
+                review["version"] != SOLUTION_REVIEW_VERSION or review["row_id"] != row_id or
+                review["problem_id"] != row["problem_id"] or review["target_source"] != row["target_source"] or
+                review["bindings"] != solution_review_bindings(row, audit)):
+            raise ValueError("solution audit: review identity/bindings mismatch")
+        kind, method = review["reviewer_kind"], review["method"]
+        if (kind not in ("human", "ai_review", "program") or type(review["human_verified"]) is not bool or
+                review["human_verified"] and kind != "human"):
+            raise ValueError("solution audit: reviewer kind/human_verified mismatch")
+        if method not in ("source_review", "bounded_check", "format_only", "no_contradiction", "regex"):
+            raise ValueError("solution audit: unsupported review method")
+        check = review["content"]
+        if (not isinstance(check, dict) or set(check) != {"result", "scope", "evidence"} or
+                check["result"] not in ("PASS", "FAIL", "UNKNOWN") or
+                check["scope"] not in ("entire_solution", "partial")):
+            raise ValueError("solution audit: invalid content result/scope")
+        evidence = check["evidence"]
+        if (not isinstance(evidence, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence) or
+                check["result"] in ("PASS", "FAIL") and not evidence):
+            raise ValueError("solution audit: content review requires explicit evidence references")
+        if check["result"] != "PASS":
+            reasons[row_id] = f"SOLUTION_CONTENT_{check['result']}"
+        elif kind not in ("human", "ai_review") or method != "source_review" or check["scope"] != "entire_solution":
+            reasons[row_id] = "SOLUTION_CONTENT_BOUNDED_REVIEW_ONLY"
+    return reasons

@@ -98,18 +98,26 @@ v1/v2의 기본 동작은 유지한다. 현재 v3는 `training-answer-v2`, `rows
 5. `collect resolve`는 같은 새 채점 옵션과 `--source-provenance SOURCE --audit AUDIT`로 실행한다.
    별도 검증 프로세스가 원본 노트·감사·교훈의 해시와 검토 범위를 재검사한다. 모델 프로세스에는 허용 교훈만 전달한다.
    노트 내용 PASS와 교훈 CLEAR를 모두 만족하는 오답만 한 번 다시 푼다.
-6. `collect rows --rows-version v3`에 같은 채점·근거·감사 옵션을 준다. A는 정답인 원문 풀이, B는 전체 검토된 원문 노트다.
+6. `collect rows --rows-version v3`에 같은 채점·근거·감사 옵션을 준다. A는 정답인 원문 풀이 **후보**, B는 전체 검토된 원문 노트다.
    미검증 노트, 누설 교훈, 실패 재풀이는 사유와 함께 제외한다. 문장을 고쳐 넣지 않는다.
-7. `train admit`로 encoding을 CPU에서 확인하고 공통 A가 있는 16문항 그룹·탈락 사유·총 update 수를 고정한다.
-   필수 인자는 기존 rows/build/order/limit/model/precision/code-commit에 `--audit AUDIT --sidecar RULES --output ADMISSION`이다.
+7. 실제로 생성된 각 A 후보의 **전체 풀이**를 이미지/원출처와 별도로 대조하여 private `solution-audit-file-v1`을 만든다.
+   `audit.solution_review_bindings(row, note_audit)`로 행·목표·입력·출처 해시를 결합하고, 파일에는 후보 rows와 note audit 파일 해시를 고정한다.
+   항목은 `solution-review-v1`, 해당 row_id/problem_id/target_source, reviewer_kind/human_verified/method,
+   `content={result: PASS|FAIL|UNKNOWN, scope: entire_solution|partial, evidence: [...]}`를 기록한다. AI 검토는 `human_verified=false`다.
+   최종 정답만 맞거나 B가 통과한 것으로 A의 풀이 검토를 대신하지 않는다. 첫 풀이와 재풀이 모두 별도 검토 대상이다.
+8. `train admit`로 검토된 A만 encoding 전에 수용하고 공통 A가 있는 16문항 그룹·탈락 사유·총 update 수를 고정한다.
+   필수 인자는 기존 rows/build/order/limit/model/precision/code-commit에 `--audit AUDIT --sidecar RULES --solution-audit SOLUTIONS --output ADMISSION`이다.
+   FAIL/UNKNOWN/검토 누락/부분 검토 A는 탈락하며, 오래되거나 변조된 결합은 오류다. 후보 원문은 그대로 보존한다.
    로컬 NF4만 `--max-row-tokens`를 미리 지정할 수 있고 그 제외 내역도 고정된다. BF16에서는 이 제한을 허용하지 않는다.
-8. `train train --protocol-version v3 --arm note|no-note --admission ADMISSION --audit AUDIT --sidecar RULES`로 학습한다.
+9. `train train --protocol-version v3 --arm note|no-note --admission ADMISSION --audit AUDIT --sidecar RULES --solution-audit SOLUTIONS`로 학습한다.
    두 arm은 같은 A·경로·순서·초기값·step/LR을 쓰고, NOTE는 `0.9 mean(A NLL)+0.1 mean(B NLL)`,
    NO-NOTE는 `0.9 mean(A NLL)`이다. B가 없다고 A 계수를 다시 정규화하지 않는다. 90:10은 손실 계수이지 실제 gradient 비율이 아니다.
    고정 뒤 encoding 결과가 달라지면 중단한다. 각각 별도 프로세스 `reload --protocol-version v3`를 거친다.
 
-RunPod 계획은 `plan --stage note-v3-collect|note-v3-train --params PARAMS --output STEPS`로 나눈다.
-두 단계 사이에서 실제 노트 검토가 필요하며 미확정 내용을 자동 승인하지 않는다. `plan.py`의 v3 params 명세가 정본이다.
+실행 계획은 `plan --stage note-v3-collect|note-v3-resolve|note-v3-train --params PARAMS --output STEPS`의 세 단계다.
+collect 뒤에는 노트를 검토하고, resolve 뒤에는 완성된 풀이 후보를 검토한다. train은 이미 닫힌 rows/audit/solution-audit 경로와 해시를 받아 재생성 없이 학습한다.
+이전 동결 소스의 후보도 해당 원문·감사에 묶인 풀이 검토로 수용할 수 있다. 새 소스의 collector로 기존 수집 결과를 재개하지 않는다.
+미확정 내용을 자동 승인하지 않으며 `plan.py`의 v3 params 명세가 정본이다. 클라우드 실행 승인은 별도다.
 동시 생성은 기존 KV 메모리 기반 `auto`, 학습은 기존 token-budget microbatch를 사용한다. 공통 admission을 한 번 만들어 두 arm이 공유한다.
 300문항 결과를 로컬에 회수·검토한 뒤 본학습으로 진행한다. 코드·CPU 통과, 실제 가중치 갱신, 노트 정확성, 성능 상승은 각각 따로 보고한다.
 
@@ -117,7 +125,7 @@ RunPod 계획은 `plan --stage note-v3-collect|note-v3-train --params PARAMS --o
 실제 학습/평가 결과는 별도 실행 receipt가 필요하다. 상위 모델 풀이·벤치마크 학습·다중 답 선택은 계속 금지한다.
 
 가중치를 바꾸지 않는 로컬 기능 확인은 같은 `admit` 결과에 `train dry-run`을 사용한다.
-필수 인자는 `--rows --build-root --order --limit --model-path --output --precision nf4 --code-commit --audit --sidecar --admission`이다.
+필수 인자는 `--rows --build-root --order --limit --model-path --output --precision nf4 --code-commit --audit --sidecar --solution-audit --admission`이다.
 `--limit`은 사전 고정한 첫 1~10문항이며, `--max-row-tokens`를 썼다면 admission과 같아야 한다.
 실제 A/B 손실과 각각의 기울기를 계산하고 모두 비운 뒤, 전체 파라미터와 동결 NF4 상태가 그대로인지 검사한다.
 optimizer/scheduler를 만들거나 step을 실행하지 않고 가중치도 저장하지 않는다. `dry_run.json`의 PASS는

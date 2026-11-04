@@ -19,7 +19,7 @@ from mmdl.runtime.contracts import MODEL_ID, MODEL_REVISION
 
 
 def model_ref(root: Path, *, arm: str = "note") -> Path:
-    hashes = {key: "a" * 64 for key in ("rows", "order", "audit", "sidecar", "admission")}
+    hashes = {key: "a" * 64 for key in ("rows", "order", "audit", "sidecar", "solution_audit", "admission")}
     protocol = plain_protocol_v3("bf16", 1, arm=arm, contracts=hashes)
     binding = {"protocol_sha256": protocol["sha256"], "prompts_sha256": protocol["prompts_sha256"],
                "data_sha256": hashes["rows"], "code_sha256": "c" * 64}
@@ -34,6 +34,8 @@ def model_ref(root: Path, *, arm: str = "note") -> Path:
 
 
 class V3FinalEvaluationTests(unittest.TestCase):
+    template: Path
+
     @classmethod
     def setUpClass(cls) -> None:
         tmp = tempfile.TemporaryDirectory(prefix="note-v3-eval-template-")
@@ -210,7 +212,7 @@ class V3TinyExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="note-v3-tiny-export-") as tmp:
             root = Path(tmp)
             base, base_manifest, _, _ = fixture(root)
-            hashes = {key: "a" * 64 for key in ("rows", "order", "audit", "sidecar", "admission")}
+            hashes = {key: "a" * 64 for key in ("rows", "order", "audit", "sidecar", "solution_audit", "admission")}
             protocol = plain_protocol_v3("bf16", 1, arm="note", contracts=hashes)
             binding = {"protocol_sha256": protocol["sha256"], "prompts_sha256": protocol["prompts_sha256"],
                        "data_sha256": hashes["rows"], "code_sha256": "c" * 64}

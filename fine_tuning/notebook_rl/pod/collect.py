@@ -202,7 +202,7 @@ def pack(run_dirs: list[Path], out_dir: Path, name: str,
             unclosed.append(path.name)
         if read_json(path / "run_state.json")["state"] == "MAIN_EXIT 0":
             recorded = read_json(path / "job.json") if (path / "job.json").is_file() else {}
-            if not any((path / item).is_file() for item in RESULT_FILES) or recorded.get("stage") in ("note-v3-collect", "note-v3-train"):
+            if not any((path / item).is_file() for item in RESULT_FILES) or recorded.get("stage") in ("note-v3-collect", "note-v3-resolve", "note-v3-train"):
                 source = _completed_chain_spec(path)
                 if not source.is_relative_to(path.absolute()):
                     if (path / "_recovery").exists():

@@ -10,7 +10,8 @@ import torch
 
 from fine_tuning.error_note import train as trainer
 from fine_tuning.error_note import plan as planner
-from fine_tuning.error_note.audit import FILE_VERSION, text_sha256
+from fine_tuning.error_note.audit import (FILE_VERSION, SOLUTION_FILE_VERSION, SOLUTION_REVIEW_VERSION,
+                                          solution_review_bindings, text_sha256)
 from fine_tuning.error_note.contract import (CONTEXT_LIMIT, KIND_NOTE, ROUTE_FULL, build_rows_v3,
                                              parse_note_v2, resolve_prompt)
 from fine_tuning.error_note.protocol import _digest, plain_protocol, plain_protocol_v2, plain_protocol_v3
@@ -29,7 +30,8 @@ def v3_encode(row):
 class V3Files(RunFilesV2):
     def __init__(self, root, groups=3):
         super().__init__(root, groups)
-        self.audit, self.sidecar, self.admission = (self.root / name for name in ("audit.json", "sidecar.json", "admission.json"))
+        self.audit, self.sidecar, self.admission, self.solution_audit = (self.root / name for name in
+            ("audit.json", "sidecar.json", "admission.json", "solution_audit.json"))
         ids = list(dict.fromkeys(row["problem_id"] for row in trainer._read_jsonl(self.rows)))
         audits, rows = {}, []
         for pid in ids:
@@ -49,18 +51,38 @@ class V3Files(RunFilesV2):
         self.rows.write_text("".join(json.dumps(row) + "\n" for row in rows))
         self.audit.write_text(json.dumps({"version": FILE_VERSION, "items": audits}) + "\n")
         self.sidecar.write_text('{"version":"source-rules-fixture"}\n')
+        self.review_solutions()
+
+    def review_solutions(self, results=None, *, missing=(), scope="entire_solution"):
+        """Authored CPU source-review fixtures only; never model-generated evidence."""
+        audits = json.loads(self.audit.read_text())["items"]
+        reviews = {}
+        for row in trainer._read_jsonl(self.rows):
+            if row["kind"] != "A" or row["row_id"] in missing:
+                continue
+            reviews[row["row_id"]] = {"version": SOLUTION_REVIEW_VERSION, "row_id": row["row_id"],
+                "problem_id": row["problem_id"], "target_source": row["target_source"],
+                "bindings": solution_review_bindings(row, audits[row["problem_id"]]),
+                "reviewer_kind": "ai_review", "human_verified": False, "method": "source_review",
+                "content": {"result": (results or {}).get(row["row_id"], "PASS"), "scope": scope,
+                            "evidence": ["authored CPU fixture: entire target checked against authored source"]}}
+        trainer._write_json(self.solution_audit, {"version": SOLUTION_FILE_VERSION,
+            "bindings": {"rows_sha256": ckpt.file_hash(self.rows), "note_audit_sha256": ckpt.file_hash(self.audit)},
+            "items": reviews})
 
     def admit(self, encode=v3_encode, *extra):
         args = trainer.build_parser().parse_args([
             "admit", "--rows", str(self.rows), "--build-root", str(self.root), "--order", str(self.order),
             "--limit", str(self.count), "--precision", "bf16", "--model-path", str(self.root),
             "--output", str(self.admission), "--audit", str(self.audit), "--sidecar", str(self.sidecar),
+            "--solution-audit", str(self.solution_audit),
             "--code-commit", COMMIT, *extra])
         return trainer.run_admit(args, encode=encode)
 
     def args(self, output="run", arm="note", *extra):
         return super().args(output, arm, "--protocol-version", "v3", "--admission", str(self.admission),
-                            "--audit", str(self.audit), "--sidecar", str(self.sidecar), *extra)
+                            "--audit", str(self.audit), "--sidecar", str(self.sidecar),
+                            "--solution-audit", str(self.solution_audit), *extra)
 
     def train(self, *args):
         return trainer.run_train(self.args(*args), policy_factory=tiny_factory, device="cpu",
@@ -91,7 +113,7 @@ class V3TrainingTests(unittest.TestCase):
     def test_legacy_hashes_and_v3_protocol_binding(self):
         self.assertEqual(plain_protocol("bf16")["sha256"], "8c4548feeff1ff3acff79c7319751dc99a7a34f25d09effb3311c626b1645d77")
         self.assertEqual(plain_protocol_v2("bf16", 214)["sha256"], "fce086a2268d1c61d40d86b9ec3c6ab34d3923e5ca0c12a02546e44fbe5a0de9")
-        hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "admission"), "a" * 64)
+        hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "solution_audit", "admission"), "a" * 64)
         note = plain_protocol_v3("bf16", 3, arm="note", contracts=hashes)
         control = plain_protocol_v3("bf16", 3, arm="no-note", contracts=hashes)
         self.assertEqual(note["training_contract"]["loss"], {
@@ -100,6 +122,8 @@ class V3TrainingTests(unittest.TestCase):
         self.assertEqual(note["max_new_tokens"], 8192)
         self.assertEqual(note["image"], plain_protocol("bf16")["image"])
         self.assertNotEqual(note["sha256"], control["sha256"])
+        self.assertEqual(note["training_contract"]["solution_content_contract"], SOLUTION_REVIEW_VERSION)
+        self.assertEqual(note["training_contract"]["admission"], "error-note-admission-v4")
         for key in hashes:
             changed = plain_protocol_v3("bf16", 3, arm="note", contracts=hashes | {key: "b" * 64})
             self.assertNotEqual(note["sha256"], changed["sha256"])
@@ -160,6 +184,7 @@ class V3TrainingTests(unittest.TestCase):
         rows = trainer._read_jsonl(files.rows)
         rows = [row for row in rows if not (16 <= int(row["problem_id"].split("-")[1]) < 32 and row["kind"] == "A")]
         files.rows.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        files.review_solutions()
         self.assertEqual(files.admit(), 0)
         admission = self.read("admission.json")
         self.assertEqual(admission["total_steps"], 2)
@@ -175,6 +200,85 @@ class V3TrainingTests(unittest.TestCase):
         for rid, coefficient in control[0]["row_coefficients"].items():
             self.assertEqual(note[0]["row_coefficients"][rid], coefficient)
         self.assertEqual(self.read("note/initial_state.json")["sha256"], self.read("no-note/initial_state.json")["sha256"])
+
+    def test_correct_final_label_does_not_admit_false_solution_and_both_arms_share_drops(self):
+        files = V3Files(self.root, groups=1)
+        record = example(correct=True)
+        record["problem_id"] = "item-0"
+        record["t1"]["text"] = "2 + 2 = 5. " + " ".join(f"step{i}" for i in range(38)) + " Final answer: B"
+        record = audited(record)
+        replacement, drops = build_rows_v3(record, tokenize)
+        self.assertFalse(drops)
+        rows = replacement + [row for row in trainer._read_jsonl(files.rows) if row["problem_id"] != "item-0"]
+        files.rows.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        audits = self.read("audit.json")
+        audits["items"]["item-0"] = record["audit"]
+        trainer._write_json(files.audit, audits)
+        files.review_solutions({"item-0:A": "FAIL"})
+        original = files.rows.read_bytes()
+
+        def checked_encode(row):
+            self.assertNotEqual(row["row_id"], "item-0:A", "rejected solution reached the encoder")
+            return v3_encode(row)
+
+        self.assertEqual(files.admit(checked_encode), 0)
+        group = self.read("admission.json")["groups"][0]
+        self.assertEqual((group["nA"], group["nB"]), (1, 2))
+        self.assertEqual(group["drops"], [{"row_id": "item-0:A", "reason": "SOLUTION_CONTENT_FAIL"}])
+        self.assertEqual(record["t1"]["status"], "CORRECT")
+        for arm in ("note", "no-note"):
+            self.assertEqual(trainer.run_train(files.args(arm, arm), policy_factory=tiny_factory, device="cpu",
+                make_encoder=lambda bundle, root: checked_encode), 0)
+            self.assertEqual(trainer._read_jsonl(self.root / arm / "drops_local.jsonl"),
+                             [{"group": 0, "row_id": "item-0:A", "reason": "SOLUTION_CONTENT_FAIL"}])
+        note, control = self.updates("note")[0], self.updates("no-note")[0]
+        self.assertEqual(note["routes_by_kind"]["A"], control["routes_by_kind"]["A"])
+        self.assertEqual({rid: value for rid, value in note["row_coefficients"].items() if rid.endswith(":A")},
+                         control["row_coefficients"])
+        self.assertEqual(files.rows.read_bytes(), original)
+
+    def test_solution_review_required_independently_for_T1_and_RESOLVE(self):
+        files = V3Files(self.root, groups=1)
+        for row_id in ("item-0:A", "item-9:A"):
+            for result, scope, expected in ((None, "entire_solution", "SOLUTION_CONTENT_MISSING_REVIEW"),
+                    ("FAIL", "entire_solution", "SOLUTION_CONTENT_FAIL"),
+                    ("UNKNOWN", "entire_solution", "SOLUTION_CONTENT_UNKNOWN"),
+                    ("PASS", "partial", "SOLUTION_CONTENT_BOUNDED_REVIEW_ONLY")):
+                with self.subTest(row_id=row_id, result=result, scope=scope):
+                    files.admission.unlink(missing_ok=True)
+                    files.review_solutions({row_id: result} if result else {}, missing=(row_id,) if result is None else ())
+                    receipt = self.read("solution_audit.json")
+                    if result is not None:
+                        receipt["items"][row_id]["content"]["scope"] = scope
+                        trainer._write_json(files.solution_audit, receipt)
+                    self.assertEqual(files.admit(), 0)
+                    group = self.read("admission.json")["groups"][0]
+                    self.assertEqual((group["nA"], group["nB"]), (1, 2))
+                    self.assertEqual(group["drops"], [{"row_id": row_id, "reason": expected}])
+
+    def test_solution_receipt_required_and_raw_bytes_bound_before_model_initialization(self):
+        files = V3Files(self.root, groups=1)
+        self.assertEqual(files.admit(), 0)
+        with patch.object(trainer, "build_policy", side_effect=AssertionError("must not initialize")):
+            args = files.args()
+            args.solution_audit = None
+            with self.assertRaisesRegex(ValueError, "solution-audit"):
+                trainer.run_train(args, device="cpu")
+            files.solution_audit.write_bytes(files.solution_audit.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "identity differs"):
+                trainer.run_train(files.args(), device="cpu")
+            files.solution_audit.unlink()
+            with self.assertRaises(FileNotFoundError):
+                trainer.run_train(files.args(), device="cpu")
+
+    def test_supplied_reserved_quality_drop_marker_is_rejected(self):
+        files = V3Files(self.root, groups=1)
+        rows = trainer._read_jsonl(files.rows)
+        rows[0][trainer.SOLUTION_DROP_FIELD] = "SOLUTION_CONTENT_FAIL"
+        files.rows.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            files.admit()
+        self.assertIn("input_ids", trainer._encode_or_drop(rows[0], v3_encode, None))
 
     def test_preflight_records_drops_before_schedule_and_later_drop_or_mutation_stops(self):
         files = V3Files(self.root, groups=1)
@@ -233,6 +337,7 @@ class V3TrainingTests(unittest.TestCase):
         files = V3Files(self.root, groups=1)
         rows = [row for row in trainer._read_jsonl(files.rows) if row["kind"] == "B"]
         files.rows.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        files.review_solutions()
         self.assertEqual(files.admit(), 1)
         with self.assertRaisesRegex(ValueError, "no A-present"):
             files.train()
@@ -247,7 +352,8 @@ class V3TrainingTests(unittest.TestCase):
         self.assertEqual(admission["inputs"]["encoding"]["max_new_tokens"], 8192)
         self.assertEqual(admission["total_steps"], 1)
         self.assertEqual(len(admission["groups"][0]["drops"]), 2)
-        groups = trainer._read_groups(files.rows, files.order, files.count, "note", 16, v3=True, audit_path=files.audit)
+        groups = trainer._read_groups(files.rows, files.order, files.count, "note", 16, v3=True,
+                                      audit_path=files.audit, solution_audit_path=files.solution_audit)
         args = files.args("local", "note", "--precision", "nf4", "--max-row-tokens", "12")
         self.assertEqual(trainer._read_admission(args, groups), admission)
         args.max_row_tokens = 13
@@ -289,7 +395,7 @@ class V3TrainingTests(unittest.TestCase):
         args = trainer.build_parser().parse_args(command[3:])
         self.assertTrue(args.resume)
         fixture = files.args("planner-fresh")
-        for key in ("rows", "build_root", "order", "limit", "model_path", "output", "audit", "sidecar", "admission"):
+        for key in ("rows", "build_root", "order", "limit", "model_path", "output", "audit", "sidecar", "solution_audit", "admission"):
             setattr(args, key, getattr(fixture, key))
         self.assertFalse(args.output.exists())
         self.assertEqual(trainer.run_train(args, policy_factory=tiny_factory, device="cpu",

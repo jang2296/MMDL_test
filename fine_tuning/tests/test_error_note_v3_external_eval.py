@@ -93,7 +93,7 @@ class ExternalEvaluationTests(unittest.TestCase):
                 ref |= {"repo_id": evaluation.BASE_ID, "revision": evaluation.BASE_REVISION}
                 ref_path = self.base_ref
             else:
-                hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "admission"), "a" * 64)
+                hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "solution_audit", "admission"), "a" * 64)
                 hashes.update(rows=evaluation.file_hash(self.rows), order=evaluation.file_hash(self.order))
                 protocol = plain_protocol_v3("bf16", 1, arm="note" if arm == "NOTE" else "no-note", contracts=hashes)
                 binding = {"protocol_sha256": protocol["sha256"], "prompts_sha256": protocol["prompts_sha256"],

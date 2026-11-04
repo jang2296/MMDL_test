@@ -6,15 +6,17 @@ Loss covers target tokens and the end token only: a wrong solution inside a note
 CLI: python -m fine_tuning.error_note.train train --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
          --arm {note,solution,no-note} --precision {bf16,nf4} --model-path M --output DIR --code-commit 40HEX
          [--token-budget T] [--gradient-checkpointing {on,off}] [--save-every 50] [--max-row-tokens K] [--resume]
-         [--protocol-version {v1,v2,v3}] [--admission ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json]
+         [--protocol-version {v1,v2,v3}] [--admission ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json --solution-audit SOLUTIONS.json]
      python -m fine_tuning.error_note.train admit --rows ROWS.jsonl --build-root V --order ORDER.json --limit N
-         --precision {bf16,nf4} --model-path M --output ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json --code-commit 40HEX
+         --precision {bf16,nf4} --model-path M --output ADMISSION.json --audit AUDIT.json --sidecar SIDECAR.json
+         --solution-audit SOLUTIONS.json --code-commit 40HEX
      python -m fine_tuning.error_note.train reload --run DIR --model-path M --precision {bf16,nf4} [--protocol-version {v1,v2,v3}]
      python -m fine_tuning.error_note.train dry-run --rows R --build-root V --order O --limit 1 --model-path M
-         --output DIR --precision nf4 --code-commit 40HEX --audit A --sidecar S --admission P [--token-budget T]
+         --output DIR --precision nf4 --code-commit 40HEX --audit A --sidecar S --solution-audit Q --admission P [--token-budget T]
 Protocol v2 (claudedocs/plan_self_note_v2_20261102.md section 4): 16 items per update and a linear LR decay whose end is
 the number of non-empty update groups of the rows file, so the protocol (and its binding) follows the rows.
-Version 3 admits both arms before training, preserves the common A routes, and uses .9 mean(A) + .1 mean(B).
+Version 3 requires source-reviewed whole solutions, admits both arms before training, preserves the common A routes,
+and uses .9 mean(A) + .1 mean(B).
 Its no-note arm omits B without renormalizing A; solution remains a legacy-only arm.
 """
 from __future__ import annotations
@@ -58,6 +60,8 @@ PROBE_ATOL = 1e-3
 PROBE_TENSORS = ("input_ids", "pixel_values", "image_grid_thw")
 ENCODE_WORKERS = 8
 ENCODE_BUFFER = 32  # rows ready ahead of the GPU; each holds its pixels in RAM
+SOLUTION_DROP_FIELD = "_solution_quality_drop"
+_SOLUTION_DROP_MARKER = object()
 STATUS_COMPLETE, STATUS_NONFINITE, STATUS_NO_UPDATES = "COMPLETE", "NONFINITE", "NO_UPDATES"
 
 
@@ -270,19 +274,25 @@ def _keep_before(path: Path, position: int) -> None:
 
 
 def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str,
-                 per_update: int = PER_UPDATE_ITEMS, *, v3: bool = False, audit_path: Path | None = None) -> list[list[dict]]:
+                 per_update: int = PER_UPDATE_ITEMS, *, v3: bool = False, audit_path: Path | None = None,
+                 solution_audit_path: Path | None = None) -> list[list[dict]]:
     """Groups come from the order, so both arms get the same updates; a group may be empty."""
     ids = [item["problem_id"] for item in read_order(order_path)["items"]]
     if not 1 <= limit <= len(ids):
         raise ValueError(f"train: limit {limit} is outside the order of {len(ids)} items")
     if v3:
-        from .audit import validate_row_audits
+        from .audit import solution_quality_reasons, validate_row_audits
         from .contract import select_rows_v3
 
         rows = _read_jsonl(rows_path)
-        if audit_path is None:
-            raise ValueError("train v3: --audit is required")
+        if audit_path is None or solution_audit_path is None:
+            raise ValueError("train v3: --audit and --solution-audit are required")
+        if any(SOLUTION_DROP_FIELD in row for row in rows):
+            raise ValueError("train v3: reserved solution-quality row field supplied")
         validate_row_audits(rows, audit_path)
+        reasons = solution_quality_reasons(rows, audit_path, solution_audit_path,
+                                           rows_sha256=ckpt.file_hash(rows_path))
+        rows = [row | {_SOLUTION_DROP_MARKER: reasons[row["row_id"]]} if row["row_id"] in reasons else row for row in rows]
         rows = select_rows_v3(rows, arm)
         if any(row["problem_id"] not in ids or row["kind"] not in (KIND_SOLUTION, KIND_NOTE) for row in rows):
             raise ValueError("train v3: an unknown problem_id or row kind in the rows file")
@@ -298,6 +308,8 @@ def _read_groups(rows_path: Path, order_path: Path, limit: int, arm: str,
 
 
 def _encode_or_drop(row: dict, encode: Callable[[dict], dict], max_row_tokens: int | None) -> dict:
+    if _SOLUTION_DROP_MARKER in row:
+        return {"row_id": row["row_id"], "reason": row[_SOLUTION_DROP_MARKER]}
     try:
         item = encode(row)
     except DropRow as exc:
@@ -345,9 +357,10 @@ def _admission_inputs(args: argparse.Namespace) -> dict:
     if args.max_row_tokens is not None and (args.precision != "nf4" or type(args.max_row_tokens) is not int
                                            or not 0 < args.max_row_tokens <= CONTEXT_LIMIT):
         raise ValueError("train v3: --max-row-tokens is a predeclared NF4 functional-check limit only")
-    if args.audit is None or args.sidecar is None:
-        raise ValueError("train v3: --audit and --sidecar are required")
-    return {"hashes": {name: ckpt.file_hash(getattr(args, name)) for name in ("rows", "order", "audit", "sidecar")},
+    if args.audit is None or args.sidecar is None or getattr(args, "solution_audit", None) is None:
+        raise ValueError("train v3: --audit, --sidecar and --solution-audit are required")
+    return {"hashes": {name: ckpt.file_hash(getattr(args, name))
+                       for name in ("rows", "order", "audit", "sidecar", "solution_audit")},
             "code_sha256": hashlib.sha256(args.code_commit.encode()).hexdigest(),
             "precision": args.precision, "limit": args.limit,
             "encoding": {"version": ADMISSION_VERSION_V3, "image": dict(IMAGE), "context_limit": CONTEXT_LIMIT,
@@ -371,7 +384,8 @@ def run_admit(args: argparse.Namespace, *, encode: Callable[[dict], dict] | None
     if args.output.exists():
         raise ValueError(f"admit: refusing to overwrite {args.output}")
     inputs = _admission_inputs(args)
-    groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2, v3=True, audit_path=args.audit)
+    groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2, v3=True,
+                          audit_path=args.audit, solution_audit_path=args.solution_audit)
     if encode is None:
         from transformers import AutoConfig, AutoProcessor
 
@@ -404,7 +418,7 @@ def _read_admission(args: argparse.Namespace, groups: list[list[dict]]) -> dict:
     if (admission.get("version") != ADMISSION_VERSION_V3
             or admission.get("sha256") != _digest({k: v for k, v in admission.items() if k != "sha256"})
             or admission.get("inputs") != _admission_inputs(args) or len(admission.get("groups", [])) != len(groups)):
-        raise ValueError("train v3: admission identity differs from rows/order/audit/sidecar/code/precision/limit")
+        raise ValueError("train v3: admission identity differs from rows/order/audit/sidecar/solution-audit/code/precision/limit")
     for index, (raw, group) in enumerate(zip(groups, admission["groups"], strict=True)):
         kept = [row["row_id"] for row in group["rows"]]
         dropped = [row["row_id"] for row in group["drops"]]
@@ -471,7 +485,7 @@ def run_dry_run(args: argparse.Namespace, *, policy_factory: Callable | None = N
         "rows_by_target_source": {}, "paired_resolve_note_problem_ids": [], "model_provenance": None,
         "source_sha256": source_identity(), "inputs": inputs, "components": {}}
     groups = _read_groups(args.rows, args.order, args.limit, "note", PER_UPDATE_ITEMS_V2,
-                          v3=True, audit_path=args.audit)
+                          v3=True, audit_path=args.audit, solution_audit_path=args.solution_audit)
     report["rows_by_kind"] = dict(Counter(row["kind"] for group in groups for row in group))
     if not any(row["kind"] == KIND_SOLUTION for group in groups for row in group):
         report.update(status="NO_USABLE_SUPERVISION", reason="NO_A_ROWS")
@@ -709,7 +723,8 @@ def run_train(args: argparse.Namespace, *, policy_factory: Callable | None = Non
         raise ValueError("train: v3 uses note/no-note; solution is a legacy route-changing arm")
     groups = _read_groups(args.rows, args.order, args.limit, "note" if v3 else args.arm,
                           PER_UPDATE_ITEMS_V2 if v2 or v3 else PER_UPDATE_ITEMS, v3=v3,
-                          audit_path=getattr(args, "audit", None))
+                          audit_path=getattr(args, "audit", None),
+                          solution_audit_path=getattr(args, "solution_audit", None))
     admission = _read_admission(args, groups) if v3 else None
     if admission is not None:
         contracts = admission["inputs"]["hashes"] | {"admission": ckpt.file_hash(args.admission)}
@@ -843,6 +858,7 @@ def run_reload(args: argparse.Namespace, *, policy_factory: Callable | None = No
             state = json.loads((args.run / "initial_state.json").read_text(encoding="utf-8"))["run"]
             hashes = contract["hashes"]
             if (ckpt.file_hash(args.run / "admission.json") != hashes["admission"]
+                    or admission.get("version") != ADMISSION_VERSION_V3
                     or admission.get("sha256") != _digest({k: v for k, v in admission.items() if k != "sha256"})
                     or admission["inputs"]["hashes"] != {k: v for k, v in hashes.items() if k != "admission"}
                     or admission["inputs"]["code_sha256"] != binding["code_sha256"]
@@ -901,17 +917,17 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--max-row-tokens", type=int, default=None, help="local 8GB only; never set on the rented GPU")
     train.add_argument("--resume", action="store_true")
     train.add_argument("--protocol-version", choices=("v1", "v2", "v3"), default="v1")
-    for name in ("admission", "audit", "sidecar"):
+    for name in ("admission", "audit", "sidecar", "solution-audit"):
         train.add_argument(f"--{name}", type=Path)
     admit = sub.add_parser("admit", help="CPU-only common v3 row encoding and update admission")
-    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar"):
+    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar", "solution-audit"):
         admit.add_argument(f"--{name}", type=Path, required=True)
     admit.add_argument("--limit", type=int, required=True)
     admit.add_argument("--precision", choices=("bf16", "nf4"), required=True)
     admit.add_argument("--code-commit", type=_commit, required=True)
     admit.add_argument("--max-row-tokens", type=int, default=None, help="predeclared NF4 functional-check admission only")
     dry = sub.add_parser("dry-run", help="v3 forward/backward diagnostics only; no optimizer or weight saving")
-    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar", "admission"):
+    for name in ("rows", "build-root", "order", "model-path", "output", "audit", "sidecar", "solution-audit", "admission"):
         dry.add_argument(f"--{name}", type=Path, required=True)
     dry.add_argument("--limit", type=int, required=True, help="predeclared first 1..10 items")
     dry.add_argument("--precision", choices=("nf4",), required=True)

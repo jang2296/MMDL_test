@@ -28,14 +28,19 @@ BASE = {
     "timeouts": {"collect": 111, "train": 222, "reload": 333, "export": 444},
 }
 COLLECT_DIR = f"{BASE['out_root']}/collect"
-TRAIN_PINS = {"reviews_path": "/workspace/private/reviews.json", "reviews_sha256": "e" * 64,
+RESOLVE_PINS = {"reviews_path": "/workspace/private/reviews.json", "reviews_sha256": "e" * 64,
               "t1_sha256": "f" * 64, "note_sha256": "0" * 64}
+TRAIN_PINS = {"rows_path": f"{COLLECT_DIR}/rows.jsonl", "rows_sha256": "1" * 64,
+              "audit_path": f"{COLLECT_DIR}/audit.json", "audit_sha256": "2" * 64,
+              "solution_audit_path": "/workspace/private/solution-audit.json", "solution_audit_sha256": "3" * 64}
 
 
 def params(stage: str, **changes: object) -> dict:
     value = copy.deepcopy(BASE)
     if stage == "note-v3-train":
         value.update(TRAIN_PINS)
+    elif stage == "note-v3-resolve":
+        value.update(RESOLVE_PINS)
     value.update(changes)
     return value
 
@@ -55,24 +60,35 @@ class V3PlanTests(unittest.TestCase):
         self.assertEqual(value_after(note, "--max-num-seqs-from"), f"{COLLECT_DIR}/sweep.json")
         self.assertNotIn("reviews", json.dumps(spec))
 
-    def test_train_pins_collected_evidence_before_audit_and_admission(self) -> None:
-        spec = planner.plan("note-v3-train", params("note-v3-train"))
+    def test_resolve_pins_collected_evidence_and_stops_before_solution_review(self) -> None:
+        spec = planner.plan("note-v3-resolve", params("note-v3-resolve"))
         self.assertIs(chain.check_spec(spec), spec)
         names = [step["name"] for step in spec["steps"]]
         self.assertEqual(names, ["pin-order", "pin-training-rules", "pin-source-provenance", "pin-t1", "pin-note",
-                                 "pin-reviews", "audit", "resolve", "rows", "admit", "train-note", "reload-note",
-                                 "export-note", "train-no-note", "reload-no-note", "export-no-note"])
+                                 "pin-reviews", "audit", "resolve", "rows"])
         steps = {step["name"]: step for step in spec["steps"]}
         for name, path, digest in (("order", BASE["order_path"], BASE["order_sha256"]),
                                    ("training-rules", BASE["training_rules_path"], BASE["training_rules_sha256"]),
                                    ("source-provenance", BASE["source_provenance_path"], BASE["source_provenance_sha256"]),
-                                   ("t1", f"{COLLECT_DIR}/t1.jsonl", TRAIN_PINS["t1_sha256"]),
-                                   ("note", f"{COLLECT_DIR}/note.jsonl", TRAIN_PINS["note_sha256"]),
-                                   ("reviews", TRAIN_PINS["reviews_path"], TRAIN_PINS["reviews_sha256"])):
+                                   ("t1", f"{COLLECT_DIR}/t1.jsonl", RESOLVE_PINS["t1_sha256"]),
+                                   ("note", f"{COLLECT_DIR}/note.jsonl", RESOLVE_PINS["note_sha256"]),
+                                   ("reviews", RESOLVE_PINS["reviews_path"], RESOLVE_PINS["reviews_sha256"])):
             self.assertEqual(steps[f"pin-{name}"]["argv"][3:], ["pin", "--file", path, "--sha256", digest])
         self.assertEqual(steps["audit"]["expect_files"], [f"{COLLECT_DIR}/audit.json", f"{COLLECT_DIR}/lessons-v3.json"])
         self.assertEqual(value_after(steps["rows"]["argv"], "--rows-version"), "v3")
         self.assertEqual(value_after(steps["resolve"]["argv"], "--max-num-seqs"), "auto")
+
+    def test_train_consumes_reviewed_closed_rows_without_regeneration(self) -> None:
+        spec = planner.plan("note-v3-train", params("note-v3-train"))
+        self.assertIs(chain.check_spec(spec), spec)
+        steps = {step["name"]: step for step in spec["steps"]}
+        self.assertEqual(list(steps), ["pin-order", "pin-training-rules", "pin-source-provenance", "pin-rows", "pin-audit",
+                                      "pin-solution-audit", "admit", "train-note", "reload-note", "export-note",
+                                      "train-no-note", "reload-no-note", "export-no-note"])
+        self.assertFalse(any(step["argv"][2] == planner.COLLECT for step in steps.values()))
+        for name in ("rows", "audit", "solution_audit"):
+            self.assertEqual(steps[f"pin-{name.replace('_', '-')}"]["argv"][3:],
+                             ["pin", "--file", TRAIN_PINS[f"{name}_path"], "--sha256", TRAIN_PINS[f"{name}_sha256"]])
 
     def test_common_training_contract_and_same_admission_for_both_arms(self) -> None:
         for stage in planner.V3_STAGES:
@@ -88,7 +104,9 @@ class V3PlanTests(unittest.TestCase):
                     self.assertEqual(value_after(argv, "--precision"), "bf16")
                     if argv[3] != "reload":
                         for flag, value in (("--audit", f"{COLLECT_DIR}/audit.json"),
-                                            ("--sidecar", BASE["training_rules_path"]), ("--order", BASE["order_path"])):
+                                            ("--sidecar", BASE["training_rules_path"]), ("--order", BASE["order_path"]),
+                                            ("--rows", TRAIN_PINS["rows_path"]),
+                                            ("--solution-audit", TRAIN_PINS["solution_audit_path"])):
                             self.assertEqual(value_after(argv, flag), value, step["name"])
                     if argv[3] == "train":
                         self.assertEqual(value_after(argv, "--admission"), f"{BASE['out_root']}/admission.json")
@@ -102,14 +120,16 @@ class V3PlanTests(unittest.TestCase):
     def test_missing_changed_or_repository_private_pins_refused(self) -> None:
         for stage in planner.V3_STAGES:
             p = params(stage)
+            extra = TRAIN_PINS if stage.endswith("train") else RESOLVE_PINS if stage.endswith("resolve") else {}
             for key in ("order_path", "order_sha256", "training_rules_path", "training_rules_sha256",
-                        "source_provenance_path", "source_provenance_sha256", *(TRAIN_PINS if stage.endswith("train") else ())):
+                        "source_provenance_path", "source_provenance_sha256", *extra):
                 with self.subTest(stage=stage, missing=key), self.assertRaises(ValueError):
                     planner.plan(stage, {name: value for name, value in p.items() if name != key})
-            for key in ("order_sha256", "training_rules_sha256", "source_provenance_sha256"):
+            for key in ("order_sha256", "training_rules_sha256", "source_provenance_sha256",
+                        *(key for key in extra if key.endswith("sha256"))):
                 with self.subTest(stage=stage, malformed=key), self.assertRaises(ValueError):
                     planner.plan(stage, params(stage, **{key: "bad"}))
-            for key in (*planner.V3_PRIVATE_PATHS, "build_root", "out_root", *(("reviews_path",) if stage.endswith("train") else ())):
+            for key in (*planner.V3_PRIVATE_PATHS, "build_root", "out_root", *(key for key in extra if key.endswith("path"))):
                 with self.subTest(stage=stage, public=key), self.assertRaisesRegex(ValueError, "outside repo_root"):
                     planner.plan(stage, params(stage, **{key: f"{BASE['repo_root']}/private.json"}))
             for changes in ({"seqs": [1]}, {"kv_cache_gib": 8}, {"token_budget": 4096}, {"reuse_t1_sha256": "f" * 64},
@@ -119,7 +139,7 @@ class V3PlanTests(unittest.TestCase):
 
     def test_deterministic_cli_plan_preserves_existing_output(self) -> None:
         stage = "note-v3-train"
-        first, changed = planner.plan(stage, params(stage)), planner.plan(stage, params(stage, reviews_sha256="1" * 64))
+        first, changed = planner.plan(stage, params(stage)), planner.plan(stage, params(stage, solution_audit_sha256="4" * 64))
         self.assertNotEqual(first["meta"]["params_sha256"], changed["meta"]["params_sha256"])
         self.assertEqual(first, planner.plan(stage, params(stage)))
         with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

@@ -76,7 +76,7 @@ class NotePromptV3Tests(unittest.TestCase):
                 self.generate(Path(tmp), answer_contract=contract.TURN1_ANSWER_CONTRACT)
 
     def test_collection_protocol_and_stored_notes_bind_the_exact_v3_prompt(self):
-        hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "admission"), "a" * 64)
+        hashes = dict.fromkeys(("rows", "order", "audit", "sidecar", "solution_audit", "admission"), "a" * 64)
         expected = protocol.plain_protocol_v3("bf16", 1, arm="note", contracts=hashes)
         self.assertEqual(expected["prompts_sha256"], protocol._digest({"note": contract.NOTE_INSTRUCTION_V3,
                                                                     "resolve_header": contract.RESOLVE_HEADER}))
