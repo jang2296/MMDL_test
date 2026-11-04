@@ -182,6 +182,56 @@ class TrainingAnswersTests(unittest.TestCase):
         self.assertEqual(self.grade(verifier, actor.problem_id, text).status, "CORRECT")
         self.assertEqual(self.grade(verifier, actor.problem_id, text.replace("73", "74")).status, "INCORRECT")
 
+    def test_terminal_heading_boxed_next_line_restates_one_gold_blind_value(self):
+        root, actor, item, _ = self.vault(gold="37")
+        verifier = Verifier(root)
+        for heading in ("Final Answer", "**Final Answer**", "**Final Answer:**"):
+            text = ("Therefore, the answer is 37.\n"
+                    "Let me verify the calculation. The same result follows.\n\n" + heading + "\n" + r"\boxed{37}")
+            with self.subTest(heading=heading):
+                result = extract_training(text, "stop", "Find x.", (), "decimal")
+                self.assertEqual((result.status, result.answer), ("OK", "37"))
+                self.assertEqual(self.grade(verifier, actor.problem_id, text).status, "CORRECT")
+                verifier.items[actor.problem_id] = replace(item, gold="38")
+                changed_gold = self.grade(verifier, actor.problem_id, text)
+                self.assertEqual((changed_gold.status, changed_gold.extracted), ("INCORRECT", "37"))
+                verifier.items[actor.problem_id] = item
+                self.assertEqual(extract_final(text, "stop").status, "INVALID_NO_FINAL")
+                self.assertEqual(extract_training(text, "length", "Find x.", (), "decimal").status, "TRUNCATED")
+        nested = "Answer: -3/4\n**Final Answer**\n" + r"\boxed{\frac{-3}{4}}"
+        result = extract_training(nested, "stop", "Find x.", (), "fraction")
+        self.assertEqual((result.status, training_value(result.answer)), ("OK", "-3/4"))
+
+    def test_terminal_heading_does_not_hide_conflicts_units_retraction_or_attribution(self):
+        terminal = "\n**Final Answer**\n" + r"\boxed{37}"
+        for prefix in ("Answer: 38", "Answer: -37", "Answer: 37 degrees", "Answer: 37 or 38",
+                       '"Answer: 37"', "According to the textbook, the answer is 37.",
+                       "```\nAnswer: 37\n```", "If the premise holds, the answer is 37.",
+                       "Answer: 37\nI retract that answer.", "Answer: 37\nIgnore my previous answer.",
+                       "Answer: 37\n37 is not correct.", "Answer: 37\nActually, 38.",
+                       "Answer: 37?", "Answer:"):
+            with self.subTest(prefix=prefix):
+                self.assertEqual(extract_training(prefix + terminal, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_MULTIPLE")
+        for text in ("According to the source:\nFinal Answer\n" + r"\boxed{37}",
+                     "```\nFinal Answer\n" + r"\boxed{37}"):
+            with self.subTest(text=text):
+                self.assertEqual(extract_training(text, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_NO_FINAL")
+
+    def test_terminal_heading_requires_a_full_boxed_final_line(self):
+        for ending in (r"\boxed{37} or \boxed{38}", "\\boxed{37}\nI have not decided.",
+                       r"\boxed{37", "", "37", r"\boxed{37} trailing prose"):
+            text = "Answer: 37\nFinal Answer\n" + ending
+            with self.subTest(ending=ending):
+                self.assertEqual(extract_training(text, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_MULTIPLE")
+        for earlier in (r"\boxed{38}", r"\boxed{37}"):
+            text = earlier + "\nFinal Answer\n" + r"\boxed{37}"
+            with self.subTest(earlier=earlier):
+                self.assertEqual(extract_training(text, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_MULTIPLE")
+
     def test_repeated_declarations_do_not_merge_different_values_or_units(self):
         for first, last in (("60", "61"), ("60", "60.00001"), ("60 degrees", "60"),
                             ("60 degrees", "60 rad"), ("60 V", "60 v"), ("1 m", "100 cm"),

@@ -110,6 +110,16 @@ def extract_training(text: str, finish_reason: str, question: str, choices: tupl
     text = re.sub(r"(" + prefix + r")\*\*(" + header + r"\s*(?::|=|\bis\b)?)\*\*",
                   r"\1\2", text, flags=re.I | re.M)
     text = re.sub(r"^[ \t]*\*\*((?:(?!\*\*).)+)\*\*[ \t]*$", r"\1", text, flags=re.M)
+    terminal_heading = re.search(r"^[ \t]*final[ \t]+answer[ \t]*:?[ \t]*\r?\n([^\r\n]+)[ \t\r\n]*\Z",
+                                 text, re.I | re.M)
+    if terminal_heading:
+        from . import v8_parser
+
+        boxed = terminal_heading[1].strip()
+        if (v8_parser._BOX.fullmatch(boxed) and len(v8_parser._BOX.findall(text)) == 1 and
+                not v8_parser._span_attributed(text, terminal_heading.start())):
+            # A terminal heading and its boxed next line are one declaration for the existing conflict checks.
+            text = text[:terminal_heading.start()] + "Final answer: " + boxed
     declaration_pattern = r"\b(?:final\s+answer|answer)\s*(?::|=|is\b)"
     declarations = list(re.finditer(declaration_pattern, text, re.I))
     if len(declarations) > 1:
