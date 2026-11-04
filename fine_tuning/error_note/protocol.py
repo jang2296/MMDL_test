@@ -10,6 +10,7 @@ import hashlib
 import json
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION
+from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
 
 from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
                        MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, RESOLVE_HEADER)
@@ -76,7 +77,7 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
     body |= {"version": VERSION_V3,
              "prompts_sha256": _digest({"note": NOTE_INSTRUCTION_V3, "resolve_header": RESOLVE_HEADER}),
              "training_contract": {"arm": arm, "hashes": dict(contracts), "master_seed": MASTER_SEED,
-                                   "answer_contract": "training-answer-v1", "audit_contract": "note-audit-v1",
+                                   "answer_contract": TRAINING_ANSWER_CONTRACT, "audit_contract": "note-audit-v1",
                                    "admission": ADMISSION_VERSION_V3, "active_group": "at_least_one_encoded_A",
                                    "route": "preserve_same_A_in_both_arms", "unexpected_drop": "STOP",
                                    "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS,

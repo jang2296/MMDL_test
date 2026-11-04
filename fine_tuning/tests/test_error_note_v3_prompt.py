@@ -28,7 +28,7 @@ class NotePromptV3Tests(unittest.TestCase):
         self.assertEqual(protocol.plain_protocol("bf16")["sha256"], "8c4548feeff1ff3acff79c7319751dc99a7a34f25d09effb3311c626b1645d77")
         self.assertEqual(protocol.plain_protocol_v2("bf16", 214)["sha256"], "fce086a2268d1c61d40d86b9ec3c6ab34d3923e5ca0c12a02546e44fbe5a0de9")
 
-    def generate(self, out, *, answer_contract="training-answer-v1"):
+    def generate(self, out, *, answer_contract="training-answer-v2"):
         stream = FakeStream(lambda request: default_output(request) | {"text": v2_note_text()})
         collect.run_note(make_items(1), make_actors(1), t1_rows(["INCORRECT"]), {"p0": "B"}, load,
             stream, collect.StreamStats(), lambda *args: self.fail("note must not contain a corrected solution"),
@@ -59,7 +59,7 @@ class NotePromptV3Tests(unittest.TestCase):
         for changed in ("legacy", "instruction", "prompt", "missing_prompt"):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as tmp:
                 out = Path(tmp)
-                self.generate(out, answer_contract=contract.TURN1_ANSWER_CONTRACT if changed == "legacy" else "training-answer-v1")
+                self.generate(out, answer_contract=contract.TURN1_ANSWER_CONTRACT if changed == "legacy" else "training-answer-v2")
                 row = collect.read_jsonl_done(out / "note.jsonl")["p0"]
                 if changed == "instruction":
                     row["note_instruction_sha256"] = "0" * 64

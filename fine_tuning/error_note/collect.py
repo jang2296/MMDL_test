@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 
+from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
 from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
 
 from .contract import (CONTEXT_LIMIT, IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V3, TURN1_ANSWER_CONTRACT,
@@ -441,9 +442,9 @@ def run_note(items: list[dict], actors: dict, t1: dict[str, dict], gold: dict[st
     the gold is known, and lessons.json is rewritten from note.jsonl at the end, also after a stop deadline."""
     if version not in ("v1", "v2"):
         raise ValueError(f"unknown note version {version!r}")
-    v3 = answer_contract == "training-answer-v1"
+    v3 = answer_contract == TRAINING_ANSWER_CONTRACT
     if v3 and version != "v2":
-        raise ValueError("training-answer-v1 requires the v2 note schema")
+        raise ValueError(f"{TRAINING_ANSWER_CONTRACT} requires the v2 note schema")
     instruction = {"note_instruction_sha256": hashlib.sha256(NOTE_INSTRUCTION_V3.encode()).hexdigest()} if v3 else {}
     out = Path(out)
     ids = [item["problem_id"] for item in items]
@@ -967,7 +968,7 @@ def _generate(args: argparse.Namespace, stage: str) -> int:
     out.mkdir(parents=True, exist_ok=True)
     items = _prefix(args)
     answer_contract = getattr(args, "answer_contract", TURN1_ANSWER_CONTRACT)
-    v3 = answer_contract == "training-answer-v1"
+    v3 = answer_contract == TRAINING_ANSWER_CONTRACT
     lessons = None
     service_options = {}
     private_files = []
@@ -1093,7 +1094,7 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--order", type=Path, required=True)
         p.add_argument("--limit", type=int, required=True)
         p.add_argument("--output", type=Path, required=True)
-        p.add_argument("--answer-contract", choices=(TURN1_ANSWER_CONTRACT, "training-answer-v1"),
+        p.add_argument("--answer-contract", choices=(TURN1_ANSWER_CONTRACT, TRAINING_ANSWER_CONTRACT),
                        default=TURN1_ANSWER_CONTRACT)
         p.add_argument("--training-rules", type=Path)
         p.add_argument("--training-rules-sha256")

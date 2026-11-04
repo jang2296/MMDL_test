@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fine_tuning.notebook_rl.answers import (
-    TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT, compare_training, extract_training,
+    TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT, compare_training, extract_final, extract_training,
+    training_value,
 )
 from fine_tuning.notebook_rl.schema import to_json
 from fine_tuning.notebook_rl.vault import write_split
@@ -64,6 +65,8 @@ class TrainingAnswersTests(unittest.TestCase):
         self.assertEqual(self.grade(verifier, actor.problem_id, "78-80", None).status, "INVALID_NO_FINAL")
         self.assertEqual(self.grade(verifier, actor.problem_id, "78-80", TURN1_EVAL_CONTRACT).status,
                          "INVALID_NO_FINAL")
+        with self.assertRaisesRegex(ValueError, "answer contracts"):
+            self.grade(verifier, actor.problem_id, "78-80", "training-answer-v1")
 
     def test_numeric_and_fraction_wrappers_preserve_sign_and_math(self):
         root, actor, item, lineage = self.vault("fraction", "-3/4", {"accept_decimal": True})
@@ -139,6 +142,81 @@ class TrainingAnswersTests(unittest.TestCase):
             self.assertNotEqual(self.grade(verifier, actor.problem_id, text).status, "CORRECT")
         self.assertEqual(self.grade(verifier, actor.problem_id, "Final answer: B. 24").status, "CORRECT")
 
+    def test_repeated_same_declarations_are_one_gold_blind_committed_value(self):
+        for text, kind, expected in (
+            ("Final answer: 60\nFinal answer: **60**", "decimal", "60"),
+            ("Answer: -3/4\nThe answer is $\\boxed{-0.75}$", "fraction", "-0.75"),
+            ("Answer: 60 V\nReasoning checks the circuit.\nAnswer: 60V", "unit_number", "60V"),
+            ("Answer: liver\nTherefore, the answer is **liver**", "short_text", "liver"),
+            ("Answer: B. 24\nFinal answer: B", "mcq", "B")):
+            with self.subTest(text=text):
+                choices = ("42", "24") if kind == "mcq" else ()
+                result = extract_training(text, "stop", "Authored question.", choices, kind)
+                self.assertEqual((result.status, result.answer), ("OK", expected))
+                self.assertEqual(extract_training(text, "length", "Authored question.", choices, kind).status,
+                                 "TRUNCATED")
+        text = "Final answer: 60\nFinal answer: 60"
+        self.assertEqual(extract_final(text, "stop").status, "INVALID_MULTIPLE")
+        root, actor, item, _ = self.vault()
+        verifier = Verifier(root)
+        first = self.grade(verifier, actor.problem_id, text)
+        verifier.items[actor.problem_id] = replace(item, gold="61")
+        second = self.grade(verifier, actor.problem_id, text)
+        self.assertEqual((first.status, second.status, first.extracted, second.extracted),
+                         ("CORRECT", "INCORRECT", "60", "60"))
+
+    def test_repeated_degree_spellings_preserve_unit_and_still_require_bound_rule(self):
+        text = ("So, the answer is 73 degrees.\n"
+                "Let me verify the angle sum.\n"
+                "Actually, the auxiliary angle follows from the same triangle.\n"
+                r"Answer: $\boxed{73^\circ}$")
+        result = extract_training(text, "stop", "Find the angle.", (), "decimal")
+        self.assertEqual(result.status, "OK")
+        self.assertIsNotNone(result.answer)
+        self.assertEqual(training_value(result.answer), "73°")
+        root, actor, _, lineage = self.vault(gold="73")
+        self.assertEqual(self.grade(Verifier(root), actor.problem_id, text).status, "UNVERIFIABLE")
+        path, sha, _ = self.rules(root, actor, lineage, "unit_number",
+                                 {"unit_aliases": ["°"], "require_unit": False})
+        verifier = Verifier(root, training_rules_path=path, training_rules_sha256=sha)
+        self.assertEqual(self.grade(verifier, actor.problem_id, text).status, "CORRECT")
+        self.assertEqual(self.grade(verifier, actor.problem_id, text.replace("73", "74")).status, "INCORRECT")
+
+    def test_repeated_declarations_do_not_merge_different_values_or_units(self):
+        for first, last in (("60", "61"), ("60", "60.00001"), ("60 degrees", "60"),
+                            ("60 degrees", "60 rad"), ("60 V", "60 v"), ("1 m", "100 cm"),
+                            ("60 or 61", "60"), ("60, 61", "60"), ("-60", "60")):
+            text = f"Answer: {first}\nReasoning continues.\nFinal answer: {last}"
+            with self.subTest(text=text):
+                self.assertEqual(extract_training(text, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_MULTIPLE")
+        text = "Answer: B. 42\nFinal answer: B. 24"
+        self.assertEqual(extract_training(text, "stop", "Choose.", ("42", "24"), "mcq").status,
+                         "INVALID_MULTIPLE")
+
+    def test_repeated_declarations_reject_quotation_attribution_unfinished_and_tail_ambiguity(self):
+        for text in ('"Answer: 60"\nFinal answer: 60',
+                     'Answer: "60"\nFinal answer: "60"',
+                     'Answer: **"60"**\nFinal answer: **"60"**',
+                     "According to the textbook, the answer is 60.\nFinal answer: 60",
+                     "```\nAnswer: 60\n```\nFinal answer: 60",
+                     "If the premise holds, the answer is 60.\nFinal answer: 60",
+                     "Answer: perhaps 60\nFinal answer: 60",
+                     "Answer:\nFinal answer: 60", "Answer: 60...\nFinal answer: 60",
+                     "Answer: 60\nFinal answer:", "Answer: 60?\nFinal answer: 60",
+                     "Answer: 60\nI retract that answer.\nFinal answer: 60",
+                     "Answer: 60\nIgnore my previous answer.\nFinal answer: 60",
+                     "Answer: 60\nMy final answer might be 61.\nFinal answer: 60",
+                     "Answer: 60\n60 is not correct.\nFinal answer: 60",
+                     "Answer: 60\nActually, 61.\nFinal answer: 60",
+                     "Answer: 60\nActually, 61.\nActually, 60.\nFinal answer: 60",
+                     "Answer: 60 degrees\n60° is not correct.\n" + r"Final answer: $\boxed{60^\circ}$",
+                     "Answer: 60\nFinal answer: 60\nor 61",
+                     "Answer: 60\nFinal answer: 60\nI have not decided."):
+            with self.subTest(text=text):
+                self.assertEqual(extract_training(text, "stop", "Find x.", (), "decimal").status,
+                                 "INVALID_MULTIPLE")
+
     def test_gold_changes_never_change_extraction_and_length_stays_truncated(self):
         root, actor, item, _ = self.vault()
         verifier = Verifier(root)
@@ -197,7 +275,7 @@ def audit(event,args):
     if event=='open' and isinstance(args[0],str): opened.append(args[0])
 sys.addaudithook(audit)
 with VerifierService(root,forbidden_roots=[],training_rules_path=rules,training_rules_sha256=sys.argv[3]) as service:
-    result=service.grade(sys.argv[4],'60°','stop','plain',answer_contract='training-answer-v1')
+    result=service.grade(sys.argv[4],'60°','stop','plain',answer_contract='training-answer-v2')
     assert result.status=='CORRECT'
     assert service.metadata['training_rules_sha256']==sys.argv[3]
     assert not any(str(p) in opened for p in private)

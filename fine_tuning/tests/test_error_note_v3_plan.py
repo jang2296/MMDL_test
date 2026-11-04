@@ -80,7 +80,7 @@ class V3PlanTests(unittest.TestCase):
             for step in spec["steps"]:
                 argv = step["argv"]
                 if argv[2] == planner.COLLECT:
-                    for flag, value in (("--order", BASE["order_path"]), ("--answer-contract", "training-answer-v1"),
+                    for flag, value in (("--order", BASE["order_path"]), ("--answer-contract", "training-answer-v2"),
                                         ("--training-rules", BASE["training_rules_path"]),
                                         ("--training-rules-sha256", BASE["training_rules_sha256"])):
                         self.assertEqual(value_after(argv, flag), value, step["name"])

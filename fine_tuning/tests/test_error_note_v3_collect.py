@@ -1,6 +1,7 @@
 """Authored CPU integration cases for audited lessons and immutable collection inputs."""
 import contextlib
 import copy
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -36,7 +37,7 @@ class CollectionFixture:
         (model / "config.json").write_text("{}")
         (model / "model.safetensors").write_bytes(b"cpu identity fixture only")
         self.args = SimpleNamespace(build_root=self.out / "vault", order=self.out / "order.json", limit=1,
-                                    output=self.out, answer_contract="training-answer-v1",
+                                    output=self.out, answer_contract="training-answer-v2",
                                     engine="hf", model_path=model, code_commit="a" * 40,
                                     training_rules=self.out / "rules.json", training_rules_sha256="1" * 64,
                                     source_provenance=self.out / "source.json", reviews=self.out / "reviews.json",
@@ -60,6 +61,17 @@ class CollectionFixture:
 
 
 class AuditedCollectTests(unittest.TestCase):
+    def test_cli_rejects_old_training_contract_instead_of_reinterpreting_it(self):
+        common = ["rows", "--build-root", "/vault", "--order", "/order.json", "--limit", "1",
+                  "--output", "/collect", "--tokenizer-path", "/model", "--answer-contract"]
+        self.assertEqual(collect._parser().parse_args(common + ["training-answer-v2"]).answer_contract,
+                         "training-answer-v2")
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error), self.assertRaises(SystemExit) as raised:
+            collect._parser().parse_args(common + ["training-answer-v1"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("invalid choice: 'training-answer-v1'", error.getvalue())
+
     def test_reviewed_note_transfer_and_rows_are_bound(self):
         with tempfile.TemporaryDirectory() as tmp:
             f = CollectionFixture(tmp)

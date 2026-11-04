@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from fine_tuning.modules import BASE_REVISION
+from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
 from fine_tuning.notebook_rl.pod.common import HEX40, HEX64, sha256_bytes
 
 PARAMS_VERSION = "error-note-plan-params-v1"
@@ -186,7 +187,7 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     collect_dir = f"{out}/collect"
     collect_cmd, train_cmd, chain_cmd = [py, "-m", COLLECT], [py, "-m", TRAIN], [py, "-m", CHAIN]
     common = ["--build-root", build, "--order", order, "--limit", limit, "--output", collect_dir,
-              "--answer-contract", "training-answer-v1", "--training-rules", p["training_rules_path"],
+              "--answer-contract", TRAINING_ANSWER_CONTRACT, "--training-rules", p["training_rules_path"],
               "--training-rules-sha256", p["training_rules_sha256"], "--code-commit", commit]
     engine = ["--model-path", model, "--kv-cache-gib", "auto", "--max-num-batched-tokens",
               str(p["max_num_batched_tokens"]), "--engine", "vllm"]

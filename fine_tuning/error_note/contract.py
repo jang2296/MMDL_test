@@ -292,7 +292,7 @@ def note_prompt_v2(p0_text: str, t1_text: str, status: str, gold: str) -> str:
 
 
 def note_prompt_v3(p0_text: str, t1_text: str, status: str, gold: str) -> str:
-    """The v2 note schema with the source-aware instruction, used only by training-answer-v1."""
+    """The v2 note schema with the source-aware instruction, used by the training answer contract."""
     return note_prompt_v2(p0_text, t1_text, status, gold).removesuffix(NOTE_INSTRUCTION_V2) + NOTE_INSTRUCTION_V3
 
 

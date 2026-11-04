@@ -15,10 +15,12 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
+
 from .audit import FILE_VERSION, audit_note, digest, read_audits, text_sha256
 from .contract import IMAGE, MAX_NEW_TOKENS, NOTE_INSTRUCTION_V3, RESOLVE_HEADER, note_prompt_v3, parse_note_v2
 
-ANSWER_CONTRACT = "training-answer-v1"
+ANSWER_CONTRACT = TRAINING_ANSWER_CONTRACT
 COLLECTION_VERSION = "error-note-collection-v3"
 LESSONS_VERSION = "error-note-lessons-v3"
 
@@ -83,7 +85,7 @@ def _write_once(path: Path, value: dict) -> None:
 def bind_collection(args, items: list[dict]) -> dict:
     """Pin public settings before generation; private rules are verified only by the service."""
     if getattr(args, "answer_contract", None) != ANSWER_CONTRACT:
-        raise ValueError("v3 collection requires training-answer-v1")
+        raise ValueError(f"v3 collection requires {ANSWER_CONTRACT}")
     rules, rules_sha = getattr(args, "training_rules", None), getattr(args, "training_rules_sha256", None)
     if rules is None or not isinstance(rules_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", rules_sha):
         raise ValueError("v3 collection requires pinned private training rules")

@@ -78,14 +78,16 @@ python -m fine_tuning.notebook_rl.proof_eval gate-62 --prereg PREREG.json --ledg
 
 ## 버전 3: 출처 검토·학습 채점·노트 대조
 
-v1/v2의 기본 동작은 유지한다. v3는 `training-answer-v1`, `rows-version v3`, `protocol-version v3`를 명시해서 실행한다.
+v1/v2의 기본 동작은 유지한다. 현재 v3는 `training-answer-v2`, `rows-version v3`, `protocol-version v3`를 명시해서 실행한다.
+학습 채점 v2는 같은 값·같은 단위의 반복 답 선언을 한 답으로 처리한다. 상충·철회·불확실한 답은 거부하며 V8/MMMU 채점은 바꾸지 않는다.
+기존 `training-answer-v1` 결과는 당시 동결 소스로만 재현한다. 새 소스에서 v1을 v2로 바꾸어 해석하거나 원래 판정을 덮어쓰지 않는다.
 생성은 계속 8192토큰·기존 일반 이미지 범위다. 클라우드는 원본 BF16, 로컬 NF4는 기능 확인용이다.
 
 1. `source_evidence prepare --build-root V --manifest MANIFEST --order ORDER --limit N --raw-root RAW --output EVIDENCE`
    로 기존 승인 자료의 private `rules.json`, `source-provenance.json`을 만든다. 파일·문항·이미지·출처 해시를 검사하며
    출처 설명을 모델의 입력이나 학습 target에 넣지 않는다. 원래 adapter의 수치 허용오차는 출처 저자 주석과 구분한다.
 2. `collect solve`/`sweep`, `collect note --note-version v2`에
-   `--answer-contract training-answer-v1 --training-rules RULES --training-rules-sha256 SHA`를 붙인다.
+   `--answer-contract training-answer-v2 --training-rules RULES --training-rules-sha256 SHA`를 붙인다.
    v2 제목 형식은 재사용하되 지시문은 v3다. 실제 틀린 주장의 교정·근거·불확실성을 쓰고, 이미지 관측과 외부 지식을 구분한다.
    원본 모델 파일·실제 코드·엔진·정밀도·환경·순서가 `collection.json`에 고정되므로 다른 조건으로 결과를 이어 쓰지 못한다.
 3. 생성된 노트를 원문/이미지/출처와 검토하고 private `note-reviews-v1` 원장을 만든다.

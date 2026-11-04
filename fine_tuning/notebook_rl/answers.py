@@ -15,7 +15,7 @@ from .schema import VerifierItem
 VERSION = "strict-final-v1"
 # Opt-in first-attempt contract: MMMU P0 prompt bytes and team-final-answer-v8 extraction (v8_parser.py).
 TURN1_EVAL_CONTRACT = "p0-eval-aligned-v1"
-TRAINING_ANSWER_CONTRACT = "training-answer-v1"
+TRAINING_ANSWER_CONTRACT = "training-answer-v2"
 # Opt-in retry rule bound only with that T1 contract: a committed MCQ retry answer naming no option is INCORRECT.
 RETRY_OUT_OF_CHOICE = "incorrect-v1"
 _FINAL = re.compile(r"^[ \t]*final answer[ \t]*:[ \t]*(.*?)[ \t]*$", re.I | re.M)
@@ -110,9 +110,55 @@ def extract_training(text: str, finish_reason: str, question: str, choices: tupl
     text = re.sub(r"(" + prefix + r")\*\*(" + header + r"\s*(?::|=|\bis\b)?)\*\*",
                   r"\1\2", text, flags=re.I | re.M)
     text = re.sub(r"^[ \t]*\*\*((?:(?!\*\*).)+)\*\*[ \t]*$", r"\1", text, flags=re.M)
-    declarations = list(re.finditer(r"\b(?:final\s+answer|answer)\s*(?::|=|is\b)", text, re.I))
+    declaration_pattern = r"\b(?:final\s+answer|answer)\s*(?::|=|is\b)"
+    declarations = list(re.finditer(declaration_pattern, text, re.I))
     if len(declarations) > 1:
-        return Extraction("INVALID_MULTIPLE", None)
+        from . import v8_parser
+
+        if re.search(r"\b(?:ignore|disregard|discard|reject|replace|revise|change)\s+"
+                     r"(?:(?:my|our|the|this|that|previous|earlier|last|final)\s+)*answer\b|"
+                     r"\banswer\s+(?:(?:may|might|could|would|should)\s+be|"
+                     r"(?:is|was)\s+(?:not\b|incorrect\b|wrong\b))", text, re.I):
+            return Extraction("INVALID_MULTIPLE", None)
+        negation = (r"(?:(?:is|was)\s+(?:not\s+(?:correct|right)|incorrect|wrong)|"
+                    r"isn['’]t\s+(?:correct|right)|cannot\s+be\s+(?:correct|right))\b")
+        keys: set[tuple[Fraction | None, str]] = set()
+        for index, declaration in enumerate(declarations):
+            start = text.rfind("\n", 0, declaration.start()) + 1
+            end = text.find("\n", declaration.end())
+            end = len(text) if end < 0 else end
+            marker = re.fullmatch(r"[ \t]*(?:(?:so|therefore|thus|hence)[,:]?\s+)?" + header
+                                  + r"\s*(?::|=|\bis\b)[ \t]*(.*?)[ \t]*", text[start:end], re.I)
+            if (marker is None or index + 1 < len(declarations) and declarations[index + 1].start() < end
+                    or index == len(declarations) - 1 and text[end:].strip()
+                    or v8_parser._span_attributed(text, declaration.start())):
+                return Extraction("INVALID_MULTIPLE", None)
+            value = marker[1].strip()
+            if (not value or value.startswith(('"', "'", "“", "‘", "`"))
+                    or re.search(r"\.{2,}|…|\?\s*$|\baccording\s+to\b", value, re.I)
+                    or v8_parser._CONDITIONAL.search(value) or v8_parser._WITHDRAW.search(text)):
+                return Extraction("INVALID_MULTIPLE", None)
+            candidate = extract_training("Answer: " + value, finish_reason, question, choices, answer_type)
+            if candidate.status != "OK" or candidate.answer is None:
+                return Extraction("INVALID_MULTIPLE", None)
+            normalized = " ".join(training_value(candidate.answer).split())
+            if (normalized.startswith(('"', "'", "“", "‘"))
+                    or re.search(rf"(?<!\w){re.escape(candidate.answer)}\s+{negation}", text, re.I)):
+                return Extraction("INVALID_MULTIPLE", None)
+            keys.add(_training_answer_key(candidate.answer))
+            if len(keys) > 1:
+                return Extraction("INVALID_MULTIPLE", None)
+        for replacement in re.finditer(
+                r"(?:^|\n|[.!?]\s+)(?:actually|instead|correction|revised\s+answer)\s*[,!:]\s*([^\n]+)", text, re.I):
+            value = replacement[1]
+            if (re.match(rf"{_NUM}|\\(?:boxed|\(|\[)|\$", value)
+                    and _training_answer_key(value) not in keys):
+                return Extraction("INVALID_MULTIPLE", None)
+        for negated in re.finditer(
+                rf"(?<!\w)({_RATIONAL}\s*(?:[A-Za-z°%µΩ][A-Za-z0-9°%µΩ^ /.*-]*)?)\s+{negation}", text, re.I):
+            if _training_answer_key(negated[1]) in keys:
+                return Extraction("INVALID_MULTIPLE", None)
+        return candidate
     if answer_type == "mcq":
         return extract_eval_aligned(text, finish_reason, question, choices, answer_type)
     marker = re.search(prefix + header + r"\s*(?::|=|\bis\b)\s*(.*)$", text, re.I | re.M)
@@ -169,6 +215,16 @@ def training_value(value: str, *, variable: str | None = None) -> str:
     if fraction:
         value = f"{fraction[1]}/{fraction[2]}{fraction[3]}"
     return value.replace("−", "-").strip()
+
+
+def _training_answer_key(value: str) -> tuple[Fraction | None, str]:
+    """Exact declaration identity; no missing-unit inference, conversion, tolerance or source aliases."""
+    normalized = " ".join(training_value(value).split())
+    quantity = re.fullmatch(rf"({_RATIONAL})\s*([A-Za-z°%µΩ][A-Za-z0-9°%µΩ^ /.*-]*)?", normalized)
+    if quantity is None or (numeric := number(quantity[1])) is None:
+        return None, normalized
+    unit = quantity[2] or ""
+    return numeric, "°" if unit.casefold() in ("degree", "degrees") else unit
 
 
 def compare_training(answer: str, item: VerifierItem, rule: dict | None = None) -> bool | None:
