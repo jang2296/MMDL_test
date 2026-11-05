@@ -472,5 +472,25 @@ class DataAuditTests(unittest.TestCase):
                 audit.check_target_identifiability(row, root)
 
 
+class LocalAuditEntrypointTests(unittest.TestCase):
+    def test_only_explicit_command_imports_existing_engine_and_forwards_arguments(self):
+        from types import SimpleNamespace
+
+        from fine_tuning.data_audit import __main__ as entry
+
+        for command, module in entry.COMMANDS.items():
+            with self.subTest(command=command), patch.object(entry, "import_module") as load:
+                engine = unittest.mock.Mock(return_value=7)
+                load.return_value = SimpleNamespace(main=engine)
+                self.assertEqual(entry.main([command, "--help"]), 7)
+                load.assert_called_once_with("fine_tuning.notebook_rl." + module)
+                engine.assert_called_once_with((["export-approval"] if command == "export-approval" else []) + ["--help"])
+        with patch.object(entry, "import_module") as load, patch("sys.stdout", new_callable=io.StringIO):
+            with self.assertRaises(SystemExit) as stopped:
+                entry.main(["--help"])
+            self.assertEqual(stopped.exception.code, 0)
+            load.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

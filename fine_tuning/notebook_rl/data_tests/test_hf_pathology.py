@@ -72,7 +72,7 @@ class NctTests(unittest.TestCase):
                 self.assertEqual(len(set(c.choices)), 4)
                 self.assertLessEqual(set(c.choices), set(path_mod.NCT_NAMES.values()))
                 self.assertEqual((c.source, c.subject, c.answer_type), ("hf-nctcrc", "Basic_Medical_Science", "mcq"))
-                self.assertEqual(c.question, "This is an H&E-stained tissue patch from a human colorectal sample. "
+                self.assertEqual(c.question, "This is an H&E-stained human tissue patch. "
                                              "Which tissue class does it show?")
 
     def test_names_are_the_nine_readable_classes(self):

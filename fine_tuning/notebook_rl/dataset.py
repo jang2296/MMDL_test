@@ -99,9 +99,13 @@ def load_images(actor: ActorItem, image_root: Path) -> list[Image.Image]:
 
 def build_splits(root: Path, pools: dict[str, list[GeneratedProblem]], *,
                  index: dict | None = None, source_registry: dict | None = None,
-                 evidence: dict | None = None) -> dict:
-    """Candidate generation/solver checks never assert human review or training permission."""
-    if set(pools) != set(SPLITS) or any(not rows for rows in pools.values()):
+                 evidence: dict | None = None, allow_empty_heldout: bool = False) -> dict:
+    """Candidate generation/solver checks never assert human review or training permission.
+
+    allow_empty_heldout (explicit opt-in, default off) lets a selected-training vault keep empty dev/sealed/
+    style_sealed splits; train must stay nonempty and the opt-in is recorded in the build manifest."""
+    if set(pools) != set(SPLITS) or not pools["train"] or (
+            not allow_empty_heldout and any(not rows for rows in pools.values())):
         raise ValueError("dataset: all four nonempty splits required")
     seen_ids: set[str] = set()
     owners: dict[str, str] = {}
@@ -161,6 +165,8 @@ def build_splits(root: Path, pools: dict[str, list[GeneratedProblem]], *,
         "human_render_review": False, "human_leak_review": False,
         "structure_split_disjoint": True,
         "dataset_code_sha256": _sha(Path(__file__).read_bytes())}
+    if allow_empty_heldout:
+        manifest["allow_empty_heldout"] = True
     _write(root / "manifest.yaml", _bytes(manifest)+b"\n")
     return manifest
 

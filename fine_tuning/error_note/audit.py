@@ -9,13 +9,15 @@ import hashlib
 import json
 from pathlib import Path
 
-from .contract import _has_words, hint_leak, parse_note_v2
+from .contract import _has_words, hint_leak, hint_leak_single, parse_note_v2, resolve_prompt
 
 VERSION = "note-audit-v1"
 FILE_VERSION = "note-audit-file-v1"
 REVIEW_VERSION = "note-review-v1"
 SOLUTION_FILE_VERSION = "solution-audit-file-v1"
 SOLUTION_REVIEW_VERSION = "solution-review-v1"
+SINGLE_NOTE_AUDIT_VERSION = "single-response-note-audit-v1"
+SINGLE_SOLUTION_REVIEW_VERSION = "single-response-solution-review-v1"
 
 
 def digest(value: object) -> str:
@@ -136,6 +138,146 @@ def validate_audit(audit: dict, record: dict, provenance: dict) -> dict:
     if audit != expected:
         raise ValueError("audit: record/source/decision binding mismatch")
     return audit
+
+
+def _single_source_bindings(record: dict, provenance: dict) -> dict:
+    """Original source-file hashes are separate from a generation's decoded/processor input hashes."""
+    try:
+        paths, hashes = record["image_paths"], record["image_sha256"]
+        if (not isinstance(provenance, dict) or not provenance or type(paths) is not list or not paths
+                or any(not isinstance(path, str) or not path.strip() for path in paths)
+                or type(hashes) is not list or len(hashes) != len(paths)
+                or any(not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha)
+                       for sha in hashes)
+                or any(not isinstance(record[key], str) or not record[key].strip()
+                       for key in ("problem_id", "p0_text", "subject", "source"))):
+            raise ValueError("single audit: source provenance and original image-file hashes required")
+        return {"input_sha256": digest({key: record[key] for key in
+                                       ("p0_text", "image_paths", "image_sha256", "subject", "source")}),
+                "source_sha256": digest(provenance), "image_files_sha256": digest(list(zip(paths, hashes, strict=True))),
+                "p0_sha256": text_sha256(record["p0_text"]), "t1_sha256": digest(record["t1"])}
+    except (KeyError, TypeError) as error:
+        raise ValueError("single audit: malformed source/input record") from error
+
+
+def single_note_review_bindings(record: dict, provenance: dict) -> dict:
+    """Bind the reviewer's opinion to original image files and complete generated T1/note records."""
+    return _single_source_bindings(record, provenance) | {"note_record_sha256": digest(record.get("note"))}
+
+
+def audit_single_note(record: dict, *, gold: str, choices: tuple[str, ...] | list[str], provenance: dict,
+                      review: dict | None = None, aliases: tuple[str, ...] | list[str] = (),
+                      acronym_candidates: tuple[str, ...] | list[str] = ()) -> dict:
+    """Keep the old note audit intact; add the single-response leak rule and strict whole-note admission."""
+    bindings = single_note_review_bindings(record, provenance)
+    if review is not None and (not isinstance(review, dict) or review.get("single_bindings") != bindings):
+        raise ValueError("single audit: reviewer source/image/generation bindings mismatch")
+    base = audit_note(record, gold=gold, choices=choices, provenance=provenance, review=review,
+                      aliases=aliases, acronym_candidates=acronym_candidates)
+    note = record.get("note")
+    parsed = parse_note_v2(note["text"]) if note else None
+    leak = hint_leak_single(parsed.lesson, gold, choices, aliases=aliases) if parsed else None
+    accepted = (base["format"]["result"] == "PASS"
+                and base["content"]["result"] == "PASS" and base["content"]["scope"] == "entire_note"
+                and base["leak"]["result"] == "CLEAR" and base["leak"]["scope"] == "entire_lesson"
+                and all(value is None for value in base["checks"].values()) and leak is None)
+    body = {"version": SINGLE_NOTE_AUDIT_VERSION, "problem_id": record["problem_id"], "bindings": bindings,
+            "base_audit": base, "single_hint_leak": leak, "accepted": accepted}
+    return body | {"sha256": digest(body)}
+
+
+def validate_single_note_audit(audit: dict, record: dict, provenance: dict) -> dict:
+    """Recompute both audit contracts; a re-hashed stale/forged single receipt is still rejected."""
+    if (not isinstance(audit, dict) or audit.get("version") != SINGLE_NOTE_AUDIT_VERSION
+            or audit.get("sha256") != digest({k: v for k, v in audit.items() if k != "sha256"})):
+        raise ValueError("single audit: unsupported note audit or sha256 mismatch")
+    try:
+        base = validate_audit(audit["base_audit"], record, provenance)
+        expected = audit_single_note(record, provenance=provenance, review=base["review"], **base["leak_inputs"])
+    except (KeyError, TypeError) as error:
+        raise ValueError("single audit: malformed note audit") from error
+    if audit != expected:
+        raise ValueError("single audit: note record/source/decision binding mismatch")
+    return audit
+
+
+def single_solution_review_bindings(row: dict, record: dict, provenance: dict,
+                                    note_audit: dict | None = None) -> dict:
+    """Bind A1/A2 to actual generated prose and hint-free P0; A1 does not depend on a note."""
+    try:
+        kind = row["kind"]
+        if kind not in ("A1", "A2") or row["target_source"] != {"A1": "T1", "A2": "RESOLVE"}[kind]:
+            raise ValueError("single solution audit: only matching A1/T1 or A2/RESOLVE rows are allowed")
+        if (row["problem_id"] != record["problem_id"] or not isinstance(row["row_id"], str) or not row["row_id"].strip()
+                or row["prompt"] != record["p0_text"]
+                or any(row[key] != record[key] for key in ("image_paths", "subject", "source"))
+                or ("image_sha256" in row and row["image_sha256"] != record["image_sha256"])):
+            raise ValueError("single solution audit: row must use the exact hint-free P0/source/image input")
+        bindings = _single_source_bindings(record, provenance)
+        generation = record["t1" if kind == "A1" else "resolve"]
+        if (generation["finish_reason"] != "stop" or generation["status"] != "CORRECT"
+                or not isinstance(generation["text"], str) or not generation["text"].strip()
+                or row["target"] != generation["text"]):
+            raise ValueError("single solution audit: target must equal the completed correct generation")
+        lesson_sha = note_sha = None
+        if kind == "A2":
+            if note_audit is None or not validate_single_note_audit(note_audit, record, provenance)["accepted"]:
+                raise ValueError("single solution audit: A2 requires an accepted single note audit")
+            note_sha = note_audit["sha256"]
+            parsed = parse_note_v2(record["note"]["text"])
+            if parsed is None:
+                raise ValueError("single solution audit: A2 requires a parsed note")
+            lesson_sha = text_sha256(parsed.lesson)
+            if (generation.get("prompt") != resolve_prompt(record["p0_text"], parsed.lesson)
+                    or generation.get("lesson_sha256") != lesson_sha
+                    or ("lesson_sha256" in row and row["lesson_sha256"] != lesson_sha)):
+                raise ValueError("single solution audit: A2 generation prompt/lesson binding mismatch")
+        elif generation.get("prompt", record["p0_text"]) != record["p0_text"]:
+            raise ValueError("single solution audit: T1 generation must use hint-free P0")
+        return bindings | {"row_sha256": digest(row), "target_sha256": text_sha256(row["target"]),
+                           "prompt_sha256": text_sha256(row["prompt"]), "generation_sha256": digest(generation),
+                           "note_audit_sha256": note_sha,
+                           "lesson_sha256": lesson_sha}
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("single solution audit: malformed row/generation bindings") from error
+
+
+def validate_single_solution_review(review: dict | None, row: dict, record: dict, provenance: dict,
+                                    note_audit: dict | None = None) -> dict:
+    """Missing/partial/negative reviews reject prose; malformed or stale receipts raise instead of passing."""
+    bindings = single_solution_review_bindings(row, record, provenance, note_audit)
+    reason = None
+    if review is None:
+        reason = "SOLUTION_CONTENT_MISSING_REVIEW"
+    else:
+        fields = {"version", "row_id", "problem_id", "target_source", "bindings", "reviewer_kind",
+                  "human_verified", "method", "content"}
+        if (not isinstance(review, dict) or set(review) != fields
+                or review["version"] != SINGLE_SOLUTION_REVIEW_VERSION or review["row_id"] != row["row_id"]
+                or review["problem_id"] != row["problem_id"] or review["target_source"] != row["target_source"]
+                or review["bindings"] != bindings):
+            raise ValueError("single solution audit: review identity/bindings mismatch")
+        kind, method = review["reviewer_kind"], review["method"]
+        if (kind not in ("human", "ai_review", "program") or type(review["human_verified"]) is not bool
+                or review["human_verified"] and kind != "human"):
+            raise ValueError("single solution audit: reviewer kind/human_verified mismatch")
+        if method not in ("source_review", "bounded_check", "format_only", "no_contradiction", "regex"):
+            raise ValueError("single solution audit: unsupported review method")
+        check = review["content"]
+        if (not isinstance(check, dict) or set(check) != {"result", "scope", "evidence"}
+                or check["result"] not in ("PASS", "FAIL", "UNKNOWN")
+                or check["scope"] not in ("entire_solution", "partial")):
+            raise ValueError("single solution audit: invalid content result/scope")
+        evidence = check["evidence"]
+        if (not isinstance(evidence, list) or any(not isinstance(ref, str) or not ref.strip() for ref in evidence)
+                or check["result"] in ("PASS", "FAIL") and not evidence):
+            raise ValueError("single solution audit: content review requires explicit evidence references")
+        if check["result"] != "PASS":
+            reason = f"SOLUTION_CONTENT_{check['result']}"
+        elif kind not in ("human", "ai_review") or method != "source_review" or check["scope"] != "entire_solution":
+            reason = "SOLUTION_CONTENT_BOUNDED_REVIEW_ONLY"
+    return {"accepted": reason is None, "reason": reason, "bindings": bindings,
+            "review_sha256": digest(review) if review is not None else None}
 
 
 def _read_items(path: Path, expected_sha256: str | None = None) -> dict[str, dict]:

@@ -5,11 +5,13 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from . import (
-    hf_agri, hf_art, hf_cauldron, hf_chem, hf_docs, hf_graph_vlqa, hf_medical, hf_music, hf_pathology, hf_science,
+    hf_agri, hf_art, hf_cauldron, hf_chem, hf_circuit, hf_clevr, hf_docs, hf_graph_vlqa, hf_medical, hf_music,
+    hf_pathology, hf_science, hf_tatqa_table,
 )
 from .hf_common import Candidate, SourceSpec
 
-_MODULES = (hf_cauldron, hf_science, hf_agri, hf_medical, hf_pathology, hf_art, hf_music, hf_chem, hf_docs, hf_graph_vlqa)
+_MODULES = (hf_cauldron, hf_science, hf_agri, hf_medical, hf_pathology, hf_art, hf_music, hf_chem,
+            hf_docs, hf_graph_vlqa, hf_circuit, hf_clevr, hf_tatqa_table)
 
 
 def repo_dir(spec: SourceSpec) -> str:

@@ -197,6 +197,127 @@ rl-only에서 노트 행만 있던 그룹은 가중치를 바꾸지 않고 스�
 
 CPU 검사: `python -m unittest discover -s fine_tuning/tests -p 'test_error_note_v4*.py'`(작은 무작위 모델·가짜 엔진. 4B 학습 효과의 증거가 아니다).
 
+## SINGLE: 실제 메모리 측정과 서로 다른 문항 묶음
+
+현재 상위 SINGLE 코드는 **`error-note-single-response-v2`**다. 이전 v1 실행은 당시 동결 코드·원장으로만 해석하며
+새 코드에서 조용히 재개하거나 reward를 소급 변경하지 않는다.
+T1의 답이 CORRECT이고 **원래 풀이 전체**의 출처 검토가 PASS인 경우에만 PG 보상 1이다.
+같은 A1 검토 receipt를 재사용하며 FAIL/UNKNOWN/승인 누락은 0이다. 기존 길이·반복 조건으로 A1이 부적격이면
+검토를 우회하지 않고 이유를 남겨 0으로 둔다. 정오·원래 action/EOS·q는 고치지 않는다.
+모든 완료 T1은 고정 B×C 분모와 전체 raw KL에 남고, A2 승인으로 틀린 원래 T1의 보상이 바뀌지 않는다.
+receipt·재계산 결정·출처/evidence hash는 controller metadata이며 processor 입력이나 target에 넣지 않는다.
+인코딩/역전파에서 결정을 다시 검증하므로 reward/accepted 값만 바꾸거나 낡은 receipt를 재사용할 수 없다.
+검토 WAIT는 유지하고 malformed/stale binding은 오류로 차단한다.
+SINGLE 노트의 parser-invalid 피드백은 “parser가 승인하지 않았다”이며 “최종답이 없었다는 뜻은 아니다”라고 명시한다.
+원래 풀이·gold·v3 노트 지시문/스키마는 그대로 주고, 기존 v1–v3 프롬프트 함수/판정은 바꾸지 않는다.
+새 protocol의 prompt hash는 실제 SINGLE 피드백 맵과 지시문을 함께 고정한다.
+
+`single`의 기본값은 HF 동시 1문항, 생성 토큰 예산 24576, 학습 singleton이며 그대로 유지된다.
+`--precision nf4|bf16`은 명시 선택이다. 아래 기능은 GPU 측정을 자동 시작하거나 OOM 뒤 재생성하지 않는다.
+동일 정책 블록은 최대 16개의 **서로 다른** 문항이며 문항별 seed·원래 action·EOS·sampling replay를 유지한다.
+
+승인된 새 동결 소스에서 다음처럼 **원래 수집 작업 자체**를 측정할 수 있다. `RESERVE`는 운영자가 사전에 정한 양의 byte 값이다.
+공통 인자·수집 결과 디렉터리는 재개 때 같게 유지하고, partial 파일명만 매번 새것으로 준다.
+이 예시는 사전 고정 2문항 경로이며 측정값이나 8192토큰 적합성의 증거가 아니다.
+
+```bash
+C=(--build-root "$BUILD" --order "$ORDER" --order-sha256 "$ORDER_SHA"
+   --frozen-approval "$APPROVAL" --source-provenance "$SOURCE" --training-rules "$RULES"
+   --model-path "$SNAP" --mode local-smoke --precision nf4 --limit 2 --token-scale 1024
+   --max-num-seqs 1 --max-num-batched-tokens 24576 --token-budget 49152)
+python -m fine_tuning.error_note.single collect "${C[@]}" --output "$OUT" \
+  --capture-capacity "$PART/collect-1.json" --capacity-reserve-bytes "$RESERVE"
+# WAIT_NOTE_REVIEW 뒤 원문/출처 검토를 기록한 다음 재개한다. 완료된 답은 다시 생성하지 않는다.
+python -m fine_tuning.error_note.single collect "${C[@]}" --output "$OUT" --note-reviews "$NOTE_REVIEWS" \
+  --capture-capacity "$PART/collect-2.json" --capacity-reserve-bytes "$RESERVE"
+# WAIT_SOLUTION_REVIEW 뒤 검토를 기록한다. dry-run은 update 없이 원래 행의 backward도 측정한다.
+python -m fine_tuning.error_note.single dry-run "${C[@]}" --output "$OUT" \
+  --note-reviews "$NOTE_REVIEWS" --solution-reviews "$SOLUTION_REVIEWS" \
+  --capture-capacity "$PART/backward.json" --capacity-reserve-bytes "$RESERVE"
+# 각 실행이 출력한 파일 SHA를 외부 원장에 고정한다. 다음 명령은 CPU 전용이다.
+python -m fine_tuning.error_note.capacity assemble \
+  --input "$PART/collect-1.json" --input-sha256 "$PART1_SHA" \
+  --input "$PART/collect-2.json" --input-sha256 "$PART2_SHA" \
+  --input "$PART/backward.json" --input-sha256 "$BACKWARD_SHA" --output "$PROFILE"
+```
+
+수집은 실제 생성 길이만 기록한다. 짧게 끝난 응답으로 쓰지 않은 8192토큰 상한을 인증하지 않는다.
+학습 측정은 기존 loss/backward의 실제 microbatch 분할을 따른다. `--token-budget 0`은 singleton이며,
+양의 예산은 기존 planner로 분할하고 singleton도 예산을 넘으면 HOLD한다. 각 항목은 실제 실행한 묶음의 크기와 ID를 기록한다.
+원래 전체 T1의 B×C 분모와 종류별 전체 SFT 행 수·가중치를 유지하며, microbatch 사이의 기울기를 누적한다.
+정책/원본 가중치는 바꾸지 않고 transaction마다 Adam moment와 전체 gradient의 상주 공간을 한 번 확보한다.
+각 peak는 앞선 replay·microbatch도 포함할 수 있는 보수적인 transaction 누적 최고값이며, 해당 묶음만의 독립 비용이 아니다.
+optimizer step의 임시 공간은 측정 범위 밖이다.
+
+정상 종료·검토 WAIT·backward 증명 HOLD에서도 완료된 측정은 새 partial에 보존한다.
+backward 증명 보고서는 선택적 측정 전에 저장한다. 증명 오류·파라미터 변경이면 추가 측정을 하지 않으며,
+측정 실패는 완료 항목을 보존하되 `UNCALIBRATED_FAILED`로 남아 합치거나 실행 입장에 사용할 수 없다.
+partial의 외부 SHA, 소스/모델/정밀도/실제 GPU UUID/라이브러리/attention backend/전체 tensor dtype·layout/
+초기 정책/reserve가 맞아야 합칠 수 있고, 같은 work를 중복 합쳐 증거를 늘릴 수 없다.
+실제 generation, full-vocabulary KL, 보상 1 PG, A1/A2/B, LM/FULL 경로가 모두 없으면 `UNCALIBRATED`(종료 코드 2)다.
+2문항에서 A2/B가 없으면 최종 profile이 될 수 없다. 추가 증거는 별도로 사전 고정한 **다른** 문항에서만 얻는다.
+partial/최종 파일은 덮어쓰지 않으며 동시에 같은 파일을 발행하는 writer도 차단한다.
+
+완성된 profile은 **별도 실행 계획**에 `--capacity-profile "$PROFILE" --capacity-profile-sha256 "$PROFILE_SHA"`로 고정한다.
+이 모드에서 생략한 동시성 상한은 16, 생성/학습 토큰 예산 상한은 각각 16×24576이다.
+기존 FIFO/token planner가 매 단계 실제 행 길이·전체 image grid와 현재 여유 VRAM으로 입장 전 분할한다.
+미측정 shape/긴 singleton/부족한 메모리는 STARTED 전에 HOLD하며, STARTED 뒤 OOM·오류는 보존하고 재시도하지 않는다.
+학습 API는 `backward_single_block(..., capacity=session)`을 사용하며 optimizer 실행기는 추가하지 않았다.
+BF16 loader 선택은 지원하지만 이 경로의 cloud controller·cloud-ready 인증은 제공하지 않는다.
+이 구현의 CPU 회귀는 실행했지만 실제 GPU calibration profile은 아직 만들지 않았다.
+
+## SINGLE campaign: 300문항 파일럿과 나머지 3,200문항 연결
+
+`single_campaign.py`는 위 메모리 측정 경로와 별도인 캠페인 실행기다. `prepare`는 모델을 불러오지 않고
+**실제 승인·동결된 정확한 3,500문항**의 순서, 전체 actor/이미지/출처, 원래 정답·허용오차·단위 근거를 검증해
+계획을 고정한다. 기존 풀의 2/10문항 확인으로 이 검사를 대신할 수 없다. 아래 변수는 아직 확보되지 않은
+실물 입력을 포함한 자리표시자이며, `SNAP`은 NF4 cache가 아닌 원본 BF16 snapshot 경로다.
+
+```bash
+C=(--build-root "$BUILD" --order "$ORDER" --order-sha256 "$ORDER_SHA"
+   --frozen-approval "$APPROVAL" --frozen-approval-sha256 "$APPROVAL_SHA"
+   --source-provenance "$SOURCE" --source-provenance-sha256 "$SOURCE_SHA"
+   --training-rules "$RULES" --training-rules-sha256 "$RULES_SHA"
+   --pilot-ids-sha256 "$PILOT_IDS_SHA" --dev-ids-sha256 "$DEV_IDS_SHA"
+   --retention-ids-sha256 "$RETENTION_IDS_SHA" --model-path "$SNAP")
+P=(--output "$CAMPAIGN_PROOF" --campaign-mode proof --precision nf4 --max-blocks 1)
+python -m fine_tuning.error_note.single_campaign prepare "${C[@]}" "${P[@]}"
+# 별도로 승인된 실제 모델 실행에서만 사용한다. 기본 proof는 optimizer/가중치 저장이 없다.
+python -m fine_tuning.error_note.single_campaign advance "${C[@]}" "${P[@]}" \
+  --allow-model-run --stop-after-seconds "$STAGE_SECONDS"
+```
+
+명령 생략 시 `prepare`, 모드 기본값은 `proof`, `--max-blocks` 기본값은 1이다. 블록 하나는 서로 다른 최대16문항이다.
+실제 실행에는 `--allow-model-run`이 필요하며, 고정한 모드·입력·메모리 설정·실행 블록 상한을 같은 캠페인에서 바꿀 수 없다.
+완성된 메모리 profile은 `prepare`부터 `--capacity-profile "$PROFILE" --capacity-profile-sha256 "$PROFILE_SHA"`로 고정한다.
+`WAIT_NOTE_REVIEW`/`WAIT_SOLUTION_REVIEW`에서는 실행을 끝내고, 각각 `--note-reviews`/`--solution-reviews`와 대응하는
+`--note-reviews-sha256`/`--solution-reviews-sha256`를 붙여 같은 `advance`를 재호출한다. 완료 응답은 재생성하지 않는다.
+불확실한 STARTED 요청은 재추첨하지 않으며, 부분 checkpoint는 `RECOVERY_REQUIRED`로 보존한다.
+
+다음은 **향후 별도 갱신·저장 승인을 받은 BF16 실행용**이다. proof 캠페인을 train으로 바꿀 수 없으므로 새 출력 경로가 필요하다.
+
+```bash
+T=(--output "$CAMPAIGN_BF16" --campaign-mode train --precision bf16 --max-blocks 1)
+python -m fine_tuning.error_note.single_campaign prepare "${C[@]}" "${T[@]}"
+python -m fine_tuning.error_note.single_campaign advance "${C[@]}" "${T[@]}" \
+  --allow-model-run --allow-update --allow-save --stop-after-seconds "$STAGE_SECONDS"
+# 저장된 정책·optimizer·LR·RNG·cursor를 복원/검사하며, 다음 블록을 실행하지 않는다.
+python -m fine_tuning.error_note.single_campaign reload "${C[@]}" "${T[@]}" --allow-model-run
+# 파일럿/외부 dev/예산 gate와 본학습 승인이 모두 있는 경우에만 다음 구간을 실행한다.
+python -m fine_tuning.error_note.single_campaign advance "${C[@]}" "${T[@]}" \
+  --allow-model-run --allow-update --allow-save --continue-main \
+  --pilot-gate "$PILOT_GATE" --pilot-gate-sha256 "$PILOT_GATE_SHA" --stop-after-seconds "$STAGE_SECONDS"
+```
+
+300문항은 18×16+12인19번째 슬롯에서 `PILOT_COMPLETE`로 멈춘다. BF16 본학습은 계획 정본
+`claudedocs/review_rl_sft_hybrid_v4_20261105.md` §11.2의 기능/외부 dev/예산 조건, 같은 파일럿 checkpoint에 결합한
+gate, `--continue-main`을 요구하며 다음301번째 문항부터3,200개만 이어간다. optimizer·LR·RNG를 초기화하지 않고 총219슬롯이다.
+proof의 추가 무갱신 순회에도 `--continue-main`이 필요하며, 순회 완료와 PG/A1/A2/B 필수 기울기 증명은 별도다. 누락 성분은 HOLD로 남는다.
+
+현재 연결 검증은 **작은 무작위 CPU 모델의57검사 통과**(CUDA 초기화 차단)다. 실제3,500문항 승인, 실제 Qwen GPU 실행,
+메모리 적합성·학습 효과를 인증한 결과가 아니다. NF4 train/checkpoint continuation은 명시적으로 HOLD이며 로컬 NF4는 무갱신 확인만 지원한다.
+이 CLI는 RunPod를 자동 생성·실행하지 않으며 기존 Pod의 SINGLE 미지원 거부를 완화하지 않는다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

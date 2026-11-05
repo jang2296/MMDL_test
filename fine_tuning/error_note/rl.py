@@ -7,9 +7,95 @@ sample is not weighted more per token than a short one, and the loss decomposes 
 """
 from __future__ import annotations
 
+import math
+from typing import Any
+
 import torch
 
+from fine_tuning.notebook_rl.input_preparation import digest
 from fine_tuning.notebook_rl import losses
+
+
+def processed_scores(scores: torch.Tensor, generated_ids: torch.Tensor, *, temperature: float = .7,
+                     top_p: float = .8, top_k: int = 20, presence_penalty: float = 1.5) -> torch.Tensor:
+    """The sampled distribution: generated-only presence, temperature, then the pinned HF top-k/top-p warpers."""
+    from transformers.generation.logits_process import TopKLogitsWarper, TopPLogitsWarper
+
+    if (scores.ndim != 2 or not scores.is_floating_point() or not bool(torch.isfinite(scores).all())
+            or generated_ids.ndim != 2 or generated_ids.shape[0] != scores.shape[0]
+            or generated_ids.dtype != torch.long or generated_ids.device != scores.device
+            or (generated_ids.numel() and (int(generated_ids.min()) < 0 or int(generated_ids.max()) >= scores.shape[1]))):
+        raise ValueError("single RL: finite [B,V] scores and generated-only int64 [B,T] IDs required")
+    if (not math.isfinite(temperature) or temperature <= 0 or not math.isfinite(top_p) or not 0 < top_p <= 1
+            or type(top_k) is not int or top_k < 0 or not math.isfinite(presence_penalty)):
+        raise ValueError("single RL: invalid sampling settings")
+    seen = torch.zeros_like(scores, dtype=torch.bool)
+    if generated_ids.numel():
+        seen.scatter_(1, generated_ids, True)
+    result = (scores.float() - seen * presence_penalty) / temperature
+    if top_k:
+        result = TopKLogitsWarper(top_k)(generated_ids, result)
+    if top_p < 1:
+        result = TopPLogitsWarper(top_p)(generated_ids, result)
+    return result
+
+
+def support_ids(scores: torch.Tensor) -> list[list[int]]:
+    """The ordered supported vocabulary IDs per processed-score row."""
+    if scores.ndim != 2 or bool(torch.isnan(scores).any()) or bool(torch.isposinf(scores).any()):
+        raise ValueError("single RL: invalid processed scores")
+    return [torch.isfinite(row).nonzero().flatten().tolist() for row in scores]
+
+
+def support_sha256(scores: torch.Tensor) -> list[str]:
+    """One digest of the ordered supported vocabulary IDs per processed-score row."""
+    return [digest(ids) for ids in support_ids(scores)]
+
+
+def stored_support_logprob(scores: torch.Tensor, generated_ids: torch.Tensor, action: int, support: list[int], *,
+                           temperature: float = .7, presence_penalty: float = 1.5, **_: Any) -> torch.Tensor:
+    """log q(action) on the generation-time top-k/top-p support, renormalized with replayed scores.
+
+    Re-deriving the support from replayed logits can drop a boundary token that was actually sampled
+    (cached decode and full forward round differently), giving -inf. The stored support is the set the
+    sampler really drew from; inside it this equals processed_scores(...).log_softmax(-1)[action].
+    """
+    if action not in support or len(set(support)) != len(support):
+        raise ValueError("single RL: sampled action outside its stored generation support")
+    seen = torch.zeros_like(scores, dtype=torch.bool)
+    if generated_ids.numel():
+        seen.scatter_(1, generated_ids, True)
+    values = ((scores.float() - seen * presence_penalty) / temperature)[0]
+    index = torch.tensor(support, dtype=torch.long, device=values.device)
+    return values[action] - values.index_select(0, index).logsumexp(0)
+
+
+def sampling_sha256(sampling: dict) -> str:
+    if set(sampling) != {"temperature", "top_p", "top_k", "presence_penalty"}:
+        raise ValueError("single RL: sampling transform must be explicit")
+    processed_scores(torch.zeros(1, 1), torch.empty(1, 0, dtype=torch.long), **sampling)
+    return digest(sampling)
+
+
+def policy_sha256(bundle) -> str:
+    """Hash every installed L/M/V tensor, including Vision tensors currently frozen by routing."""
+    from fine_tuning.modules import tensor_sha256
+
+    owned = {id(parameter) for group in bundle.params.values() for parameter in group}
+    values = {name: tensor_sha256(parameter) for name, parameter in bundle.model.named_parameters()
+              if id(parameter) in owned}
+    if len(values) != len(owned):
+        raise ValueError("single RL: incomplete policy tensor inventory")
+    return digest(values)
+
+
+def single_pg(logprobs: torch.Tensor, reward: int, *, problem_count: int, token_scale: float) -> torch.Tensor:
+    """b=0 REINFORCE; wrong answers remain in the fixed B*C denominator."""
+    if (logprobs.ndim != 1 or not logprobs.numel() or not bool(torch.isfinite(logprobs).all())
+            or type(reward) is not int or reward not in (0, 1) or type(problem_count) is not int or problem_count < 1
+            or not math.isfinite(token_scale) or token_scale <= 0):
+        raise ValueError("single RL: invalid reward, action log probabilities or fixed denominator")
+    return -reward * logprobs.sum() / (problem_count * token_scale)
 
 
 def pad(values: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:

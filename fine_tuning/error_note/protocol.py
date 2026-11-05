@@ -13,7 +13,8 @@ from fine_tuning.modules import BASE_ID, BASE_REVISION
 from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
 
 from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
-                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, RESOLVE_HEADER)
+                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, RESOLVE_HEADER,
+                       SINGLE_VERDICT_LABELS)
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
 MERGERS = ["model.visual.merger", "model.visual.deepstack_merger_list.0",
@@ -124,4 +125,69 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
                                                      "loop_window": LOOP_WINDOW, "loop_ratio": LOOP_RATIO},
                                    "loss": {"row": "mean_target_and_eos_nll", "A": 0.9,
                                             "B": 0.1 if arm == "note" else 0.0, "renormalize_missing_kind": False}}}
+    return body | {"sha256": _digest(body)}
+
+
+# v3 (user 2026-11-05): program-only row admission; RL replay over the stored generation-time support.
+VERSION_SINGLE = "error-note-single-response-v3"
+SINGLE_REWARD_GATE = "single-t1-program-gate-v1"
+SINGLE_REPLAY = "stored-generation-support-v1"
+# Cached-decode vs full-forward numerics differ; a per-row |replay - sampled| above these is a binding error.
+SINGLE_REPLAY_MEAN_ATOL = 0.1
+SINGLE_REPLAY_MAX_ATOL = 3.0
+SINGLE_CONTRACT_HASHES = frozenset(("source", "dataset", "order", "data_admission"))
+SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+
+
+def single_prompts_sha256() -> str:
+    return _digest({"note": NOTE_INSTRUCTION_V3, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER})
+
+
+def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[list[str]]:
+    """Pilot and continuation close separate 16-item blocks; every original ID occurs once."""
+    if (not problem_ids or any(not isinstance(pid, str) or not pid for pid in problem_ids)
+            or len(set(problem_ids)) != len(problem_ids) or type(pilot_count) is not int or pilot_count < 1):
+        raise ValueError("single protocol: unique nonempty problem IDs and positive pilot count required")
+    boundary = min(pilot_count, len(problem_ids))
+    return [part[start:start + PER_UPDATE_ITEMS_V2]
+            for part in (problem_ids[:boundary], problem_ids[boundary:])
+            for start in range(0, len(part), PER_UPDATE_ITEMS_V2)]
+
+
+def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[str, str],
+                          token_scale: float, beta: float = 0.02,
+                          sft_weights: dict[str, float] | None = None) -> dict:
+    """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission."""
+    import math
+
+    weights = {"A1": 0.05, "A2": 0.5, "B": 0.05} if sft_weights is None else dict(sft_weights)
+    if (set(contracts) != SINGLE_CONTRACT_HASHES or any(
+            not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+            for value in contracts.values())):
+        raise ValueError("single protocol: explicit source, dataset, order and data-admission SHA256 required")
+    if (isinstance(token_scale, bool) or not isinstance(token_scale, (int, float))
+            or not math.isfinite(token_scale) or token_scale <= 0
+            or isinstance(beta, bool) or not isinstance(beta, (int, float)) or not math.isfinite(beta) or beta < 0
+            or set(weights) != {"A1", "A2", "B"} or any(
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or value < 0 for value in weights.values())):
+        raise ValueError("single protocol: finite fixed normalization and nonnegative weights required")
+    body = {key: value for key, value in plain_protocol_v2(precision, total_slots).items() if key != "sha256"}
+    body |= {"version": VERSION_SINGLE, "sampling": dict(SINGLE_SAMPLING),
+             "prompts_sha256": single_prompts_sha256(),
+             "training_contract": {
+                 "version": VERSION_SINGLE, "hashes": dict(contracts), "master_seed": MASTER_SEED, "per_update_items": PER_UPDATE_ITEMS_V2,
+                 "generation_counts": {"t1": 1, "note": 1, "resolve": 1}, "sampling": dict(SINGLE_SAMPLING),
+                 "rl": {"method": "reinforce", "baseline": 0.0, "token_scale": float(token_scale),
+                        "beta": float(beta), "reward": SINGLE_REWARD_GATE,
+                        "kl": "raw_F0_to_current_on_all_completed_T1_prefixes"},
+                 "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
+                 "length_policy": {"min_target_tokens": 1, "max_target_tokens": MAX_TARGET_TOKENS,
+                                   "content_acceptance": "program_checks_only_content_unverified"},
+                 "renormalize_missing_kind": False, "replay": "original_actions_same_live_policy_once",
+                 "replay_support": {"method": SINGLE_REPLAY, "row_mean_atol": SINGLE_REPLAY_MEAN_ATOL,
+                                    "row_max_atol": SINGLE_REPLAY_MAX_ATOL},
+                 "zero_signal": "consume_slot_without_optimizer_or_decay", "total_slots": total_slots,
+                 "pilot_boundary": 300, "pilot_main_optimizer": "continuous",
+                 "routes": {"RL": "LM", "A1": "LM", "A2_B": "accepted_note_self_report"}}}
     return body | {"sha256": _digest(body)}

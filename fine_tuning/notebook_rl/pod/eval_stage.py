@@ -38,6 +38,7 @@ params (`eval-stage-params-v1`), absolute canonical paths:
                seed 3407 only); its F0 runs in the same ledger must set it too.
                FT-NOTE-V3 (prereg v5) also requires seed 3407, in-process vLLM and reuse_export true; a separate
                verification step connects the declared model reference to its checkpoint before any ledger START.
+               FT-HYB-V4 (prereg v6) and FT-SINGLE (prereg v7; binding = the campaign's campaign-plan.json) likewise.
   eval-course  + ft_export, ft_model_ref_sha256 (sha256 of <ft_export>/model_ref.json written by eval-ft)
 """
 from __future__ import annotations
@@ -67,8 +68,9 @@ COMMON = {"version", "commit", "repo_root", "python", "volume_root", "artifact_r
           "prereg_sha256", "ledger", "run_prefix", "subset", "subset_sha256", "arm", "seeds", "subset_tag"}
 NOT_PATHS = {"version", "run_prefix", "arm", "seeds", "subset_tag", "reuse_export", "eval_slots", "vllm_inprocess"}
 ARM_OF = {"eval-f0": ("F0",), "eval-ft": ("FT-NOTE", "FT-SOLUTION", "FT-NOTE-3417", proof_eval.ARM_V2, proof_eval.ARM_V3,
-                                          proof_eval.ARM_V4)}
-FINAL_ARMS = (proof_eval.ARM_V3, proof_eval.ARM_V4)  # declared before evaluation: reuse_export + verify-v<n>-export
+                                          proof_eval.ARM_V4, proof_eval.ARM_SINGLE)}
+# declared before evaluation: reuse_export + verify-<tag>-export (FT-SINGLE: binding = its campaign-plan.json)
+FINAL_ARMS = (proof_eval.ARM_V3, proof_eval.ARM_V4, proof_eval.ARM_SINGLE)
 STAGES = ("eval-f0", "eval-ft")  # planned; eval-course is dropped from the proof (user decision 2026-10-31)
 MMMU_ID = re.compile(r"validation_[A-Za-z_]+_[0-9]{1,3}\Z")
 EXTRA = {"eval-f0": set(),
@@ -200,7 +202,7 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
             "--base", snapshot, "--output", p["ft_export"], "--code-commit", p["training_commit"]],
             [model_ref, f"{model_path}/export_manifest.json"]))
     if p["arm"] in FINAL_ARMS:
-        command = "verify-v3-export" if p["arm"] == proof_eval.ARM_V3 else "verify-v4-export"
+        command = f"verify-{proof_eval.FINAL_TAGS[p['arm']][1]}-export"
         steps.append(_step(command, [py, "-m", PROOF, command, "--model-ref", model_ref,
                                                 "--checkpoint", p["checkpoint"], "--binding", p["binding"],
                                                 "--prereg", p["prereg"]]))

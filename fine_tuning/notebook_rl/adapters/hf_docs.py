@@ -9,17 +9,21 @@ Candidate.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import re
 import zipfile
 from collections.abc import Iterator
+from dataclasses import replace
 from decimal import Decimal
+from importlib.metadata import version
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from .hf_common import Candidate, SourceSpec, mcq_from_answer
+from ..schema import AnswerType
+from .hf_common import Candidate, SourceSpec, candidate_order, mcq_from_answer, split_for
 
 SPECS: dict[str, SourceSpec] = {
     "hf-chartqa": SourceSpec(
@@ -31,7 +35,14 @@ SPECS: dict[str, SourceSpec] = {
         "hf-tatdqa", "next-tat/TAT-DQA", "bc46208b22f0bfe47152c98fd0938d238ce868c2",
         "CC-BY-4.0", "HUMAN", "TAT-DQA financial annotators (Zhu et al. 2022)", "document",
     ),
+    "hf-tatdqa-pdf": SourceSpec(
+        "hf-tatdqa-pdf", "next-tat/TAT-DQA", "bc46208b22f0bfe47152c98fd0938d238ce868c2",
+        "CC-BY-4.0", "HUMAN", "TAT-DQA native PDF pages and financial annotations; faithful PDFium5.2.0 raster",
+        "document",
+    ),
 }
+PDFIUM_VERSION = "5.2.0"
+PDF_RENDER_PIXELS = 1_300_000
 
 _CHARTQA_COLUMNS = ["image", "query", "label", "human_or_machine"]
 # Checked in order; the first subject with a keyword at a word start in the lowercased query wins.
@@ -82,6 +93,7 @@ def _chartqa_candidate(row: dict, native_id: str) -> Candidate | None:
     lowered = question.lower()
     subject = next((name for name, words in _CHARTQA_RULES
                     if any(re.search(rf"\b{re.escape(w)}", lowered) for w in words)), "Manage")
+    answer_type: AnswerType
     if answer.lower() in ("yes", "no"):
         question, choices, gold = mcq_from_answer(question, ["Yes", "No"], 0 if answer.lower() == "yes" else 1)
         answer_type, accept = "mcq", {}
@@ -141,7 +153,73 @@ def iter_tatdqa(repo_dir: Path) -> Iterator[Candidate]:
                     yield candidate
 
 
+def render_pdf_page(raw: bytes, page_number: int) -> bytes:
+    """Faithful full-page RGB raster; no224px image, crop, annotation or fallback."""
+    import pypdfium2 as pdfium
+
+    if version("pypdfium2") != PDFIUM_VERSION:
+        raise ValueError(f"TAT-DQA PDF: source preparation requires pypdfium2=={PDFIUM_VERSION}")
+    if type(page_number) is not int or page_number < 1:
+        raise ValueError("TAT-DQA PDF: native page number must be a positive integer")
+    with pdfium.PdfDocument(raw) as document:
+        if page_number > len(document):
+            raise ValueError("TAT-DQA PDF: native page is absent")
+        page = document[page_number - 1]
+        try:
+            width, height = page.get_size()
+            scale = math.sqrt(PDF_RENDER_PIXELS / (width * height))
+            bitmap = page.render(scale=scale)
+            try:
+                image = bitmap.to_pil().convert("RGB")
+                stream = io.BytesIO()
+                image.save(stream, format="PNG")
+                return stream.getvalue()
+            finally:
+                bitmap.close()
+        finally:
+            page.close()
+
+
+def render_pdf_pages(raw: bytes, native_page_count: int) -> tuple[bytes, ...]:
+    """Bind all actual PDF pages to the native layout count; doc.page metadata is unreliable."""
+    import pypdfium2 as pdfium
+
+    if type(native_page_count) is not int or not 1 <= native_page_count <= 2:
+        raise ValueError("TAT-DQA PDF: one or two native pages required")
+    with pdfium.PdfDocument(raw) as document:
+        if len(document) != native_page_count:
+            raise ValueError("TAT-DQA PDF: native document page count mismatch")
+    return tuple(render_pdf_page(raw, number) for number in range(1, native_page_count + 1))
+
+
+def iter_tatdqa_pdf(repo_dir: Path) -> Iterator[Candidate]:
+    """One label-blind native QA/report; preserve every original internal held-out report."""
+    root = Path(repo_dir)
+    entries = json.loads((root / "tatdqa_dataset_train.json").read_text())
+    best: dict[str, tuple[str, Candidate, dict]] = {}
+    for entry in entries:
+        doc = entry["doc"]
+        for question in entry["questions"]:
+            candidate = _tatdqa_candidate(doc["uid"], doc["source"], question, b"pending-native-pdf-raster")
+            if candidate is None or split_for(candidate) != "train":
+                continue
+            candidate = replace(candidate, source="hf-tatdqa-pdf")
+            key = candidate_order(candidate, 3407)
+            if doc["source"] not in best or key < best[doc["source"]][0]:
+                best[doc["source"]] = key, candidate, doc
+    with zipfile.ZipFile(root / "tatdqa_docs_train.zip") as archive:
+        for report in sorted(best):
+            _, candidate, doc = best[report]
+            layout = json.loads(archive.read(f"train/{doc['uid']}.json"))
+            page_count = len(layout["pages"])
+            if page_count not in (1, 2):
+                continue  # no truncation of original documents beyond the two-image input contract
+            images = render_pdf_pages(archive.read(f"train/{doc['uid']}.pdf"), page_count)
+            yield replace(candidate, images=images)
+
+
 ITERATORS = {
     "hf-chartqa": iter_chartqa,
     "hf-tatdqa": iter_tatdqa,
+    "hf-tatdqa-pdf": iter_tatdqa_pdf,
 }

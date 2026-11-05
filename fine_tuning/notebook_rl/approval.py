@@ -47,7 +47,13 @@ ACCEPTANCE_RULE = "acceptance-sampling-v1"
 ACCEPTANCE_SAMPLE = 60
 ACCEPTANCE_MAX_FAILED = 2
 ACCEPTANCE_ALPHA = .05
-UNION_RECEIPT = "union_receipt.json"  # pool_freeze materialize: <vault>/contamination/union_receipt.json
+# User decision 2026-11-05: an explicit, recorded no-sample-review policy. No verdicts exist or are written;
+# it is accepted only when no allowlisted item carries a leak warning (those are excluded before selection).
+# Contamination/exclusion, allowlist, quarantine and every other D gate are unchanged.
+AI_LOCAL_REVIEW_FORMAT_SKIPPED = "ai-reviewed-local-review-skipped-v1"
+SOURCE_REVIEW_SKIPPED = "SKIPPED_BY_USER_DECISION_2026-11-05"
+SOURCE_REVIEW_SKIPPED_KIND = "SOURCE_REVIEW_SKIPPED"
+UNION_RECEIPT ="union_receipt.json"  # pool_freeze materialize: <vault>/contamination/union_receipt.json
 _SCANNER_FILES = frozenset({"audit.py", "notebook_rl/contamination.py",
     "notebook_rl/benchmark_inventory_v1.json", "notebook_rl/vault.py",
     "notebook_rl/schema.py", "notebook_rl/protocol_v1.yaml"})
@@ -366,12 +372,18 @@ def ai_review_order(problem_ids, seed: int) -> list[str]:
     return sorted(problem_ids, key=lambda pid: _sha(f"{seed}:{pid}".encode()))
 
 
-def _ai_local_provenance(proof: dict) -> str:
+def is_skipped_review(review: object) -> bool:
+    return type(review) is dict and review.get("format") == AI_LOCAL_REVIEW_FORMAT_SKIPPED
+
+
+def _ai_local_provenance(proof: dict, skipped: bool = False) -> str:
     provenance: dict = proof.get("provenance")  # type: ignore[assignment]
+    kind, method = ((SOURCE_REVIEW_SKIPPED_KIND, SOURCE_REVIEW_SKIPPED) if skipped
+                    else (AI_LOCAL_REVIEW_KIND, AI_LOCAL_REVIEW_METHOD))
     _require(type(provenance) is dict and set(provenance) == {
         "reviewer_id", "kind", "method", "reviewed_at_utc", "human_verified", "labels_modified"}
         and isinstance(provenance["reviewer_id"], str) and bool(provenance["reviewer_id"].strip())
-        and provenance["kind"] == AI_LOCAL_REVIEW_KIND and provenance["method"] == AI_LOCAL_REVIEW_METHOD
+        and provenance["kind"] == kind and provenance["method"] == method
         and provenance["human_verified"] is False and provenance["labels_modified"] is False,
         "AI_LOCAL_REVIEW_PROVENANCE")
     _time(provenance["reviewed_at_utc"])
@@ -406,7 +418,20 @@ def _ai_local_review(review: dict, reviewer: str, items: dict, warnings: dict, i
     that source (every item ineligible). v2 (acceptance-sampling-v1): the short sample still blocks; F >= 1
     failures block unless >= min(60, allowlisted) were reviewed and F <= 2, in which case only the failed
     items are ineligible. A malformed, reordered or quarantine-touching record blocks all.
+    Skipped (user decision 2026-11-05): no sources/verdicts at all, and no leak warning on any allowlisted item.
     """
+    if is_skipped_review(review):
+        _require(set(review) == {"format", "reviewer_id", "human_verified", "labels_modified", "reviewed_at_utc",
+                                 "sampling_seed", "input_files_sha256", "source_review", "sources", "leak_warnings"}
+                 and review["source_review"] == SOURCE_REVIEW_SKIPPED and review["reviewer_id"] == reviewer
+                 and review["human_verified"] is False and review["labels_modified"] is False
+                 and type(review["sampling_seed"]) is int and review["sampling_seed"] == seed
+                 and review["input_files_sha256"] == input_files_sha256
+                 and review["sources"] == {} and review["leak_warnings"] == [], "AI_LOCAL_SKIPPED_REVIEW_BINDING")
+        _time(review["reviewed_at_utc"])
+        _require(not any(row["problem_id"] in allowlist for rows in warnings.values() for row in rows),
+                 "SKIPPED_REVIEW_ALLOWLISTED_LEAK_WARNING")
+        return {}, 0, None
     acceptance = type(review) is dict and review.get("format") == AI_LOCAL_REVIEW_FORMAT_V2
     _require(type(review) is dict and set(review) == {
         "format", "reviewer_id", "human_verified", "labels_modified", "reviewed_at_utc", "sampling_seed",
@@ -480,7 +505,7 @@ def _ai_local_review(review: dict, reviewer: str, items: dict, warnings: dict, i
 
 
 def ai_local_eligibility(sources: dict[str, str], allowlist, blocked: dict[str, list[str]],
-                         quality: dict | None = None) -> dict:
+                         quality: dict | None = None, source_review: str | None = None) -> dict:
     """Allowlisted items outside blocked sources and outside acceptance-failed items; quarantined IDs are
     never eligible. The quality section is recorded only for an acceptance-sampling (v2) review."""
     failed = {pid for row in (quality or {}).get("sources", {}).values() for pid in row["failed_ids"]}
@@ -488,7 +513,8 @@ def ai_local_eligibility(sources: dict[str, str], allowlist, blocked: dict[str, 
     _require(bool(eligible), "NO_ELIGIBLE_SOURCE")
     return {"allowlisted_by_source": dict(sorted(Counter(sources[pid] for pid in allowlist).items())),
             "quarantined_count": len(set(sources) - set(allowlist)), "blocked_sources": blocked,
-            "eligible_ids": eligible, **({"quality": quality} if quality is not None else {})}
+            "eligible_ids": eligible, **({"quality": quality} if quality is not None else {}),
+            **({"source_review": source_review} if source_review is not None else {})}
 
 
 def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
@@ -517,8 +543,9 @@ def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
                  f"{gate}_COVERAGE_OR_MISMATCH")
     _require(proofs["D2"]["measurements"].get("independent_solvers") is True, "D2_INDEPENDENT_SOLVERS")
     unresolved_leaks = None
+    skipped = is_skipped_review(ai_review)
     if ai_review is not None:
-        reviewer = _ai_local_provenance(proofs["D3"])
+        reviewer = _ai_local_provenance(proofs["D3"], skipped)
         m = proofs["D3"]["measurements"]
         _require(set(m) == {"sampling_seed", "review"} and type(m["sampling_seed"]) is int
                  and m["sampling_seed"] == review_seed, "D3_REVIEW_SEED_BINDING")
@@ -560,7 +587,7 @@ def _data_gates(proofs: dict, items: dict, manifests: dict, input_files: dict,
              and all(type(value) is int and value == 0 for value in m.values()), "D5_SPLIT_LEAK")
     _require(proofs["D6"]["measurements"] == {"exclusion_receipt_sha256": receipt_sha}, "D6_RECEIPT_BINDING")
     if ai_review is not None:
-        _require(_ai_local_provenance(proofs["D7"]) == reviewer, "AI_LOCAL_REVIEW_PROVENANCE")
+        _require(_ai_local_provenance(proofs["D7"], skipped) == reviewer, "AI_LOCAL_REVIEW_PROVENANCE")
     else:
         (_ai_program_review if limited_smoke else _human)(proofs["D7"], registry)
     actor_files = {path: digest for path, digest in input_files.items() if Path(path).name == "actor_inputs.jsonl"}
@@ -664,8 +691,10 @@ def _gpu_gates(proofs: dict, scope: dict, protocol: dict) -> None:
              and math.isfinite(m["G11"]["step_seconds"]) and m["G11"]["step_seconds"] > 0, "G11_ACTUAL_MEASUREMENTS")
 
 
-def _build_items(root: Path, manifest: dict, registry_of, files: dict) -> tuple[dict, dict, dict, dict]:
-    """(items, split manifests, input files, images) of the build at root, bound to its manifest."""
+def _build_items(root: Path, manifest: dict, registry_of, files: dict,
+                 allow_empty_heldout: bool = False) -> tuple[dict, dict, dict, dict]:
+    """(items, split manifests, input files, images) of the build at root, bound to its manifest.
+    allow_empty_heldout: only a union vault whose bound manifest records the opt-in; train stays nonempty."""
     from . import contamination as c
     from .vault import read_actors, read_lineage, read_verifier
     from PIL import Image
@@ -676,7 +705,7 @@ def _build_items(root: Path, manifest: dict, registry_of, files: dict) -> tuple[
         manifests[split] = _read_json(split_root / "manifest.yaml", files)
         _require(manifest.get("split_manifests", {}).get(split) == files[str(split_root / "manifest.yaml")], "SPLIT_MANIFEST_CHANGED")
         actors, lineages, verifiers = read_actors(split_root), read_lineage(split_root), read_verifier(split_root)
-        _require(actors and len(actors) == manifest["counts"][split] and {a.problem_id for a in actors} == set(lineages) == set(verifiers), "SPLIT_COUNT_OR_IDS")
+        _require((actors or (allow_empty_heldout and split != "train")) and len(actors) == manifest["counts"][split] and {a.problem_id for a in actors} == set(lineages) == set(verifiers), "SPLIT_COUNT_OR_IDS")
         for name in ("manifest.yaml", "actor_inputs.jsonl", "lineage.jsonl", "verifier_private.jsonl"):
             path = split_root / name
             expected_files[str(path)] = _sha(_read(path))
@@ -803,7 +832,8 @@ def _union_inputs(root: Path, manifest: dict, payload: dict, index: dict, protoc
     except ValueError:
         raise _Blocked("UNION_SHARD_OVERLAP") from None
     owner = {pid: row["shard"] for pid, row in union["items"].items()}
-    items, manifests, expected_files, _ = _build_items(root, manifest, lambda pid: registries[owner[pid]], files)
+    items, manifests, expected_files, _ = _build_items(root, manifest, lambda pid: registries[owner[pid]], files,
+                                                       manifest.get("allow_empty_heldout") is True)
     files.update(expected_files)
     for pid, item in items.items():
         record = shard_items[owner[pid]].get(pid)
@@ -924,8 +954,14 @@ def _validate(payload: dict) -> dict:
                                        protocol["seeds"][0], limited_smoke=limited_smoke, ai_review=ai_review,
                                        allowlist=set(quarantine["allowlist"]))
         if ai_local:
+            skipped = is_skipped_review(ai_review)
             eligibility = ai_local_eligibility({pid: item["actor"].source for pid, item in items.items()},
-                                               quarantine["allowlist"], blocked or {}, quality)
+                                               quarantine["allowlist"], blocked or {}, quality,
+                                               SOURCE_REVIEW_SKIPPED if skipped else None)
+            if skipped:
+                result["limitations"].append(f"source_review={SOURCE_REVIEW_SKIPPED}: no per-source sample review was "
+                                             "made; leak-warned items were excluded before selection; contamination/"
+                                             "exclusion checks unchanged")
             eligible = set(eligibility["eligible_ids"])
             selected = [pid for pid in selected if pid in eligible]
             _require(bool(selected), "NO_ELIGIBLE_TRAIN_ITEMS")
@@ -1002,8 +1038,9 @@ def _public_validate(payload: dict, timeout: float) -> dict:
                      and result["input_binding"].get("ai_review_file_sha256") == result["ai_review_file_sha256"]),
                      "PREFLIGHT_RESPONSE_INVALID")
             eligibility = result.get("eligibility")
-            _require(not ai_local or (type(eligibility) is dict and set(eligibility) - {"quality"} == {
+            _require(not ai_local or (type(eligibility) is dict and set(eligibility) - {"quality", "source_review"} == {
                 "allowlisted_by_source", "quarantined_count", "blocked_sources", "eligible_ids"}
+                and eligibility.get("source_review", SOURCE_REVIEW_SKIPPED) == SOURCE_REVIEW_SKIPPED
                 and type(eligibility["eligible_ids"]) is list and type(eligibility["quarantined_count"]) is int
                 and type(eligibility["blocked_sources"]) is dict and type(eligibility["allowlisted_by_source"]) is dict
                 and set(result["selected_ids"]) <= set(eligibility["eligible_ids"])

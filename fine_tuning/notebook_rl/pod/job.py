@@ -35,7 +35,7 @@ from .common import HEX40, HEX64, parse_utc, read_json, sha256_bytes, sha256_fil
 VERSION = "pod-job-v1"
 PREP_VERSION = "pod-prep-v1"
 TRAINING_STAGES = ("bf16-smoke-throughput", "pilot-300", "main", "note-300", "note-3417", "note-v2",
-                   "note-v3-collect", "note-v3-resolve", "note-v3-train")
+                   "note-v3-collect", "note-v3-resolve", "note-v3-train", "single-pilot", "single-main")
 EVAL_STAGES = ("eval-f0", "eval-ft", "eval-course")
 STAGES = TRAINING_STAGES + EVAL_STAGES
 ENVIRONMENTS = ("experiments", "vllm", "proof")  # proof = vllm lock + bitsandbytes 0.48.2 (training imports it even under BF16)

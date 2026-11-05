@@ -851,6 +851,424 @@ def _hf_stream_builder(args: argparse.Namespace, stats: StreamStats) -> Stream:
     return stream
 
 
+# Explicit SINGLE path; the legacy builders above retain their original contracts.
+SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
+
+
+def single_request_binding(request: dict) -> dict:
+    """The identity of one permitted completion, shared by collection and resume validation."""
+    if not isinstance(request, dict):
+        raise ValueError("SINGLE: a complete request dictionary is required")
+    pid = request.get("problem_id", request.get("item"))
+    if (not isinstance(pid, str) or not pid or any(not isinstance(request.get(k), str) or not request[k]
+            for k in ("request_id", "stage")) or type(request.get("seed")) is not int
+            or not 0 <= request["seed"] < 2**31 or type(request.get("max_tokens")) is not int
+            or not 1 <= request["max_tokens"] <= MAX_NEW_TOKENS
+            or not isinstance(request.get("messages"), list) or not isinstance(request.get("images"), list)):
+        raise ValueError("SINGLE: complete request identity, messages, images, seed and token cap required")
+    if "item" in request and request["item"] != pid:
+        raise ValueError("SINGLE: conflicting problem identity")
+    block = request.get("block_id")
+    if not ((isinstance(block, str) and block) or (type(block) is int and block >= 0)):
+        raise ValueError("SINGLE: block_id required")
+    if any(k in request for k in ("n", "seeds", "num_return_sequences", "num_beams")):
+        raise ValueError("SINGLE: candidate counts, beam counts and multiple seeds are forbidden")
+    return {"request_id": request["request_id"], "problem_id": pid, "block_id": block,
+            "stage": request["stage"], "seed": request["seed"], "max_tokens": request["max_tokens"]}
+
+
+def single_request_sha256(request: dict) -> str:
+    """Bind the original request and decoded images before a request may enter generation."""
+    from fine_tuning.notebook_rl.input_preparation import digest
+
+    binding = single_request_binding(request)
+    images = []
+    for image in request["images"]:
+        if getattr(image, "mode", None) != "RGB":
+            raise ValueError("SINGLE: original decoded RGB images required")
+        images.append({"mode": image.mode, "size": list(image.size),
+                       "sha256": hashlib.sha256(image.tobytes()).hexdigest()})
+    return digest(binding | {"messages": request["messages"], "images": images})
+
+
+class SingleGenerationDeadline(TimeoutError):
+    """A configured deadline stopped one original draw stream; scalar traces are audit-only, never resumable."""
+
+    def __init__(self, sampled: dict, request_ids: list[str]):
+        super().__init__("SINGLE: generation deadline reached; unfinished requests cannot be resampled")
+        self.sampled = sampled
+        self.request_ids = list(request_ids)
+        self.partials: list[dict] = []
+
+
+class _SingleActionSampler:
+    """Draw each distinct question from its own RNG and retain only scalar action evidence."""
+
+    def __init__(self, requests: list[dict], prompt_width: int, eos: set[int], pad: int, device: Any,
+                 *, loop_stop: bool, stop_at: float | None):
+        import torch
+
+        self.requests, self.prompt_width, self.eos, self.pad = requests, prompt_width, eos, pad
+        self.generators = [torch.Generator(device=device).manual_seed(r["seed"]) for r in requests]
+        self.tokens: list[list[int]] = [[] for _ in requests]
+        self.history = torch.full((len(requests), max(r["max_tokens"] for r in requests)), pad,
+                                  dtype=torch.long, device=device)
+        self.logprobs: list[list[float]] = [[] for _ in requests]
+        self.supports: list[list[str]] = [[] for _ in requests]
+        self.support_ids: list[list[list[int]]] = [[] for _ in requests]
+        self.reasons = [""] * len(requests)
+        self.detectors = [BlockRepetition() if loop_stop else None for _ in requests]
+        self.steps, self.stop_at = 0, stop_at
+
+    def __call__(self, input_ids: Any, scores: Any) -> Any:
+        import torch
+
+        from .rl import digest, processed_scores
+
+        if (input_ids.shape != (len(self.requests), self.prompt_width + self.steps)
+                or scores.ndim != 2 or scores.shape[0] != len(self.requests)):
+            raise RuntimeError("SINGLE: generation prefix or score shape changed")
+        if self.steps and not torch.equal(input_ids[:, self.prompt_width:], self.history[:, :self.steps]):
+            raise RuntimeError("SINGLE: generated actions differ from the recorded draws")
+        if self.stop_at is not None and time.monotonic() >= self.stop_at:
+            raise SingleGenerationDeadline({"tokens": [list(row) for row in self.tokens],
+                "logprobs": [list(row) for row in self.logprobs], "supports": [list(row) for row in self.supports],
+                "support_ids": [list(row) for row in self.support_ids],
+                "reasons": [reason or "deadline" for reason in self.reasons], "steps": self.steps},
+                [request["request_id"] for request in self.requests])
+        forced = torch.full_like(scores, float("-inf"))
+        active = [i for i, reason in enumerate(self.reasons) if not reason]
+        for i, reason in enumerate(self.reasons):
+            if reason:
+                forced[i, self.pad] = 0.0
+        if active:
+            # One batched transform and one host sync per step; each question keeps its own RNG stream.
+            rows = torch.tensor(active, dtype=torch.long, device=scores.device)
+            transformed = processed_scores(scores[rows], self.history[rows, :self.steps], **SINGLE_SAMPLING)
+            probabilities = transformed.softmax(-1)
+            picks = torch.cat([torch.multinomial(probabilities[j:j + 1], 1, generator=self.generators[i])
+                               for j, i in enumerate(active)])
+            chosen = transformed.log_softmax(-1).gather(-1, picks).flatten()
+            self.history[rows, self.steps] = picks.flatten()
+            forced[rows, picks.flatten()] = 0.0
+            supports: list[list[int]] = [[] for _ in active]
+            for row, column in torch.isfinite(transformed).nonzero().tolist():
+                supports[row].append(column)
+            for j, (token, logprob) in enumerate(zip(picks.flatten().tolist(), chosen.tolist(), strict=True)):
+                i = active[j]
+                self.logprobs[i].append(float(logprob))
+                self.support_ids[i].append(supports[j])
+                self.supports[i].append(digest(supports[j]))
+                self.tokens[i].append(token)
+                detector = self.detectors[i]
+                repeated = detector.feed([token]) if detector is not None else False
+                if token in self.eos:
+                    self.reasons[i] = "stop"
+                elif repeated:
+                    self.reasons[i] = LOOP_STOP_FINISH
+                elif len(self.tokens[i]) == self.requests[i]["max_tokens"]:
+                    self.reasons[i] = "length"
+        self.steps += 1
+        # HF remains in sampling mode; these one-token distributions emit the independent stochastic draws above.
+        return forced
+
+    def rows_done(self, input_ids: Any, scores: Any, **kwargs: Any) -> Any:
+        import torch
+
+        return torch.tensor([bool(r) for r in self.reasons], dtype=torch.bool, device=input_ids.device)
+
+    def finish(self, sequences: Any, prompts: Any) -> None:
+        import torch
+
+        if (not all(self.reasons) or sequences.shape != (len(self.requests), self.prompt_width + self.steps)
+                or not torch.equal(sequences[:, :self.prompt_width], prompts)
+                or any(sequences[i, self.prompt_width:self.prompt_width + len(row)].tolist() != row
+                       for i, row in enumerate(self.tokens))):
+            raise RuntimeError("SINGLE: missing, duplicated or altered completion")
+
+
+def _single_batch_inputs(prepared: list[dict], pad: int, device: Any) -> dict:
+    """Left-pad different prompts; concatenate image tensors in the same question/image order."""
+    import torch
+
+    width = max(p["input_tokens"] for p in prepared)
+    keys = set(prepared[0]["inputs"])
+    allowed = {"input_ids", "attention_mask", "pixel_values", "image_grid_thw", "token_type_ids", "mm_token_type_ids"}
+    if not {"input_ids", "attention_mask"} <= keys or keys - allowed or any(set(p["inputs"]) != keys for p in prepared):
+        raise ValueError("SINGLE: unsupported or inconsistent processor tensors")
+    batch = {}
+    for key in keys:
+        values = [p["inputs"][key] for p in prepared]
+        if key in ("pixel_values", "image_grid_thw"):
+            batch[key] = torch.cat(values, dim=0).to(device)
+        else:
+            if any(v.shape != (1, p["input_tokens"]) for v, p in zip(values, prepared, strict=True)):
+                raise ValueError("SINGLE: processor sequence tensor shape changed")
+            batch[key] = torch.cat([torch.nn.functional.pad(v, (width-v.shape[1], 0), value=pad if key == "input_ids" else 0)
+                                    for v in values], dim=0).to(device)
+    return batch
+
+
+def _single_generate_batch(bundle: Any, rows: list[dict], prepared: list[dict], dimensions: list[dict], *,
+                           eos: Any, eos_ids: set[int], pad: int, stop_at: float | None,
+                           loop_stop: bool, capture: Any = None) -> dict:
+    """Own batch GPU tensors locally so every measurement starts before inputs/history and releases them on return."""
+    import torch
+    from transformers import GenerationConfig, LogitsProcessorList, StoppingCriteriaList
+    from .capacity import CapacityHold, shape
+
+    model = bundle.model
+    device = next(model.parameters()).device
+    measurement = (capture.measure("generation", shape(dimensions, generation=True),
+        hashlib.sha256(json.dumps([p["input_sha256"] for p in prepared]).encode()).hexdigest())
+        if capture is not None else contextlib.nullcontext(None))
+    with measurement as measured:
+        inputs = _single_batch_inputs(prepared, pad, device)
+        sampler = _SingleActionSampler(rows, inputs["input_ids"].shape[1], eos_ids, pad, device,
+                                       loop_stop=loop_stop, stop_at=stop_at)
+        config = GenerationConfig(do_sample=True, num_beams=1, num_return_sequences=1, temperature=1.0,
+            top_p=1.0, top_k=0, repetition_penalty=1.0, max_new_tokens=max(r["max_tokens"] for r in rows),
+            eos_token_id=eos, pad_token_id=pad, use_cache=True, renormalize_logits=False,
+            return_dict_in_generate=True, output_scores=False, output_logits=False)
+        began, generated = time.monotonic(), None
+        devices = [device.index or 0] if device.type == "cuda" else []
+        try:
+            with torch.random.fork_rng(devices=devices), torch.inference_mode(), (
+                    torch.autocast("cuda", dtype=torch.bfloat16) if device.type == "cuda" else contextlib.nullcontext()):
+                generated = model.generate(**inputs, generation_config=config, use_model_defaults=False,
+                    logits_processor=LogitsProcessorList([sampler]),
+                    stopping_criteria=StoppingCriteriaList([sampler.rows_done]))
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            sampler.finish(getattr(generated, "sequences", generated), inputs["input_ids"])
+            if measured is not None:
+                cache = getattr(generated, "past_key_values", None)
+                if cache is None or not hasattr(cache, "layers") or any(
+                        value.dtype != torch.bfloat16 for layer in cache.layers for value in (layer.keys, layer.values)):
+                    raise CapacityHold("capacity HOLD: unmeasured/non-BF16 KV cache")
+                del cache
+                measured["shape"] = shape([row | {"target_tokens": len(tokens)}
+                    for row, tokens in zip(dimensions, sampler.tokens, strict=True)], generation=True)
+                measured["work_ids"] = [row["request_id"] for row in rows]
+                measured["complete"] = True
+        except SingleGenerationDeadline as error:
+            error.sampled["seconds"] = time.monotonic() - began
+            raise
+        finally:
+            if generated is not None and hasattr(generated, "past_key_values"):
+                generated["past_key_values"] = None
+        return {"tokens": sampler.tokens, "logprobs": sampler.logprobs, "supports": sampler.supports,
+                "support_ids": sampler.support_ids,
+                "reasons": sampler.reasons, "steps": sampler.steps, "seconds": time.monotonic() - began}
+
+
+def hf_single_stream_builder(bundle: Any, args: argparse.Namespace, stats: StreamStats) -> Stream:
+    """Reuse the live policy for bounded batches of different SINGLE questions, with exact action evidence.
+
+    max_num_batched_tokens bounds rows * (padded prompt width + maximum output cap). Optional measured admission
+    splits only before execution; no sampling retry or unmeasured sizing.
+    Construct a new stream after a policy update, using the same bundle and its new policy SHA.
+    """
+    from .rl import policy_sha256, sampling_sha256
+    from .capacity import CapacityHold, shape as capacity_shape
+
+    seqs = getattr(args, "max_num_seqs", 1)
+    context = getattr(args, "context_limit", CONTEXT_LIMIT)
+    budget = getattr(args, "max_num_batched_tokens", context)
+    if (type(seqs) is not int or not 1 <= seqs <= 16 or type(context) is not int or context < 1
+            or type(budget) is not int or budget < 1):
+        raise ValueError("SINGLE: explicit sequence capacity 1..16, context and padded token budget required")
+    policy, protocol = args.policy_sha256, args.protocol_sha256
+    if any(not isinstance(h, str) or len(h) != 64 or any(c not in "0123456789abcdef" for c in h)
+           for h in (policy, protocol)):
+        raise ValueError("SINGLE: policy and protocol SHA256 required")
+    if policy_sha256(bundle) != policy:
+        raise ValueError("SINGLE: stale live policy")
+    sampling_hash = sampling_sha256(SINGLE_SAMPLING)
+    capacity, capture = getattr(args, "capacity_session", None), getattr(args, "capacity_capture", None)
+    if capacity is not None and capture is not None:
+        raise CapacityHold("capacity HOLD: measurement and measured admission are separate runs")
+    prepared_by_id: dict[str, dict] = {}
+    planned: list[list[str]] = []
+    admitted: list[tuple[str, str]] = []
+    start_batch: Callable | None = None
+
+    def set_start_callback(callback: Callable | None) -> None:
+        nonlocal start_batch
+        start_batch = callback
+
+    def row_shape(request: dict, item: dict) -> dict:
+        return {"problem_id": single_request_binding(request)["problem_id"], "prompt_tokens": item["input_tokens"],
+                "target_tokens": request["max_tokens"], "image_grids": item["inputs"]["image_grid_thw"].tolist()}
+
+    def admit(requests: list[dict]) -> None:
+        from fine_tuning.notebook_rl.input_preparation import prepare_protocol_inputs
+
+        nonlocal planned, admitted
+        assert capacity is not None
+        prepared_by_id.clear()
+        shapes: list[dict] = []
+        base_plan: list[list[int]] = []
+        current: list[int] = []
+        for index, request in enumerate(requests):
+            binding_ = single_request_binding(request)
+            item, _ = prepare_protocol_inputs(bundle.processor, bundle.model.config, request["messages"], request["images"],
+                                               getattr(args, "image_cfg", IMAGE))
+            prepared_by_id[binding_["request_id"]] = item
+            dimensions = row_shape(request, item)
+            if dimensions["prompt_tokens"] + dimensions["target_tokens"] > min(context, budget):
+                raise CapacityHold("capacity HOLD: singleton exceeds context/token budget")
+            shapes.append(dimensions)
+            changed_stage = current and any(single_request_binding(requests[current[0]])[key] != binding_[key]
+                                            for key in ("block_id", "stage"))
+            overflow = False
+            if not changed_stage and len(current) < seqs:
+                cost = capacity_shape([shapes[i] for i in [*current, index]], generation=True)
+                overflow = cost["rows"] * cost["total_tokens"] > budget
+            if current and (changed_stage or len(current) == seqs or overflow):
+                base_plan.append(current)
+                current = []
+            current.append(index)
+        if current:
+            base_plan.append(current)
+        indices = capacity.partition(shapes, base_plan, "generation")
+        planned = [[requests[i]["request_id"] for i in batch] for batch in indices]
+        admitted = [(request["request_id"], single_request_sha256(request)) for request in requests]
+    seen: set[str] = set()
+    submitted: set[tuple[Any, str, str]] = set()
+    block_items: dict[Any, set[str]] = {}
+    stats.receipt_extra.update(single_sampler="hf-independent-question-v1", single_batch_rows=seqs,
+                               single_padded_token_budget=budget)
+
+    def stream(requests: Iterable[dict], stats_: StreamStats, stop_after: float | None) -> Iterator[tuple[dict, dict]]:
+        from fine_tuning.notebook_rl.input_preparation import prepare_protocol_inputs
+
+        model, processor = bundle.model, bundle.processor
+        if policy_sha256(bundle) != policy:
+            raise ValueError("SINGLE: stale live policy")
+        eos = model.generation_config.eos_token_id
+        eos_ids = set(eos if isinstance(eos, list) else () if eos is None else (eos,))
+        pad = model.generation_config.pad_token_id
+        if type(pad) is not int or any(type(token) is not int for token in eos_ids):
+            raise ValueError("SINGLE: integer padding and EOS token IDs required")
+        stop_at = None if stop_after is None else time.monotonic() + stop_after
+        if capacity is not None:
+            requests = list(requests)
+            if [(r["request_id"], single_request_sha256(r)) for r in requests] != admitted:
+                admit(requests)
+        iterator = iter(requests)
+        waiting: dict | None = None
+        was_training = model.training
+        model.eval()
+        batch_number = 0
+        try:
+            while True:
+                if stop_at is not None and time.monotonic() >= stop_at:
+                    stats_.stopped_early = True
+                    return
+                batch: list[tuple[dict, dict]] = []
+                batch_limit = len(planned[batch_number]) if capacity is not None and batch_number < len(planned) else seqs
+                while len(batch) < batch_limit:
+                    if waiting is None:
+                        try:
+                            request = next(iterator)
+                        except StopIteration:
+                            break
+                    else:
+                        request = waiting
+                    waiting = None
+                    binding = single_request_binding(request)
+                    if batch and any(binding[k] != single_request_binding(batch[0][0])[k] for k in ("block_id", "stage")):
+                        waiting = request
+                        break
+                    if capacity is not None:
+                        item = prepared_by_id[binding["request_id"]]
+                    else:
+                        item, _ = prepare_protocol_inputs(processor, model.config, request["messages"], request["images"],
+                                                           getattr(args, "image_cfg", IMAGE))
+                    length, cap = item["input_tokens"], request["max_tokens"]
+                    if length + cap > context or length + cap > budget:
+                        raise ValueError("SINGLE: prompt plus completion exceeds explicit context/token budget")
+                    cost = (len(batch)+1) * (max([p["input_tokens"] for _, p in batch] + [length])
+                                           + max([r["max_tokens"] for r, _ in batch] + [cap]))
+                    if batch and cost > budget:
+                        waiting = request
+                        break
+                    key = (binding["block_id"], binding["stage"], binding["problem_id"])
+                    if (binding["request_id"] in seen or key in submitted
+                            or any(r["request_id"] == binding["request_id"] for r, _ in batch)):
+                        raise ValueError("SINGLE: duplicate request or second candidate for a question/stage")
+                    if any(binding["problem_id"] == single_request_binding(r)["problem_id"] for r, _ in batch):
+                        raise ValueError("SINGLE: concurrent requests must be different questions")
+                    members = block_items.get(binding["block_id"], set()) | {binding["problem_id"]}
+                    members |= {single_request_binding(r)["problem_id"] for r, _ in batch}
+                    if len(members) > 16:
+                        raise ValueError("SINGLE: more than 16 different questions in a frozen block")
+                    batch.append((request, item))
+                if not batch:
+                    return
+                rows, prepared = [r for r, _ in batch], [p for _, p in batch]
+                dimensions = [row_shape(r, item) for r, item in batch]
+                if capacity is not None:
+                    if batch_number >= len(planned) or [r["request_id"] for r in rows] != planned[batch_number]:
+                        raise CapacityHold("capacity HOLD: admitted FIFO plan changed")
+                    receipt = capacity.check(dimensions, "generation")
+                    stats_.receipt_extra.setdefault("capacity_admissions", []).append(receipt)
+                    if start_batch is not None:
+                        start_batch(rows)
+                for request in rows:
+                    record = single_request_binding(request)
+                    seen.add(record["request_id"])
+                    submitted.add((record["block_id"], record["stage"], record["problem_id"]))
+                    block_items.setdefault(record["block_id"], set()).add(record["problem_id"])
+                batch_number += 1
+                deadline = None
+                try:
+                    sampled = _single_generate_batch(bundle, rows, prepared, dimensions, eos=eos, eos_ids=eos_ids,
+                        pad=pad, stop_at=stop_at, loop_stop=getattr(args, "loop_stop", False), capture=capture)
+                except SingleGenerationDeadline as error:
+                    stats_.stopped_early = True
+                    deadline, sampled = error, error.sampled
+                except TimeoutError:
+                    stats_.stopped_early = True
+                    raise
+                stats_.steps += sampled["steps"]
+                stats_.step_seconds += sampled["seconds"]
+                stats_.active_sum += sum(map(len, sampled["tokens"]))
+                if policy_sha256(bundle) != policy:
+                    raise ValueError("SINGLE: policy changed during collection")
+                for i, (request, item) in enumerate(batch):
+                    ids = sampled["tokens"][i]
+                    text = processor.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+                    generation = single_request_binding(request) | {"prompt_token_ids": list(item["prompt_token_ids"]),
+                        "completion_token_ids": list(ids), "sampling_logprobs": sampled["logprobs"][i],
+                        "support_sha256": sampled["supports"][i], "support_token_ids": sampled["support_ids"][i],
+                        "sampling": dict(SINGLE_SAMPLING),
+                        "policy_sha256": policy, "protocol_sha256": protocol, "sampling_sha256": sampling_hash,
+                        "input_sha256": item["input_sha256"], "finish_reason": sampled["reasons"][i],
+                        "request_sha256": single_request_sha256(request), "text": text,
+                        "eos_token_ids": sorted(eos_ids), "completion_count": 1}
+                    output = {"text": text, "finish_reason": sampled["reasons"][i], "prompt_tokens": item["input_tokens"],
+                        "completion_tokens": len(ids), "seconds": sampled["seconds"], "completion_count": 1, "generation": generation}
+                    if deadline is not None:
+                        generation.update(incomplete=True, input_tensors=item["input_tensors"])
+                        output["incomplete"] = True
+                        deadline.partials.append(output)
+                    else:
+                        yield request, output
+                if deadline is not None:
+                    raise deadline
+                if stats_.on_step is not None:
+                    stats_.on_step()
+        finally:
+            model.train(was_training)
+
+    if capacity is not None:
+        setattr(stream, "admit", admit)
+        setattr(stream, "set_start_callback", set_start_callback)
+    return stream
+
+
 # ------------------------------------------------------------------ sweep
 
 def _child_command(args: argparse.Namespace, seqs: int, stop_after: float | None) -> list[str]:

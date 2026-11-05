@@ -254,9 +254,11 @@ def produce(root: Path, review_descriptor: dict, benchmark: Path, output: Path, 
                 owners[value].add(row[2].split)
         leaks[key] = sum(len(splits) > 1 for splits in owners.values())
     warnings = {split: manifest["leak_review"] for split, manifest in manifests.items()}
-    provenance = {"reviewer_id": review.get("reviewer_id"), "kind": approval.AI_LOCAL_REVIEW_KIND,
-                  "method": approval.AI_LOCAL_REVIEW_METHOD, "reviewed_at_utc": review.get("reviewed_at_utc"),
-                  "human_verified": False, "labels_modified": False}
+    skipped = approval.is_skipped_review(review)
+    provenance = {"reviewer_id": review.get("reviewer_id"),
+                  "kind": approval.SOURCE_REVIEW_SKIPPED_KIND if skipped else approval.AI_LOCAL_REVIEW_KIND,
+                  "method": approval.SOURCE_REVIEW_SKIPPED if skipped else approval.AI_LOCAL_REVIEW_METHOD,
+                  "reviewed_at_utc": review.get("reviewed_at_utc"), "human_verified": False, "labels_modified": False}
     ids_sha = smoke._hash(sorted(row["problem_id"] for row in checks))
     gates = {
         "D1": {"checked_ids_sha256": ids_sha, "items_checked": len(checks),
@@ -285,7 +287,8 @@ def produce(root: Path, review_descriptor: dict, benchmark: Path, output: Path, 
     blocked, quality = approval._data_gates(proofs, as_items, manifests, files, registry,
                                             receipt_descriptor["file_sha256"], 3407, ai_review=review, allowlist=allowlist)
     eligibility = approval.ai_local_eligibility({pid: row[0].source for pid, row in items.items()}, allowlist,
-                                                blocked or {}, quality)
+                                                blocked or {}, quality,
+                                                approval.SOURCE_REVIEW_SKIPPED if skipped else None)
     if any(smoke._sha(_read(Path(path))) != digest for path, digest in files.items()):
         raise ValueError("pool evidence: inputs changed during measurement")
     report: dict = {"format": "notebook-rl-data-gates-v1", "status": "COMPLETE", "binding": binding, "scope": scope,
@@ -293,7 +296,9 @@ def produce(root: Path, review_descriptor: dict, benchmark: Path, output: Path, 
     for key, proof in proofs.items():
         proof.update(gate=key, status="PASS", binding_sha256=smoke._hash(binding), scope_sha256=smoke._hash(scope),
                      producer_sha256=scope["producer"]["file_sha256"], records=checks if key in ("D1", "D2") else None,
-                     limitations=_LIMITS if quality is None else [*_LIMITS, _ACCEPTANCE_LIMIT])
+                     limitations=([*_LIMITS, f"source_review={approval.SOURCE_REVIEW_SKIPPED}: no per-source sample "
+                                   "review; leak-warned items excluded before selection."] if skipped else
+                                  _LIMITS if quality is None else [*_LIMITS, _ACCEPTANCE_LIMIT]))
         path = output / (key + ".json")
         _write(path, _bytes(proof) + b"\n")
         report["gates"][key] = {"status": "PASS", "artifact": smoke._descriptor(path)}

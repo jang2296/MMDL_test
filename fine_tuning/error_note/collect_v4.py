@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -31,10 +32,10 @@ from typing import Any, Callable, Iterator
 from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
 from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
 
-from .collect import (LOOP_STOP_FINISH, PREFETCH_WORKERS, WAIT, ResourceLog, Stream, StreamStats, _blocked_fields,
+from .collect import (LOOP_STOP_FINISH, PREFETCH_WORKERS, WAIT, ResourceLog, SingleGenerationDeadline, Stream, StreamStats, _blocked_fields,
                       _grader, _hf_stream_builder, _kv_arg, _seqs_arg, _vllm_stream_builder, append_jsonl, auto_seqs,
                       bounded_map, install_training_guards, read_jsonl_done, resolve_kv, run_generation, run_note,
-                      write_atomic, write_json)
+                      single_request_binding, single_request_sha256, write_atomic, write_json, SINGLE_SAMPLING)
 from .contract import MAX_NEW_TOKENS, TURN1_ANSWER_CONTRACT, VERDICT_LABELS, resolve_prompt
 from .order import read_order
 from .v4 import (ADAPTIVE_FIRST, ALL_WRONG, LOOP_STOPPED, PROBE_MAX_TOKENS, PROBE_SEEDS, RESOLVE_M, ROLLOUT_N,
@@ -45,6 +46,215 @@ COLLECTION_FILE = "collection-v4.json"
 GATES_FILE = "gates-v4.json"
 SELFCHECK_FILE = "selfcheck-v4.json"
 ROLLOUT_FILE = "rollouts"
+SINGLE_LEDGER = "single-requests.json"
+SINGLE_LEDGER_LOCK = ".single-requests.lock"
+
+
+def validate_single_output(request: dict, output: dict, *, policy_sha256: str, protocol_sha256: str) -> None:
+    """Reject incomplete/actionless, multiple or mismatched SINGLE completions before persistence."""
+    _validate_single_trace(request, output, policy_sha256=policy_sha256, protocol_sha256=protocol_sha256, partial=False)
+
+
+def validate_single_partial(request: dict, output: dict, *, policy_sha256: str, protocol_sha256: str) -> None:
+    """Validate deadline evidence only; even an EOS-finished row remains inadmissible in an interrupted batch."""
+    _validate_single_trace(request, output, policy_sha256=policy_sha256, protocol_sha256=protocol_sha256, partial=True)
+
+
+def _validate_single_trace(request: dict, output: dict, *, policy_sha256: str, protocol_sha256: str, partial: bool) -> None:
+    from .rl import sampling_sha256
+
+    generation = output.get("generation") if isinstance(output, dict) else None
+    if (not isinstance(generation, dict) or type(output.get("completion_count")) is not int
+            or output["completion_count"] != 1 or type(generation.get("completion_count")) is not int
+            or generation["completion_count"] != 1 or output.get("blocked")):
+        raise ValueError("SINGLE: exactly one complete action-bearing output required")
+    if (output.get("incomplete", False) is not partial or generation.get("incomplete", False) is not partial):
+        raise ValueError("SINGLE: incomplete deadline evidence cannot be a completed output")
+    expected = single_request_binding(request) | {"policy_sha256": policy_sha256, "protocol_sha256": protocol_sha256,
+        "sampling_sha256": sampling_sha256(SINGLE_SAMPLING), "sampling": SINGLE_SAMPLING,
+        "request_sha256": single_request_sha256(request)}
+    if any(generation.get(k) != v for k, v in expected.items()):
+        raise ValueError("SINGLE: request/policy/protocol/sampling binding mismatch")
+    if sampling_sha256(generation["sampling"]) != generation["sampling_sha256"]:
+        raise ValueError("SINGLE: altered sampling transform")
+    prompt, actions = generation.get("prompt_token_ids"), generation.get("completion_token_ids")
+    if (not isinstance(prompt, list) or not isinstance(actions, list) or not prompt or not actions and not partial
+            or any(any(type(token) is not int or token < 0 for token in ids) for ids in (prompt, actions))):
+        raise ValueError("SINGLE: original nonempty prompt and action IDs required")
+    if (output.get("prompt_tokens") != len(prompt) or output.get("completion_tokens") != len(actions)
+            or len(actions) > request["max_tokens"] or not isinstance(output.get("text"), str)
+            or output["text"] != generation.get("text")):
+        raise ValueError("SINGLE: original text or token counts mismatch")
+    probabilities, supports = generation.get("sampling_logprobs"), generation.get("support_sha256")
+    if (not isinstance(probabilities, list) or len(probabilities) != len(actions)
+            or any(type(p) not in (int, float) or not math.isfinite(p) or p > 0 for p in probabilities)
+            or not isinstance(supports, list) or len(supports) != len(actions)):
+        raise ValueError("SINGLE: one finite processed probability/support per action required")
+    hashes = [generation.get("input_sha256"), policy_sha256, protocol_sha256, *supports]
+    if any(not isinstance(h, str) or len(h) != 64 or any(c not in "0123456789abcdef" for c in h) for h in hashes):
+        raise ValueError("SINGLE: invalid input/policy/protocol/support digest")
+    if partial:
+        import torch
+        from fine_tuning.notebook_rl.input_preparation import digest, tensor_identity
+
+        identities = generation.get("input_tensors")
+        if (not isinstance(identities, dict) or digest(identities) != generation["input_sha256"]
+                or identities.get("input_ids") != tensor_identity(torch.tensor([prompt], dtype=torch.long))):
+            raise ValueError("SINGLE: deadline prompt/input tensor binding mismatch")
+    eos = generation.get("eos_token_ids")
+    if not isinstance(eos, list) or any(type(token) is not int or token < 0 for token in eos):
+        raise ValueError("SINGLE: actual EOS identity required")
+    finish = generation.get("finish_reason")
+    allowed_finishes = ("stop", "length", LOOP_STOP_FINISH) + (("deadline",) if partial else ())
+    if (output.get("finish_reason") != finish or finish not in allowed_finishes
+            or any(token in eos for token in actions[:-1]) or ((bool(actions) and actions[-1] in eos) != (finish == "stop"))
+            or (finish == "length" and len(actions) != request["max_tokens"])
+            or (not actions and finish != "deadline") or (finish == "deadline" and len(actions) >= request["max_tokens"])):
+        raise ValueError("SINGLE: termination differs from original actions; EOS cannot be manufactured")
+
+
+def run_single_requests(requests: list[dict], stream: Stream, stats: StreamStats, out: Path, *,
+                        policy_sha256: str, protocol_sha256: str, stop_after: float | None = None) -> dict[str, dict]:
+    """Exclusively own the per-policy ledger through generation and persistence; refuse overlapping collectors.
+
+    `out` belongs to one frozen-policy block. Additional stages may append distinct request IDs in the same directory.
+    A deadline or interrupted STARTED request is INCOMPLETE and must be preserved for the parent to resolve.
+    """
+    import fcntl
+
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    # Keep the inode: unlinking permits overlapping collectors to lock different files.
+    with (out / SINGLE_LEDGER_LOCK).open("a", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("SINGLE: BUSY: collection ledger is busy; another collector owns this output directory") from error
+        return _run_single_requests_locked(requests, stream, stats, out, policy_sha256=policy_sha256,
+                                            protocol_sha256=protocol_sha256, stop_after=stop_after)
+
+
+def _run_single_requests_locked(requests: list[dict], stream: Stream, stats: StreamStats, out: Path, *,
+                                policy_sha256: str, protocol_sha256: str,
+                                stop_after: float | None = None) -> dict[str, dict]:
+    """Reuse only verified completions while the caller owns SINGLE_LEDGER_LOCK."""
+    from .rl import sampling_sha256
+
+    bindings = [single_request_binding(r) for r in requests]
+    ids = [r["request_id"] for r in bindings]
+    if (len(ids) != len(set(ids)) or len({(r["block_id"], r["stage"], r["problem_id"]) for r in bindings}) != len(ids)):
+        raise ValueError("SINGLE: duplicate request or second candidate")
+    expected = dict(zip(ids, requests, strict=True))
+    fingerprints = {key: single_request_sha256(r) for key, r in expected.items()}
+    header = {"version": "single-request-ledger-v1", "policy_sha256": policy_sha256,
+              "protocol_sha256": protocol_sha256, "sampling_sha256": sampling_sha256(SINGLE_SAMPLING)}
+    path = Path(out) / SINGLE_LEDGER
+    if path.exists():
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        body = {key: value for key, value in saved.items() if key != "sha256"}
+        if (saved.get("sha256") != _digest(body) or any(saved.get(k) != v for k, v in header.items())
+                or saved.get("error")):
+            raise ValueError("SINGLE: corrupt or stale collection ledger")
+        records = saved["requests"]
+    else:
+        records = {}
+    for key, record in records.items():
+        if (record.get("state") != "COMPLETED" or record.get("output_sha256") != _digest(record.get("output"))):
+            raise ValueError(f"SINGLE: INCOMPLETE or altered request {key}; resampling is forbidden")
+        if key in expected:
+            if record.get("request_sha256") != fingerprints[key]:
+                raise ValueError("SINGLE: request changed during resume")
+            validate_single_output(expected[key], record["output"], policy_sha256=policy_sha256,
+                                   protocol_sha256=protocol_sha256)
+    existing = {tuple(record["output"]["generation"][k] for k in ("block_id", "stage", "problem_id")): key
+                for key, record in records.items()}
+    if len(existing) != len(records) or any(
+            (r["block_id"], r["stage"], r["problem_id"]) in existing
+            and existing[(r["block_id"], r["stage"], r["problem_id"])] != r["request_id"] for r in bindings):
+        raise ValueError("SINGLE: second candidate or changed request identity during resume")
+    all_bindings = bindings + [r["output"]["generation"] for r in records.values()]
+    blocks = {r["block_id"] for r in all_bindings}
+    if len(blocks) > 1 or len({r["problem_id"] for r in all_bindings}) > 16:
+        raise ValueError("SINGLE: ledger belongs to one frozen block of at most 16 different questions")
+    Path(out).mkdir(parents=True, exist_ok=True)
+    failure = None
+
+    def persist() -> None:
+        body = header | {"requests": records, **({"error": failure} if failure else {})}
+        write_json(path, body | {"sha256": _digest(body)})
+
+    todo = [r for r in requests if r["request_id"] not in records]
+    if todo and (admit := getattr(stream, "admit", None)) is not None:
+        admit(todo)  # Before pending() writes STARTED: rejected capacity has consumed no answer or RNG draw.
+    set_start = getattr(stream, "set_start_callback", None)
+
+    def start_batch(batch: list[dict]) -> None:
+        if len({request["request_id"] for request in batch}) != len(batch):
+            raise ValueError("SINGLE: duplicate request in a batch before STARTED")
+        for request in batch:
+            key = request["request_id"]
+            if key not in expected or key in records or single_request_sha256(request) != fingerprints[key]:
+                raise ValueError("SINGLE: unexpected, duplicate or changed batch before STARTED")
+        for request in batch:
+            key = request["request_id"]
+            records[key] = {"state": "STARTED", "request_sha256": fingerprints[key]}
+        persist()
+
+    def pending() -> Iterator[dict]:
+        for request in todo:
+            if set_start is None:
+                start_batch([request])
+            yield request
+
+    completed = set()
+    if todo:
+        try:
+            if set_start is not None:
+                set_start(start_batch)
+            for request, output in stream(pending(), stats, stop_after):
+                key = request.get("request_id")
+                if (key not in expected or key in completed or key not in records
+                        or records[key].get("state") != "STARTED"
+                        or single_request_sha256(request) != fingerprints[key]):
+                    raise ValueError("SINGLE: duplicate, unexpected or unstarted completion")
+                validate_single_output(request, output, policy_sha256=policy_sha256, protocol_sha256=protocol_sha256)
+                # JSON roundtrip detaches caller-owned mutable lists from the authoritative persisted evidence.
+                output = json.loads(json.dumps(output, allow_nan=False))
+                records[key] = {"state": "COMPLETED", "request_sha256": fingerprints[key], "output": output,
+                                "output_sha256": _digest(output)}
+                persist()
+                completed.add(key)
+        except BaseException as exc:
+            from .capacity import CapacityHold
+
+            if not (set_start is not None and isinstance(exc, CapacityHold)
+                    and all(record.get("state") == "COMPLETED" for record in records.values())):
+                failure = type(exc).__name__ + ": " + str(exc)[:500]
+                if isinstance(exc, SingleGenerationDeadline):
+                    try:
+                        partials = exc.partials
+                        keys = [partial["generation"]["request_id"] for partial in partials]
+                        started = {key for key, record in records.items() if record["state"] == "STARTED"}
+                        if not keys or keys != exc.request_ids or len(keys) != len(set(keys)) or not set(keys) <= started:
+                            raise ValueError("deadline trace must cover its started batch exactly once")
+                        for key, partial in zip(keys, partials, strict=True):
+                            validate_single_partial(expected[key], partial, policy_sha256=policy_sha256,
+                                                    protocol_sha256=protocol_sha256)
+                        detached = json.loads(json.dumps(partials, allow_nan=False))
+                        for key, partial in zip(keys, detached, strict=True):
+                            records[key].update(partial_output=partial, partial_output_sha256=_digest(partial))
+                    except (KeyError, TypeError, ValueError) as invalid:
+                        failure = "INVALID_DEADLINE_TRACE: " + str(invalid)[:500]
+                        persist()
+                        raise ValueError("SINGLE: invalid deadline trace; collection remains INCOMPLETE") from invalid
+                persist()
+            raise
+        finally:
+            if set_start is not None:
+                set_start(None)
+    if any(key not in records or records[key].get("state") != "COMPLETED" for key in ids):
+        raise ValueError("SINGLE: INCOMPLETE collection; missing completions cannot be declared complete")
+    return {key: records[key]["output"] for key in ids}
 
 
 def sample_id(problem_id: str, tag: str) -> str:

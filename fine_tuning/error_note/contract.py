@@ -12,6 +12,7 @@ import hashlib
 import re
 import string
 from typing import Callable
+import unicodedata
 import zlib
 
 MASTER_SEED = 3407
@@ -296,6 +297,21 @@ def note_prompt_v3(p0_text: str, t1_text: str, status: str, gold: str) -> str:
     return note_prompt_v2(p0_text, t1_text, status, gold).removesuffix(NOTE_INSTRUCTION_V2) + NOTE_INSTRUCTION_V3
 
 
+SINGLE_VERDICT_LABELS = VERDICT_LABELS | {key: "NOT ACCEPTED BY THE FINAL-ANSWER PARSER. "
+    "This does not establish that no final answer was written; inspect the original response."
+    for key in ("INVALID_NO_FINAL", "INVALID_MULTIPLE")}
+
+
+def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str) -> str:
+    """Prospective SINGLE feedback separates parser rejection from absence of a written answer."""
+    if not p0_text.strip() or not gold.strip():
+        raise ValueError("single note: nonblank P0 and gold required")
+    if status not in SINGLE_VERDICT_LABELS:
+        raise ValueError(f"no single verdict label for status {status!r}")
+    return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {SINGLE_VERDICT_LABELS[status]}\n"
+            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V3}")
+
+
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)
 
 
@@ -372,6 +388,42 @@ def hint_leak(lesson: str, gold: str, choices: tuple[str, ...] | list[str]) -> s
     if bare and re.search(rf"(?<!\w){re.escape(_normal(bare))}(?!\w)", normal):
         return "GOLD_TEXT"
     return None
+
+
+_SINGLE_LETTER_DIRECTIVE = re.compile(
+    r"\b(?:pick|choose|select|prefer|mark|answer(?:\s+with)?|respond\s+with)\s+"
+    r"(?:(?:the\s+)?(?:option|choice)\s+)?(?:\(([a-j])\)|([b-j])\b|([a-j])(?=[.);:,!?]|\s*$))",
+    re.IGNORECASE,
+)
+_SINGLE_LETTER_PREDICATE = re.compile(
+    r"\b([a-j])\s+(?:is|would\s+be|must\s+be)\s+(?:the\s+)?(?:correct|right|answer)\b", re.IGNORECASE,
+)
+_SINGLE_POSITION_REFERENCE = re.compile(
+    r"\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|[1-9](?:st|nd|rd|th)?)"
+    r"\s+(?:option|choice|answer)\b|\b(?:option|choice)\s+(?:number\s+)?"
+    r"(?:one|two|three|four|five|six|seven|eight|nine|ten|[1-9][0-9]?)\b", re.IGNORECASE,
+)
+
+
+def hint_leak_single(lesson: str, gold: str, choices: tuple[str, ...] | list[str],
+                     *, aliases: tuple[str, ...] | list[str] = ()) -> str | None:
+    """Single-response contract only; old saved v2/v3 decisions retain their original rule.
+
+    These bounded text checks cannot certify a whole lesson. The source-bound review remains required.
+    """
+    text = unicodedata.normalize("NFKC", lesson)
+    reason = hint_leak(text, unicodedata.normalize("NFKC", gold), choices)
+    if reason is not None:
+        return reason
+    if choices:
+        match = _SINGLE_LETTER_DIRECTIVE.search(text) or _SINGLE_LETTER_PREDICATE.search(text)
+        if match:
+            return "DIRECTED_OPTION:" + next(value.upper() for value in match.groups() if value)
+        if _SINGLE_POSITION_REFERENCE.search(text):
+            return "OPTION_POSITION"
+    if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+        raise ValueError("single lesson: nonempty source aliases required")
+    return "SOURCE_ALIAS" if any(_has_words(text, alias) for alias in aliases) else None
 
 
 def resolve_prompt(p0_text: str, lesson: str) -> str:

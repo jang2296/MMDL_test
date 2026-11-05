@@ -21,26 +21,30 @@ import argparse
 import hashlib
 import json
 import math
+from contextlib import nullcontext
 from collections import Counter, defaultdict
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import torch
+from torch.utils.checkpoint import checkpoint as recompute
 
 from fine_tuning.notebook_rl import checkpoint as ckpt
-from fine_tuning.notebook_rl.input_preparation import prepare_protocol_inputs
+from fine_tuning.notebook_rl.input_preparation import digest, prepare_protocol_inputs, tensor_identity
 from fine_tuning.notebook_rl.policy import PolicyBundle, assert_base_unchanged, build_policy
 from fine_tuning.notebook_rl.prompts import user_message
 from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_unchanged
 
 from . import rl
-from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, update_groups
+from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, VERDICT_LABELS, update_groups
 from .order import read_order
-from .protocol import ARM, PER_UPDATE_ITEMS_V2, VERSION_V4, plain_protocol_v4
+from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MEAN_ATOL, VERSION_V4,
+                       plain_protocol_v4)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
                     _commit, _encode_or_drop, _factory, _gradient_norms, _keep_before, _newest_checkpoint, _peak_gib,
+                    _autocast, _image_inputs, _pad_id,
                     _read_jsonl, _read_probe_rows, _save, _summary, _tensor_counts, _trainable_hashes, _write_json,
                     _write_probe, batch_logprobs, compute_probe, encoded_groups, plan_microbatches)
 from .v4 import ARMS, KIND_A2, KIND_B, KIND_RL, KINDS, SFT_KINDS
@@ -204,6 +208,354 @@ def run_update_v4(bundle: PolicyBundle, optimizer: torch.optim.AdamW, scheduler:
             "target_tokens": sum(row["target_len"] for row in encoded), "loss": loss, **stats,
             "grad_norms": grad_norms, "seconds": time.perf_counter() - started, "peak_allocated_gib": _peak_gib(),
             "skipped": False}
+
+
+def _single_ids(value: Any, name: str) -> list[int]:
+    if not isinstance(value, list) or not value or any(type(v) is not int or v < 0 for v in value):
+        raise ValueError(f"single train: {name} must contain the original nonempty integer token IDs")
+    return value
+
+
+def _single_encoded_input_sha256(row: dict) -> str:
+    prompt = row["input_ids"][:-row["target_len"]][None]
+    values = {"input_ids": prompt, "attention_mask": torch.ones_like(prompt),
+              "pixel_values": row["pixel_values"], "image_grid_thw": row["image_grid_thw"]}
+    return digest({key: tensor_identity(value) for key, value in values.items()})
+
+
+def encode_single_row(processor: Any, model_config: Any, row: dict, images: list[Any]) -> dict:
+    """Preserve sampled actions, including actual EOS; targets never include the prompt or review material."""
+    generation = row["generation"]
+    actions = _single_ids(generation.get("completion_token_ids"), "completion_token_ids")
+    if any(getattr(model_config, name, None) in actions for name in ("image_token_id", "video_token_id")):
+        raise ValueError("single train: generated image/video placeholder cannot be replayed; HOLD")
+    if (row.get("kind") not in KINDS or row.get("route") not in (ROUTE_FULL, ROUTE_LM)
+            or row.get("target") != generation.get("text")
+            or any(token in row["prompt"] for token in processor.tokenizer.all_special_tokens)):
+        raise ValueError("single train: invalid row kind, route, control token or changed original target")
+    prepared, _ = prepare_protocol_inputs(processor, model_config, [user_message(row["prompt"], len(images))], images, IMAGE)
+    inputs = prepared["inputs"]
+    if row["kind"] == KIND_RL:
+        from .single import validate_single_reward
+
+        validate_single_reward(row)
+        if (generation.get("prompt_token_ids") != prepared["prompt_token_ids"]
+                or generation.get("input_sha256") != prepared["input_sha256"]):
+            raise ValueError("single train: RL original prompt IDs or image/input binding changed")
+    if generation.get("completion_tokens", len(actions)) != len(actions):
+        raise ValueError("single train: completion token count changed")
+    result = dict(row)
+    result.update(input_ids=torch.cat([inputs["input_ids"][0], torch.tensor(actions, dtype=torch.long)]),
+                  target_len=len(actions), pixel_values=inputs["pixel_values"], image_grid_thw=inputs["image_grid_thw"],
+                  input_sha256=prepared["input_sha256"])
+    if _single_encoded_input_sha256(result) != prepared["input_sha256"]:
+        raise ValueError("single train: prepared inputs cannot be reproduced by the training forward")
+    return result
+
+
+def _single_hidden(bundle: PolicyBundle, rows: list[dict]) -> tuple[torch.Tensor, torch.Tensor, list[int]]:
+    base = bundle.model.get_base_model()
+    device = next(base.parameters()).device
+    lengths = [row["input_ids"].numel() for row in rows]
+    ids = torch.full((len(rows), max(lengths)), _pad_id(bundle), dtype=torch.long, device=device)
+    mask = torch.zeros_like(ids)
+    for index, (row, length) in enumerate(zip(rows, lengths, strict=True)):
+        if not 0 < row["target_len"] < length:
+            raise ValueError("single train: nonempty prompt and actions required")
+        ids[index, :length] = row["input_ids"].to(device)
+        mask[index, :length] = 1
+    with _autocast(device):
+        hidden = base.model(input_ids=ids, attention_mask=mask, **_image_inputs(rows, device),
+                            use_cache=False, return_dict=True).last_hidden_state
+    return hidden, ids, lengths
+
+
+def _single_reference_hidden(bundle: PolicyBundle, rows: list[dict]) -> torch.Tensor:
+    from fine_tuning.modules import tensor_sha256
+
+    base = bundle.model.get_base_model()
+    for root in bundle.inventory["mergers"]:
+        original = base.get_submodule(root).original_module
+        for name, parameter in original.named_parameters():
+            if parameter.requires_grad or tensor_sha256(parameter) != bundle.base_sha256[f"{root}.{name}"]:
+                raise ValueError("single train: F0 original Merger changed")
+    vision_on = bundle.route.vision_on
+    try:
+        with torch.no_grad(), bundle.model.disable_adapter():
+            return _single_hidden(bundle, rows)[0].detach()
+    finally:
+        bundle.route.apply(vision_on)
+
+
+def _single_project(head: Any, states: torch.Tensor, actions: torch.Tensor, offset: int,
+                    sampling: dict, support: list[list[int]]) -> torch.Tensor:
+    logits = head(states).float()
+    values = []
+    for index, scores in enumerate(logits):
+        step = offset + index
+        values.append(rl.stored_support_logprob(scores[None], actions[:step][None], int(actions[step]),
+                                                support[step], **sampling))
+    return torch.stack(values)
+
+
+def _single_raw_kl(head: Any, states: torch.Tensor, reference: torch.Tensor,
+                   vocab_chunk: int, *, force_full: bool = False) -> torch.Tensor:
+    """Exact raw KL(F0||theta), streaming vocabulary reductions with recomputed projections."""
+    if not isinstance(head, torch.nn.Linear) or any(p.requires_grad for p in head.parameters()):
+        raise ValueError("single train: raw F0 KL requires the frozen original linear language head")
+    reference = reference.detach()
+    if not force_full and torch.equal(states, reference):
+        return states.float().sum(-1) * 0  # Exact F0 equality must not create an update from reduction roundoff.
+
+    def log_z(hidden: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+        bias = head.bias[start:stop] if head.bias is not None else None
+        return torch.nn.functional.linear(hidden, head.weight[start:stop], bias).float().logsumexp(-1)
+
+    current_z: torch.Tensor | None = None
+    with torch.no_grad():
+        reference_z: torch.Tensor | None = None
+        for start in range(0, head.weight.shape[0], vocab_chunk):
+            value = log_z(reference, start, start + vocab_chunk)
+            reference_z = value if reference_z is None else torch.logaddexp(reference_z, value)
+    for start in range(0, head.weight.shape[0], vocab_chunk):
+        project = partial(log_z, start=start, stop=start + vocab_chunk)
+        value = recompute(project, states, use_reentrant=False) if torch.is_grad_enabled() else project(states)
+        current_z = value if current_z is None else torch.logaddexp(current_z, value)
+    assert current_z is not None and reference_z is not None
+    reference_log_z = reference_z
+
+    def expectation(hidden: torch.Tensor, original: torch.Tensor, start: int, stop: int) -> torch.Tensor:
+        bias = head.bias[start:stop] if head.bias is not None else None
+        scores = torch.nn.functional.linear(hidden, head.weight[start:stop], bias).float()
+        with torch.no_grad():
+            scores0 = torch.nn.functional.linear(original, head.weight[start:stop], bias).float()
+            probability = (scores0 - reference_log_z[:, None]).exp()
+        return (probability * (scores0 - scores)).sum(-1)
+
+    result = current_z - reference_z
+    for start in range(0, head.weight.shape[0], vocab_chunk):
+        project = partial(expectation, start=start, stop=start + vocab_chunk)
+        value = (recompute(project, states, reference, use_reentrant=False) if torch.is_grad_enabled()
+                 else project(states, reference))
+        result = result + value
+    return result
+
+
+def single_batch_statistics(bundle: PolicyBundle, rows: list[dict], sampling: dict, *, reference: bool = False,
+                            chunk: int = 32, vocab_chunk: int = 4096, force_full_kl: bool = False) -> list[dict]:
+    """Replay original T1 prefixes; checkpoint projections retain no whole token-by-vocabulary graph."""
+    if not rows or chunk < 1 or vocab_chunk < 1:
+        raise ValueError("single train: rows and positive projection chunks required")
+    original = _single_reference_hidden(bundle, rows) if reference else None
+    hidden, ids, lengths = _single_hidden(bundle, rows)
+    head = bundle.model.get_base_model().lm_head
+    result = []
+    for index, (row, length) in enumerate(zip(rows, lengths, strict=True)):
+        start = length - row["target_len"]
+        states, actions = hidden[index, start - 1:length - 1], ids[index, start:length]
+        logprobs, kl = [], []
+        support = row["generation"]["support_token_ids"]
+        for offset in range(0, row["target_len"], chunk):
+            h = states[offset:offset + chunk]
+            project = partial(_single_project, head, actions=actions, offset=offset, sampling=sampling, support=support)
+            logprobs.append(recompute(project, h, use_reentrant=False) if torch.is_grad_enabled() else project(h))
+            if original is not None:
+                h0 = original[index, start - 1 + offset:min(length - 1, start - 1 + offset + chunk)]
+                kl.append(_single_raw_kl(head, h, h0, vocab_chunk, force_full=force_full_kl))
+        value = torch.cat(logprobs)
+        divergence = torch.cat(kl) if kl else torch.zeros_like(value)
+        if not bool(torch.isfinite(value).all()) or not bool(torch.isfinite(divergence).all()):
+            raise NonFiniteStop("single train: nonfinite action log probability or raw KL")
+        result.append({"logprobs": value, "kl": divergence})
+    return result
+
+
+def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict) -> list[dict]:
+    from .protocol import SINGLE_REWARD_GATE, VERSION_SINGLE
+    from .single import validate_single_reward
+
+    if contract.get("version") != VERSION_SINGLE or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
+        raise ValueError("single train: SINGLE v3 program-gate reward contract required; v1/v2 cannot resume")
+    expected = contract["expected_problem_ids"]
+    if (not isinstance(expected, list) or not expected or len(set(expected)) != len(expected)
+            or any(not isinstance(pid, str) or not pid for pid in expected)):
+        raise ValueError("single train: unique preregistered expected problem IDs required")
+    sampling = contract["sampling"]
+    sampling_hash = rl.sampling_sha256(sampling)
+    if rl.policy_sha256(bundle) != contract["policy_sha256"]:
+        raise ValueError("single train: current policy differs from collection policy")
+    if len({row["row_id"] for row in encoded}) != len(encoded):
+        raise ValueError("single train: duplicate row ID")
+    t1 = [row for row in encoded if row["kind"] == KIND_RL]
+    if len(t1) != len(expected) or {row["problem_id"] for row in t1} != set(expected):
+        raise ValueError("single train: incomplete or duplicate T1 membership")
+    if any(not isinstance(contract.get(key), dict) or set(contract[key]) != set(expected)
+           for key in ("reward_provenance_sha256", "reward_evidence_sha256")):
+        raise ValueError("single train: fixed per-ID reward provenance/evidence pins required")
+    pairs = [(row["problem_id"], row["kind"]) for row in encoded]
+    if len(set(pairs)) != len(pairs):
+        raise ValueError("single train: multiple responses for a problem/kind")
+    for row in encoded:
+        if (row["problem_id"] not in expected or row["kind"] not in KINDS
+                or row["route"] not in (ROUTE_FULL, ROUTE_LM)
+                or row["kind"] in (KIND_RL, "A1") and row["route"] != ROUTE_LM):
+            raise ValueError("single train: invalid kind, problem or route")
+    for row in t1:
+        generation = row["generation"]
+        actions = _single_ids(generation.get("completion_token_ids"), "completion_token_ids")
+        prompt = _single_ids(generation.get("prompt_token_ids"), "prompt_token_ids")
+        if (generation.get("policy_sha256") != contract["policy_sha256"]
+                or generation.get("sampling_sha256") != sampling_hash
+                or generation.get("input_sha256") != row.get("input_sha256")
+                or generation.get("input_sha256") != _single_encoded_input_sha256(row)
+                or row["input_ids"].tolist() != prompt + actions or row["target_len"] != len(actions)
+                or row.get("complete") is not True or type(row.get("reward")) is not int or row["reward"] not in (0, 1)
+                or row.get("status") not in {*VERDICT_LABELS, "LOOP_STOPPED", "UNVERIFIABLE"}
+                or len(generation.get("sampling_logprobs", [])) != len(actions)
+                or len(generation.get("support_sha256", [])) != len(actions)
+                or len(generation.get("support_token_ids", [])) != len(actions)):
+            raise ValueError("single train: incomplete, stale or changed original RL generation")
+        for action, support, sha in zip(actions, generation["support_token_ids"], generation["support_sha256"], strict=True):
+            if (not isinstance(support, list) or action not in support
+                    or any(type(token) is not int for token in support) or digest(support) != sha):
+                raise ValueError("single train: stored generation support changed or excludes its sampled action")
+        validate_single_reward(row)
+        if (digest(row["reward_evidence"]["provenance"]) != contract["reward_provenance_sha256"][row["problem_id"]]
+                or digest(row["reward_evidence"]) != contract["reward_evidence_sha256"][row["problem_id"]]):
+            raise ValueError("single train: original reward source/evidence differs from the sealed contract")
+        expected_lp = torch.tensor(generation["sampling_logprobs"], dtype=torch.float32)
+        if not bool(torch.isfinite(expected_lp).all()):
+            raise ValueError("single train: nonfinite stored sampling log probabilities")
+    return t1
+
+
+def _require_single_zero_dropout(bundle: PolicyBundle) -> None:
+    config = bundle.model.get_base_model().config
+    for value in (config, getattr(config, "text_config", None), getattr(config, "vision_config", None)):
+        if value is not None and getattr(value, "attention_dropout", 0) != 0:
+            raise ValueError("single train: nonzero configured attention dropout changes sampling replay; HOLD")
+    if any(value.lora_dropout != 0 for value in bundle.model.peft_config.values()):
+        raise ValueError("single train: nonzero configured LoRA dropout changes sampling replay; HOLD")
+    for name, module in bundle.model.named_modules():
+        if ((isinstance(module, torch.nn.modules.dropout._DropoutNd) and module.p != 0)
+                or getattr(module, "attention_dropout", 0) != 0):
+            raise ValueError(f"single train: nonzero actual dropout at {name} changes sampling replay; HOLD")
+
+
+def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict, token_budget: int = 0,
+                          components: Iterable[str] = ("PG", "KL", "A1", "A2", "B"), *,
+                          capacity: Any = None, force_full_kl: bool = False, capture: Any = None) -> dict:
+    """One frozen-policy block, fixed B*C PG/raw KL and per-kind row-mean SFT; no optimizer or scheduler."""
+    selected = set(components)
+    if capacity is not None and capture is not None:
+        raise ValueError("single train: measured admission and calibration are separate transactions")
+    if selected - {"PG", "KL", "A1", "A2", "B"}:
+        raise ValueError("single train: unknown loss component")
+    settings, weights = contract["rl"], contract["sft_weights"]
+    scale, beta = settings["token_scale"], settings["beta"]
+    if (not math.isfinite(scale) or scale <= 0 or not math.isfinite(beta) or beta < 0
+            or set(weights) != set(SFT_KINDS) or any(not math.isfinite(w) or w < 0 for w in weights.values())):
+        raise ValueError("single train: explicit finite nonnegative weights and positive token scale required")
+    _require_single_zero_dropout(bundle)
+    t1 = _validate_single_block(bundle, encoded, contract)
+    initial_route = bundle.route.vision_on
+    was_training = bundle.model.training
+    plan = plan_microbatches([row["input_ids"].numel() for row in t1], [row["route"] for row in t1], token_budget)
+    from .capacity import CapacityHold, encoded_shapes
+
+    if capacity is not None or capture is not None:
+        if type(token_budget) is not int or token_budget < 0:
+            raise CapacityHold("capacity HOLD: nonnegative integer training token budget required")
+        if token_budget and any(row["input_ids"].numel() > token_budget for row in encoded):
+            raise CapacityHold("capacity HOLD: a training singleton exceeds the explicit token budget")
+    if capacity is not None:
+        plan = capacity.partition(encoded_shapes(t1), plan, "rl_kl")
+    sft_plans = {}
+    for kind in SFT_KINDS:
+        rows = [row for row in encoded if row["kind"] == kind]
+        if kind not in selected or not rows or not weights[kind]:
+            continue
+        batches = plan_microbatches([row["input_ids"].numel() for row in rows], [row["route"] for row in rows], token_budget)
+        if capacity is not None:
+            bounded = []
+            geometry = encoded_shapes(rows)
+            for indices in batches:
+                phase = "sft_full" if rows[indices[0]]["route"] == ROUTE_FULL else "sft_lm"
+                bounded.extend(capacity.partition(geometry, [indices], phase))
+            batches = bounded
+        sft_plans[kind] = (rows, batches)
+    stats: dict[str, Any] = {"rl": {"rows": len(t1), "problem_count": len(t1), "token_scale": scale,
+                                     "action_tokens": sum(row["target_len"] for row in t1), "pg": 0., "kl": 0.},
+                             "sft": {}, "replay_verified": False}
+    try:
+        bundle.model.train()  # Qwen activation checkpointing requires training mode; checked zero dropout keeps replay exact.
+        # Validate every sampled distribution before any component can leave a partial gradient.
+        bundle.route.apply(False)
+        replay_stats = {"tokens": 0, "abs_sum": 0., "max_abs": 0., "over_0.1": 0, "row_mean_max": 0.}
+        with torch.no_grad():
+            for indices in plan:
+                batch = [t1[i] for i in indices]
+                if capacity is not None:
+                    capacity.check(encoded_shapes(batch), "rl_kl")
+                replay = single_batch_statistics(bundle, batch, contract["sampling"])
+                for row, actual in zip(batch, replay, strict=True):
+                    expected = torch.tensor(row["generation"]["sampling_logprobs"], device=actual["logprobs"].device)
+                    gap = (actual["logprobs"].float() - expected).abs()
+                    row_mean, row_max = float(gap.mean()), float(gap.max())
+                    replay_stats.update(tokens=replay_stats["tokens"] + gap.numel(),
+                                        abs_sum=replay_stats["abs_sum"] + float(gap.sum()),
+                                        max_abs=max(replay_stats["max_abs"], row_max),
+                                        row_mean_max=max(replay_stats["row_mean_max"], row_mean))
+                    replay_stats["over_0.1"] += int((gap > .1).sum())
+                    if row_mean > SINGLE_REPLAY_MEAN_ATOL or row_max > SINGLE_REPLAY_MAX_ATOL:
+                        raise ValueError(f"single train: sampling logprob replay changed (row mean {row_mean:.4f}, "
+                                         f"max {row_max:.4f}); RL HOLD")
+        stats["replay"] = replay_stats | {"mean_abs": replay_stats["abs_sum"] / max(1, replay_stats["tokens"])}
+        stats["replay_verified"] = True
+        if "PG" in selected or "KL" in selected and beta:
+            for indices in plan:
+                batch = [t1[i] for i in indices]
+                bundle.route.apply(False)
+                if capacity is not None:
+                    capacity.check(encoded_shapes(batch), "rl_kl")
+                with capture.batch(batch, "rl_kl", "RL", full_kl=force_full_kl and "KL" in selected and beta > 0) if capture is not None else nullcontext():
+                    values = single_batch_statistics(bundle, batch, contract["sampling"], reference="KL" in selected and beta > 0,
+                                                      force_full_kl=force_full_kl)
+                    terms = []
+                    for row, value in zip(batch, values, strict=True):
+                        if "PG" in selected:
+                            term = rl.single_pg(value["logprobs"], row["reward"], problem_count=len(t1), token_scale=scale)
+                            stats["rl"]["pg"] += float(term.detach())
+                            if row["reward"]:
+                                terms.append(term)
+                        if "KL" in selected and beta:
+                            term = beta * value["kl"].sum() / (len(t1) * scale)
+                            stats["rl"]["kl"] += float(term.detach())
+                            terms.append(term)
+                    if terms:
+                        torch.stack(terms).sum().backward()
+        for kind, (rows, batches) in sft_plans.items():
+            losses: dict[str, float] = defaultdict(float)
+            for indices in batches:
+                if capacity is not None:
+                    phase = "sft_full" if rows[indices[0]]["route"] == ROUTE_FULL else "sft_lm"
+                    capacity.check(encoded_shapes([rows[i] for i in indices]), phase)
+                batch = [rows[i] for i in indices]
+                phase = "sft_full" if batch[0]["route"] == ROUTE_FULL else "sft_lm"
+                with capture.batch(batch, phase, kind) if capture is not None else nullcontext():
+                    values = _backward_rows(bundle, rows, [indices], [weights[kind] / len(rows)] * len(rows))
+                losses[kind] += values[kind]
+            mean = losses[kind] / len(rows)
+            if not math.isfinite(mean):
+                raise NonFiniteStop(f"single train: nonfinite {kind} loss")
+            stats["sft"][kind] = {"rows": len(rows), "row_nll_mean": mean, "weight": weights[kind],
+                                   "weighted_loss": weights[kind] * mean}
+    finally:
+        bundle.model.train(was_training)
+        bundle.route.apply(initial_route)
+    stats["loss"] = stats["rl"]["pg"] + stats["rl"]["kl"] + sum(v["weighted_loss"] for v in stats["sft"].values())
+    stats["has_gradient"] = any(p.grad is not None and bool(p.grad.abs().sum() > 0) for ps in bundle.params.values() for p in ps)
+    return stats
 
 
 def _contracts(args: argparse.Namespace) -> tuple[dict, dict | None]:

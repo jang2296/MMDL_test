@@ -203,13 +203,16 @@ def decide_selfcheck(verdicts: list[list[str]]) -> str:
     return SELF_CONSISTENT if all(answer == "TRUE" for answer in flat) else UNCHECKED
 
 
-def target_problem(text: str, token_ids: list[int], finish_reason: str, status: str) -> str | None:
+def target_problem(text: str, token_ids: list[int], finish_reason: str, status: str, *,
+                   min_tokens: int = MIN_TARGET_TOKENS) -> str | None:
     """Why a correct completion may not be an SFT target (A1/A2); None when it may. The v2 length rules plus loops."""
     if finish_reason != "stop":
         return "NOT_STOPPED"
     if status != CORRECT:
         return "NOT_CORRECT"
-    if len(token_ids) < MIN_TARGET_TOKENS:
+    if type(min_tokens) is not int or min_tokens < 1:
+        raise ValueError("target_problem: positive integer token minimum required")
+    if len(token_ids) < min_tokens:
         return "TOO_SHORT"
     if len(token_ids) > MAX_TARGET_TOKENS:
         return "TOO_LONG"

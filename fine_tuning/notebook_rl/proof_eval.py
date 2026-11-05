@@ -23,6 +23,9 @@ Error-note version 3 uses ``preregister --format v5 --ft-v3-model-ref REF``: one
 seed 3407 and the same 8k variant, wrong + rest exactly once. ``gate-62`` checks >=559; ``gate-67.4`` checks >=607.
 Error-note version 4 (RL + note SFT) uses ``preregister --format v6 --ft-v4-model-ref REF`` the same way with the one
 final FT-HYB-V4 export of its last round (``verify-v4-export`` before ledger START).
+The single-response RL+SFT campaign (error_note.single_campaign) uses ``preregister --format v7 --ft-single-model-ref REF``:
+one final FT-SINGLE export, same variant/seed/subsets, PASS iff > 558 (``gate-62``); ``export`` and
+``verify-single-export`` take the campaign's sealed campaign-plan.json as ``--binding``.
 Only F0 runs with the same evaluation code, registration and hardware are paired; historical counts are display only.
 
 Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --subset S
@@ -75,8 +78,15 @@ ARMS_V5 = ("F0", ARM_V3)
 FORMAT_V6 = "notebook-rl-proof-prereg-v6"  # error-note version 4 (RL + note SFT): arms F0 and FT-HYB-V4
 ARM_V4 = "FT-HYB-V4"
 ARMS_V6 = ("F0", ARM_V4)
-ALL_ARMS = ARMS + (ARM_V2, ARM_V3, ARM_V4)
-FINAL_ARMS = {FORMAT_V5: ARM_V3, FORMAT_V6: ARM_V4}  # one checkpoint declared before a single 900-item pass
+FORMAT_V7 = "notebook-rl-proof-prereg-v7"  # single-response RL + SFT campaign: arms F0 and FT-SINGLE
+ARM_SINGLE = "FT-SINGLE"
+ALL_ARMS = ARMS + (ARM_V2, ARM_V3, ARM_V4, ARM_SINGLE)
+FINAL_ARMS = {FORMAT_V5: ARM_V3, FORMAT_V6: ARM_V4, FORMAT_V7: ARM_SINGLE}  # one checkpoint declared before a single 900-item pass
+# final arm -> (preregistration tag, export tag, checkpoint kind, gate format, gate result key)
+FINAL_TAGS = {ARM_V3: ("v5", "v3", "NOTE", "error-note-final-gate-v3", "ft_note_v3"),
+              ARM_V4: ("v6", "v4", "hybrid", "error-note-final-gate-v4", "ft_hyb_v4"),
+              ARM_SINGLE: ("v7", "single", "single-campaign", "error-note-final-gate-single-v1", "ft_single")}
+SINGLE_PILOT = (19, 300)  # single_campaign: the pilot ends after slot 19 = the first 300 items
 B2_CORRECT = 558
 VLLM_INPROCESS_ENV = "VLLM_ENABLE_V1_MULTIPROCESSING"
 # subset tag -> (file version, B2 key it must equal)
@@ -160,8 +170,7 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
 
     if not isinstance(code_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", code_commit):
         raise ValueError("proof_eval: --code-commit must be the full 40-hex training commit")
-    loaded = json.loads(Path(binding_file).read_text(encoding="utf-8"))
-    binding = loaded["binding"] if isinstance(loaded, dict) and "binding" in loaded else loaded
+    binding, plan = _binding_file(binding_file)
     checkpoint, output = Path(checkpoint), Path(output)
     metadata = read_metadata(checkpoint, binding=binding)
     version = metadata["protocol"].get("version")
@@ -171,6 +180,9 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
         if v3_protocol != expected or metadata["step"] != expected["optimizer"]["total_steps"]:
             tag = "v3" if version == "error-note-protocol-v3" else "v4"
             raise ValueError(f"proof_eval: {tag} export requires the final BF16 checkpoint of its fixed protocol")
+    campaign = _single_campaign_export(metadata, plan) if plan is not None or version == _single_version() else None
+    if campaign is not None:
+        v3_protocol = metadata["protocol"]
     output.mkdir(parents=True, exist_ok=False)
     model_dir = output / "model"
     export = export_merged(checkpoint, Path(base), model_dir, metadata["arm"], binding=binding,
@@ -194,10 +206,47 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
             "precision_policy": export["precision_policy"],
             "unmerged_inference_bit_equivalent": export["precision_policy"]["unmerged_inference_bit_equivalent"],
             **({"training_protocol": v3_protocol} if v3_protocol is not None else {}),
+            **({"campaign": campaign} if campaign is not None else {}),
         },
     }
     _write_once(output / "model_ref.json", json.dumps(model_ref, indent=2, sort_keys=True) + "\n")
     return model_ref
+
+
+def _single_version() -> str:
+    from fine_tuning.error_note.protocol import VERSION_SINGLE
+
+    return VERSION_SINGLE
+
+
+def _binding_file(path: Path) -> tuple[dict, dict | None]:
+    """(binding, plan): a binding JSON, a launch.json holding 'binding', or a single campaign's sealed
+    campaign-plan.json, whose checkpoint binding is single_campaign._binding(plan) (plan returned, else None)."""
+    loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(loaded, dict) and str(loaded.get("version")).startswith("single-campaign-"):
+        from fine_tuning.error_note import single_campaign
+
+        single_campaign._plan_check(loaded)
+        return single_campaign._binding(loaded), loaded
+    return (loaded["binding"] if isinstance(loaded, dict) and "binding" in loaded else loaded), None
+
+
+def _single_campaign_export(metadata: dict, plan: dict | None) -> dict:
+    """The pilot (slot 19 = 300 items) or final checkpoint of the one campaign whose sealed plan binds it."""
+    from fine_tuning.error_note import single_campaign
+    from fine_tuning.error_note.order import _ids_sha256
+
+    if plan is None or metadata["protocol"] != plan["protocol"]:
+        raise ValueError("proof_eval: a single-response export requires --binding <its campaign-plan.json>")
+    cursor = metadata["cursor"].get("single", {})
+    single_campaign._cursor(plan, cursor, cursor.get("policy_sha256"))
+    slot, consumed, last = cursor["slot"], cursor["consumed_problem_ids"], len(plan["blocks"])
+    if metadata["step"] != slot or (slot, len(consumed)) != SINGLE_PILOT and slot != last:
+        raise ValueError("proof_eval: single-response export requires the pilot (slot 19, 300 items) or the final "
+                         "campaign checkpoint")
+    return {"version": plan["version"], "plan_sha256": plan["sha256"], "stage": "final" if slot == last else "pilot",
+            "slot": slot, "updates": cursor["updates"], "consumed_ids_sha256": _ids_sha256(consumed),
+            "policy_sha256": cursor["policy_sha256"]}
 
 
 def _expected_training_protocol(protocol: dict) -> dict:
@@ -244,7 +293,37 @@ def _v4_model_ref(path: Path) -> tuple[dict, dict]:
 
 
 def _final_model_ref(path: Path, fmt: str) -> tuple[dict, dict]:
-    return _v4_model_ref(path) if fmt == FORMAT_V6 else _v3_model_ref(path)
+    return {FORMAT_V6: _v4_model_ref, FORMAT_V7: _single_model_ref}.get(fmt, _v3_model_ref)(path)
+
+
+def _single_model_ref(path: Path) -> tuple[dict, dict]:
+    """The declared final export of one single-response campaign (its last slot), validated like the v4 export."""
+    from fine_tuning.error_note import single
+    from fine_tuning.error_note.protocol import ARM
+
+    ref = json.loads(Path(path).read_text(encoding="utf-8"))
+    export = ref.get("export", {})
+    protocol, campaign, binding = (export.get(key, {}) for key in ("training_protocol", "campaign", "binding"))
+    if protocol.get("version") != _single_version():
+        raise ValueError("proof_eval: v7 evaluation requires an error-note-single-response export")
+    single._protocol_check(protocol)
+    if (ref.get("kind") != "merged" or ref.get("dtype") != "bfloat16" or not ref.get("files")
+            or ref.get("base") != {"id": MODEL_ID, "revision": MODEL_REVISION}
+            or ref.get("processor_revision") != MODEL_REVISION or export.get("arm") != ARM
+            or campaign.get("stage") != "final" or export.get("step") != campaign.get("slot")
+            or campaign.get("slot") != protocol["training_contract"]["total_slots"]
+            or ref.get("train_config_sha256") != digest(protocol)
+            or binding.get("protocol_sha256") != protocol["sha256"]
+            or binding.get("prompts_sha256") != protocol["prompts_sha256"]
+            or binding.get("data_sha256") != campaign.get("plan_sha256")
+            or ref.get("data_manifest_sha256") != binding["data_sha256"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(export.get("checkpoint_files", {}).get("metadata.json", "")))):
+        raise ValueError("proof_eval: v7 evaluation requires its one final BF16 single-campaign export and matching "
+                         "protocol binding")
+    declared = {"model_ref": str(Path(path).resolve()), "model_ref_sha256": sha256_file(path),
+                "model_sha256": digest(ref["files"]), "checkpoint_metadata_sha256": export["checkpoint_files"]["metadata.json"],
+                "train_config_sha256": ref["train_config_sha256"], "campaign_plan_sha256": campaign["plan_sha256"]}
+    return ref, declared
 
 
 def _v3_model_ref(path: Path) -> tuple[dict, dict]:
@@ -283,13 +362,13 @@ def verify_v3_export(model_ref: Path, checkpoint: Path, binding_file: Path, prer
 
     prereg, _ = load_preregistration(prereg_path)
     if prereg["format"] not in FINAL_ARMS:
-        raise ValueError("proof_eval: export verification needs a v5 or v6 preregistration")
+        raise ValueError("proof_eval: export verification needs a v5, v6 or v7 preregistration")
     arm = FINAL_ARMS[prereg["format"]]
+    tag = FINAL_TAGS[arm][1]
     ref, declared = _final_model_ref(model_ref, prereg["format"])
     if any(prereg["arms"][arm].get(k) != v for k, v in declared.items() if k != "model_ref"):
-        raise ValueError(f"proof_eval: {'v3' if arm == ARM_V3 else 'v4'} export differs from the declared final checkpoint")
-    loaded = json.loads(Path(binding_file).read_text(encoding="utf-8"))
-    binding = loaded["binding"] if "binding" in loaded else loaded
+        raise ValueError(f"proof_eval: {tag} export differs from the declared final checkpoint")
+    binding, plan = _binding_file(binding_file)
     metadata = read_metadata(checkpoint, binding=binding)
     manifest = validate_export_reference(Path(model_ref).parent / "model", ref)
     if (sha256_file(Path(checkpoint) / "metadata.json") != declared["checkpoint_metadata_sha256"]
@@ -297,8 +376,9 @@ def verify_v3_export(model_ref: Path, checkpoint: Path, binding_file: Path, prer
             or metadata["resolved_protocol_sha256"] != declared["train_config_sha256"]
             or metadata["arm"] != ref["export"]["arm"] or metadata["step"] != ref["export"]["step"]
             or manifest["checkpoint_files"] != {p.name: sha256_file(p) for p in Path(checkpoint).iterdir()}
-            or manifest["checkpoint_state_sha256"] != metadata["state_sha256"]):
-        raise ValueError(f"proof_eval: {'v3' if arm == ARM_V3 else 'v4'} export checkpoint metadata or binding differs")
+            or manifest["checkpoint_state_sha256"] != metadata["state_sha256"]
+            or arm == ARM_SINGLE and _single_campaign_export(metadata, plan) != ref["export"]["campaign"]):
+        raise ValueError(f"proof_eval: {tag} export checkpoint metadata or binding differs")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -763,6 +843,20 @@ def build_preregistration_v6(subset: Path, rest_subset: Path, b2_predictions: Pa
     return value
 
 
+def build_preregistration_v7(subset: Path, rest_subset: Path, b2_predictions: Path, ft_model_ref: Path) -> dict:
+    """Final single-response campaign checkpoint, declared before its single 900-item seed-3407 evaluation."""
+    _, declared = _single_model_ref(ft_model_ref)
+    value = build_preregistration_v5_shape(subset, rest_subset, b2_predictions, ARM_SINGLE, declared,
+                                           "single final BF16 checkpoint of the single-response RL + note SFT campaign "
+                                           "(error-note-single-response-v3, all 3,500 items), fixed before MMMU evaluation")
+    value["format"] = FORMAT_V7
+    value["course_facing_run"]["rule"] = "one final FT-SINGLE 8k pass over the 900 original IDs (wrong + rest)"
+    value["notes"][0] = "one final campaign checkpoint, one seed (3407), no additional MMMU seeds or checkpoint selection"
+    value["notes"].append("historical 8k F0 = 541/900 (prereg-v4 ledger, 2026-11-02) is a display-only reference "
+                          "(gate-62 --f0-reference 541), never paired or part of the rule")
+    return value
+
+
 def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictions: Path, arm: str, declared: dict,
                                    definition: str) -> dict:
     value = build_preregistration_v4(subset, rest_subset, b2_predictions)
@@ -780,14 +874,19 @@ def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictio
 
 
 def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS,
-                fmt: str = "v3", ft_v3_model_ref: Path | None = None, ft_v4_model_ref: Path | None = None) -> str:
-    """Write-once preregistration plus ``<output>.sha256``; v5/v6 pin a previously exported final model reference."""
+                fmt: str = "v3", ft_v3_model_ref: Path | None = None, ft_v4_model_ref: Path | None = None,
+                ft_single_model_ref: Path | None = None) -> str:
+    """Write-once preregistration plus ``<output>.sha256``; v5/v6/v7 pin a previously exported final model reference."""
     output = Path(output)
     if (fmt == "v5") != (ft_v3_model_ref is not None):
         raise ValueError("proof_eval: --format v5 requires --ft-v3-model-ref; the flag is v5-only")
     if (fmt == "v6") != (ft_v4_model_ref is not None):
         raise ValueError("proof_eval: --format v6 requires --ft-v4-model-ref; the flag is v6-only")
-    if ft_v4_model_ref is not None:
+    if (fmt == "v7") != (ft_single_model_ref is not None):
+        raise ValueError("proof_eval: --format v7 requires --ft-single-model-ref; the flag is v7-only")
+    if ft_single_model_ref is not None:
+        value = build_preregistration_v7(subset, rest_subset, b2_predictions, ft_single_model_ref)
+    elif ft_v4_model_ref is not None:
         value = build_preregistration_v6(subset, rest_subset, b2_predictions, ft_v4_model_ref)
     elif ft_v3_model_ref is not None:
         value = build_preregistration_v5(subset, rest_subset, b2_predictions, ft_v3_model_ref)
@@ -806,7 +905,7 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
     if not sidecar.exists() or sidecar.read_text(encoding="ascii").strip() != value:
         raise ValueError("proof_eval: preregistration hash sidecar missing or mismatched")
     prereg = json.loads(path.read_text(encoding="utf-8"))
-    if prereg.get("format") not in (FORMAT, FORMAT_V4, FORMAT_V5, FORMAT_V6) or prereg.get("status") != "FROZEN":
+    if prereg.get("format") not in (FORMAT, FORMAT_V4, *FINAL_ARMS) or prereg.get("status") != "FROZEN":
         raise ValueError("proof_eval: not a frozen proof preregistration")
     if prereg["scorer"]["files"] != _scorer_files():
         raise ValueError("proof_eval: V8 scorer source changed since preregistration")
@@ -821,13 +920,13 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
                 or any(subsets[tag]["ids"] != prereg["b2_reference"][key] or subsets[tag]["count"] != n
                        for tag, key, n in (("wrong", "wrong_ids", 342), ("rest", "right_ids", 558)))
                 or len(set(subsets["wrong"]["ids"]) | set(subsets["rest"]["ids"])) != 900):
-            kind = "NOTE" if final == ARM_V3 else "hybrid"
-            raise ValueError(f"proof_eval: {'v5' if final == ARM_V3 else 'v6'} requires one declared {kind} checkpoint, "
+            tag, _, kind, *_ = FINAL_TAGS[final]
+            raise ValueError(f"proof_eval: {tag} requires one declared {kind} checkpoint, "
                              "seed 3407 and all 900 disjoint original IDs")
         for key in ("model_ref_sha256", "model_sha256", "checkpoint_metadata_sha256", "train_config_sha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", str(prereg["arms"][final].get(key, ""))):
-                raise ValueError("proof_eval: v5 final NOTE model reference is not bound" if final == ARM_V3
-                                 else "proof_eval: v6 final hybrid model reference is not bound")
+                tag, _, kind, *_ = FINAL_TAGS[final]
+                raise ValueError(f"proof_eval: {tag} final {kind} model reference is not bound")
     return prereg, value
 
 
@@ -1083,7 +1182,7 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
     keys = [(e["arm"], e["variant"], e["subset"]) for e in starts.values()]
     final = FINAL_ARMS.get(prereg["format"])
     if final is not None and len(keys) != len(set(keys)):
-        raise ValueError(f"proof_eval: {'v5' if final == ARM_V3 else 'v6'} ledger contains repeated attempts, including failed runs")
+        raise ValueError(f"proof_eval: {FINAL_TAGS[final][0]} ledger contains repeated attempts, including failed runs")
     if any(e["preregistration_sha256"] != prereg_sha for e in starts.values()):
         raise ValueError("proof_eval: the ledger belongs to another preregistration")
     allowed = {(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]}
@@ -1190,8 +1289,8 @@ def gate_300(results: dict) -> dict:
     no-parse / length-finish counts of the collapse alert are the seed means of the per-seed values. A threshold for
     spending more, never proof of improvement."""
     if results.get("preregistration_format") in FINAL_ARMS:
-        raise ValueError("proof_eval: v3 final evaluation has no 342-item pilot gate"
-                         if results["preregistration_format"] == FORMAT_V5 else "proof_eval: v4 final evaluation has no 342-item pilot gate")
+        tag = FINAL_TAGS[FINAL_ARMS[results["preregistration_format"]]][1]
+        raise ValueError(f"proof_eval: {tag} final evaluation has no 342-item pilot gate")
     _require_same_slots_and_gpu(results.get("runs", []))
     wrong = results["subsets"]["wrong"]
     f0, note = wrong["arms"].get("F0"), wrong["arms"].get("FT-NOTE")
@@ -1269,14 +1368,14 @@ def gate_v3(results: dict, target_percent: float, f0_reference: int | None = Non
     """One final v3 (v5) or v4 (v6) pass: numeric targets, current paired F0 and explicitly unpaired references."""
     if results.get("preregistration_format") not in FINAL_ARMS or target_percent not in (62, 67.4):
         raise ValueError("proof_eval: v3 final gates require a v5 preregistration and target 62 or 67.4 "
-                         "(v4: a v6 preregistration)")
+                         "(v4: a v6 preregistration; single campaign: v7)")
     _require_same_slots_and_gpu(results.get("runs", []))
     arm = FINAL_ARMS[results["preregistration_format"]]
-    v6 = arm == ARM_V4
+    _, tag, _, gate_format, result_key = FINAL_TAGS[arm]
     seed = "3407"
     block = results["full_900"].get(arm, {})
     if block.get("items") != 900 or set(block.get("seeds", {})) != {seed}:
-        raise ValueError(f"proof_eval: {'v4' if v6 else 'v3'} final gate requires both {arm} subsets, "
+        raise ValueError(f"proof_eval: {tag} final gate requires both {arm} subsets, "
                          "exactly 900 items and seed 3407 only")
     ft = block["seeds"][seed]
     minimum = 559 if target_percent == 62 else 607
@@ -1292,10 +1391,10 @@ def gate_v3(results: dict, target_percent: float, f0_reference: int | None = Non
                 truth[arm].update({sid: sid in correct for sid in sub["ids"]})
         paired = {"correct": f0["correct"], "accuracy": f0["accuracy"], "ft_minus_f0": ft["correct"] - f0["correct"],
                   "mcnemar": mcnemar_exact(truth["F0"], truth[arm]), "conditions": "same current evaluation registration"}
-    return {"format": "error-note-final-gate-v4" if v6 else "error-note-final-gate-v3", "not_proof_of_improvement": True,
+    return {"format": gate_format, "not_proof_of_improvement": True,
             "preregistration_sha256": results.get("preregistration_sha256"), "variant": GATE_62_VARIANT, "seed": 3407,
             "arm": arm, "items": 900, "target_percent": target_percent, "minimum_correct": minimum,
-            "status": "PASS" if ft["correct"] >= minimum else "FAIL", ("ft_hyb_v4" if v6 else "ft_note_v3"): ft,
+            "status": "PASS" if ft["correct"] >= minimum else "FAIL", result_key: ft,
             "rule": f"PASS iff the one final {arm} 900-item V8 correct count >= {minimum} (> {target_percent}%)",
             "paired_f0": paired,
             "f0_reference": None if f0_reference is None else {
@@ -1358,9 +1457,9 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("--base", type=Path, required=True, help="pinned BF16 snapshot directory")
     exp.add_argument("--output", type=Path, required=True, help="new directory: model/ + model_ref.json")
     exp.add_argument("--code-commit", required=True, help="40-hex Git commit of the training code")
-    for name in ("verify-v3-export", "verify-v4-export"):
-        check_export = sub.add_parser(name, help="connect the declared final (v5: v3 NOTE, v6: v4 hybrid) export "
-                                                 "to its source checkpoint")
+    for name in ("verify-v3-export", "verify-v4-export", "verify-single-export"):
+        check_export = sub.add_parser(name, help="connect the declared final (v5: v3 NOTE, v6: v4 hybrid, v7: single "
+                                                 "campaign, --binding its campaign-plan.json) export to its source checkpoint")
         for flag in ("model-ref", "checkpoint", "binding", "prereg"):
             check_export.add_argument(f"--{flag}", type=Path, required=True)
     mk = sub.add_parser("make-subset", help="write the wrong (342) or rest (558) evaluation subset file from the B2 file")
@@ -1372,11 +1471,12 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
     pre.add_argument("--rest-subset", type=Path, required=True, help="proof-eval-subset-rest-v1 JSON: the B2 V8 right IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
-    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6"), default="v3",
+    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6", "v7"), default="v3",
                      help=f"v3 = {FORMAT}, v4 = {FORMAT_V4}, v5 = {FORMAT_V5} (final FT-NOTE-V3, declared checkpoint), "
-                          f"v6 = {FORMAT_V6} (final FT-HYB-V4)")
+                          f"v6 = {FORMAT_V6} (final FT-HYB-V4), v7 = {FORMAT_V7} (final FT-SINGLE)")
     pre.add_argument("--ft-v3-model-ref", type=Path, help="required for v5; final NOTE export fixed before evaluation")
     pre.add_argument("--ft-v4-model-ref", type=Path, help="required for v6; final hybrid export fixed before evaluation")
+    pre.add_argument("--ft-single-model-ref", type=Path, help="required for v7; final campaign export fixed before evaluation")
     start = sub.add_parser("ledger-start", help="append the START of one evaluation run (before run-eval/eval.sh); "
                            "refused when that (arm, variant, subset) has a started run not recorded as FAILED")
     start.add_argument("--prereg", type=Path, required=True)
@@ -1407,6 +1507,7 @@ def main(argv: list[str] | None = None) -> int:
     ana.add_argument("--ft-v2-model-ref", type=Path, default=None)
     ana.add_argument("--ft-v3-model-ref", type=Path, default=None)
     ana.add_argument("--ft-v4-model-ref", type=Path, default=None)
+    ana.add_argument("--ft-single-model-ref", type=Path, default=None)
     ana.add_argument("--output", type=Path, required=True, help="report path; .json and .md are written")
     gate.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
     gate62.add_argument("--output", type=Path, required=True, help="gate result JSON (write-once)")
@@ -1419,15 +1520,15 @@ def main(argv: list[str] | None = None) -> int:
         ref = export_for_eval(args.checkpoint, args.binding, args.base, args.output, args.code_commit)
         print(f"EXPORTED {args.output / 'model_ref.json'} unmerged_inference_bit_equivalent="
               f"{ref['export']['unmerged_inference_bit_equivalent']}")
-    elif args.command in ("verify-v3-export", "verify-v4-export"):
+    elif args.command in ("verify-v3-export", "verify-v4-export", "verify-single-export"):
         verify_v3_export(args.model_ref, args.checkpoint, args.binding, args.prereg)
-        print(f"{'V4' if args.command == 'verify-v4-export' else 'V3'}_EXPORT_VERIFIED {args.model_ref}")
+        print(f"{args.command.split('-')[1].upper()}_EXPORT_VERIFIED {args.model_ref}")
     elif args.command == "make-subset":
         value = make_subset(args.kind, args.output, args.b2_predictions)
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset)
         print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['subset']} {event['run_id']}")
@@ -1443,19 +1544,19 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "gate-62":
         result = gate_62(analyze(args.prereg, args.runs, None, args.ledger), args.f0_reference)
         _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
-        arm_key = next(key for key in ("ft_note_v3", "ft_hyb_v4", "ft_v2") if key in result)
+        arm_key = next(key for key in ("ft_note_v3", "ft_hyb_v4", "ft_single", "ft_v2") if key in result)
         print(f"GATE62 {result['status']} {arm_key}={result[arm_key]['correct']} b2={B2_CORRECT}")
     elif args.command == "gate-67.4":
         result = gate_v3(analyze(args.prereg, args.runs, None, args.ledger), 67.4, args.f0_reference)
         _write_once(args.output, json.dumps(result, indent=2, sort_keys=True) + "\n")
-        arm_key = "ft_hyb_v4" if "ft_hyb_v4" in result else "ft_note_v3"
+        arm_key = next(key for key in ("ft_note_v3", "ft_hyb_v4", "ft_single") if key in result)
         print(f"GATE67.4 {result['status']} {arm_key}={result[arm_key]['correct']} minimum=607")
     else:
         refs = {arm: path for arm, path in (("FT-NOTE", args.ft_note_model_ref),
                                             ("FT-SOLUTION", args.ft_solution_model_ref),
                                             ("FT-NOTE-3417", args.ft_note_3417_model_ref),
                                             (ARM_V2, args.ft_v2_model_ref), (ARM_V3, args.ft_v3_model_ref),
-                                            (ARM_V4, args.ft_v4_model_ref)) if path}
+                                            (ARM_V4, args.ft_v4_model_ref), (ARM_SINGLE, args.ft_single_model_ref)) if path}
         report = analyze(args.prereg, args.runs, refs, args.ledger)
         _write_once(args.output.with_suffix(".json"), json.dumps(report, indent=2, sort_keys=True) + "\n")
         _write_once(args.output.with_suffix(".md"), render_markdown(report))

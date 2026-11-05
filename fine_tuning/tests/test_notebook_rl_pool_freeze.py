@@ -6,13 +6,15 @@ approval fixtures do): never a real exclusion result, only the binding/refusal l
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import hashlib
 import io
 import json
+import shutil
 import tempfile
 import unittest
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +37,11 @@ def _sha(raw: bytes) -> str:
 
 def _json(path: Path, value) -> dict:
     path.write_text(json.dumps(value))
+    return {"path": str(path.absolute()), "file_sha256": _sha(path.read_bytes())}
+
+
+def _selection_json(path: Path, value: dict) -> dict:
+    path.write_bytes(pf._bytes(value) + b"\n")
     return {"path": str(path.absolute()), "file_sha256": _sha(path.read_bytes())}
 
 
@@ -207,6 +214,170 @@ class PoolFreezeTests(unittest.TestCase):
         pf.freeze(shards, reviews, list(approvals), self.cat, self.quota, seed, self.base / name)
         manifest = json.loads((self.base / name / "dataset_manifest.json").read_bytes())
         return manifest, manifest["items"]
+
+    def explicit(self, shards, reviews):
+        found = [pf._shard(i, root, reviews[i], None) for i, root in enumerate(shards)]
+        records = [row for _, rows in found for row in rows]
+        eligible = [row for row in records if row["status"] is None and row["subject"] == "Biology"][:2]
+        self.assertEqual(len(eligible), 2)
+        self.quota.write_text(json.dumps({"Biology": 2, "Physics": 0}))
+        document = {"version": pf.SELECTION_VERSION,
+                    "shards": [{key: meta[key] for key in pf._SELECTION_SHARD_FIELDS} for meta, _ in found],
+                    "items": [{"problem_id": row["problem_id"], "category": category}
+                              for row, category in zip(eligible, ("C3", "C8"), strict=True)]}
+        path = self.base / "selection.json"
+        return path, document, records
+
+    def freeze_explicit(self, shards, reviews, path, document, name="selected", **kwargs):
+        descriptor = _selection_json(path, document)
+        return pf.freeze(shards, reviews, [], self.cat, self.quota, 11, self.base / name,
+                         selection=path, selection_sha256=descriptor["file_sha256"], **kwargs)
+
+    def test_explicit_ids_categories_and_quota_do_not_change_original_metadata(self):
+        shards, reviews, _ = self.shards()
+        path, document, original = self.explicit(shards, reviews)
+        self.freeze_explicit(shards, reviews, path, document)
+        manifest, _ = pf._manifest(self.base / "selected/dataset_manifest.json")
+        self.assertEqual(manifest["selection"], document | {"file_sha256": _sha(path.read_bytes())})
+        categories = {row["problem_id"]: row["category"] for row in document["items"]}
+        self.assertEqual(pf.selection_categories(manifest), categories)
+        self.assertEqual(manifest["quota_order"], pf.SELECTION_ORDER)
+        by_id = {row["problem_id"]: row for row in manifest["items"]}
+        self.assertEqual({pid for pid, row in by_id.items() if row["status"] == pf.INCLUDED}, set(categories))
+        for row in original:
+            selected = row["problem_id"] in categories
+            after = by_id[row["problem_id"]]
+            self.assertEqual(after["status"], (pf.INCLUDED if selected else pf.QUOTA) if row["status"] is None else row["status"])
+            self.assertEqual({k: v for k, v in after.items() if k not in ("category", "status")},
+                             {k: v for k, v in row.items() if k not in ("category", "status")})
+        self.assertNotIn("quality_exclusions", manifest)
+        self.freeze_explicit(shards, reviews, path, document, name="selected-again")
+        self.assertEqual((self.base / "selected/dataset_manifest.json").read_bytes(),
+                         (self.base / "selected-again/dataset_manifest.json").read_bytes())
+
+    def test_explicit_selection_rejects_tamper_duplicates_ineligible_and_shortfall(self):
+        shards, reviews, _ = self.shards()
+        path, document, original = self.explicit(shards, reviews)
+        mutations = [document | {"items": document["items"] * 2}]
+        for status in (pf.DEV, pf.SEALED, pf.BLOCKED, pf.DUPLICATE, pf.UNRESOLVED, pf.NONRELEASABLE):
+            bad = copy.deepcopy(document)
+            bad["items"][0]["problem_id"] = next(row["problem_id"] for row in original if row["status"] == status)
+            mutations.append(bad)
+        for field, value in (("problem_id", "unknown"), ("category", "C9")):
+            bad = copy.deepcopy(document)
+            bad["items"][0][field] = value
+            mutations.append(bad)
+        bad = copy.deepcopy(document)
+        bad["shards"][0]["item_index_sha256"] = "0" * 64
+        mutations.append(bad)
+        mutations.append(document | {"items": document["items"][:1]})
+        for number, bad in enumerate(mutations):
+            with self.subTest(case=number), self.assertRaises(ValueError):
+                self.freeze_explicit(shards, reviews, path, bad, name=f"bad-{number}")
+            self.assertFalse((self.base / f"bad-{number}").exists())
+        _selection_json(path, document)
+        for supplied, digest in ((path, None), (None, _sha(path.read_bytes())), (path, "0" * 64)):
+            with self.assertRaises(ValueError):
+                pf.freeze(shards, reviews, [], self.cat, self.quota, 11, self.base / "bad-hash",
+                          selection=supplied, selection_sha256=digest)
+        self.assertFalse((self.base / "bad-hash").exists())
+
+    def test_explicit_receipt_requires_exact_canonical_bytes(self):
+        shards, reviews, _ = self.shards()
+        path, document, _ = self.explicit(shards, reviews)
+        canonical = pf._bytes(document)
+        for raw in (canonical, canonical + b"\n\n", b" " + canonical + b"\n", json.dumps(document, indent=2).encode() + b"\n"):
+            path.write_bytes(raw)
+            with patch.object(pf, "_shard", side_effect=AssertionError("noncanonical input reached a shard")):
+                with self.assertRaisesRegex(ValueError, "canonical JSON"):
+                    pf.freeze(shards, reviews, [], self.cat, self.quota, 11, self.base / "bad-canonical",
+                              selection=path, selection_sha256=_sha(raw))
+        self.assertFalse((self.base / "bad-canonical").exists())
+
+    def test_explicit_selection_rejects_quality_filter_and_cross_shard_family(self):
+        shards, reviews, _ = self.shards()
+        path, document, _ = self.explicit(shards, reviews)
+        victim = document["items"][0]["problem_id"]
+        quality = self.base / "quality-selected.json"
+        _json(quality, {"version": pf.QUALITY_VERSION,
+                        "rules": [{"id": "authored", "description": "authored quality failure", "code_sha256": "a" * 64}],
+                        "items": [{"problem_id": victim, "rule_id": "authored"}]})
+        with self.assertRaisesRegex(ValueError, "eligible train"):
+            self.freeze_explicit(shards, reviews, path, document, name="bad-quality", quality_exclusions=quality)
+        cross = pf.cross_shard_allowlist
+        with patch.object(pf, "cross_shard_allowlist", side_effect=lambda rows: cross(rows) - {victim}):
+            with self.assertRaisesRegex(ValueError, "quarantined family"):
+                self.freeze_explicit(shards, reviews, path, document, name="bad-family")
+        self.assertFalse((self.base / "bad-quality").exists())
+        self.assertFalse((self.base / "bad-family").exists())
+
+    def test_embedded_selection_validation_rejects_manifest_tampering(self):
+        shards, reviews, _ = self.shards()
+        path, document, _ = self.explicit(shards, reviews)
+        self.freeze_explicit(shards, reviews, path, document)
+        manifest = json.loads((self.base / "selected/dataset_manifest.json").read_bytes())
+        victim = document["items"][0]["problem_id"]
+        mutations = []
+        for field, value in (("category", "C8"), ("split", "dev"), ("status", pf.QUOTA)):
+            bad = copy.deepcopy(manifest)
+            next(row for row in bad["items"] if row["problem_id"] == victim)[field] = value
+            mutations.append(bad)
+        bad = copy.deepcopy(manifest)
+        bad["selection"]["items"].append(bad["selection"]["items"][0])
+        mutations.append(bad)
+        bad = copy.deepcopy(manifest)
+        bad["quota"]["Biology"] = 3
+        mutations.append(bad)
+        for number, bad in enumerate(mutations):
+            changed = self.base / f"manifest-tamper-{number}.json"
+            _json(changed, bad)
+            with self.subTest(case=number), self.assertRaises(ValueError):
+                pf._manifest(changed)
+
+    def test_original_selection_pin_rejects_coordinated_edits_before_materialization(self):
+        shards, reviews, _ = self.shards()
+        path, document, _ = self.explicit(shards, reviews)
+        self.freeze_explicit(shards, reviews, path, document)
+        manifest = json.loads((self.base / "selected/dataset_manifest.json").read_bytes())
+        victim = document["items"][0]["problem_id"]
+        replacement = next(row["problem_id"] for row in manifest["items"]
+                           if row["status"] == pf.QUOTA and row["subject"] == "Biology")
+        mutations = []
+        category = copy.deepcopy(manifest)
+        category["selection"]["items"][0]["category"] = "C8"
+        next(row for row in category["items"] if row["problem_id"] == victim)["category"] = "C8"
+        mutations.append(category)
+        swap = copy.deepcopy(manifest)
+        swap["selection"]["items"][0]["problem_id"] = replacement
+        next(row for row in swap["items"] if row["problem_id"] == victim)["status"] = pf.QUOTA
+        next(row for row in swap["items"] if row["problem_id"] == replacement).update(status=pf.INCLUDED, category="C3")
+        mutations.append(swap)
+        for key, value in (("selection", None), ("quota_order", None), ("quota_order", "legacy-order")):
+            missing = copy.deepcopy(manifest)
+            if value is None:
+                del missing[key]
+            else:
+                missing[key] = value
+            mutations.append(missing)
+        for number, changed in enumerate(mutations):
+            changed_path = self.base / f"coordinated-{number}.json"
+            _json(changed_path, changed)
+            with patch.object(pf, "_union_entry", side_effect=AssertionError("tampered selection reached a shard")) as union:
+                with self.subTest(case=number), self.assertRaisesRegex(ValueError, "selection.*SHA256|selection.*binding|embedded receipt"):
+                    pf.materialize(changed_path, shards, self.base / f"bad-materialize-{number}",
+                                   [Path("missing-registry")] * len(shards), [Path("missing-evidence")] * len(shards))
+                union.assert_not_called()
+            self.assertFalse((self.base / f"bad-materialize-{number}").exists())
+
+    def test_explicit_opt_out_is_byte_identical_to_legacy_default(self):
+        shards, reviews, _ = self.shards()
+        self.freeze(shards, reviews, name="legacy-default")
+        pf.freeze(shards, reviews, [], self.cat, self.quota, 11, self.base / "legacy-explicit-none",
+                  selection=None, selection_sha256=None)
+        for name in ("dataset_manifest.json", "summary.json", "summary.md"):
+            self.assertEqual((self.base / "legacy-default" / name).read_bytes(),
+                             (self.base / "legacy-explicit-none" / name).read_bytes())
+        self.assertNotIn("selection", json.loads((self.base / "legacy-default/dataset_manifest.json").read_bytes()))
 
     def test_every_status_path_and_label_blind_quota(self):
         shards, reviews, ctx = self.shards()
@@ -470,6 +641,61 @@ class UnionReceiptTests(unittest.TestCase):
 
     def assert_blocked(self, result: dict, code: str) -> None:
         self.assertEqual((result["status"], result["blockers"], result["selected_ids"]), ("BLOCKED_NOT_CHECKED", [code], []))
+
+    def test_explicit_selection_round_trip_then_hash_only_runtime_without_shards(self):
+        from fine_tuning.error_note import frozen_data as fd, order
+
+        before = {path: path.read_bytes() for root in self.shards for path in root.rglob("*") if path.is_file()}
+        found = [pf._shard(i, root, None, None) for i, root in enumerate(self.shards)]
+        eligible = [row for _, rows in found for row in rows if row["status"] is None and row["subject"] == "Biology"][:2]
+        self.assertEqual(len(eligible), 2)
+        self.quota.write_text(json.dumps({"Biology": 2, "Physics": 0}))
+        receipt = {"version": pf.SELECTION_VERSION,
+                   "shards": [{key: meta[key] for key in pf._SELECTION_SHARD_FIELDS} for meta, _ in found],
+                   "items": [{"problem_id": row["problem_id"], "category": category}
+                             for row, category in zip(eligible, ("C3", "C8"), strict=True)]}
+        selection_path = self.base / "explicit-selection.json"
+        desc = _selection_json(selection_path, receipt)
+        pf.freeze(self.shards, [None, None], [], self.cat, self.quota, 11, self.base / "explicit-freeze",
+                  selection=selection_path, selection_sha256=desc["file_sha256"])
+        manifest = self.base / "explicit-freeze/dataset_manifest.json"
+        self.materialize(manifest, "explicit-vault")
+        root = self.base / "explicit-vault"
+        kept = self.kept(manifest)
+        self.assertEqual(pf.verify(manifest, root), [])
+        for split in SPLITS:
+            for _, name in pf._RECORDS:
+                copied = pf._lines(root / split / name)
+                originals = {pid: raw for shard in self.shards for pid, raw in pf._lines(shard / split / name).items()}
+                self.assertTrue(all(raw == originals[pid] for pid, raw in copied.items()))
+        self.assertTrue(all(path.read_bytes() == raw for path, raw in before.items()))
+        result = self.validate(self.request(root))
+        self.assertEqual((result["status"], result["blockers"]), ("VALIDATED_FOR_MEASUREMENT", []))
+        approved = _json(self.base / "explicit-approved.json", result)
+        ids = [row["problem_id"] for row in receipt["items"]]
+        sources = Counter(kept[pid]["source"] for pid in ids)
+        order_path = self.base / "explicit-order.json"
+        ordered = {"version": order.VERSION, "count": 2, "ids_sha256": order._ids_sha256(ids),
+                   "items": [{"problem_id": pid, "source": kept[pid]["source"], "cluster": kept[pid]["category"]}
+                             for pid in ids],
+                   "selection": {"pilot_ids_sha256": order._ids_sha256(ids[:1]),
+                                 "cluster_train_counts": {"C3": 1, "C8": 1}, "cluster_pilot_counts": {"C3": 1},
+                                 "source_train_counts": dict(sources), "source_caps": dict(sources)}}
+        pinned = _json(order_path, ordered)
+        for shard in self.shards:
+            shutil.rmtree(shard)
+        selection_path.unlink()
+        for scan in self.scans:
+            for name in ("registry", "evidence"):
+                Path(scan[name]["path"]).unlink()
+        Path(self.index_desc["path"]).unlink()
+        with patch.object(fd, "TRAIN_COUNT", 2), patch.object(fd, "PILOT_COUNT", 1), \
+                patch.object(approval, "_validate", side_effect=AssertionError("approval rerun")), \
+                patch.object(c, "scan", side_effect=AssertionError("benchmark rescan")), \
+                patch.object(c, "load_index", side_effect=AssertionError("benchmark index access")):
+            checked = fd.verify_frozen_data(root, approved, order_path, order_sha256=pinned["file_sha256"])
+        self.assertEqual(checked["cluster_train_counts"], {"C3": 1, "C8": 1})
+        self.assertEqual((checked["train_count"], checked["pilot_count"], checked["main_count"]), (2, 1, 1))
 
     def test_union_vault_is_approved_and_binds_every_shard(self):
         union = json.loads((self.vault / "contamination" / pf.UNION_FILE).read_bytes())

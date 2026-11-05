@@ -16,6 +16,8 @@ CLI:
                                                          stage1: replace the size tokens by min(selected, N)
                                                          rounded down to K (and its update count), exec CMD
   chain receipt --source R --output O --step NAME        copy a throughput receipt as the stage receipt
+  chain capture --output O -- CMD...                     run CMD, write its stdout to the new file O (also
+                                                         echoed), exit with CMD's code (e.g. a reload receipt)
 
 Spec `pod-chain-spec-v1` (shared with the eval stages): {"version", "steps": [{"name", "argv",
 "expect_files", "timeout_seconds"?}], "meta"?}. Names are unique; expect_files are absolute paths
@@ -498,6 +500,9 @@ def main(argv: list[str] | None = None) -> int:
     receipt.add_argument("--source", required=True)
     receipt.add_argument("--output", required=True)
     receipt.add_argument("--step", required=True)
+    capture = sub.add_parser("capture")
+    capture.add_argument("--output", required=True)
+    capture.add_argument("cmd", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
         if args.command == "plan":
@@ -530,6 +535,15 @@ def main(argv: list[str] | None = None) -> int:
             resolved = sized_argv(read_json(args.selection), args.max_items, args.per_update, cmd)
             print(json.dumps({"with_train_size": args.selection, "argv": resolved}), flush=True)
             os.execvp(resolved[0], resolved)
+        if args.command == "capture":
+            cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
+            if not cmd:
+                raise ChainError("capture needs a command")
+            with open(args.output, "x", encoding="utf-8") as stream:  # write-once: a receipt is never replaced
+                result = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, text=True)
+                stream.write(result.stdout)
+            sys.stdout.write(result.stdout)
+            return result.returncode if result.returncode >= 0 else 128 - result.returncode
         value = stage_receipt(args.source, args.output, args.step)
         print(json.dumps({"stage_receipt": args.output, "source_sha256": value["stage_receipt_source_sha256"]}))
         return 0

@@ -157,9 +157,9 @@ class TatdqaTest(unittest.TestCase):
 
 
 class RegistryTest(unittest.TestCase):
-    def test_iterators_and_specs_cover_both_sources(self):
-        self.assertEqual(set(hf_docs.ITERATORS), {"hf-chartqa", "hf-tatdqa"})
-        self.assertEqual(set(hf_docs.SPECS), {"hf-chartqa", "hf-tatdqa"})
+    def test_iterators_and_specs_cover_all_sources(self):
+        self.assertEqual(set(hf_docs.ITERATORS), {"hf-chartqa", "hf-tatdqa", "hf-tatdqa-pdf"})
+        self.assertEqual(set(hf_docs.SPECS), {"hf-chartqa", "hf-tatdqa", "hf-tatdqa-pdf"})
 
 
 if __name__ == "__main__":

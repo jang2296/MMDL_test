@@ -24,6 +24,16 @@ reviews_path/reviews_sha256 and t1_sha256/note_sha256. It pins those collected f
 candidate rows v3, then stops. No private file is read while planning. Train requires closed rows_path/audit_path/solution_audit_path
 and their SHA256 pins, then performs admission and both training arms without regenerating targets. Shared generation
 settings remain schema fields for all stages. Note and solution reviews are created outside these executable specs.
+
+Stages single-pilot and single-main (single-response RL + SFT campaign, error_note.single_campaign) take
+`error-note-plan-params-single-v1`: SINGLE_KEYS (+ the dev-evaluation inputs for single-pilot, + pilot_gate_path/sha256
+for single-main). The campaign directory is <out_root>/campaign; every campaign call carries the same pinned inputs.
+single-pilot: pins -> advance --max-blocks 1 -> fresh-process reload receipt -> advance --max-blocks 18 (checkpoint-19 =
+PILOT_COMPLETE) -> fresh-process reload receipt -> export checkpoint-19 -> external-dev preregister-hybrid -> F0 and HYB
+run/grade -> analyze-hybrid. The pilot-gate JSON is built afterwards by the operator (evaluate pilot-gate).
+single-main: pins (incl. the gate) -> advance --continue-main --max-blocks 200 -> reload receipt -> export the final
+checkpoint to <volume_root>/eval-data/proof/export-single-final. The one MMMU pass is a separate eval-ft job (arm FT-SINGLE,
+prereg v7): a training job never carries an MMMU evaluation.
 """
 from __future__ import annotations
 
@@ -44,7 +54,8 @@ SPEC_VERSION = "pod-chain-spec-v1"
 PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
 V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
-STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES)
+SINGLE_STAGES = ("single-pilot", "single-main")
+STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES)
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
 PATH_KEYS = ("python", "repo_root", "build_root", "model_path", "out_root")
@@ -62,6 +73,22 @@ COLLECT = "fine_tuning.error_note.collect"
 TRAIN = "fine_tuning.error_note.train"
 CHAIN = "fine_tuning.notebook_rl.pod.chain"
 PROOF = "fine_tuning.notebook_rl.proof_eval"
+CAMPAIGN = "fine_tuning.error_note.single_campaign"
+EVALUATE = "fine_tuning.error_note.evaluate"
+PARAMS_VERSION_SINGLE = "error-note-plan-params-single-v1"
+SINGLE_INPUTS = ("order", "frozen_approval", "source_provenance", "training_rules")  # <name>_path + <name>_sha256
+SINGLE_PATHS = ("python", "repo_root", "build_root", "model_path", "out_root", "volume_root",
+                *(f"{name}_path" for name in SINGLE_INPUTS))
+SINGLE_HASHES = (*(f"{name}_sha256" for name in SINGLE_INPUTS), "pilot_ids_sha256", "dev_ids_sha256",
+                 "retention_ids_sha256")
+SINGLE_CAPACITY = ("max_num_seqs", "max_num_batched_tokens", "token_budget")
+SINGLE_KEYS = {"version", "commit", "timeouts", *SINGLE_PATHS, *SINGLE_HASHES, *SINGLE_CAPACITY}
+# stage -> (extra paths, extra hashes, timeout kinds)
+SINGLE_EXTRA = {"single-pilot": (("dev_manifest_path", "dev_vault_root", "dev_rules_path"),
+                                 ("dev_manifest_sha256", "dev_rules_sha256"),
+                                 ("cpu", "advance_first", "advance_pilot", "reload", "export", "evaluate")),
+                "single-main": (("pilot_gate_path",), ("pilot_gate_sha256",), ("cpu", "advance_main", "reload", "export"))}
+PILOT_BLOCKS, MAIN_BLOCKS = 19, 200  # single_campaign: 219 slots of 16, PILOT_COMPLETE after slot 19 (300 items)
 
 
 def _positive_int(params: dict[str, Any], key: str, low: int) -> None:
@@ -75,6 +102,8 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"stage must be one of {STAGES}")
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
+    if stage in SINGLE_STAGES:
+        return _check_single(stage, params)
     v2, v3 = stage == "note-v2", stage in V3_STAGES
     extra_paths: tuple[str, ...] = ()
     extra_hashes: tuple[str, ...] = ()
@@ -255,8 +284,118 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     return steps
 
 
+def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
+    paths, hashes, kinds = SINGLE_EXTRA[stage]
+    keys = SINGLE_KEYS | set(paths) | set(hashes)
+    missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys)
+    if missing or unknown:
+        raise ValueError(f"params keys: missing {missing}, unknown {unknown}")
+    if params["version"] != PARAMS_VERSION_SINGLE:
+        raise ValueError(f"version must be {PARAMS_VERSION_SINGLE}")
+    if not isinstance(params["commit"], str) or not HEX40.fullmatch(params["commit"]):
+        raise ValueError("commit must be 40 lowercase hex characters")
+    for key in (*SINGLE_PATHS, *paths):
+        value = params[key]
+        if (not isinstance(value, str) or not value.startswith("/") or value == "/"
+                or posixpath.normpath(value) != value):
+            raise ValueError(f"{key} must be a canonical absolute path: {value!r}")
+    for key in (*SINGLE_HASHES, *hashes):
+        if not isinstance(params[key], str) or not HEX64.fullmatch(params[key]):
+            raise ValueError(f"{key} must be 64 lowercase hex characters")
+    if posixpath.basename(params["model_path"]) != BASE_REVISION:
+        raise ValueError(f"model_path must be the pinned snapshot directory {BASE_REVISION}")
+    private = ("build_root", "out_root", *(f"{name}_path" for name in SINGLE_INPUTS), *paths)
+    for key in private:
+        if posixpath.commonpath((params["repo_root"], params[key])) == params["repo_root"]:
+            raise ValueError(f"{key} must be outside repo_root (private evidence is not repository content)")
+    # The campaign's own bounds (single_campaign.prepare): 1..16 sequences, positive batch tokens, budget >= 0.
+    _positive_int(params, "max_num_seqs", 1)
+    _positive_int(params, "max_num_batched_tokens", 1)
+    _positive_int(params, "token_budget", 0)
+    if params["max_num_seqs"] > 16:
+        raise ValueError("max_num_seqs must be <= 16")
+    timeouts = params["timeouts"]
+    if not isinstance(timeouts, dict) or set(timeouts) != set(kinds) or any(
+            type(timeouts[k]) is not int or timeouts[k] < 1 for k in kinds):
+        raise ValueError(f"timeouts must map exactly {list(kinds)} to integers >= 1")
+    return params
+
+
+def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
+    py, out, model, commit, t = p["python"], p["out_root"], p["model_path"], p["commit"], p["timeouts"]
+    campaign_dir, chain_cmd = f"{out}/campaign", [py, "-m", CHAIN]
+    plan_file = f"{campaign_dir}/campaign-plan.json"
+
+    def step(name: str, argv: list[str], expect: list[str], kind: str) -> dict[str, Any]:
+        return {"name": name, "argv": argv, "expect_files": expect, "timeout_seconds": t[kind]}
+
+    def campaign(command: str, *extra: str) -> list[str]:
+        return [py, "-m", CAMPAIGN, command, "--build-root", p["build_root"], "--model-path", model,
+                "--output", campaign_dir,
+                *(item for name in SINGLE_INPUTS for item in (f"--{name.replace('_', '-')}", p[f"{name}_path"],
+                                                               f"--{name.replace('_', '-')}-sha256", p[f"{name}_sha256"])),
+                *(item for name in ("pilot", "dev", "retention") for item in (f"--{name}-ids-sha256", p[f"{name}_ids_sha256"])),
+                "--campaign-mode", "train", "--precision", "bf16", "--max-num-seqs", str(p["max_num_seqs"]),
+                "--max-num-batched-tokens", str(p["max_num_batched_tokens"]), "--token-budget", str(p["token_budget"]),
+                "--execution-max-blocks", "219", "--allow-model-run", *extra]
+
+    def advance(blocks: int, *extra: str) -> list[str]:
+        return campaign("advance", "--allow-update", "--allow-save", "--max-blocks", str(blocks), *extra)
+
+    def reload(slot: int) -> dict[str, Any]:  # a new process restores weights, moments, LR, RNG and cursor
+        receipt = f"{out}/reload-{slot}.json"
+        return step(f"reload-{slot}", [*chain_cmd, "capture", "--output", receipt, "--", *campaign("reload", "--max-blocks", "1")],
+                    [receipt], "reload")
+
+    def export(slot: int, target: str) -> dict[str, Any]:
+        return step(f"export-{slot}", [py, "-m", PROOF, "export", "--checkpoint", f"{campaign_dir}/checkpoint-{slot}",
+                                       "--binding", plan_file, "--base", model, "--output", target, "--code-commit", commit],
+                    [f"{target}/model_ref.json", f"{target}/model/export_manifest.json"], "export")
+
+    paths, hashes, _ = SINGLE_EXTRA[stage]
+    pins = [(name.replace("_", "-"), p[f"{name}_path"], p[f"{name}_sha256"]) for name in SINGLE_INPUTS]
+    pins += [(key.removesuffix("_path").replace("_", "-"), p[key], p[key.removesuffix("_path") + "_sha256"])
+             for key in paths if key.endswith("_path")]
+    steps = [step(f"pin-{name}", [*chain_cmd, "pin", "--file", path, "--sha256", sha], [], "cpu") for name, path, sha in pins]
+    if stage == "single-main":
+        last = PILOT_BLOCKS + MAIN_BLOCKS
+        return steps + [
+            step("advance-main", advance(MAIN_BLOCKS, "--continue-main", "--pilot-gate", p["pilot_gate_path"],
+                                         "--pilot-gate-sha256", p["pilot_gate_sha256"]),
+                 [f"{campaign_dir}/checkpoint-{last}/metadata.json"], "advance_main"),
+            reload(last),
+            export(last, f"{p['volume_root']}/eval-data/proof/export-single-final"),
+        ]
+    dev, pilot_export = f"{out}/dev-eval", f"{out}/export-pilot"
+    prereg, runs = f"{dev}/prereg.json", f"{dev}/runs"
+    evaluate = [py, "-m", EVALUATE]
+    steps += [
+        step("advance-1", advance(1), [f"{campaign_dir}/checkpoint-1/metadata.json"], "advance_first"),
+        reload(1),
+        step("advance-pilot", advance(PILOT_BLOCKS - 1), [f"{campaign_dir}/checkpoint-{PILOT_BLOCKS}/metadata.json"],
+             "advance_pilot"),
+        reload(PILOT_BLOCKS),
+        export(PILOT_BLOCKS, pilot_export),
+        step("dev-prereg", [*evaluate, "preregister-hybrid", "--manifest", p["dev_manifest_path"],
+                            "--vault-root", p["dev_vault_root"], "--campaign-plan", plan_file, "--f0-model-path", model,
+                            "--hyb-export", pilot_export, "--dev-rules", p["dev_rules_path"], "--run-root", runs,
+                            "--code-commit", commit, "--output", prereg], [prereg], "cpu"),
+    ]
+    for arm in ("F0", "HYB"):
+        run = f"{runs}/{arm}"
+        steps += [step(f"dev-{arm.lower()}", [*evaluate, "run", "--prereg", prereg, "--arm", arm, "--output", run],
+                       [f"{run}/generation.json"], "evaluate"),
+                  step(f"dev-{arm.lower()}-grade", [*evaluate, "grade", "--prereg", prereg, "--run", run],
+                       [f"{run}/summary.json"], "cpu")]
+    analysis = f"{dev}/analysis.json"
+    return steps + [step("dev-analyze", [*evaluate, "analyze-hybrid", "--prereg", prereg, "--f0", f"{runs}/F0",
+                                         "--hyb", f"{runs}/HYB", "--output", analysis], [analysis], "cpu")]
+
+
 def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     p = _check(stage, params)
+    if stage in SINGLE_STAGES:
+        return _spec(stage, p, _plan_single(stage, p))
     if stage in V3_STAGES:
         return _spec(stage, p, _plan_v3(stage, p))
     if stage == "note-v2":

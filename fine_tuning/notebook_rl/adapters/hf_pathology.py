@@ -25,7 +25,7 @@ SOURCE_PTBXL = "hf-ptbxl"
 NCT_SUBJECT = "Basic_Medical_Science"
 LAB_SUBJECT = "Diagnostics_and_Laboratory_Medicine"
 NCT_QUESTION = (
-    "This is an H&E-stained tissue patch from a human colorectal sample. Which tissue class does it show?"
+    "This is an H&E-stained human tissue patch. Which tissue class does it show?"
 )
 BM_QUESTION = (
     "This is a single cell from a May-Grünwald-Giemsa stained bone marrow smear. Which cell type is it?"

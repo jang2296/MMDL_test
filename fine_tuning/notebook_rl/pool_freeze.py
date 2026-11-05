@@ -3,6 +3,8 @@
   freeze       reviewed shards (an hf_pool build whose contamination/receipt_v2.json is an adjudicated
                exclusion receipt) -> dataset_manifest.json with one status per shard item + summary.{json,md};
                optional --quality-exclusions (quality-exclusions-v1) marks listed items EXCLUDED_QUALITY_FILTER
+               optional --selection/--selection-sha256 pins explicit IDs and per-ID C1..C8 categories;
+               selection bytes must be dataset._bytes(body) + b"\n": sorted compact UTF-8 JSON and exactly one LF.
   materialize  manifest + the same shards (+ each shard's source registry and scan evidence) -> one
                candidate-build vault of INCLUDED/HELD_OUT items, byte-identical records and images, bound by
                freeze_binding.json, with contamination/union_receipt.json binding every shard receipt
@@ -36,6 +38,9 @@ from .hf_pool import ITEM_INDEX_VERSION
 from .schema import ActorItem, Lineage, VerifierItem, from_json, load_protocol
 
 VERSION = "pool-freeze-manifest-v1"
+SELECTION_VERSION = "pool-freeze-selection-v1"
+SELECTION_ORDER = "explicit-selected-ids-v1"
+_SELECTION_SHARD_FIELDS = ("shard", "build_manifest_sha256", "exclusion_receipt_file_sha256", "item_index_sha256")
 BINDING_VERSION = "pool-freeze-vault-binding-v1"
 UNION_VERSION = "pool-freeze-union-receipt-v1"
 UNION_STATUS = "EXCLUSION_CHECKED_WITH_LIMITS_UNION"
@@ -193,9 +198,10 @@ def _reviewed(root: Path) -> tuple[dict, str, dict, str, dict, list[dict]]:
     return manifest, build_sha, receipt, receipt_sha, items, effective
 
 
-def _shard(number: int, root: Path, review_path: Path | None, approval_path: Path | None) -> tuple[dict, list[dict]]:
+def _shard(number: int, root: Path, review_path: Path | None, approval_path: Path | None, *,
+           reviewed: tuple | None = None) -> tuple[dict, list[dict]]:
     root = Path(root).absolute()
-    manifest, build_sha, receipt, receipt_sha, items, effective = _reviewed(root)
+    manifest, build_sha, receipt, receipt_sha, items, effective = _reviewed(root) if reviewed is None else reviewed
     adj = receipt["adjudication"]
     by_id = {adjudication.candidate_id(candidate): candidate for candidate in effective}
 
@@ -262,12 +268,85 @@ def _order(seed: int, record: dict) -> tuple[str, str]:
     return _sha(f"{seed}:{record['source']}:{record['native_id']}".encode()), record["problem_id"]
 
 
+def _selection_items(document: dict, shards: list[dict]) -> dict[str, str]:
+    """Validate the selector's externally pinned decision against the reviewed shard identities."""
+    if (set(document) != {"version", "shards", "items"} or document.get("version") != SELECTION_VERSION
+            or type(document.get("shards")) is not list or type(document.get("items")) is not list
+            or not document["items"]):
+        raise ValueError(f"freeze: invalid {SELECTION_VERSION} receipt")
+    bindings = document["shards"]
+    if (len(bindings) != len(shards)
+            or any(type(binding) is not dict or set(binding) != set(_SELECTION_SHARD_FIELDS)
+                   or type(binding.get("shard")) is not int
+                   or any(re.fullmatch(r"[0-9a-f]{64}", str(binding.get(key))) is None
+                          for key in _SELECTION_SHARD_FIELDS[1:]) for binding in bindings)
+            or any(binding != {key: meta.get(key) for key in _SELECTION_SHARD_FIELDS}
+                   for binding, meta in zip(bindings, shards, strict=True))):
+        raise ValueError("freeze: selection reviewed shard bindings differ")
+    rows = document["items"]
+    if any(type(row) is not dict or set(row) != {"problem_id", "category"}
+           or type(row.get("problem_id")) is not str or not row["problem_id"]
+           or type(row.get("category")) is not str or re.fullmatch(r"C[1-8]", row["category"]) is None for row in rows):
+        raise ValueError("freeze: selection items require problem_id and category C1..C8")
+    selected = {row["problem_id"]: row["category"] for row in rows}
+    if len(selected) != len(rows):
+        raise ValueError("freeze: duplicate selected problem_id")
+    return selected
+
+
+def _exact_selection_quota(rows: list[dict], quotas: dict) -> None:
+    if (type(quotas) is not dict or any(type(subject) is not str or type(count) is not int or count < 0
+                                      for subject, count in quotas.items())
+            or dict(Counter(row["subject"] for row in rows)) != {subject: count for subject, count in quotas.items() if count}):
+        raise ValueError("freeze: explicit selection does not match exact subject quota (shortfall or excess)")
+
+
+def selection_categories(manifest: dict) -> dict[str, str] | None:
+    """Read only embedded, manifest-bound selection metadata; no source shard, receipt or benchmark access."""
+    if "selection" not in manifest:
+        if manifest.get("quota_order") == SELECTION_ORDER:
+            raise ValueError("freeze: explicit selection marker requires its embedded receipt")
+        return None
+    selection = manifest["selection"]
+    if (type(selection) is not dict or set(selection) != {"version", "shards", "items", "file_sha256"}
+            or re.fullmatch(r"[0-9a-f]{64}", str(selection.get("file_sha256"))) is None
+            or manifest.get("quota_order") != SELECTION_ORDER):
+        raise ValueError("freeze: invalid embedded selection binding")
+    document = {key: value for key, value in selection.items() if key != "file_sha256"}
+    if _sha(_bytes(document) + b"\n") != selection["file_sha256"]:
+        raise ValueError("freeze: embedded selection SHA256 differs from the originally pinned canonical receipt")
+    selected = _selection_items(document, manifest["shards"])
+    rows = manifest["items"]
+    if any(type(row) is not dict or type(row.get("problem_id")) is not str for row in rows):
+        raise ValueError("freeze: invalid selected manifest item")
+    by_id = {row["problem_id"]: row for row in rows}
+    included = [row for row in rows if row["status"] == INCLUDED]
+    if len(by_id) != len(rows) or set(selected) != {row["problem_id"] for row in included}:
+        raise ValueError("freeze: selected IDs differ from INCLUDED manifest items")
+    if any(by_id[pid]["split"] != "train" or by_id[pid].get("category") != category for pid, category in selected.items()):
+        raise ValueError("freeze: selected manifest split/category differs from the bound receipt")
+    _exact_selection_quota(included, manifest["quota"])
+    return selected
+
+
 def freeze(shards: list[Path], reviews: list[Path | None], approvals: list[Path | None], category_map: Path,
-           quota: Path, seed: int, output: Path, quality_exclusions: Path | None = None) -> dict:
+           quota: Path, seed: int, output: Path, quality_exclusions: Path | None = None, *,
+           selection: Path | None = None, selection_sha256: str | None = None) -> dict:
     if not shards or len(reviews) != len(shards) or (approvals and len(approvals) != len(shards)):
         raise ValueError("freeze: one --quality-review (path or none) per --shard, and none or one --approval per shard")
     if type(seed) is not int or seed < 0:
         raise ValueError("freeze: seed must be a nonnegative integer")
+    if (selection is None) != (selection_sha256 is None):
+        raise ValueError("freeze: selection path and expected selection SHA256 must be supplied together")
+    selected_document = None
+    if selection is not None:
+        raw = vault._read(selection)
+        selected_document = json.loads(raw, object_pairs_hook=vault._unique)
+        if type(selected_document) is not dict or raw != _bytes(selected_document) + b"\n":
+            raise ValueError("freeze: selection requires dataset._bytes(body) plus exactly one final LF (canonical JSON)")
+        actual_sha = _sha(raw)
+        if (re.fullmatch(r"[0-9a-f]{64}", str(selection_sha256)) is None or actual_sha != selection_sha256):
+            raise ValueError("freeze: selection file SHA256 differs from its expected value")
     categories, categories_sha = _load(category_map)
     quotas, quota_sha = _load(quota)
     if any(type(k) is not str or type(v) is not str or not v for k, v in categories.items()):
@@ -275,8 +354,10 @@ def freeze(shards: list[Path], reviews: list[Path | None], approvals: list[Path 
     if any(k not in categories or type(v) is not int or v < 0 for k, v in quotas.items()):
         raise ValueError("freeze: quota must be {mapped subject: nonnegative int}")
     metas, records = [], []
+    reviewed_shards = [_reviewed(Path(root).absolute()) for root in shards] if selected_document is not None else None
     for number, root in enumerate(shards):
-        meta, rows = _shard(number, root, reviews[number], approvals[number] if approvals else None)
+        meta, rows = _shard(number, root, reviews[number], approvals[number] if approvals else None,
+                            reviewed=reviewed_shards[number] if reviewed_shards is not None else None)
         metas.append(meta)
         records += rows
     owners: dict[str, int] = {}
@@ -299,9 +380,25 @@ def freeze(shards: list[Path], reviews: list[Path | None], approvals: list[Path 
     for record in records:
         if record["status"] is None:
             pending[record["subject"]].append(record)
-    for subject, rows in pending.items():
-        for rank, record in enumerate(sorted(rows, key=lambda r: _order(seed, r))):
-            record["status"] = INCLUDED if rank < quotas.get(subject, 0) else QUOTA
+    if selected_document is None:
+        for subject, rows in pending.items():
+            for rank, record in enumerate(sorted(rows, key=lambda r: _order(seed, r))):
+                record["status"] = INCLUDED if rank < quotas.get(subject, 0) else QUOTA
+    else:
+        selected = _selection_items(selected_document, metas)
+        by_id = {record["problem_id"]: record for record in records}
+        assert reviewed_shards is not None
+        allowed = cross_shard_allowlist([(reviewed[4], _allowed(reviewed[2])) for reviewed in reviewed_shards])
+        if any(pid not in by_id or by_id[pid]["status"] is not None or by_id[pid]["split"] != "train"
+               or pid not in allowed for pid in selected):
+            raise ValueError("freeze: selected IDs must be known eligible train items outside every quarantined family")
+        _exact_selection_quota([by_id[pid] for pid in selected], quotas)
+        for rows in pending.values():
+            for record in rows:
+                pid = record["problem_id"]
+                record["status"] = INCLUDED if pid in selected else QUOTA
+                if pid in selected:
+                    record["category"] = selected[pid]
     records.sort(key=lambda r: r["problem_id"])
     manifest = {"version": VERSION, "status": "FROZEN_DATA_DECISION_NOT_TRAINING_APPROVAL", "training_allowed": False,
                 "human_verified": False, "seed": seed, "statuses": list(STATUSES),
@@ -310,6 +407,9 @@ def freeze(shards: list[Path], reviews: list[Path | None], approvals: list[Path 
                 "shards": metas, "counts": dict(Counter(r["status"] for r in records)), "items": records}
     if quality is not None:
         manifest.update(statuses=[*STATUSES, QUALITY_FILTER], quality_exclusions=quality)
+    if selected_document is not None:
+        manifest.update(selection={**selected_document, "file_sha256": selection_sha256}, quota_order=SELECTION_ORDER)
+        selection_categories(manifest)
     output = Path(output)
     vault._safe_root(output.parent, create=True)
     output.mkdir(mode=0o700)
@@ -394,6 +494,7 @@ def _manifest(path: Path) -> tuple[dict, str]:
     manifest, sha = _load(path)
     if manifest.get("version") != VERSION or type(manifest.get("items")) is not list:
         raise ValueError(f"freeze: {path} is not a {VERSION} manifest")
+    selection_categories(manifest)
     return manifest, sha
 
 
@@ -444,7 +545,7 @@ def _union_entry(meta: dict, root: Path, registry_path: Path, evidence_path: Pat
 
 
 def materialize(manifest_path: Path, shards: list[Path], output: Path, registries: list[Path],
-                evidences: list[Path]) -> dict:
+                evidences: list[Path], *, allow_empty_heldout: bool = False) -> dict:
     manifest, manifest_sha = _manifest(manifest_path)
     if not len(shards) == len(registries) == len(evidences) == len(manifest["shards"]):
         raise ValueError("materialize: give exactly the manifest's shards, in order, each with its registry and evidence")
@@ -481,7 +582,7 @@ def materialize(manifest_path: Path, shards: list[Path], output: Path, registrie
                     or lineage.split != r["split"]):
                 raise ValueError(f"materialize: image hash or identity mismatch for {pid}")
             pools[r["split"]].append(GeneratedProblem(actor, verifier, lineage, images))
-    build_splits(output, pools)
+    build_splits(output, pools, allow_empty_heldout=allow_empty_heldout)
     output = Path(output).absolute()
     binding = {"version": BINDING_VERSION, "dataset_manifest_sha256": manifest_sha,
                "vault_manifest_sha256": _sha(vault._read(output / "manifest.yaml")),
@@ -620,6 +721,8 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--output", type=Path, required=True)
     f.add_argument("--quality-exclusions", type=Path, default=None,
                    help=f"{QUALITY_VERSION} JSON: listed items become {QUALITY_FILTER} (optional)")
+    f.add_argument("--selection", type=Path, help=f"opt-in {SELECTION_VERSION} explicit eligible train IDs/categories")
+    f.add_argument("--selection-sha256", help="externally pinned SHA256 of --selection (both flags required)")
     m = sub.add_parser("materialize")
     m.add_argument("--manifest", type=Path, required=True)
     m.add_argument("--shard", type=Path, action="append", required=True)
@@ -628,19 +731,23 @@ def main(argv: list[str] | None = None) -> int:
     m.add_argument("--evidence", type=Path, action="append", required=True,
                    help="the evidence.json each shard was scanned with, one per --shard in order")
     m.add_argument("--output", type=Path, required=True)
+    m.add_argument("--allow-empty-heldout", action="store_true",
+                   help="explicit opt-in: dev/sealed/style_sealed may be empty (recorded in the vault manifest)")
     v = sub.add_parser("verify")
     v.add_argument("--manifest", type=Path, required=True)
     v.add_argument("--vault", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "freeze":
         summary = freeze(args.shard, args.quality_review, args.approval, args.category_map, args.quota,
-                         args.seed, args.output, args.quality_exclusions)
+                         args.seed, args.output, args.quality_exclusions,
+                         selection=args.selection, selection_sha256=args.selection_sha256)
         print(json.dumps({"status": "FROZEN", "totals": summary["totals"],
                           "dataset_manifest_sha256": summary["dataset_manifest_sha256"]}, sort_keys=True))
         return 0
     if args.command == "materialize":
         print(json.dumps({"status": "MATERIALIZED", **materialize(args.manifest, args.shard, args.output,
-                                                                    args.source_registry, args.evidence)},
+                                                                    args.source_registry, args.evidence,
+                                                                    allow_empty_heldout=args.allow_empty_heldout)},
                          sort_keys=True))
         return 0
     errors = verify(args.manifest, args.vault)

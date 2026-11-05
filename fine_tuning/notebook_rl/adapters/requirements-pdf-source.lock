@@ -1,0 +1,2 @@
+# Optional CPU source preparation only; frozen-image training does not import PDFium.
+pypdfium2==5.2.0 --hash=sha256:da4815426a5adcf03bf4d2c5f26c0ff8109dbfaf2c3415984689931bc6006ef9

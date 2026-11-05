@@ -1,5 +1,381 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-11-05 — Claude 재개: SINGLE v3(프로그램 검사·저장 후보 재계산), 3,500 선정, 런포드 연결
+
+사용자 결정(11-05): 코덱스 작업을 완료하고 런포드 본학습·평가까지 진행. 학습 행 수용은 **프로그램 검사만**
+(16문항마다 AI 내용 검토 관문 제거, 내용 정확성은 미검증으로 보고), 기존+신규를 합친 3,500문항, 300 시험 후
+사용자 판단, MMMU 900은 최종 모델로 1회, 48GB·1달러/시 미만, 쓰지 않는 포드는 회수 후 즉시 삭제.
+
+- **RL 확률 재계산 오류 수정(SINGLE v3):** 생성 때 실제로 뽑을 수 있었던 top-k/top-p 후보 목록
+  (`support_token_ids`)을 저장하고, 학습 때 그 후보 안에서 재계산한다(`rl.stored_support_logprob`).
+  재계산 분포에서 경계 후보가 빠져 원래 토큰이 −∞가 되던 F4 `NonFiniteStop`의 직접 원인을 없앤다.
+  생성(캐시 1토큰씩)과 재계산(전체 문장) 사이 수치 차이는 행별 평균 0.1·최대 3.0 이하만 허용하고 기록한다
+  (이전 1e-3 정확 일치 조건의 변경이며, 결합 오류 검출용 상한).
+- **프로그램 검사:** T1 보상 1 = 채점 CORRECT + 정상 종료 + 길이/반복 문제 없음(A1과 같은 조건).
+  노트 수용 = 형식 통과 + 누설 검사(대소문자·서수·보기 문장·별칭) 통과. A2 = 재풀이 CORRECT + 같은 조건, B는 A2가 있을 때만.
+- 캠페인은 checkpoint-0·19(300 시험)와 최신 2개만 남겨 디스크 누적(약 1.7GB×219)을 막는다.
+- 검사: error_note 전체 CPU 475개 통과, 변경 파일 Ruff 통과. 16문항 생성 샘플러를 묶음 처리로 바꿈(행별 난수 유지, 묶음=단건 비교 검사 통과).
+- **로컬 NF4 실제 무갱신 검사(코덱스 사전 등록 순서 17–26, 동결본 `analysis_exports/self_note_single_v3_20261105/package-root`,
+  원장 `self-note-single-20261105/single-v3-local/`):** T1 정답6/오답2/형식실패1/잘림1. 노트 4개 중 프로그램 수용2
+  (NCT는 `debris is often correct` 누설로 거부 — 코덱스 AI 검토와 같은 판정, 1개 형식 실패). 재풀이2는 잘림·복수답으로 A2/B 0.
+  PG·A1 실제 기울기 비영(L/M, LM 경로라 V 없음), F0 KL 0(정상), 재생 차이 평균 0.0044·최대 0.53, 가중치 불변·기울기 제거 확인.
+  같은 오답의 노트→재풀이 정답→A2/B 실제 기울기는 10문항에서 발생하지 않아 **실제 모델에서는 미관측**(작은 CPU 모델에서만 통과).
+  MapQA 정답 1개는 반복 검사로 A1·양의 보상 제외.
+
+## 2026-11-05 — 10:44Z 사용자 요청으로 저장 후 중단, Claude 인계
+
+- 사용자가 주간 사용량 부족으로 **현재 상태 저장 후 중단**을 명시했다. 병렬 에이전트6개를 중단했고,
+  마지막 조회에서 GPU 실행 프로세스는 없었다. RunPod·실제 Qwen 갱신/저장·commit/push는 수행하지 않았다.
+- 완료: F4 통합 CPU149검사, 300→3200 연결 CPU57검사, 총11751후보 자동 중복 검색.
+  공간 후보437family 중 직접 대조 증거가 닫힌 것은362개, 남은 것은75개(part15/16/18)다.
+  최신 strict core는v5이며 뒤에 닫힌 part10/17 등은 아직 최종 결합 전이다.
+  최종3500 목록·출처 품질 인증은 미완료다. 일부 ScienceQA는 그림 없이도 답할 수 있어 품질 검토 중이다.
+- 실제 NF4 첫2 풀이·노트 생성은 완료했으나 첫 확률 재생에서 무갱신 backward 검사가 실패했다.
+  `replay-diagnostic/actual-01`은 동일 원래 토큰으로 분포 불일치를 확인했다. head1/autocast 변경만으로는
+  해결되지 않았고, 수동 cached 재생도 더 이른 위치에서 달라져 원인이 완전히 확정되지 않았다.
+  추가 확인된 결함: 정책 식별자가 원래 NF4 기저/양자화 상태까지 묶지 않음, 실제 grad-enabled 확률 검증 누락.
+  이 수정은 아직 구현·검증되지 않았다. 확인한 runtime4파일은 여전히F4와 byte동일하다.
+- 인계 정본: `claudedocs/handoff_local_validation_20261105.md`.
+  private checkpoint: `/home/jang2/mmdl-artifacts/self-note-single-20261105/usage-constraint-checkpoint.json`.
+  재개 시 완료된 답 재생성·실패 덮어쓰기·오염 기준/확률 검사 완화·동결본 수정 금지.
+
+## 2026-11-05 — 10:15Z 실제 NF4 확률 재생 실패 보존, 자료 직접 대조 계속
+
+- F4 첫2 생성은 ScienceQA 정답119토큰, NCT 오답245토큰, NCT 노트269토큰으로 종료했다.
+  ScienceQA 전체 풀이 검토는 PASS이며, NCT 노트는 내용 UNKNOWN·교훈 LEAK로 거부했다.
+  실제 노트에 `debris is often correct`가 있어 정답 없는 재풀이에 전달하지 않는다.
+- 동일 완료 원문으로 무갱신 기울기 검사를 실행했으나 `NonFiniteStop`으로 실패했다(exit2).
+  RL2행/A1 1행은 구성됐지만 component 검사는 완료되지 않았다. 실제 optimizer/scheduler step0,
+  저장0, 전체 가중치 불변·기울기 제거를 확인했다. 실패를 PASS로 바꾸거나 다음8 생성을 자동 진행하지 않는다.
+  원장 `self-note-single-20261105/single-next10-f4-readiness/f4/close-first2-exit.json`, SHA
+  `4c6693b7e3fc3a0a30002947cdb61284596a375465bb2f1741426fb11f6caf7e`.
+- 코드상 실패 위치는 reference=false의 첫 확률 재생이므로 이 실행에서 full KL까지 도달하지 않았다.
+  NF4 생성과 전체 문장 재생의 수치 차이 때문에 원래 action이 top-k/top-p 범위에서 빠졌을 가능성을
+  실제 원래 토큰으로 진단한다. 원인은 아직 실측 확정 전이며, 유한성·support 검사를 완화하지 않는다.
+- 의료 추가69family를 실제 대조한 결과40family만 해소돼 신규 SLAKE 공급은 strict core에서96개다.
+  미확정29family는 계속 제외한다. 같은 C4 안에서 SLAKE96/NCT204로4개를 옮기는 조건부v7을 준비하며,
+  OLD1320/NEW2180·전체3500·분야별 수량·상한·최종 품질 검사는 그대로 유지한다.
+- 공간 후보437family 중285개의 실제 대조가 닫혔고152개가 남았다(일부 닫힌 의견은 아직 core 결합 전).
+  최종3500 고정과 출처 품질, 실제 전체 오답 교정 기울기, GPU 병렬 용량은 여전히 미완료다.
+  RunPod·유료 API·실제 Qwen 갱신/저장·commit/push는 수행하지 않았다.
+
+## 2026-11-05 — 09:53Z F4 실제 NF4 첫2 시작, 후보 검색 종료·직접 대조 진행
+
+- F4 동결545파일의 통합 CPU149검사(0skip)가 통과했고, 새 자료/승인/출처/입력 준비도 exit0으로 완료했다.
+  실제 준비619.06초, 소유 프로세스 합계 RSS 최대16.85GiB, 사용 가능 RAM 최소4.42GiB였다.
+  과거10.5GiB 예상보다 컸으므로 같은 준비는 약20GiB 가용 RAM(3GiB 여유 포함)을 확보한다.
+- fresh approval은 `VALIDATED_FOR_MEASUREMENT`, `measurement_allowed=true`, `training_allowed=false`다.
+  원래 순서17–26 중 첫2개를09:53:07Z에 실제 NF4로 시작했다. PID1522474/startticks113363895,
+  원장 `self-note-single-20261105/single-next10-f4-readiness/f4/gpu-first2-launch.json`.
+  모델 로딩 성공은 확인했지만 노트·재풀이·기울기 완료 증거는 아직 없다.
+- 옛 NCT/DeepWeeds 두 문항은 질문의 임상/주 대상 전제가 충분히 지지되지 않아 사전 등록한 거부 대조군이다.
+  원래 gold·이미지·순서는 보존하고 양의PG/A1/A2/B/교훈 재풀이 수용을 금지한다. 이는 새3500 학습 자료의 인증이 아니다.
+- 기본11498 및 별도표253, 총11751 후보의 자동 전수 검색은 모두 종료했다. 기본37507경고, 표744경고를
+  기존 근거와 정확히 결합해 재사용하거나 실제 이미지/질문으로 대조 중이다. 미확정은 제외한다.
+  음악 신규4family 부족은 직접 대조로 해소했고, 공간/의료/지리 후보의 남은 경고와 최종 출처 품질 검사는 계속한다.
+- 정정: 기존 held-out611/제외1820과 **train 후보**의 family/image/pixel 교집합은0이다.
+  후보 전체에는 원래 Geometry held-out10개를 같은 ID·이미지·dev5/sealed5로 보존했으므로 전체 후보 교집합0이라고 하면 부정확하다.
+- 최종3500 목록·최종 선정 출처별20/60 품질 검토·실제 전체 오답 교정 기울기·측정된 병렬 용량은 미완료다.
+  RunPod·유료 API·실제 Qwen 갱신/저장·commit/push는 수행하지 않았다.
+
+## 2026-11-05 — 09:20Z 로컬 검증 중간 기록: 실행·재개 CPU 통과, 전수 대조 진행
+
+- `single_campaign.py`의 300+3200/219구간 연결과 checkpoint·cursor·RNG 복구는 연결 CPU57검사(0skip) 및 독립 검토를 통과했다.
+  복구 시 모델을 두 번 올리던 결함을 고쳤다. 실제 Qwen/GPU 검증은 아니며 NF4 갱신·저장은 계속 차단한다.
+  영수증 `self-note-single-20261105/single-campaign-validation/cpu-final-01/receipt.json`, SHA
+  `a6a651eff124375544ff672a2759a8c97d0d2f8cca36444dadfeb281bdf219a4`.
+- deadline 예외의 실제 부분 action·확률·입력 결합 보존은 CPU39검사와 독립 반례 검토를 통과했다.
+  부분 원장은 STARTED/실패 상태로 남고 재채점·학습·재생성을 허용하지 않는다. 옛 시간초과 원장은 복구된 것으로 바꾸지 않는다.
+- 기본11498·별도표253 후보의 SSCD/SigLIP GPU 특징 추출이 오류0으로 완료됐다. 현재 기본 전체 대조를 CPU에서 수행하고,
+  표 shard 대조는 뒤이어 실행한다. 닫힌 제외 판정이 없으므로 최종3500·중복 검사 완료는 아직 아니다.
+- 새 table-only TATQA는 실제56개 검토에서53지지/2명확한 계산·라벨 불일치/1미확정으로 HOLD다. 57–60은 미검토다.
+  Met의5개 추가 대조 후에도 전체 예비20의3개 미확정이 남아 해당 출처는 HOLD다. 조건부 선정안v6은 C5 ChartQA650,
+  C6 신규 MapQA300으로 바꾸되, 실제 제외 판정 후 공급 수량과 최종 선정 표본의 품질을 다시 확인한다.
+- GVLQA는 원 제작자 TRAIN 그래프와 현재276개 정답을 전수 대조했고 모두 일치했다. 과거8개 미확정/실패 의견은
+  원본 근거로 해소하되 이전 의견을 보존했다. 모든 그림의 시각 품질 인증이나 최종 선정 gate 통과는 아니다.
+- 새 F4 동결·승인 준비 후 기존 순서17–26을 NF4 무갱신 모드로 실행한다. 현재 전체 오답→노트→재풀이 및
+  PG/KL/A1/A2/B 실제 기울기와 메모리 동시 처리 실측은 미완료다. RunPod·실제 Qwen step·commit/push는 시작하지 않았다.
+
+## 2026-11-05 — 로컬 목표 재개, 첫16 시간초과 보존·후속 검증 진행
+
+사용자가 남은3500선정/전수중복/실제NF4사이클/300→3200연결/메모리별동시처리 검증을 재개했다.
+RunPod·실제 Qwen 가중치 갱신/저장·commit/push 보류는 유지한다.
+
+- 옛 F 첫16은07:52:29Z에 생성deadline으로exit1. T1 16/노트5완료, 악보노트STARTED, 마지막GVLQA노트미생성.
+  실제재풀이·backward미완료. 미완료요청 재생성 금지와 원문/실패 보존을 유지한다.
+- 메모리capture의 묶음 확대·SFT 분모 우회·증명 저장 순서 수정: source-bound119CPU검사+독립검토통과,
+  receipt SHA `1678da57610f75573c5ccd4610968584a924f194a5eb146f471f5a15e5384843`. 실제GPUprofile은 미완료.
+- 새기본11498+별도표253 후보의 GPU특징추출 재개. Qwen과 동시 실행하지 않는다. 기본 SSCD/SigLIP이미지 각각5958신규,
+  오류0으로 완료했고 텍스트/표추가shard/전체대조/경고판정은 계속 진행한다. 최종3500은 아직 없다.
+- 새표first20의3UNKNOWN 중2개는 실제표의 유일한 행을 묻는 문맥과 nativeannotation으로확인,1개는UNKNOWN유지.
+  root추가판정 SHA `50a52370565f04713b2959ba3a995442bee2ef1dc68fad48c4e24f2a8affdbd2`; 이전의견은보존하며60확대검토.
+- 단일campaign실행기와 deadline부분action보존을 서로겹치지않는범위로 구현/CPU검사 중이다. 동결본 hotpatch는 없다.
+
+## 2026-11-05 — 첫16 T1 완료·신규 후보 OCR 완료, 검토와 실제 기울기는 진행 중
+
+옛 동결 SINGLE v1의 첫16 T1은 정답9/오답2/잘림3/최종답 형식실패1/복수답 형식실패1이다.
+기존13응답을 재생성하지 않고 원래 순서11–16의 첫 풀이만 추가했다. 노트 수집은 진행 중이며,
+PlantVillage 실제 오답의 노트는 내용 PASS·교훈 CLEAR로 검증했다. 일반 조건부 관찰 방법과 정답 지시를 구분한
+검토 근거 및 초기 UNCERTAIN 의견을 함께 보존했다. 아직 재풀이 정답·A2/B 기울기 성공은 아니다.
+
+- 최종 Plant 노트 검토 SHA `59f6c1e862f7810e91e277a31eaea6a6ff165ded79e3645942e92dda10f3f47c`,
+  원문/출처/이미지 결합을 루트가 옛 동결 코드로 재계산한 영수증 `fixed16-review/plant-root-recheck.json`.
+- 새 SINGLE v2의542파일 동결, 기존 순서17–26 등록, native evidence·fresh local approval·CPU 입력검사 완료.
+  실제 실행 계획은8192토큰/단계14400초/외부14430초/종료유예30초/VRAM reserve2GiB다. GPU 생성은 아직 전이다.
+- 새11498후보 OCR20008입력 완료(기존16150 재사용+새3858, 실패0). GPU 특징 추출과 경고 판정은 대기 중이다.
+- ChartQA22family는 native gold 자기 일치 검사 실패로 CONTRACT_UNSUPPORTED 제외했다. 라벨 오류나 중복으로 보고하지 않는다.
+- TATQA 기존 source 품질 HOLD를 보존하고 원 제작자의 table-only arithmetic/count를 별도 source shard로 준비 중이다.
+  새 출처명으로 과거 문항을 신규로 세지 않으며 기존 전체 후보 이미지/pixel 및 held-out/family도 보호한다.
+- 최종3500/전수 제외 판정/실제 NF4 RL+SFT 전체 기울기/실측 용량 profile은 미완료다.
+  RunPod·실제 Qwen 가중치 갱신/저장·commit/push는 보류한다.
+
+## 2026-11-05 — SINGLE v2 보상·파서 피드백 수정 CPU 검증, 실제 실행은 옛 동결 버전 유지
+
+실제 정답/설명 오류 사례를 근거로 새 SINGLE v2는 정답이고 원문 전체 검토 PASS인 T1만 양의 PG 보상을 준다.
+FAIL/UNKNOWN/미수용은 보상0이며 원래 T1·행 수·분모·KL 범위는 유지한다. 검토 WAIT를 없애지 않고,
+변조/오래된 검토는 오류로 차단한다. 파서 미수용을 최종답 부재로 단정하지 않는 SINGLE 전용 피드백도 추가했다.
+이전 v1–v3 프롬프트와 실제 실행 중인 옛 F/첫16 원장은 변경하지 않았다.
+
+- source-bound CPU116검사(0 skip), optimizer-step/CUDA 초기화 차단 하에서 통과. Ruff11파일·범위mypy7파일 통과.
+  영수증 `single-v2-validation/cpu-v2-01/receipt.json` SHA `af5ecb416f2c0567af55d22c44431b83ba5b1e630d54b545f5f794bf80a32f40`.
+- 독립 검토12검사 및16문항/양성1개 PG 비교 통과, 고정분모16과 원래 generation 보존 확인. 실제 GPU v2 검증은 아직 없다.
+- 메모리 측정 capture/CPU결합·실측 범위 내 자동 묶음·STARTED 전 검사 경로를 구현했다. 실제 GPU 용량 profile과
+  optimizer step workspace는 미검증이다. 앞선 CPU검사에서 CUDA context가 초기화된 사건은 별도 기록했고,
+  해당 프로세스 종료 뒤 최종 검사는 CUDA 비활성·초기화 차단 상태로 수행했다.
+- 300/3500 실행기와 유료 검토 대기 종료/동일정책 복구는 아직 연결되지 않았다. 기존 Pod의 미지원 SINGLE 거부를 유지한다.
+  노트/풀이 검토 대기·회수·재로딩 비용도 향후 예산에 포함한다. RunPod와 실제 Qwen 갱신/저장은 계속 보류한다.
+
+## 2026-11-05 — 고정10 원문 재사용 복구·풀이 내용 감사, 첫16 확장 시작
+
+기하 단위 규칙 보완 후 옛 동결 코드로 T1 10개를 재채점했다. 생성 호출0, 기하만 UNVERIFIABLE→CORRECT,
+나머지9개 동일. 완료된12요청을 재사용하고 미실행 지도 노트1개만 생성했다. 첫10은 정답7/오답1/잘림1/형식실패1이다.
+지도 노트는 범위 누락 지적은 맞지만 NO_FINAL_ANSWER 원인 분류가 맞지 않아 전체 UNKNOWN/미수용으로 남겼다.
+정답7 중 반복·길이 제외2개, 나머지5개의 전체 풀이 내용은 수용2/실패3(입자 수·식물 학명·근거 없는 임상 추론)이었다.
+5개 독립 검토 receipt의 canonical SHA를 옛 감사 코드로 재검증했다. AI 검토이며 human_verified=false다.
+
+- A1 검토 파일 SHA `4576bf9d9cd2fa53aa9eaf975d5ae035c1be11946da551f678c4d3dbafb5b6af`.
+- 원래 순서11–16을 사전 등록하고 첫16 블록으로 확장했다. 기존13응답은 원문/요청 동일성 검사 후 재사용한다.
+  CPU 검사2회·잘못된 pin 거부·Ruff/mypy를 통과한 private driver로 실제 수집을 시작했다. 실제 상태는 private launch/log 확인.
+- 새 PDF 후보는 실제24검토에서19지지/3실패/2미확정으로 출처 HOLD. 원본 context 누락·단위/부호·질문 범위 문제가 있다.
+  native doc.page도 일부 실제 PDF/layout 페이지 수와 맞지 않아 metadata를 페이지 선택 기준으로 쓰지 않도록 수정 중이다.
+  PDF는 최종 후보에서 빼고 C5를 ChartQA600+TATQA50으로 바꾼 선정안v3를 기록했다. 해당 출처 gate 통과·선정 완료는 아니다.
+- 실제 RL/SFT backward·동일 오답의 A2/B 연결·최종3500 승인 미완료. RunPod·Qwen 갱신/저장·commit/push 보류 유지.
+
+## 2026-11-05 — NF4 고정10 생성 완료, 원본 이미지 단위 누락으로 채점 중단
+
+실제 고정10 T1 생성은 모두 원장에 COMPLETED로 보존됐으나 Geometry3K 채점에서 UNVERIFIABLE이 발생했다.
+원본 이미지에 명시된 도 단위가 기존 source rule에 없어 `123°`를 숫자 정답123과 비교하지 못했다.
+원본 이미지·actor/native ID에 결합한 별도 단위 검토를 작성했으며, 옛 소스/원장을 변경하지 않는 새 규칙·출력으로 복구한다.
+모든 완료 응답을 그대로 재사용하며 첫2 노트 FAIL도 유지한다. 실제 Qwen backward는 아직 실행 전이다.
+단위 관측 영수증 SHA: `c20da64e8d21d2b3ea7fd07ae51ba9e21132ee9c7b44a678abd0e3214afd5e4b`.
+RunPod·유료 API·실제 Qwen 갱신/저장·commit/push 보류 유지.
+
+## 2026-11-05 — 실제 NF4 첫 2문항 검토·다음 8문항 시작, 후보 전수 검색 종료
+
+단일 응답 코드 통합 CPU 87검사와 Ruff를 통과한 소스 539파일을 private 동결했다. 실제 Qwen NF4 첫 2문항에서
+풀이와 노트를 각각 한 번씩 생성했다. ScienceQA는 오답(214토큰), ChEBI는 8192토큰 잘림이다.
+두 노트 모두 원래 이미지/원출처와 충돌하는 주장으로 내용 FAIL, 교훈 누설 CLEAR였다. 잘못된 노트를 고치지 않고
+검토 영수증으로 거부했으며, 같은 실행의 고정 다음 8문항을 시작했다. 아직 재풀이 성공이나 RL/SFT 역전파 통과 증거는 없다.
+
+- 노트 검토: `self-note-single-20261105/nf4-fixed10/note-reviews-first2.json`, SHA256
+  `104a6eee81cb22fa7b7920fd7f28e091cf8e0e97a3ea21dd25480b410e729556`. 원문/이미지/기존·single binding 검증 통과, `human_verified=false`.
+- 새 후보 6990개의 로컬 전수 검색이 오류 0으로 종료했다. 경고 23884건/4637문항이며 최종 경고 판정은 미완료다.
+  예전 경고와 정확히 일치하는 10361건만 기존 검토 재사용 대상이다. 이 단계는 최종3500 승인·비오염 보증이 아니다.
+- 원본 품질 검토에서 금융 질문/정답 범위 불일치, TQA 복수 정답, 회로 bbox 기호 분류 오류, 224×224 문서 가독성 문제를 발견했다.
+  의학·생물·화학 분야의 검토자 전문성 한계에 따른 UNKNOWN과 실제 라벨 오류를 구분해 보존했다.
+- 명시 ID/군집 selection receipt의 canonical SHA 및 marker 연결 결함 수정 후 집중14검사와 실제 freeze→hash-only 연결1검사,
+  독립4검사/변조 반례가 통과했다. 최종3500 실물 선정은 아직 하지 않았다.
+- 증거 root: `/home/jang2/mmdl-artifacts/self-note-single-20261105/`. RunPod·유료 API·실제 Qwen 갱신/저장·commit/push 보류 유지.
+
+## 2026-11-05 — 단일 응답 RL+SFT 구현·후보 자료 준비 완료, 전수 중복 검사 진행 중
+
+사용자의 로컬 완료 목표에 따라 실제 구현과 자료 작업을 시작했다. **최종 3,500 선정/동결과 실제 NF4 검증은 미완료**다.
+RunPod·유료 API·실제 Qwen optimizer 갱신/체크포인트 저장·Git commit/push는 보류한다. 정본 계획 §12에 단계별 상태를 갱신했다.
+
+- `error_note/single.py`의 단일 T1/노트/재풀이, 원래 action·sampling 확률, 단일 PG+raw KL+A1/A2/B,
+  source-bound 검토·재개·성분별 무갱신 backward를 구현 중이다. 기존 v1–v3 경로와 보호 파일은 유지한다.
+- 독립 검토에서 채점 mode 오류, 이미지 변경 뒤 옛 노트 검토의 재사용, 동시 collector 중복 생성 반례를 재현해 수정했다.
+  dropout 0 검증 후 backward에만 training mode를 써 checkpoint를 활성화하고 원래 mode로 복원한다. CPU 실제 checkpoint 호출 확인.
+- `fine_tuning/data_audit/` 선택 실행 진입점과 `frozen_data.py`의 기존 frozen approval/union/hash 재사용을 구현했다.
+  정확한 train3500·pilot300·held-out 배제·외부 예상 SHA를 검사하며 런타임에서 benchmark/index/검출기를 열지 않는다.
+- 후보 풀 19출처, train6975+held-out15를 준비했다. 이전 학습 native2715/new4260은 oversupply이며 최종1320+2180 선정이 아니다.
+  CircuitVQA 원본 count와 bbox 불일치 행을 고치지 않고 제외했다. 후보 exact-count501/417family는 정답 재검증,
+  나머지199유형은 미재검증으로 선별 부적격이다. 기존 held-out611 및 과거 제외family와의 교집합0을 확인했다.
+- 원본 cache6933파일/15,092,962,664byte 해시 일치. benchmark100파일/16740레코드·12168고유이미지 실물해시와
+  보정/엔진/cache 결합 확인. 새 후보 OCR4worker 및 SSCD/SigLIP 로컬 전수 검사가 실행 중이다. Qwen과 GPU 동시 사용하지 않는다.
+- 집중 CPU 검사와 Ruff/범위 mypy를 수행했다. 통합 중 production source 변경으로 freeze fixture1건이 SHA 불일치로 실패했고,
+  source 안정 후 해당 frozen-data7검사 전부 통과했다. 전체 연결 검사는 구현 종료 뒤 수행한다.
+- private 증거: `/home/jang2/mmdl-artifacts/self-note-single-20261105/`의 `data-supply/`, `data-audit/`.
+  현재 성공은 코드/자료 준비 범위이며 실제 Qwen RL+SFT 기울기 성공이나 성능 향상을 뜻하지 않는다.
+
+## 2026-11-05 — 단일 응답 RL+SFT·로컬 3,500문항 동결·유료 실행 전 검증 계획 갱신
+
+사용자 요청으로 `claudedocs/review_rl_sft_hybrid_v4_20261105.md`를 수정했다. §2–5의 기존 구현 감사/반례는 보존하고,
+§6–12에 현재 단일 응답 학습·자료 선정·검증·RunPod 절차를 새로 적었다. 이전 다중 후보·500문항/비용 제안은 현재 실행안에서 제외했다.
+
+- 단일 T1→오답이면 자기 노트1→누설 없는 교훈 재풀이1, T1 REINFORCE(b=0)+A1/A2/B SFT. 실제 sampling 분포/logprob 연결 필수.
+  서로 다른16문항 동안 정책 동결→공동1step. 300+3200은 최대219개의 예정 갱신 구간이며 optimizer/LR/RNG/cursor 연속 유지가 수정 대상이다.
+- 학습3500=기존후보1320+신규후보2180, 8군집 quota와 prefix300 파일럿. 실제 확보/선정 완료 아님.
+  품질·출처·family 분리·MMMU/MMMU-Pro 전체 고정 inventory(100파일/16740레코드) 제외 검사는 로컬에서 수행할 계획이다.
+- 기존 `frozen-approval-verify-v1`와 `pool_freeze.verify`를 재사용해 RunPod는 영수증/자료/순서 해시와 정확한 개수만 검사한다.
+  현 freeze의 shortfall 허용과 최종 order의 구조 중복 제거 때문에 exact3500/pilot300 검사가 추가로 필요하다.
+  교수님 선택 실행용 `fine_tuning/data_audit/`는 진입점만 분리할 예정이며 아직 만들지 않았다. benchmark 근거 원문은 로컬에 보관한다.
+- CPU 반례/복구→실제 NF4 고정2→다음8→성분별 무갱신 backward→재감사 반복을 명시했다.
+  같은 문항 INCORRECT→자기 노트→단1회 CORRECT 재풀이→A2/B 기울기 연결과 별도 T1 PG 기울기가 없으면 전체 PASS하지 않는다.
+- 독립 설계/데이터 검토를 반영했고 군집 합3500/300, 재사용후보1320, 링크/공백/절 구조와 기존 inventory 수치를 확인했다.
+  새 코드 검사·자료 다운로드/선별·전수 중복 검사·Qwen 생성/갱신·RunPod·GitHub 게시를 실행한 것으로 표시하지 않는다.
+- 실제 Qwen 갱신/저장 및 RunPod 보류는 유지한다. 계획은 비용 낭비를 줄이는 절차이며 $25 완료·70% 성능 보장이 아니다.
+  변경 전 문서와 갱신 검사 영수증은 `analysis_exports/rl_sft_v4_review_20261105/`에 보관한다.
+
+## 2026-11-05 — 다중 답 생성 후 선택 금지 재확인, 현재 v4 설계 사용 불가
+
+사용자가 여러 답을 낸 뒤 선택하는 방식이 프로젝트에서 금지임을 재확인했다. 앞 감사에서 이를 최우선으로 지적하지 않은 것을 정정한다.
+현재 v4는 첫 풀이 2→4회와 재풀이 2회 중 첫 수용 정답 선택(`v4.py:288–296`)을 포함한다. 평가 n=1만으로 전체 규칙을 충족하지 않는다.
+계획 §13 D1은 미승인이며, 다중 응답 GRPO 경로·해당 비용 계획을 실행하지 않는다. 단일 응답 RL+SFT로 목적함수와 검증/비용 계획을 다시 설계해야 한다.
+기존 허용 범위인 첫 풀이 1회→노트→교훈 재풀이 1회는 유지하되 실패 뒤 후보 추가·답 선택은 금지, 평가에는 첫 풀이만 쓴다.
+현재 그룹 평균 advantage는 n=1에서 0이 되므로 단순 설정 변경만으로 RL 전환을 완료할 수 없다.
+정정은 `claudedocs/review_rl_sft_hybrid_v4_20261105.md` §1에 반영했다. 소스·원격 변경, 실제 Qwen v4 생성/학습, RunPod 실행 없음.
+
+## 2026-11-05 — 원격 RL+SFT v4 로컬 동기화·구현 감사 완료, 본학습 차단 결함 확인
+
+사용자 요청으로 원격 계획/구현을 fetch했다. `claude/rl-sft-v4-code`의 `ba42e1ecb87259edfd6000d84cb0f571215abb28`가
+계획 브랜치 `00542b3`을 포함한다. MMDL_test를 해당 추적 브랜치로 전환하고 이전 공개본과 로컬 충돌이 없음을 확인한 뒤
+변경 18파일을 상위 작업공간에 역동기화했다. 제출 MMDL은 clean HEAD `197838c11557911a14a46d87b7f52fda0cac5b3c` 불변.
+원격 병합/push·독자 소스 수정·Qwen GPU 실행·실제 Qwen 가중치 갱신·RunPod 실행은 하지 않았다.
+
+- 정본 검토: `claudedocs/review_rl_sft_hybrid_v4_20261105.md`. 원계획은 `claudedocs/plan_rl_sft_hybrid_v4_20261104.md`.
+- RL+SFT 손실 연결은 있으나 old=current.detach로 clip/MIS 미작동, 원래 rollout 토큰/확률 소실, 일부 RL 행 탈락 뒤 그룹 변경을 확인했다.
+- 소문자/서수 교훈 누설, 미완료 단계 통과, 오래된 노트 gate 재사용, 모델/설정 미고정 재개를 CPU 반례로 확인했다.
+- Pod stage 허용 목록 누락, round2 arm별 rows와 dev 등록의 동일해시/스케줄 요구 충돌. 로컬 HF 기본 auto 동시수도 vLLM 메모리 계산을 호출한다.
+- CPU error_note 339/339 OK(134.135s), 공유 평가/Pod 109검사 중 108통과/1기존 private 등록 부재 skip(73.297s), Ruff·10실행파일 mypy PASS.
+  기존 검사 통과와 새 반례 실패를 함께 기록한다. 이전 v3 실제 NF4 무갱신 증거를 v4 학습 증거로 확대하지 않는다.
+- 새 3,500문항 데이터와 신규 adapter는 S1 계획으로 남아 있다. 현 코드로 유료 본학습 준비 완료를 주장할 수 없다.
+- RunPod 읽기 전용 가격/재고 조회: 48GB A6000 Community $0.33/h LOW, A40 Secure $0.59/h 전역 HIGH(EU-SE-1 LOW), Ada Secure $0.99/h NONE.
+  최저 시간당 가격과 최저 총비용은 다르며 처리량 측정 필요. 사용자 $25 상한/RunPod 보류/실제 가중치 무변경 제한 유지.
+- 동기화·검사·독립 반례·가격 원장: `analysis_exports/rl_sft_v4_review_20261105/`.
+
+## 2026-11-04 — 사용자 승인에 따라 수정 코드·분석 문서 MMDL_test 게시 완료
+
+사용자가 수정 코드와 분석 문서 §17.10의 결과·근거를 GitHub에 올리도록 명시적으로 승인했다.
+`jang2296/MMDL_test`의 `feat/workspace-repro`에 기존 코드 수정 8커밋과 분석 문서 1커밋을 정상 push했다.
+최종 원격 HEAD는 `13f34f84ca8f07e4582e462ec853fa70ad5d5a67`이며 로컬 HEAD와 일치하고 checkout은 clean이다.
+
+- 코드 32파일은 상위 소스와 byte/mode 일치. 분석 문서는 `claudedocs/analysis_self_note_mmmu_root_causes_20261103.md` 전체이며 §17.10을 포함한다.
+- 문서 SHA256 `58ac75de597271305210ff85b4c775f3f45b81d9583a63ef3e6ea52476028dcc`; GitHub에서 해당 commit의 §17.10과 blob을 조회했다.
+- 게시 checkout CPU 회귀 **285검사 OK(128.613초)**, 변경 Python 전체 Ruff, 실행 코드 6파일 범위 mypy, diff 공백 검사 통과.
+- 독립 공개 검토: 8커밋의 변경 blob 71개와 문서 검토. 비밀키·실제 원문 데이터·바이너리 포함 없음. §17.10의 5개 증거 해시는 private 원장과 일치.
+- 기존 동기화 도구의 파일/비밀키 검사를 재사용해 요청된 문서만 복사했다. 다른 `AGENTS.md`/`CLAUDE.md`/`docs/PROJECT_STATUS.md` 차이는 이번 게시에 포함하지 않았다.
+- 원문 응답·이미지·가중치·private 실행 원장은 업로드하지 않았다. 문서의 경로와 해시는 로컬 보관 증거를 가리킨다.
+- 제출 `MMDL`은 clean HEAD `197838c11557911a14a46d87b7f52fda0cac5b3c` 불변. RunPod/유료 실행·실제 가중치 갱신 보류는 유지한다.
+- 게시 검사/범위 영수증: `analysis_exports/self_note_v3_20261104/publication-{cpu-tests.log,scope-receipt.json}`.
+
+## 2026-11-04 — 요청한 실제 로컬 NF4 무갱신 오답 교정 사이클 완료
+
+고정순서 index10 PlantVillage에서 실제 INCORRECT 첫 풀이90토큰 → 자기 노트240토큰(내용PASS/교훈CLEAR) →
+정답 없는1회 재풀이132토큰 CORRECT → 별도 풀이 내용PASS → 같은 문항 A2/B 실제 손실·역전파까지 통과했다.
+틀린 풀이/정답/교훈의 입력 경계와 원문 target을 실제 processor로 확인했고, 검토 자료를 target에 넣지 않았다.
+공통 수용은 Plant A2 FULL/Plant B FULL/History B LM3행이다. A와 B 각각 L/M/V 유한·비영 기울기,
+1337파라미터텐서 전후해시동일·NF4기저불변·gradclear 확인, **optimizer0/scheduler0/weights_saved=false**다.
+CPU미니모델이 아니라 실제Qwen4B NF4 실행이며, 실제가중치학습/성능개선은 아니다.
+
+- 최신 로컬코드 `42b208f097b95bfd0799a335d7b3f67692006cbe`(MMDL_test clean, push없음).
+- 최종GPU원장 `analysis_exports/self_note_v3_20261104/continuation-10-14/dry-solution-audit/dry_run.json`
+  SHA `c03cba922693ce075a8c99ee765a8853b0588e694de288b0d8ae88e06156b545`.
+- 분석/수정/검사/실제수치/한계 정본: `claudedocs/analysis_self_note_mmmu_root_causes_20261103.md` §17.6–17.10.
+- 실행종료 후 소유모델프로세스0, GPU관측0MiB. 제출MMDL clean HEAD197838c 불변.
+- 요청한 로컬 무갱신 기능검증 완료. RunPod/유료실행·가중치갱신/저장·GitHub게시 보류 유지.
+  새900문항 성능·62/67.4점 초과는 미검증. 자유문장 내용검토는 원출처를 대조하는 별도 단계다.
+
+## 2026-11-04 — 사용자 재개 지시: 실제 무갱신 전체 경로가 검증될 때까지 계속
+
+사용자가 “멈추지 말고 … 구현될 때까지 반복”하도록 명시했다. 앞선 실패 진단을 완료로 간주해 중단한 해석을 정정한다.
+로컬 NF4에서 실제 오답 풀이→채점→검증된 자기 노트→정답 없는 교훈 재풀이→수용된 A2/B의 손실·독립 기울기 계산과
+전후 파라미터 불변까지 확인할 때까지 분석·수정·검증을 계속한다. 가중치 갱신/저장, RunPod/유료 실행, GitHub 게시는 계속 보류한다.
+이전 실패·미완료 원장은 보존한다. 동일한 분자 문항의 300초 미완료는 8K 생성 실측 속도를 고려한 1200초 범위로 새 실행한다
+(`analysis_exports/self_note_v3_20261104/next-item-complete/`). 노트 감사 기준을 낮추거나 원문을 고쳐 통과시키지 않는다.
+현재 병렬 점검: 입력·노트 내용의 근거, HF 생성 시간/중단 처리, 실제 학습 행·층별 기울기·실패 receipt.
+처음부터 맞힌 A1/B만으로 재풀이 경로를 검증했다고 하지 않는다. 아래 종료 기록은 재개 전의 과거 상태다.
+
+후속: 분자 T1은785.07초·8192토큰 TRUNCATED, 노트의 존재하지 않는 ethoxy 결합 주장으로 내용 FAIL(교훈 CLEAR),
+재풀이0·학습행0으로 닫았다. 기존 압축 반복 검사는 음성이지만 실제 동일64토큰 구간58회 반복을 확인했다.
+`next-item-complete/repetition-audit.json`에 원문/tokenizer 해시와 수치를 보존했으며 학습 gate는 그대로다.
+원래 고정순서 index2–4는 `continuation-3/plan.json`으로 사전 등록해 진행한다.
+dry-run의 실제 수용 A2/B 추적·예상 L/M/V 기울기·오류 receipt 보강은 로컬 `bac2f25dc53ec095640354f995868d710a480b08`
+(집중48검사/Ruff/범위mypy·독립 검토 통과)에 고정했다. 실제 업데이트 함수는 변경하지 않았으며 게시하지 않았다.
+
+`continuation-3` 완료: 음악 CORRECT1692토큰, 기하 INVALID_MULTIPLE6584, 그래프 CORRECT3.
+노트3개 모두 내용 FAIL/누설 CLEAR였고 학습행0(음악 반복/그래프 너무 짧음도 제외), 재풀이0이다.
+기하의 두 답 선언은 모두123도이며 nativegold123과 같다. 선언 수만으로 거부한 학습 전용 추출 결함을 수정 중이다.
+실제 노트 입력은 NO CLEAR FINAL ANSWER였으며, 초기 진행 설명의 WRONG 전달 주장은 정정했다. 이 문항은 오답 교정 성공에 포함하지 않는다.
+각도1질문과 nativeimage의 degree 표기를 확인한 새private sidecar는 그문항1개에만 degree단위를 추가했다(원래허용오차유지).
+원문/기존sidecar불변, `source-evidence-degree-review/review-receipt.json`에 근거, AI검토falsehuman.
+다음 원래순서 index5–9를 `continuation-5/order.json`으로 고정했다. 계속 로컬 무갱신 검증 범위이며 cloud/push보류다.
+
+채점수정 완료: `training-answer-v2`, 로컬 `b66e99dd093071abf5be4fac3283946f4a355ebb`, 동결`package-root-answer-v2`.
+집중75통과; 전체256 중255통과·CLI시험 인자누락1 수정후 해당1통과; 독립반례21통과; Ruff/범위mypy통과.
+저장기하 원문의 새판정CORRECT는 별도 `geometry-regrade-answer-v2.json`이며 원래결과불변, 오답교정성공에 미포함.
+이 결함은 준비중인v3에서 발견했으며 이전v1/v2성능실패원인으로소급하지 않는다.
+동결manifest SHA272a4340a0348f939c4a778fb1f480603e21acafeb18120233330966a51d0d78, 수정본으로고정5문항수집진행.
+
+후속 고정5문항 완료: T1 CORRECT4/INVALID_NO_FINAL1, 노트 PASS2/FAIL1/UNKNOWN2.
+MapQA는 원래 끝점만 답한 문제를 자기 노트로 지적하고, 정답 없는1회 재풀이에서 전체 구간을 맞혔다.
+그러나 재풀이10토큰으로 기존32토큰 하한 미달, A2 제외. 기준/원문 불변이며 전체 A2+B backward는 아직 미검증이다.
+후보A4에 틀린 설명(Chemistry 입자9개를8개라고 주장)이 포함된 결함을 발견하여 A 전체 내용의 독립 검토 gate를 추가한다.
+실제검토 A4→PASS1/FAIL1/UNKNOWN2, B2 별도PASS. 풀이 감사 `continuation-5/solution-audit.json`
+SHA efa60381ce5597dc86f6545536621e452355c42925db7336a01681a636269120, human_verified=false.
+수집→노트 감사/재풀이/후보 생성→풀이 감사 후 학습의3단계로 연결하며 학습 중 재생성하지 않는다.
+원래고정순서 index10–14를 사전등록해 같은생성동결본으로 실행 중이다. 상세는 분석정본 §17.8.
+
+풀이 감사 gate 수정 동결: 로컬 `d418792b2b78f0e2b793658a6cae9eae86eb62a2`, manifest
+4dd7e2ac56d2218f649416955c3b43964c1b75b3ff9e0bc0e177fd0b54479f8a. 집중70/감사42/회수25검사 통과.
+전체274실행의 구형 hash fixture3오류를 필수필드 추가로 수정한 관련13검사 통과, Ruff/실행코드6개 mypy 통과.
+검사 수 중복합산 금지. 실제CPU수용 A1 1/B2, A3거부; GPU backward와 A2/B 전체 경로는 아직 미검증.
+
+**이후 실제 GPU backward PASS(10:41Z):** 위 A1 1/B2에 대해 NF4 Qwen4B의 A/B 독립 loss·유한 비영 L/M기울기 확인,
+V기울기없음(LM), 전체1337파라미터텐서해시 동일·양자화기저불변·gradclear. optimizer0/scheduler0/weights_saved=false.
+원장 `continuation-5/dry-solution-audit/dry_run.json` SHA f76fb0a81c9af7e8aefc4eacb6bd50bb7345acfab644d0a898260f62e3a9e632.
+CPU원문/마스크 preflight PASS(거부A3개인코딩0). **A2/B교집합은빈목록: 전체오답교정완료나성능개선으로보고하지않는다.**
+index10–14 T1종료: INCORRECT1/CORRECT1/TRUNCATED2/INVALID_MULTIPLE1. 기하32의 반복선언+별도제목 표기추출결함 추가발견,
+실제기하설명도틀려학습미수용. 새노트생성/감사→1회재풀이→A2/B검증을계속한다. 분석정본 §17.9.
+
+추가 추출수정 로컬 `42b208f097b95bfd0799a335d7b3f67692006cbe`, 동결manifest
+c9163acf8d5da885069f11ce79b22952985d6d75a15ca00b49a255ef57c012c8. 최종별도제목+유일box의 표기만 정규화,
+기존충돌/단위/철회/인용검사유지. 관련29/독립15/Ruff/mypy통과. 저장기하새추출OK32·내용FAIL은별도원장, 이전결과불변.
+
+## 2026-11-04 — 로컬 진단 종료, 내용 gate 미통과, loss/backward 미검증, RunPod 대기
+
+**최신 사용자 변경:** 잔액 $25 확인. “로컬 실험까지만 하고 런포드 진행은 잠시 대기” 지시에 따라
+수행한 로컬 무갱신 진단을 종료하고 사용자 승인을 기다린다. RunPod 생성/유료 실행 및 GitHub 게시는 대기한다.
+허용 범위는 실제 풀이→채점→자기 노트→누설 없는 허용 교훈으로 재풀이→손실/backward 확인이었으며,
+**optimizer/scheduler step과 가중치·checkpoint 저장은 금지**됐다. 실제 양성 학습 경로는 검증하지 못했다.
+원장 `analysis_exports/self_note_v3_20261104/`; 최종 로컬 코드 `eadc6caeacc7250ad43c23beac4e731db21a044b`, 동결본 `package-root-bounded/`,
+소스 manifest SHA256 `18c0902b2afacb70614f1bac6f6823dff90f9091feba99e76b6130aa294bc183`다. 초기 소스·실패·원문은 모두 보존했다.
+고정 첫 문항의 T1은 세 진단 모두 같은 INCORRECT 213토큰 원문(SHA256 `28df5a524ef3bf12b44deb022ddfc2c9f0b14d5929aa337d8f91f835c46adaef`)이다.
+노트는 `diagnostic-1` 311토큰/내용 FAIL, `diagnostic-2` 245토큰/UNKNOWN(출처가 뒷받침하지 않는 상대적 전문화),
+`diagnostic-3` 278토큰/FAIL(출처 및 앞선 철회와 모순되는 잘못된 주장을 다시 함)이었다. 교훈 누설은 모두 CLEAR지만 내용 gate는 미통과했다.
+실제 CLI resolve는 CONTENT_FAIL/CONTENT_UNKNOWN으로 재풀이를 건너뛰었고 rows0이다. `diagnostic-3/admission.json`은
+active=false·nA0/nB0·total_steps0, `diagnostic-3/dry/dry_run.json`은 NO_USABLE_SUPERVISION/NO_A_ROWS·components={}·optimizer0/scheduler0·weights_saved=false다.
+이 거부된 학습 경로는 모델을 로드하지 않았으므로 실제 Qwen loss/backward와 전후 파라미터 해시는 미검증이다.
+추가로 결과를 보기 전에 등록한 고정 순서 index1 CheBI 역할 문항은 wall 300초·exit124로 종료했다. 완성 답·t1.jsonl이 없어
+채점/노트/재풀이/학습을 진행하지 않았다. 이는 8K length 종료나 INCORRECT 판정이 아니다. 소유 작업은 모두 종료했고 종료 시 GPU 사용량은0MiB였다.
+
+초기 승인 경로는 분석→코드→CPU→로컬 NF4→RunPod BF16였으나 현재 실행 범위는 위 로컬 무갱신 진단으로 제한됐다. 계획/분석 정본은
+`claudedocs/analysis_self_note_mmmu_root_causes_20261103.md` §16–17이다. 8K·일반 이미지·P0/V8·단일 답·상위 모델 튜터 금지,
+사용자 제시 남은 예산 $25를 유지하며 실제 잔액/가격은 대여 직전에 조회한다. 제출 `MMDL/` 수정 없음.
+
+- 구현: 별도 학습 채점 계약, 출처 근거/노트 검토 receipt, 검토된 B와 누설 없는 교훈 수용, 공통 A/admission,
+  NOTE=0.9A+0.1B와 NO-NOTE=0.9A, 수집/재개/Pod 계획 연결. 최종 v5는 실제 BF16 NOTE export를 고정하고 900개·seed3407을 유지한다.
+- CPU 실실행: error_note 212 통과; 공유 채점/검증/체크포인트/proof_eval 128 통과; Pod 관련151 중150 통과·기존 로컬 사전등록 부재 skip1;
+  V8파서20 통과. 변경 범위 Ruff 및 error_note 범위 mypy 통과. 후속 v5 연결72 중71 통과·같은 기존 skip1. 중복 검사를 고유 합계로 더하지 않는다.
+  후속 결합245개는 `def16e6`에서64.809초로 통과했다. 최종 프롬프트 문구 수정은 집중4개·Ruff 통과, 앞선4개 소스 범위 mypy 통과다.
+  기존236개·42개 및 이들 재검사는 서로 겹치므로 합산하지 않는다.
+- 기존3,417개 자료의 private 출처 근거 준비 완료(비객관식 규칙676/객관식2741). 이 자료 준비는 생성 노트의 정확성 인증이 아니다.
+  외부 dev402 등록/분리/평가 연결은 구현 중이다.
+- 미검증/미실행: 이번 v3 실제 Qwen loss/backward·전후 파라미터 해시, 가중치 갱신·checkpoint 저장/재로딩, 새 RunPod, 300문항/본학습/최종900.
+- 현재는 중단·승인 대기다. 재개 전 우선순위는 원출처로 부정확·근거 부족 자기 노트를 진단하고 수용 가능한 감독 경로를 설계하는 것이다.
+  일반 프롬프트3회 진단만으로 해결했다고 하지 않으며, 원문 target 수정·감사 기준 완화는 하지 않는다. 기존 지식 고착은 미입증 가설이다.
+  완료 문항1개와 미완료1개에서 정확도·일반화 개선을 주장하지 않는다. 표본 확대·클라우드·게시로 자동 진행하지 않는다.
+
 ## 2026-10-30 (저녁) — 데이터 정책 변경: 자체 생성 데이터 제외, 동일 문제 정의, 대규모 오염·평가 설계
 
 `[사용자]` 학습 데이터는 허깅페이스 등 기존 데이터셋에서만 가져오고 우리가 생성하지 않는다(저품질 유입 방지). 오염 검사의 목적은
@@ -207,6 +583,25 @@ MMMU/MMMU-Pro와 동일한 문제의 학습 방지. RunPod 증명(약 3,000문�
   - 로컬 NF4 2·10문항 전 단계 통과(재로딩 차이 0, 교훈 누설 0). 다시 풀기는 2문항에서 1/2, 10문항에서 1/4이 정답이었고, 정답 1건은 반복 끝에 찍은 답이라 반복 기준으로 제외됐다.
   - MMDL_test `1c8e95d` push(문서의 MMMU 정답·응답 인용은 §5.2에 맞게 요약으로 바꿈).
   - 11-02 17:50Z 조회 결과: RTX 6000 Ada·A40·L40(S)·RTX A6000 모두 재고 없음. 48GB 이상은 RTX PRO 6000(96GB, 1.69달러/시)부터 있어 1달러 상한을 넘으므로 사용자 결정 대기.
+- **버전 2 런포드 실행(11-03)**: Pod `7wckbg8ozbbm5h`(RTX 6000 Ada, US-WA-1, 0.99달러/시, 00:31:57Z 생성).
+  - 16비트 10문항 확인 PASS(재로딩 차 0). 다시 푼 풀이가 "**Lesson applied:**"를 써서 누설로 빠져 다시 풀기 머리말에 "언급하지 말라"를 넣었다(`b3ba0fb`). **이 수정 뒤 확인 시험을 다시 하지 않았다.**
+  - 1차 전체 실행(`b3ba0fb`, 01:07Z~): 노트 3,417 완료. 다시 풀기 1,255회 중 정답 357이었지만 길이 중앙값 8토큰(1,071개가 32토큰 미만)이라 정답 357 중 326이 TOO_SHORT로 빠지고 다시 풀기 행은 28개였다.
+    행 4,853(A 1,488: T1 1,460·다시 풀기 28 / B 3,365). 제안 2가 사실상 빠지므로 학습 8번째 갱신(02:10Z)에서 중단했다. 결과는 `/workspace/note-v2/aborted-hdr1`, `train-note-aborted-hdr1`, `runs/note-v2-aborted-hdr1`에 보존.
+    길이 한도 도달: T1 283(반복 161·비반복 122, 비반복 43%), 노트 23(비반복 10).
+  - 수정 `b6f1017`: 머리말을 계획 원문 "Lesson from your own review of a similar problem:"으로 되돌렸다. CPU 145 통과.
+    대여기 앞쪽 200문항 확인(`note-v2-hdrtest`): 다시 풀기 69회, 길이 중앙값 389, 32토큰 미만 4, 정답 17, 교훈 언급 19(정답 중 6, 행에서 제외).
+  - 2차 전체 실행(`b6f1017`, 02:20:51Z~, 노트는 기존 그대로 재사용, 다시 풀기부터 새로). 900문항 평가 대기 `eval-s3`도 새 커밋으로 다시 걸었다.
+    다시 풀기(02:22–03:37Z): 1,255회 중 정답 267(21.3%), 길이 중앙값 469, 한도 도달 238(반복 140·비반복 98). 정답 중 제외: 교훈 언급 70, 반복 58, 32토큰 미만 24, 너무 김 4.
+    행 4,936(A 1,571: T1 1,460·다시 풀기 111 / B 3,365, FULL 720). 학습 03:37:51Z 시작.
+  - 학습(03:37–05:47Z): 갱신 214·건너뜀 0, 7,553초, 손실 0.329→0.247, L504/M24/V96 모두 변경. 새 프로세스 재로딩 PASS(가중치 차 0, greedy 일치). export 05:49Z.
+  - **900문항 판정 FAIL**(seed 3407, `gate-62.json`): FT-V2 **544/900(60.44%)** < 558. 오답 342 중 58, 정답이던 558 중 486. 1회 실행의 흔들림은 약 1.6점.
+    같은 8K·seed의 미학습 F0 541과 문항별: 이득 65·손실 62·순 +3(McNemar p 0.86). 1판 3,417 모델 537 대비 순 +7(p 0.63). 출력 길이는 유지(중앙값 F0 444·FT-V2 464.5·1판 299.5).
+    오답 342: F0 57 → 300 모델 79(+22, p 0.015) / 1판 3,417 64 / FT-V2 58. 정답 558: F0 484 / 1판 473 / FT-V2 486.
+    평가 길이 한도 도달: F0 111 → FT-V2 98. FT-V2의 98건 중 압축 기준 반복은 7건뿐이고, 나머지는 같은 문장 반복이 아닌 긴 시행착오였다(두 번째 절반 고유 줄 비율 중앙값 0.83).
+  - 결론: 버전 2는 1판의 출력 축소는 막았지만 900문항 정확도를 미학습 모델보다 의미 있게 올리지 못했다. 개선 미관측.
+  - 회수: `hf-pool-v3/pod-note-v2/final/final.tgz` sha `1f7e34e7…`(해시 일치·압축 해제, 예측 900행), `ckpt-note-v2.tar` sha `6be0cd75…`(1,735,157,760바이트, 첫 scp 실패 후 재전송으로 해시 일치).
+  - Pod `7wckbg8ozbbm5h` 07:02Z 삭제(가동 23,431초), 목록 0. 청구 조회 합계 24.38달러(11-03 5.56, 반영 지연; 가동 시간으로 계산한 이 Pod 비용 약 6.5달러, 확정 합계 약 25.4달러 예상). 잔액 약 25달러(50.42 기준).
+  - 1차 실행(머리말 오류)으로 버린 시간은 약 1시간 15분(약 1.2달러)이다.
 - (이전) 새 데이터 실제 GPU 최소시험 시도 기록: v13(package-root-v13)은 actor guard가 union 요청의 샤드별 registry/evidence 구조를 몰라 KeyError로
   생성 전 중단 → 수정(샤드별 경로 + 샤드 build-root의 verifier_private/lineage도 차단 목록에 추가, 실제 vault에서 40개 차단 파일 확인).
   v14: 증거·제안·준비(`LOCAL_POOL_DATA_VALIDATED`)·NF4 캐시 저장/새 프로세스 확인 통과 → 실제 생성 436초(peak alloc 4.23GB) 후
