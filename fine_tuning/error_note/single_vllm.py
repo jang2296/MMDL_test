@@ -133,7 +133,8 @@ class SingleVllmSampler:
             params = SamplingParams(n=1, temperature=SINGLE_SAMPLING["temperature"], top_p=SINGLE_SAMPLING["top_p"],
                                     top_k=SINGLE_SAMPLING["top_k"], presence_penalty=SINGLE_SAMPLING["presence_penalty"],
                                     repetition_penalty=1.0, max_tokens=request["max_tokens"], seed=request["seed"],
-                                    stop_token_ids=self.eos_token_ids, logprobs=TOP_LOGPROBS)
+                                    stop_token_ids=self.eos_token_ids, logprobs=TOP_LOGPROBS,
+                                    detokenize=False)  # text is decoded from the action IDs in finish()
             return engine._prompt(prepared, prepared.token_ids), params, item
 
         def finish(output: Any, request: dict, item: dict) -> dict:

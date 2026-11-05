@@ -228,8 +228,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         stream = (getattr(args, "stream_builder", None) or hf_single_stream_builder)(bundle, args, stats)
 
     def checkpoint(status: str, **extra) -> dict:
-        if policy_sha256(bundle) != policy:
-            raise ValueError("single runtime: policy changed during collection")
+        # Hashing all 624 policy tensors per completion cost minutes per block; the policy is re-checked once
+        # after generation (below) and again by the update's sealed contract.
         state.update(status=status, **extra)
         return _state(state_path, state)
 
@@ -330,6 +330,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     if not generate("resolve", {pid: resolve_prompt(state["records"][pid]["p0_text"], lesson(pid))
                                 for pid in approved}):
         return checkpoint("INCOMPLETE_RESOLVE", note_audits=audits, note_decisions=note_decisions)
+    if policy_sha256(bundle) != policy:
+        raise ValueError("single runtime: policy changed during collection")
     rows, decisions = [], {}
     for pid in active:
         record = state["records"][pid]

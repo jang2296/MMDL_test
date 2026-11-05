@@ -573,6 +573,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     import json
+    import os
+    import sys
     from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
     from fine_tuning.notebook_rl.dataset import load_images
     from fine_tuning.notebook_rl.vault import read_actors, read_verifier
@@ -618,7 +620,14 @@ def main(argv: list[str] | None = None) -> int:
                 continue_main=args.continue_main, pilot_gate=gate_descriptor,
                 stop_after=args.stop_after_seconds, reload_only=args.command == "reload")
         print(json.dumps({"status": result["status"], "slot": result["cursor"]["slot"], "updates": result["cursor"]["updates"]}))
-        return 0 if result["status"] in ("BOUNDED_STOP", "PILOT_COMPLETE", "COMPLETE", "RELOADED") else 2
+        code = 0 if result["status"] in ("BOUNDED_STOP", "PILOT_COMPLETE", "COMPLETE", "RELOADED") else 2
+    if args.engine == "vllm":
+        # ponytail: vLLM 0.11 sleep-mode MemPool teardown aborts at interpreter exit after all state is durable;
+        # exit directly once outputs are flushed. Drop this when a vLLM upgrade fixes the destructor.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(code)
+    return code
 
 
 if __name__ == "__main__":
