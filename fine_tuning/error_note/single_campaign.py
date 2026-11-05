@@ -602,8 +602,10 @@ def main(argv: list[str] | None = None) -> int:
         private = read_verifier(args.build_root / "train")
         gold = {item["problem_id"]: private[item["problem_id"]].gold for item in plan["items"]}
         del private
-        forbidden = install_training_guards(args.build_root, private_files=[args.source_provenance, args.training_rules,
-            *[path for path in (args.pilot_gate,) if path is not None]])
+        # vLLM needs the reviewed OpenAI schema types (API clients stay denied) and is imported before the file guards.
+        forbidden = install_training_guards(args.build_root, vllm_schema={} if args.engine == "vllm" else None,
+            private_files=[args.source_provenance, args.training_rules,
+                           *[path for path in (args.pilot_gate,) if path is not None]])
         with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
                              training_rules_sha256=args.training_rules_sha256) as verifier:
             def grade(pid, text, finish, mode):
