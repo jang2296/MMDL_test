@@ -24,6 +24,22 @@ from fine_tuning.tests.test_error_note_single_collect import args, bundle, outpu
 from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, gradients, pin_reward_fixture
 from fine_tuning.tests.test_error_note_train import tiny_factory
 
+
+_SHORT = None
+
+
+def setUpModule():
+    """Tiny-model fixtures use short targets; the 32-token solution rule is tested in single_runtime/loss."""
+    global _SHORT
+    from fine_tuning.error_note import single as _single
+
+    _SHORT = patch.object(_single, "SOLUTION_MIN_TOKENS", 1)
+    _SHORT.start()
+
+
+def tearDownModule():
+    _SHORT.stop()
+
 IDENTITY = {"source_sha256": "a" * 64, "model_sha256": "b" * 64, "precision": "bf16"}
 
 

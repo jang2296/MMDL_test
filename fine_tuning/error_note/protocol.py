@@ -129,12 +129,16 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 
 
 # v3 (user 2026-11-05): program-only row admission; RL replay over the stored generation-time support.
-VERSION_SINGLE = "error-note-single-response-v3"
-SINGLE_REWARD_GATE = "single-t1-program-gate-v1"
+# v4: MCQ graded by the V8-aligned contract, >=32-token solutions for reward/A1/A2 (pilot v3 collapsed to bare
+# answers), replay drift bounded per block and on long rows (one-token rows measure engine noise, not binding).
+VERSION_SINGLE = "error-note-single-response-v4"
+SINGLE_REWARD_GATE = "single-t1-program-gate-v2"
 SINGLE_REPLAY = "stored-generation-support-v1"
-# Cached-decode vs full-forward numerics differ; a per-row |replay - sampled| above these is a binding error.
-SINGLE_REPLAY_MEAN_ATOL = 0.1
+SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
+SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
+SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS = 64
 SINGLE_REPLAY_MAX_ATOL = 3.0
+SINGLE_ANSWER_CONTRACTS = {"mcq": "p0-eval-aligned-v1", "open": "training-answer-v2"}
 SINGLE_CONTRACT_HASHES = frozenset(("source", "dataset", "order", "data_admission"))
 SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
 
@@ -182,10 +186,14 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                         "beta": float(beta), "reward": SINGLE_REWARD_GATE,
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes"},
                  "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
-                 "length_policy": {"min_target_tokens": 1, "max_target_tokens": MAX_TARGET_TOKENS,
+                 "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,
+                                   "max_target_tokens": MAX_TARGET_TOKENS,
                                    "content_acceptance": "program_checks_only_content_unverified"},
+                 "answer_contracts": dict(SINGLE_ANSWER_CONTRACTS),
                  "renormalize_missing_kind": False, "replay": "original_actions_same_live_policy_once",
-                 "replay_support": {"method": SINGLE_REPLAY, "row_mean_atol": SINGLE_REPLAY_MEAN_ATOL,
+                 "replay_support": {"method": SINGLE_REPLAY, "block_mean_atol": SINGLE_REPLAY_BLOCK_MEAN_ATOL,
+                                    "row_mean_atol": SINGLE_REPLAY_ROW_MEAN_ATOL,
+                                    "row_mean_min_tokens": SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
                                     "row_max_atol": SINGLE_REPLAY_MAX_ATOL},
                  "zero_signal": "consume_slot_without_optimizer_or_decay", "total_slots": total_slots,
                  "pilot_boundary": 300, "pilot_main_optimizer": "continuous",

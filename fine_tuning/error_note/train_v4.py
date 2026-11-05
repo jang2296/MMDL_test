@@ -39,8 +39,8 @@ from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_uncha
 from . import rl
 from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, VERDICT_LABELS, update_groups
 from .order import read_order
-from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MEAN_ATOL, VERSION_V4,
-                       plain_protocol_v4)
+from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL,
+                       SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS, VERSION_V4, plain_protocol_v4)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
                     _commit, _encode_or_drop, _factory, _gradient_norms, _keep_before, _newest_checkpoint, _peak_gib,
@@ -375,7 +375,7 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     from .single import validate_single_reward
 
     if contract.get("version") != VERSION_SINGLE or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
-        raise ValueError("single train: SINGLE v3 program-gate reward contract required; v1/v2 cannot resume")
+        raise ValueError("single train: SINGLE v4 program-gate reward contract required; v1-v3 cannot resume")
     expected = contract["expected_problem_ids"]
     if (not isinstance(expected, list) or not expected or len(set(expected)) != len(expected)
             or any(not isinstance(pid, str) or not pid for pid in expected)):
@@ -507,10 +507,14 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                                         max_abs=max(replay_stats["max_abs"], row_max),
                                         row_mean_max=max(replay_stats["row_mean_max"], row_mean))
                     replay_stats["over_0.1"] += int((gap > .1).sum())
-                    if row_mean > SINGLE_REPLAY_MEAN_ATOL or row_max > SINGLE_REPLAY_MAX_ATOL:
+                    long_row = gap.numel() >= SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS
+                    if long_row and row_mean > SINGLE_REPLAY_ROW_MEAN_ATOL or row_max > SINGLE_REPLAY_MAX_ATOL:
                         raise ValueError(f"single train: sampling logprob replay changed (row mean {row_mean:.4f}, "
                                          f"max {row_max:.4f}); RL HOLD")
-        stats["replay"] = replay_stats | {"mean_abs": replay_stats["abs_sum"] / max(1, replay_stats["tokens"])}
+        block_mean = replay_stats["abs_sum"] / max(1, replay_stats["tokens"])
+        if block_mean > SINGLE_REPLAY_BLOCK_MEAN_ATOL:
+            raise ValueError(f"single train: sampling logprob replay changed (block mean {block_mean:.4f}); RL HOLD")
+        stats["replay"] = replay_stats | {"mean_abs": block_mean}
         stats["replay_verified"] = True
         if "PG" in selected or "KL" in selected and beta:
             for indices in plan:

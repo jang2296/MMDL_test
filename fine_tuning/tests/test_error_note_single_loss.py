@@ -17,6 +17,22 @@ from fine_tuning.notebook_rl.input_preparation import digest
 from fine_tuning.tests.test_error_note_train import encoded, tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
 
+
+_SHORT = None
+
+
+def setUpModule():
+    """Tiny-model fixtures use short targets; the 32-token solution rule is tested in single_runtime/loss."""
+    global _SHORT
+    from fine_tuning.error_note import single as _single
+
+    _SHORT = patch.object(_single, "SOLUTION_MIN_TOKENS", 1)
+    _SHORT.start()
+
+
+def tearDownModule():
+    _SHORT.stop()
+
 SAMPLING = {"temperature": .7, "top_p": 1., "top_k": 0, "presence_penalty": 1.5}
 
 
@@ -248,6 +264,15 @@ class SingleRewardGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "malformed"):
                 single.validate_single_reward(row)
 
+    def test_bare_correct_answer_earns_no_reward_under_the_32_token_rule(self):
+        owner = tiny_factory()
+        rows, _ = block(owner, count=1)
+        with patch.object(single, "SOLUTION_MIN_TOKENS", 32):
+            row = copy.deepcopy(rows[0])
+            bind_reward_fixture(row)
+            self.assertEqual(row["reward"], 0)
+            self.assertIn("TOO_SHORT", row["reward_evidence"]["decision"]["reason"])
+
     def test_forged_reward_and_decision_stale_or_malformed_receipts_fail(self):
         owner = tiny_factory()
         rows, contract = block(owner, count=1, reward=0)
@@ -312,7 +337,8 @@ class SingleRewardGate(unittest.TestCase):
         bad["reward_evidence"]["review"] = {"target_source": "RESOLVE", "content": {"result": "PASS"}}
         with self.assertRaisesRegex(ValueError, "malformed"):
             single.validate_single_reward(bad)
-        for version in (None, "error-note-single-response-v1", "error-note-single-response-v2"):
+        for version in (None, "error-note-single-response-v1", "error-note-single-response-v2",
+                        "error-note-single-response-v3"):
             old = copy.deepcopy(contract)
             old["version"] = version
             with self.assertRaisesRegex(ValueError, "cannot resume"):
@@ -364,6 +390,29 @@ class SingleTinyPolicy(unittest.TestCase):
             self.assertEqual(bundle.model.training, incoming)
             self.assertTrue(all(module.training == incoming for module in bundle.model.modules()))
             self.assertTrue(all(p.grad is None for ps in bundle.params.values() for p in ps))
+
+    def test_short_row_engine_noise_passes_but_block_mean_and_token_max_bounds_hold(self):
+        bundle = tiny_factory()
+        rows, contract = block(bundle, count=2)
+        # One short row off by 0.3 nats per token (cross-engine first-token noise) stays admissible ...
+        noisy = copy.deepcopy(rows)
+        noisy[0]["generation"]["sampling_logprobs"] = [v - .3 for v in noisy[0]["generation"]["sampling_logprobs"]]
+        bind_reward_fixture(noisy[0])
+        noisy_contract = pin_reward_fixture(noisy, copy.deepcopy(contract))
+        with patch.object(train, "SINGLE_REPLAY_BLOCK_MEAN_ATOL", .5):
+            self.assertTrue(train.backward_single_block(bundle, noisy, noisy_contract, components=("PG",))["replay_verified"])
+        bundle.model.zero_grad(set_to_none=True)
+        # ... but not when the whole block drifts, nor any single token beyond the max bound.
+        with self.assertRaisesRegex(ValueError, "block mean"):
+            train.backward_single_block(bundle, noisy, noisy_contract, components=("PG",))
+        spike = copy.deepcopy(rows)
+        spike[1]["generation"]["sampling_logprobs"][0] -= 3.5
+        bind_reward_fixture(spike[1])
+        spike_contract = pin_reward_fixture(spike, copy.deepcopy(contract))
+        with patch.object(train, "SINGLE_REPLAY_BLOCK_MEAN_ATOL", 10.):
+            with self.assertRaisesRegex(ValueError, "row mean"):
+                train.backward_single_block(bundle, spike, spike_contract, components=("PG",))
+        self.assertTrue(all(p.grad is None for ps in bundle.params.values() for p in ps))
 
     def test_nonzero_actual_or_configured_attention_and_lora_dropout_is_rejected(self):
         bundle = tiny_factory()

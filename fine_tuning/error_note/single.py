@@ -20,7 +20,7 @@ from .audit import audit_single_note, digest, single_note_review_bindings, text_
 from .collect import ResourceLog, StreamStats, hf_single_stream_builder, install_training_guards, write_json
 from .collect_v3 import file_sha, generation_identity
 from .collect_v4 import run_single_requests
-from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, ROUTE_FULL, ROUTE_LM,
+from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS, ROUTE_FULL, ROUTE_LM,
                        note_prompt_single, parse_note_v2, resolve_prompt, sample_seed)
 from .protocol import ARM, SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256
 from .v4 import target_problem
@@ -28,6 +28,8 @@ from .v4 import target_problem
 VERSION = "single-response-runtime-v3"
 COMPONENTS = ("PG", "KL", "A1", "A2", "B")
 GRADED = frozenset(("CORRECT", "INCORRECT", "TRUNCATED", "INVALID_NO_FINAL", "INVALID_MULTIPLE"))
+# A correct solution earns reward/A1/A2 only with some written reasoning: bare answers collapsed pilot v3's outputs.
+SOLUTION_MIN_TOKENS = MIN_TARGET_TOKENS
 # The verifier could not compare (e.g. an unbound unit): reward 0, no note (no truthful wrong/right feedback exists).
 UNVERIFIABLE = "UNVERIFIABLE"
 
@@ -105,8 +107,9 @@ def _candidate(record: dict, kind: str) -> dict | None:
     if output is None:
         return None
     actions = output["generation"]["completion_token_ids"]
+    minimum = SOLUTION_MIN_TOKENS if kind in ("A1", "A2") else 1
     if kind != "RL" and (not output["text"].strip()
-                         or target_problem(output["text"], actions, output["finish_reason"], "CORRECT", min_tokens=1)):
+                         or target_problem(output["text"], actions, output["finish_reason"], "CORRECT", min_tokens=minimum)):
         return None
     if kind in ("A1", "A2") and output["status"] != "CORRECT":
         return None
@@ -139,7 +142,7 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
             reason = "T1_UNVERIFIABLE" if row["status"] == UNVERIFIABLE else "T1_NOT_CORRECT"
         else:
             problem = target_problem(row["target"], row["generation"]["completion_token_ids"], t1["finish_reason"],
-                                     "CORRECT", min_tokens=1)
+                                     "CORRECT", min_tokens=SOLUTION_MIN_TOKENS)
             reason = None if _candidate(record, "A1") is not None else "T1_INELIGIBLE_" + (problem or "EMPTY_TARGET")
         return {"accepted": reason is None, "reason": reason, "bindings": bindings, "method": "program"}
     except (KeyError, TypeError, AttributeError) as error:
@@ -627,7 +630,6 @@ def _main(args: argparse.Namespace) -> int:
     import random
     import numpy as np
     import torch
-    from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
     from fine_tuning.notebook_rl.dataset import load_images
     from fine_tuning.notebook_rl.policy import enable_deterministic_execution
     from fine_tuning.notebook_rl.policy import build_policy
@@ -677,8 +679,11 @@ def _main(args: argparse.Namespace) -> int:
     try:
         with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
                              training_rules_sha256=plan["rules_sha256"]) as verifier, ResourceLog(args.output / "resources.jsonl"):
+            contracts = plan["protocol"]["training_contract"]["answer_contracts"]
+
             def grade(pid, text, finish_reason, mode):
-                result = verifier.grade(pid, text, finish_reason, mode, answer_contract=TRAINING_ANSWER_CONTRACT)
+                contract = contracts["mcq" if actors[pid].choices else "open"]
+                result = verifier.grade(pid, text, finish_reason, mode, answer_contract=contract)
                 return result.status, result.extracted
 
             state = run_single_block(bundle, actors=actors, items=plan["fixed10"], provenance=sources, gold=gold, grade=grade,

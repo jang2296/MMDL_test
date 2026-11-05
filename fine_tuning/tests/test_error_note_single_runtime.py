@@ -20,10 +20,10 @@ import torch
 from fine_tuning.error_note import audit, rl, single
 from fine_tuning.error_note.collect import WAIT, single_request_binding, single_request_sha256
 from fine_tuning.error_note.protocol import SINGLE_SAMPLING, plain_protocol_single, single_blocks
-from fine_tuning.tests.test_error_note_single_audit import record_for, solution_review
+from fine_tuning.tests.test_error_note_single_audit import record_for
 from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, pin_reward_fixture
 from fine_tuning.tests.test_error_note_train import tiny_factory
-from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE, example, review_for
+from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE, example
 
 
 def protocol(count=219):
@@ -413,48 +413,34 @@ print('guard boundary PASS; no model loaded')
             backward.assert_not_called()
             self.assertEqual(json.loads((args.output / "dry-run-2.json").read_text())["status"], "FAIL")
 
-    def test_single_one_action_targets_are_eligible_while_legacy_default_remains32(self):
+    def test_solutions_need_32_tokens_but_notes_do_not(self):
         from fine_tuning.error_note.v4 import target_problem
 
+        self.assertEqual(single.SOLUTION_MIN_TOKENS, 32)
         self.assertEqual(target_problem("B", [11], "stop", "CORRECT"), "TOO_SHORT")
-        self.assertIsNone(target_problem("B", [11], "stop", "CORRECT", min_tokens=1))
-        self.assertEqual(target_problem("", [], "stop", "CORRECT", min_tokens=1), "TOO_SHORT")
-        self.assertEqual(self.protocol["training_contract"]["length_policy"]["min_target_tokens"], 1)
+        self.assertEqual(self.protocol["training_contract"]["length_policy"]["min_target_tokens"], 32)
+        self.assertEqual(self.protocol["training_contract"]["answer_contracts"],
+                         {"mcq": "p0-eval-aligned-v1", "open": "training-answer-v2"})
         for kind in ("A1", "A2", "B"):
             record = record_for(correct=kind == "A1")
             stage = {"A1": "t1", "A2": "resolve", "B": "note"}[kind]
             if kind != "B":
                 record[stage]["text"] = "B"
-            # Synthetic action inventory checks the length guard, not tokenizer compression of this note.
             for output in (record["t1"], record["note"], record["resolve"]):
                 output["generation"] = {"text": output["text"], "completion_token_ids": [11]}
             row = single._candidate(record, kind)
-            self.assertIsNotNone(row, kind)
-            self.assertEqual(row["target"], record[stage]["text"])
-            review = review_for(record) | {"single_bindings": audit.single_note_review_bindings(record, PROVENANCE)}
-            note = audit.audit_single_note(record, gold="B", choices=("red", "blue"), provenance=PROVENANCE, review=review)
+            # A bare one-token answer earns no SFT row; a one-token note is a format question for the note gate.
+            self.assertEqual(row is None, kind != "B", kind)
             if kind != "B":
-                solution = solution_review(row, record, note if kind == "A2" else None)
-                self.assertTrue(audit.validate_single_solution_review(
-                    solution, row, record, PROVENANCE, note if kind == "A2" else None)["accepted"])
-            record[stage]["text"] = "  "
-            self.assertIsNone(single._candidate(record, kind))
-
-    def test_short_gibberish_solution_still_requires_full_source_acceptance(self):
-        record = record_for(correct=True)
-        record["t1"]["text"] = "nonsenseword"
-        record["t1"]["generation"] = {"text": "nonsenseword", "completion_token_ids": [11]}
-        row = single._candidate(record, "A1")
-        self.assertIsNotNone(row)
-        self.assertFalse(audit.validate_single_solution_review(None, row, record, PROVENANCE)["accepted"])
-        review = solution_review(row, record)
-        review["content"]["result"] = "FAIL"
-        self.assertFalse(audit.validate_single_solution_review(review, row, record, PROVENANCE)["accepted"])
-
+                record[stage]["generation"]["completion_token_ids"] = list(range(100, 132))
+                self.assertIsNotNone(single._candidate(record, kind), kind)
 
 class UpdateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.short = patch.object(single, "SOLUTION_MIN_TOKENS", 1)  # tiny-model fixtures use short targets
+        cls.short.start()
+        cls.addClassCleanup(cls.short.stop)
         cls.threads = torch.get_num_threads()
         torch.set_num_threads(2)
 

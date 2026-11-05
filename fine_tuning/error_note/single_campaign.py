@@ -575,7 +575,6 @@ def main(argv: list[str] | None = None) -> int:
     import json
     import os
     import sys
-    from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
     from fine_tuning.notebook_rl.dataset import load_images
     from fine_tuning.notebook_rl.vault import read_actors, read_verifier
     from fine_tuning.notebook_rl.verifier_service import VerifierService
@@ -586,41 +585,53 @@ def main(argv: list[str] | None = None) -> int:
         from fine_tuning.notebook_rl.policy import enable_deterministic_execution
 
         enable_deterministic_execution()  # must precede the guards/verifier imports that initialize CUDA
-    with single._runtime_lock(args.output, ".campaign-cli.lock"):
-        plan = prepare(args)
-        if args.command == "prepare":
-            print(json.dumps({"status": "PREPARED", "slots": len(plan["blocks"]), "model_loaded": False}))
-            return 0
-        if not args.allow_model_run:
-            raise ValueError("single campaign: actual model execution requires explicit --allow-model-run")
-        if (args.pilot_gate is None) != (args.pilot_gate_sha256 is None):
-            raise ValueError("single campaign: gate path and external SHA256 required together")
-        if args.pilot_gate is not None:
-            _checked({"path": str(args.pilot_gate), "file_sha256": args.pilot_gate_sha256})
-        # The trusted controller preloads private bytes before actor file/import guards.
-        gate_descriptor = (_descriptor(args.pilot_gate) | {"raw": args.pilot_gate.read_bytes()}) if args.pilot_gate else None
-        actors = {actor.problem_id: actor for actor in read_actors(args.build_root / "train")}
-        sources = single._read(args.source_provenance)["items"]
-        private = read_verifier(args.build_root / "train")
-        gold = {item["problem_id"]: private[item["problem_id"]].gold for item in plan["items"]}
-        del private
-        # vLLM needs the reviewed OpenAI schema types (API clients stay denied) and is imported before the file guards.
-        forbidden = install_training_guards(args.build_root, vllm_schema={} if args.engine == "vllm" else None,
-            private_files=[args.source_provenance, args.training_rules,
-                           *[path for path in (args.pilot_gate,) if path is not None]])
-        with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
-                             training_rules_sha256=args.training_rules_sha256) as verifier:
-            def grade(pid, text, finish, mode):
-                value = verifier.grade(pid, text, finish, mode, answer_contract=TRAINING_ANSWER_CONTRACT)
-                return value.status, value.extracted
+    try:
+        with single._runtime_lock(args.output, ".campaign-cli.lock"):
+            plan = prepare(args)
+            if args.command == "prepare":
+                print(json.dumps({"status": "PREPARED", "slots": len(plan["blocks"]), "model_loaded": False}))
+                return 0
+            if not args.allow_model_run:
+                raise ValueError("single campaign: actual model execution requires explicit --allow-model-run")
+            if (args.pilot_gate is None) != (args.pilot_gate_sha256 is None):
+                raise ValueError("single campaign: gate path and external SHA256 required together")
+            if args.pilot_gate is not None:
+                _checked({"path": str(args.pilot_gate), "file_sha256": args.pilot_gate_sha256})
+            # The trusted controller preloads private bytes before actor file/import guards.
+            gate_descriptor = (_descriptor(args.pilot_gate) | {"raw": args.pilot_gate.read_bytes()}) if args.pilot_gate else None
+            actors = {actor.problem_id: actor for actor in read_actors(args.build_root / "train")}
+            sources = single._read(args.source_provenance)["items"]
+            private = read_verifier(args.build_root / "train")
+            gold = {item["problem_id"]: private[item["problem_id"]].gold for item in plan["items"]}
+            del private
+            # vLLM needs the reviewed OpenAI schema types (API clients stay denied) and is imported before the file guards.
+            forbidden = install_training_guards(args.build_root, vllm_schema={} if args.engine == "vllm" else None,
+                private_files=[args.source_provenance, args.training_rules,
+                               *[path for path in (args.pilot_gate,) if path is not None]])
+            with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
+                                 training_rules_sha256=args.training_rules_sha256) as verifier:
+                # MCQ: the V8-aligned evaluation contract; open answers keep the unit-aware training rules.
+                contracts = plan["protocol"]["training_contract"]["answer_contracts"]
 
-            result = run_campaign(plan, output=args.output, model_path=args.model_path, actors=actors, provenance=sources,
-                gold=gold.__getitem__, grade=grade, load_images=lambda actor: load_images(actor, args.build_root / "images"),
-                device="cuda:0", max_blocks=args.max_blocks, allow_update=args.allow_update, allow_save=args.allow_save,
-                continue_main=args.continue_main, pilot_gate=gate_descriptor,
-                stop_after=args.stop_after_seconds, reload_only=args.command == "reload")
-        print(json.dumps({"status": result["status"], "slot": result["cursor"]["slot"], "updates": result["cursor"]["updates"]}))
-        code = 0 if result["status"] in ("BOUNDED_STOP", "PILOT_COMPLETE", "COMPLETE", "RELOADED") else 2
+                def grade(pid, text, finish, mode):
+                    contract = contracts["mcq" if actors[pid].choices else "open"]
+                    value = verifier.grade(pid, text, finish, mode, answer_contract=contract)
+                    return value.status, value.extracted
+
+                result = run_campaign(plan, output=args.output, model_path=args.model_path, actors=actors, provenance=sources,
+                    gold=gold.__getitem__, grade=grade, load_images=lambda actor: load_images(actor, args.build_root / "images"),
+                    device="cuda:0", max_blocks=args.max_blocks, allow_update=args.allow_update, allow_save=args.allow_save,
+                    continue_main=args.continue_main, pilot_gate=gate_descriptor,
+                    stop_after=args.stop_after_seconds, reload_only=args.command == "reload")
+            print(json.dumps({"status": result["status"], "slot": result["cursor"]["slot"], "updates": result["cursor"]["updates"]}))
+            code = 0 if result["status"] in ("BOUNDED_STOP", "PILOT_COMPLETE", "COMPLETE", "RELOADED") else 2
+    except BaseException:
+        if args.engine != "vllm":
+            raise
+        import traceback
+
+        traceback.print_exc()  # the direct exit below must still report the failure
+        code = 1
     if args.engine == "vllm":
         # ponytail: vLLM 0.11 sleep-mode MemPool teardown aborts at interpreter exit after all state is durable;
         # exit directly once outputs are flushed. Drop this when a vLLM upgrade fixes the destructor.

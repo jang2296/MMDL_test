@@ -23,6 +23,22 @@ from fine_tuning.tests.test_error_note_train import tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
 
 
+
+_SHORT = None
+
+
+def setUpModule():
+    """Tiny-model fixtures use short targets; the 32-token solution rule is tested in single_runtime/loss."""
+    global _SHORT
+    from fine_tuning.error_note import single as _single
+
+    _SHORT = patch.object(_single, "SOLUTION_MIN_TOKENS", 1)
+    _SHORT.start()
+
+
+def tearDownModule():
+    _SHORT.stop()
+
 def plan_for(count=32, mode="proof"):
     items = [{"problem_id": f"p{i}", "subject": "Biology", "source": "authored-test"} for i in range(count)]
     blocks = single_blocks([x["problem_id"] for x in items])
