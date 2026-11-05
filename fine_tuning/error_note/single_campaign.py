@@ -552,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
     from .collect import install_training_guards
 
     args = build_parser().parse_args(argv)
+    if args.command != "prepare":
+        from fine_tuning.notebook_rl.policy import enable_deterministic_execution
+
+        enable_deterministic_execution()  # must precede the guards/verifier imports that initialize CUDA
     with single._runtime_lock(args.output, ".campaign-cli.lock"):
         plan = prepare(args)
         if args.command == "prepare":
