@@ -30,7 +30,7 @@ def plan_for(count=32, mode="proof"):
         contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024.)
     body = {"version": campaign.VERSION, "mode": mode, "items": items, "blocks": blocks, "protocol": protocol,
             "source": {"authored_fixture": True}, "generation": {"model_files_sha256": "b" * 64},
-            "capacity": {"max_num_seqs": 1, "max_num_batched_tokens": 24576, "token_budget": 0, "context_limit": 24576},
+            "capacity": {"max_num_seqs": 1, "max_num_batched_tokens": 24576, "token_budget": 0, "context_limit": 24576, "engine": "hf"},
             "gate_rule": campaign.GATE_RULE, "dev_ids_sha256": "c" * 64, "retention_ids_sha256": "d" * 64}
     return body | {"sha256": audit.digest(body)}
 

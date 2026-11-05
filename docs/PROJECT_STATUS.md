@@ -21,6 +21,17 @@
   PG·A1 실제 기울기 비영(L/M, LM 경로라 V 없음), F0 KL 0(정상), 재생 차이 평균 0.0044·최대 0.53, 가중치 불변·기울기 제거 확인.
   같은 오답의 노트→재풀이 정답→A2/B 실제 기울기는 10문항에서 발생하지 않아 **실제 모델에서는 미관측**(작은 CPU 모델에서만 통과).
   MapQA 정답 1개는 반복 검사로 A1·양의 보상 제외.
+- **3,500 동결(에이전트):** strict allowlist v5에서 OLD1,455/NEW2,045, 시험300(OLD126/NEW174), 누설 경고 119개 family 제외,
+  출처별 AI 품질 표본 검토는 사용자 결정으로 생략(승인에 `SKIPPED_BY_USER_DECISION_2026-11-05` 기록), 빈 held-out 명시 opt-in.
+  원장 `self-note-single-20261105/final3500-v1/receipt.json`, 포드 자료 `pod-outbox/single-data-v1`·`single-devdata-v1`.
+- **런포드 1차(A40 h7sdfusyxd655k, 13:34–14:30Z, 약 0.55달러, 삭제·목록0 확인):** 커밋 f9dd088은 cuBLAS 결정성 설정 순서로
+  첫 단계 실패, b86110c로 수정 후 실제 16비트 첫 묶음 갱신·새 프로세스 재로딩 PASS. 첫 묶음 T1 정답7/오답3/복수답3/최종답없음2/
+  판정불가1, 노트 8 중 7 수용, 재풀이 7 중 2 정답 → **같은 오답의 A2·B 실제 기울기 첫 관측**, 재생 차이 평균0.010·행평균최대0.049.
+  HF 묶음 생성이 걸음당 0.2–0.33초(fp32 LoRA 분리 연산·작은 커널 과다, 프로파일)로 느려 사용자 지시로 중단(PID SIGTERM),
+  부분 결과 회수 `pod-single-pilot-h7sdfusyxd655k/`(해시 일치).
+- **생성 속도 수정:** 생성만 vLLM 0.11(`single_vllm.py`)로 전환 — 매 갱신 후 LoRA 합친 BF16 전체 가중치 push, processed logprob
+  20개에서 실제 support 기록, 학습 중 sleep level2로 GPU 반환. 묶음 안에서 문항별로 T1→노트→재풀이를 바로 잇는 연속 처리
+  (`run_single_requests(follow_up=...)`). CPU error_note 495검사 통과. 실제 vLLM 속도·재생 차이는 포드 첫 묶음에서 확인 예정.
 
 ## 2026-11-05 — 10:44Z 사용자 요청으로 저장 후 중단, Claude 인계
 

@@ -114,11 +114,15 @@ def _validate_single_trace(request: dict, output: dict, *, policy_sha256: str, p
 
 
 def run_single_requests(requests: list[dict], stream: Stream, stats: StreamStats, out: Path, *,
-                        policy_sha256: str, protocol_sha256: str, stop_after: float | None = None) -> dict[str, dict]:
+                        policy_sha256: str, protocol_sha256: str, stop_after: float | None = None,
+                        follow_up: Callable[[dict, dict], list[dict]] | None = None) -> dict[str, dict]:
     """Exclusively own the per-policy ledger through generation and persistence; refuse overlapping collectors.
 
     `out` belongs to one frozen-policy block. Additional stages may append distinct request IDs in the same directory.
     A deadline or interrupted STARTED request is INCOMPLETE and must be preserved for the parent to resolve.
+    follow_up(request, output) -> next requests (a later stage of the same question), called once per completed
+    request, including reused ones on resume; it needs a continuous stream (WAIT) so later stages start while
+    other questions are still generating. The result then also holds every follow-up's output.
     """
     import fcntl
 
@@ -131,15 +135,19 @@ def run_single_requests(requests: list[dict], stream: Stream, stats: StreamStats
         except BlockingIOError as error:
             raise ValueError("SINGLE: BUSY: collection ledger is busy; another collector owns this output directory") from error
         return _run_single_requests_locked(requests, stream, stats, out, policy_sha256=policy_sha256,
-                                            protocol_sha256=protocol_sha256, stop_after=stop_after)
+                                            protocol_sha256=protocol_sha256, stop_after=stop_after, follow_up=follow_up)
 
 
 def _run_single_requests_locked(requests: list[dict], stream: Stream, stats: StreamStats, out: Path, *,
-                                policy_sha256: str, protocol_sha256: str,
-                                stop_after: float | None = None) -> dict[str, dict]:
+                                policy_sha256: str, protocol_sha256: str, stop_after: float | None = None,
+                                follow_up: Callable[[dict, dict], list[dict]] | None = None) -> dict[str, dict]:
     """Reuse only verified completions while the caller owns SINGLE_LEDGER_LOCK."""
+    from collections import deque
+
     from .rl import sampling_sha256
 
+    if follow_up is not None and not getattr(stream, "continuous", False):
+        raise ValueError("SINGLE: follow-up requests need a continuous (WAIT-capable) stream")
     bindings = [single_request_binding(r) for r in requests]
     ids = [r["request_id"] for r in bindings]
     if (len(ids) != len(set(ids)) or len({(r["block_id"], r["stage"], r["problem_id"]) for r in bindings}) != len(ids)):
@@ -183,7 +191,39 @@ def _run_single_requests_locked(requests: list[dict], stream: Stream, stats: Str
         body = header | {"requests": records, **({"error": failure} if failure else {})}
         write_json(path, body | {"sha256": _digest(body)})
 
-    todo = [r for r in requests if r["request_id"] not in records]
+    def register(request: dict) -> None:
+        """A follow-up joins the same block ledger under the same identity/duplicate rules."""
+        binding = single_request_binding(request)
+        key = binding["request_id"]
+        if key in expected or any(single_request_binding(r)["stage"] == binding["stage"]
+                                  and single_request_binding(r)["problem_id"] == binding["problem_id"]
+                                  for r in expected.values()):
+            raise ValueError("SINGLE: duplicate follow-up request or second candidate")
+        if binding["block_id"] != bindings[0]["block_id"]:
+            raise ValueError("SINGLE: a follow-up must stay in its frozen block")
+        expected[key] = request
+        fingerprints[key] = single_request_sha256(request)
+        ids.append(key)
+
+    queue: deque[dict] = deque()
+
+    def advance(request: dict, output: dict) -> None:
+        for later in follow_up(request, output) if follow_up is not None else ():
+            register(later)
+            done = records.get(later["request_id"])
+            if done is None:
+                queue.append(later)
+                continue
+            if done.get("request_sha256") != fingerprints[later["request_id"]]:
+                raise ValueError("SINGLE: request changed during resume")
+            validate_single_output(later, done["output"], policy_sha256=policy_sha256, protocol_sha256=protocol_sha256)
+            advance(later, done["output"])  # A reused completion re-derives its own next stage.
+
+    for request in requests:
+        if request["request_id"] in records:
+            advance(request, records[request["request_id"]]["output"])
+    todo = [r for r in requests if r["request_id"] not in records] + list(queue)
+    queue.clear()
     if todo and (admit := getattr(stream, "admit", None)) is not None:
         admit(todo)  # Before pending() writes STARTED: rejected capacity has consumed no answer or RNG draw.
     set_start = getattr(stream, "set_start_callback", None)
@@ -200,10 +240,19 @@ def _run_single_requests_locked(requests: list[dict], stream: Stream, stats: Str
             records[key] = {"state": "STARTED", "request_sha256": fingerprints[key]}
         persist()
 
+    in_flight = 0
+
     def pending() -> Iterator[dict]:
-        for request in todo:
+        nonlocal in_flight
+        queue.extend(todo)
+        while queue or (follow_up is not None and in_flight):
+            if not queue:
+                yield WAIT  # later stages appear only when an active question completes
+                continue
+            request = queue.popleft()
             if set_start is None:
                 start_batch([request])
+            in_flight += 1
             yield request
 
     completed = set()
@@ -224,6 +273,8 @@ def _run_single_requests_locked(requests: list[dict], stream: Stream, stats: Str
                                 "output_sha256": _digest(output)}
                 persist()
                 completed.add(key)
+                in_flight -= 1
+                advance(request, output)
         except BaseException as exc:
             from .capacity import CapacityHold
 

@@ -82,7 +82,8 @@ SINGLE_PATHS = ("python", "repo_root", "build_root", "model_path", "out_root", "
 SINGLE_HASHES = (*(f"{name}_sha256" for name in SINGLE_INPUTS), "pilot_ids_sha256", "dev_ids_sha256",
                  "retention_ids_sha256")
 SINGLE_CAPACITY = ("max_num_seqs", "max_num_batched_tokens", "token_budget")
-SINGLE_KEYS = {"version", "commit", "timeouts", *SINGLE_PATHS, *SINGLE_HASHES, *SINGLE_CAPACITY}
+SINGLE_KEYS = {"version", "commit", "timeouts", "engine", *SINGLE_PATHS, *SINGLE_HASHES, *SINGLE_CAPACITY}
+SINGLE_ENGINE_KEYS = {"name", "kv_cache_gib", "gpu_memory_utilization", "sleep"}  # campaign --engine/... flags
 # stage -> (extra paths, extra hashes, timeout kinds)
 SINGLE_EXTRA = {"single-pilot": (("dev_manifest_path", "dev_vault_root", "dev_rules_path"),
                                  ("dev_manifest_sha256", "dev_rules_sha256"),
@@ -314,6 +315,13 @@ def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     _positive_int(params, "token_budget", 0)
     if params["max_num_seqs"] > 16:
         raise ValueError("max_num_seqs must be <= 16")
+    engine = params["engine"]
+    if (not isinstance(engine, dict) or set(engine) != SINGLE_ENGINE_KEYS or engine["name"] not in ("hf", "vllm")
+            or isinstance(engine["kv_cache_gib"], bool) or not isinstance(engine["kv_cache_gib"], (int, float))
+            or not engine["kv_cache_gib"] > 0 or not isinstance(engine["gpu_memory_utilization"], float)
+            or not 0 < engine["gpu_memory_utilization"] < 1 or type(engine["sleep"]) is not bool):
+        raise ValueError(f"engine must map exactly {sorted(SINGLE_ENGINE_KEYS)} (name hf|vllm, KV GiB > 0, "
+                         "utilization in (0,1), sleep bool)")
     timeouts = params["timeouts"]
     if not isinstance(timeouts, dict) or set(timeouts) != set(kinds) or any(
             type(timeouts[k]) is not int or timeouts[k] < 1 for k in kinds):
@@ -337,6 +345,9 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
                 *(item for name in ("pilot", "dev", "retention") for item in (f"--{name}-ids-sha256", p[f"{name}_ids_sha256"])),
                 "--campaign-mode", "train", "--precision", "bf16", "--max-num-seqs", str(p["max_num_seqs"]),
                 "--max-num-batched-tokens", str(p["max_num_batched_tokens"]), "--token-budget", str(p["token_budget"]),
+                "--engine", p["engine"]["name"], "--kv-cache-gib", str(p["engine"]["kv_cache_gib"]),
+                "--gpu-memory-utilization", str(p["engine"]["gpu_memory_utilization"]),
+                "--vllm-sleep" if p["engine"]["sleep"] else "--no-vllm-sleep",
                 "--execution-max-blocks", "219", "--allow-model-run", *extra]
 
     def advance(blocks: int, *extra: str) -> list[str]:

@@ -18,7 +18,7 @@ from PIL import Image
 import torch
 
 from fine_tuning.error_note import audit, rl, single
-from fine_tuning.error_note.collect import single_request_binding, single_request_sha256
+from fine_tuning.error_note.collect import WAIT, single_request_binding, single_request_sha256
 from fine_tuning.error_note.protocol import SINGLE_SAMPLING, plain_protocol_single, single_blocks
 from fine_tuning.tests.test_error_note_single_audit import record_for, solution_review
 from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, pin_reward_fixture
@@ -75,7 +75,7 @@ class RuntimeTests(unittest.TestCase):
         return single.run_single_block(self.owner, actors=self.actors, items=self.items,
                                        provenance={pid: PROVENANCE for pid in self.actors}, gold=gold, grade=grade,
                                        load_images=lambda actor: [Image.new("RGB", (8, 8))], protocol=self.protocol,
-                                       output=self.out, limit=limit, stream=self.stream, **kwargs)
+                                       output=self.out, limit=limit, **({"stream": self.stream} | kwargs))
 
     def leaking(self, lesson):
         original = self.stream
@@ -161,6 +161,44 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(row["generation"]["completion_token_ids"], actions)
             self.assertEqual([r["kind"] for r in closed["rows"]], ["RL", "RL", "A2", "B"])
             self.assertEqual(len(self.seen), 4)
+
+    def continuous(self, events):
+        """A WAIT-aware engine like collect.continuous_stream: up to 16 active, one completion per step (FIFO)."""
+        def stream(requests, stats, stop_after):
+            iterator, active, done = iter(requests), [], False
+
+            def fill():
+                nonlocal done
+                while not done and len(active) < 16:
+                    item = next(iterator, None)
+                    if item is None:
+                        done = True
+                    elif item is WAIT:
+                        return
+                    else:
+                        events.append(("submit", item["request_id"]))
+                        active.append(item)
+            fill()
+            while active:
+                item = active.pop(0)
+                events.append(("complete", item["request_id"]))
+                yield from self.stream([item], stats, stop_after)
+                fill()
+        stream.continuous = True
+        return stream
+
+    def test_continuous_engine_starts_a_note_before_other_first_solves_end_with_identical_rows(self):
+        staged = self.run_block(limit=10)
+        staged_rows = json.loads((self.out / staged["rows_path"]).read_text())["rows"]
+        self.out, self.seen, events = Path(self.tmp.name) / "pipelined", [], []
+        with patch.object(self, "stream", wraps=self.stream):
+            state = self.run_block(limit=10, stream=self.continuous(events))
+        self.assertEqual(state["status"], "ROWS_READY")
+        self.assertEqual(json.loads((self.out / state["rows_path"]).read_text())["rows"], staged_rows)
+        self.assertLess(events.index(("submit", "p1:note")), events.index(("complete", "p9:t1")))
+        self.assertEqual(len(self.seen), 12)
+        self.assertEqual(self.run_block(limit=10, stream=self.continuous(events))["status"], "ROWS_READY")
+        self.assertEqual(len(self.seen), 12)  # a rerun reuses every completion, including follow-ups
 
     def test_unverifiable_t1_keeps_rl_row_with_zero_reward_and_gets_no_gold_note(self):
         def grade(pid, text, finish, mode):

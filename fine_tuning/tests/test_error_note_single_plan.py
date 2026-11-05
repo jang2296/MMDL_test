@@ -35,6 +35,7 @@ BASE = {
     "training_rules_path": "/workspace/private/training-rules.json", "training_rules_sha256": "e" * 64,
     "pilot_ids_sha256": "f" * 64, "dev_ids_sha256": "1" * 64, "retention_ids_sha256": "2" * 64,
     "max_num_seqs": 16, "max_num_batched_tokens": 393216, "token_budget": 24000,
+    "engine": {"name": "vllm", "kv_cache_gib": 16, "gpu_memory_utilization": 0.65, "sleep": True},
 }
 PILOT_EXTRA = {
     "dev_manifest_path": "/workspace/private/dev/manifest.json", "dev_manifest_sha256": "3" * 64,

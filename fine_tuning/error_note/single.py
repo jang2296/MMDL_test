@@ -225,7 +225,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     if stream is None:
         args = argparse.Namespace(**vars(stream_args)) if stream_args is not None else argparse.Namespace()
         args.policy_sha256, args.protocol_sha256 = policy, protocol["sha256"]
-        stream = hf_single_stream_builder(bundle, args, stats)
+        stream = (getattr(args, "stream_builder", None) or hf_single_stream_builder)(bundle, args, stats)
 
     def checkpoint(status: str, **extra) -> dict:
         if policy_sha256(bundle) != policy:
@@ -239,33 +239,73 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             raise ValueError("single runtime: accepted note is no longer parseable")
         return parsed.lesson
 
+    def request(pid: str, stage: str, prompt: str) -> dict:
+        return {"request_id": f"{pid}:{stage}", "problem_id": pid, "block_id": block_id, "stage": stage,
+                "seed": sample_seed(pid, "t1" if stage == "t1" else stage), "max_tokens": MAX_NEW_TOKENS,
+                "messages": [user_message(prompt, len(actors[pid].image_paths))], "images": load_images(actors[pid]),
+                "prompt": prompt}
+
+    def accept(stage: str, pid: str, output_: dict, prompt: str) -> None:
+        result = dict(output_) | {"prompt": prompt}
+        if stage != "note":
+            status, extracted = grade(pid, result["text"], result["finish_reason"], actors[pid].mode)
+            if status not in GRADED | {UNVERIFIABLE}:
+                raise ValueError(f"single runtime: ungraded/system outcome blocks the block: {status}")
+            result.update(status=status, extracted=extracted)
+        if stage == "resolve":
+            result["lesson_sha256"] = text_sha256(lesson(pid))
+        previous = state["records"][pid].get(stage)
+        if previous is not None and previous != result:
+            raise ValueError("single runtime: completed generation/grade changed")
+        state["records"][pid][stage] = result
+        checkpoint("COLLECTING_" + stage.upper())
+
+    def note_prompt(pid: str) -> str:
+        t1 = state["records"][pid]["t1"]
+        return note_prompt_single(state["records"][pid]["p0_text"], t1["text"], t1["status"], gold(pid))
+
+    def note_decision(pid: str) -> tuple[dict, dict]:
+        record, source = state["records"][pid], provenance[pid]
+        audit = audit_single_note(record, gold=gold(pid), choices=actors[pid].choices, provenance=source,
+                                  aliases=source.get("leak_aliases", ()),
+                                  acronym_candidates=source.get("acronym_candidates", ()))
+        validate_single_note_audit(audit, record, source)
+        return audit, note_program_decision(audit)
+
+    def is_wrong(pid: str) -> bool:
+        return state["records"][pid]["t1"]["status"] not in ("CORRECT", UNVERIFIABLE)
+
     def generate(stage: str, prompts: dict[str, str]) -> bool:
-        requests = [{"request_id": f"{pid}:{stage}", "problem_id": pid, "block_id": block_id, "stage": stage,
-                     "seed": sample_seed(pid, "t1" if stage == "t1" else stage), "max_tokens": MAX_NEW_TOKENS,
-                     "messages": [user_message(prompt, len(actors[pid].image_paths))], "images": load_images(actors[pid])}
-                    for pid, prompt in prompts.items()]
+        requests = [request(pid, stage, prompt) for pid, prompt in prompts.items()]
         if not requests:
             return True
-        results = run_single_requests(requests, stream, stats, output, policy_sha256=policy,
-                                      protocol_sha256=protocol["sha256"], stop_after=stop_after)
-        for request in requests:
-            pid = request["problem_id"]
-            if request["request_id"] not in results:
-                continue
-            result = dict(results[request["request_id"]]) | {"prompt": prompts[pid]}
-            if stage != "note":
-                status, extracted = grade(pid, result["text"], result["finish_reason"], actors[pid].mode)
-                if status not in GRADED | {UNVERIFIABLE}:
-                    raise ValueError(f"single runtime: ungraded/system outcome blocks the block: {status}")
-                result.update(status=status, extracted=extracted)
-            if stage == "resolve":
-                result["lesson_sha256"] = text_sha256(lesson(pid))
-            previous = state["records"][pid].get(stage)
-            if previous is not None and previous != result:
-                raise ValueError("single runtime: completed generation/grade changed")
-            state["records"][pid][stage] = result
-            checkpoint("COLLECTING_" + stage.upper())
+        results = run_single_requests([{k: v for k, v in r.items() if k != "prompt"} for r in requests], stream, stats,
+                                      output, policy_sha256=policy, protocol_sha256=protocol["sha256"], stop_after=stop_after)
+        for item in requests:
+            if item["request_id"] in results:
+                accept(stage, item["problem_id"], results[item["request_id"]], item["prompt"])
         return all(stage in state["records"][pid] for pid in prompts)
+
+    def pipeline() -> None:
+        """Continuous engines: a question's note/re-solve starts as soon as its own previous stage ends."""
+        prompts: dict[str, str] = {}
+
+        def submit(item: dict) -> dict:
+            prompts[item["request_id"]] = item.pop("prompt")
+            return item
+
+        def follow(item: dict, result: dict) -> list[dict]:
+            pid, stage = item["problem_id"], item["stage"]
+            accept(stage, pid, result, prompts[item["request_id"]])
+            if stage == "t1" and is_wrong(pid):
+                return [submit(request(pid, "note", note_prompt(pid)))]
+            if stage == "note" and note_decision(pid)[1]["accepted"]:
+                return [submit(request(pid, "resolve", resolve_prompt(state["records"][pid]["p0_text"], lesson(pid))))]
+            return []
+
+        run_single_requests([submit(request(pid, "t1", state["records"][pid]["p0_text"])) for pid in active], stream,
+                            stats, output, policy_sha256=policy, protocol_sha256=protocol["sha256"],
+                            stop_after=stop_after, follow_up=follow)
 
     for item in items[:limit]:
         pid, actor = item["problem_id"], actors[item["problem_id"]]
@@ -276,20 +316,16 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             state["records"][pid] = metadata
         elif any(state["records"][pid][k] != value for k, value in metadata.items()):
             raise ValueError("single runtime: actor metadata changed")
+    if getattr(stream, "continuous", False):
+        pipeline()  # The staged pass below then reuses every completion from the ledger without generating.
     if not generate("t1", {pid: state["records"][pid]["p0_text"] for pid in active}):
         return checkpoint("INCOMPLETE_T1")
-    wrong = [pid for pid in active if state["records"][pid]["t1"]["status"] not in ("CORRECT", UNVERIFIABLE)]
-    if not generate("note", {pid: note_prompt_single(state["records"][pid]["p0_text"], state["records"][pid]["t1"]["text"],
-                                                state["records"][pid]["t1"]["status"], gold(pid)) for pid in wrong}):
+    wrong = [pid for pid in active if is_wrong(pid)]
+    if not generate("note", {pid: note_prompt(pid) for pid in wrong}):
         return checkpoint("INCOMPLETE_NOTE")
     audits, note_decisions = {}, {}
     for pid in wrong:
-        record, source = state["records"][pid], provenance[pid]
-        audits[pid] = audit_single_note(record, gold=gold(pid), choices=actors[pid].choices, provenance=source,
-                                       aliases=source.get("leak_aliases", ()),
-                                       acronym_candidates=source.get("acronym_candidates", ()))
-        validate_single_note_audit(audits[pid], record, source)
-        note_decisions[pid] = note_program_decision(audits[pid])
+        audits[pid], note_decisions[pid] = note_decision(pid)
     approved = [pid for pid in wrong if note_decisions[pid]["accepted"]]
     if not generate("resolve", {pid: resolve_prompt(state["records"][pid]["p0_text"], lesson(pid))
                                 for pid in approved}):

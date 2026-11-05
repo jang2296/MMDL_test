@@ -125,7 +125,16 @@ def _prepare(args: argparse.Namespace) -> dict:
                 "max_num_batched_tokens": args.max_num_batched_tokens if args.max_num_batched_tokens is not None else
                     (16 * CONTEXT_LIMIT if measured else CONTEXT_LIMIT),
                 "token_budget": args.token_budget if args.token_budget is not None else (16 * CONTEXT_LIMIT if measured else 0),
-                "context_limit": CONTEXT_LIMIT}
+                "context_limit": CONTEXT_LIMIT, "engine": getattr(args, "engine", "hf")}
+    if capacity["engine"] == "vllm":
+        capacity |= {"kv_cache_gib": args.kv_cache_gib, "gpu_memory_utilization": args.gpu_memory_utilization,
+                     "vllm_sleep": args.vllm_sleep}
+        if (args.precision != "bf16" or not isinstance(args.kv_cache_gib, (int, float)) or not args.kv_cache_gib > 0
+                or not isinstance(args.gpu_memory_utilization, float) or not 0 < args.gpu_memory_utilization < 1
+                or type(args.vllm_sleep) is not bool):
+            raise ValueError("single campaign: vLLM generation needs BF16, positive KV GiB and a utilization in (0,1)")
+    elif capacity["engine"] != "hf":
+        raise ValueError("single campaign: engine must be hf or vllm")
     if (type(capacity["max_num_seqs"]) is not int or not 1 <= capacity["max_num_seqs"] <= 16
             or type(capacity["max_num_batched_tokens"]) is not int or capacity["max_num_batched_tokens"] < 1
             or type(capacity["token_budget"]) is not int or capacity["token_budget"] < 0):
@@ -366,6 +375,17 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
         torch.manual_seed(MASTER_SEED)
         factory = policy_factory or (build_quantized_policy if plan["protocol"]["precision"] == "nf4" else build_policy)
         optimizer = scheduler = None
+        sampler = None
+        if plan["capacity"]["engine"] == "vllm" and not reload_only and stream is None:
+            from transformers import GenerationConfig
+            from .single_vllm import SingleVllmSampler
+
+            # Before the HF policy reaches the GPU: vLLM checks its memory fraction against free memory at start.
+            eos = GenerationConfig.from_pretrained(str(model_path), local_files_only=True).eos_token_id
+            sampler = SingleVllmSampler(model_path, kv_cache_gib=plan["capacity"]["kv_cache_gib"],
+                max_num_seqs=plan["capacity"]["max_num_seqs"],
+                gpu_memory_utilization=plan["capacity"]["gpu_memory_utilization"],
+                sleep=plan["capacity"]["vllm_sleep"], eos_token_ids=eos if isinstance(eos, list) else [eos])
         if selected is not None:
             def checked_factory(*values):
                 fresh = factory(*values)
@@ -402,6 +422,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             single._state(state_path, state)
         capacity = None
         args = argparse.Namespace(**plan["capacity"])
+        if sampler is not None:
+            args.stream_builder = sampler.stream_builder
         if "profile" in plan["capacity"]:
             from .capacity import Capacity, load_profile
 
@@ -475,6 +497,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 bundle.processor, bundle.model.config, row, load_images(actors[row["problem_id"]])) for row in closed["rows"]]
             if train:
                 cursor.update(last_transaction_sha256=digest(transaction), parent_checkpoint=state["checkpoint"])
+                if sampler is not None:
+                    sampler.release()  # vLLM weights/KV leave the GPU before the HF backward
                 update = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, closed["contract"], cursor=cursor,
                     block_ids=ids, allow_update=True, token_budget=args.token_budget, capacity=capacity)
                 single._sealed(block_output / "update-stats.json", {"transaction_sha256": digest(transaction),
@@ -533,6 +557,10 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name + "-sha256")
     for name in ("max-num-seqs", "max-num-batched-tokens", "token-budget"):
         parser.add_argument("--" + name, type=int)
+    parser.add_argument("--engine", choices=("hf", "vllm"), default="hf", help="generation engine (vllm: BF16 pods)")
+    parser.add_argument("--kv-cache-gib", type=float, default=16.)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=.65)
+    parser.add_argument("--vllm-sleep", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-blocks", type=int, default=1, help="blocks to run in this call")
     parser.add_argument("--execution-max-blocks", type=int, default=219, help="sealed campaign-wide ceiling")
     parser.add_argument("--allow-model-run", action="store_true")
