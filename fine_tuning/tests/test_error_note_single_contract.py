@@ -12,6 +12,13 @@ from fine_tuning.error_note.protocol import (SINGLE_REWARD_GATE, VERSION_SINGLE,
                                             plain_protocol_single, single_blocks, single_prompts_sha256)
 
 
+def note_record(cause, status):
+    """A parsed v2 note with the given Cause for a T1 with the given status."""
+    note = ("What the image shows: two labelled bars.\nImage reading: CORRECT\nCause: " + cause
+            + "\nWhat went wrong: I compared the wrong bars.\nLesson: Read each bar label before comparing.")
+    return {"t1": {"status": status}, "note": {"text": note}}
+
+
 class SingleLessonTests(unittest.TestCase):
     def test_direct_lowercase_unicode_and_position_references_block(self):
         for text in ("Pick b.", "Choose the second choice.", "b is correct.", "Select Ｂ.",
@@ -73,14 +80,18 @@ class SingleProtocolTests(unittest.TestCase):
     def test_neutral_single_parser_feedback_preserves_original_response_gold_and_legacy_v3(self):
         p0, raw, gold = "Question: exact P0", "Original prose\nGrading result: NO CLEAR FINAL ANSWER\nFinal answer: 50.2%", "[48, 52]%"
         for status in ("INVALID_NO_FINAL", "INVALID_MULTIPLE"):
-            old, new = note_prompt_v3(p0, raw, status, gold), note_prompt_single(p0, raw, status, gold)
+            old, new = note_prompt_v3(p0, raw, status, gold), note_prompt_single(p0, raw, status, gold, read=None)
             prefix = f"{p0}\n\nYour earlier solution:\n{raw}\n\nGrading result: "
             self.assertEqual(old, prefix + "NO CLEAR FINAL ANSWER\n" + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V3}")
-            self.assertEqual(new, prefix + SINGLE_VERDICT_LABELS[status] + "\n" + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
+            self.assertEqual(new, prefix + SINGLE_VERDICT_LABELS[status] + "\n"
+                             + "The grader read your final answer as: no final answer\n"
+                             + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
             self.assertIn("This does not establish that no final answer was written; inspect the original response.", new)
         for status in ("CORRECT", "INCORRECT", "TRUNCATED"):  # v7: the v3 feedback with the SINGLE instruction
-            self.assertEqual(note_prompt_single(p0, raw, status, gold),
-                             note_prompt_v3(p0, raw, status, gold).removesuffix(NOTE_INSTRUCTION_V3) + NOTE_INSTRUCTION_SINGLE)
+            v3 = note_prompt_v3(p0, raw, status, gold).removesuffix(NOTE_INSTRUCTION_V3) + NOTE_INSTRUCTION_SINGLE
+            self.assertEqual(note_prompt_single(p0, raw, status, gold, read="  2399999\n unit "),
+                             v3.replace("\nCorrect answer:", "\nThe grader read your final answer as: 2399999 unit"
+                                        "\nCorrect answer:"))
         self.assertEqual(VERDICT_LABELS["INVALID_NO_FINAL"], "NO CLEAR FINAL ANSWER")
 
 
@@ -94,7 +105,10 @@ class SingleV7Tests(unittest.TestCase):
         for sentence in added:
             self.assertEqual(base.count(sentence), 1)
             base = base.replace(sentence, "")
-        self.assertEqual(base, NOTE_INSTRUCTION_V2)
+        self.assertEqual(base, NOTE_INSTRUCTION_V2  # v8 removes the NONE cause and the nothing-went-wrong sentence
+                         .replace("CALCULATION, NO_FINAL_ANSWER or NONE.", "CALCULATION or NO_FINAL_ANSWER.")
+                         .replace(" If nothing went wrong, say what was done properly.", ""))
+        self.assertNotIn("NONE", NOTE_INSTRUCTION_SINGLE)
         self.assertTrue(NOTE_INSTRUCTION_SINGLE.startswith("Review your own work like a student writing an error note."
                                                            + added[0] + "\n"))
         for hedge in ("outside knowledge", "directly visible", "visible details"):
@@ -158,27 +172,40 @@ class SingleV7Tests(unittest.TestCase):
             audit = {"base_audit": {"format": {"result": "PASS"}, "leak_inputs": {"choices": choices},
                                     "checks": {"hint_leak": base_leak, "alias_leak": None}},
                      "single_hint_leak": None, "sha256": "0" * 64}
-            return single.note_program_decision(audit)
+            return single.note_program_decision(audit, note_record("IMAGE", "INCORRECT"))
         lesson, choices = "Remember that x² terms dominate for large inputs.", ["x", "x²", "2x"]
         self.assertIsNone(hint_leak_single(lesson, "B", choices))  # NFKC lesson "x2" vs raw option "x²"
         self.assertEqual(decision(hint_leak(lesson, "B", choices), choices)["reason"], "NOTE_HINT_LEAK")
         self.assertTrue(decision("OPTION_LETTER:A", [])["accepted"])
 
-    def test_protocol_records_union_reward_table_and_note_cap(self):
+    def test_protocol_records_scorer_reward_table_and_note_cap(self):
+        from fine_tuning.error_note.contract import DENIAL_PHRASES, GRADER_READ_LINE, GRADER_READ_NONE
+        from fine_tuning.error_note.single_grading import ALIASES, ALIASES_SHA256, NORMALIZATION_RULES
+
         pins = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
         contract = plain_protocol_single("bf16", 2, contracts=pins, token_scale=1024)["training_contract"]
         self.assertEqual((VERSION_SINGLE, SINGLE_REWARD_GATE),
-                         ("error-note-single-response-v7", "single-t1-program-gate-v4"))
+                         ("error-note-single-response-v8", "single-t1-program-gate-v5"))
         self.assertEqual(contract["answer_contracts"],
-                         {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1|training-answer-v2"})
-        self.assertEqual(contract["answer_union"]["name"], "p0-eval-aligned-v1|training-answer-v2")
+                         {"mcq": "p0-eval-aligned-v1", "open": "v8-extract+normalize+training-compare-v1"})
+        scorer = contract["answer_scorer"]
+        self.assertEqual((scorer["id"], scorer["rules"], scorer["aliases"], scorer["aliases_sha256"]),
+                         ("v8-extract+normalize+training-compare-v1", list(NORMALIZATION_RULES), ALIASES, ALIASES_SHA256))
+        self.assertEqual(ALIASES, {"hf-clevr": {"metallic": "metal", "matte": "rubber"}})
+        filters = contract["program_filters"]
+        self.assertEqual(filters["answer_denial"]["phrases"], list(DENIAL_PHRASES))
+        self.assertEqual(filters["note_cause"]["reasons"], ["NOTE_CAUSE_NONE", "NOTE_CAUSE_MISMATCH"])
+        self.assertEqual(filters["a2_review_references"]["match"], "word_boundary")
+        self.assertIn("first max(4, len-2) letters", filters["lesson_stem"])
+        self.assertNotIn("answer_union", contract)
         self.assertEqual(contract["rl"]["reward_values"],
                          {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1, "other": 0})
         self.assertEqual(contract["note_max_tokens"], 1024)
         self.assertEqual(contract["max_tokens"], {"t1": 8192, "resolve": 8192})
         self.assertEqual(single_prompts_sha256(), _digest({
             "note": NOTE_INSTRUCTION_SINGLE, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER,
-            "resolve_instruction": RESOLVE_INSTRUCTION_SINGLE}))
+            "resolve_instruction": RESOLVE_INSTRUCTION_SINGLE,
+            "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE]}))
 
 
 if __name__ == "__main__":

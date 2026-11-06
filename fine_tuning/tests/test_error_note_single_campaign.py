@@ -641,7 +641,17 @@ class UnionGradingTests(unittest.TestCase):
                          (("INCORRECT", "p0-eval-aligned-v1"), ["p0-eval-aligned-v1"]))
         protocol = plain_protocol_single("bf16", 1, contracts={k: "a" * 64 for k in ("source", "dataset", "order",
                                                                                       "data_admission")}, token_scale=1024.)
-        self.assertEqual(protocol["training_contract"]["answer_contracts"]["open"], union)
+        self.assertEqual(protocol["training_contract"]["answer_contracts"]["open"],
+                         "v8-extract+normalize+training-compare-v1")
+
+    def test_v8_open_scorer_delegates_to_single_grading_with_the_actor(self):
+        scorer = "v8-extract+normalize+training-compare-v1"
+        with patch("fine_tuning.error_note.single_grading.grade_single", return_value=("CORRECT", "3.84")) as graded:
+            self.assertEqual(single.grade_answer("verifier", scorer, "p", "t", "stop", "plain", actor="actor"),
+                             ("CORRECT", "3.84"))
+        graded.assert_called_once_with("verifier", "actor", "p", "t", "stop", "plain")
+        with self.assertRaisesRegex(ValueError, "needs the item actor"):
+            single.grade_answer("verifier", scorer, "p", "t", "stop", "plain")
 
 
 if __name__ == "__main__":

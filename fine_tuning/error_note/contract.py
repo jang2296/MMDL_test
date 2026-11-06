@@ -304,26 +304,34 @@ SINGLE_VERDICT_LABELS = VERDICT_LABELS | {key: "NOT ACCEPTED BY THE FINAL-ANSWER
 
 # v7 (2026-11-06 cycle-1 review): NOTE_INSTRUCTION_V2 plus exactly three sentences (answer denial, ignored parser/cut-off
 # feedback, generic "verify" lessons). No visible-detail/outside-knowledge wording: that V3 text taught image-only hedging.
+# v8: notes exist only for wrong answers, so Cause NONE and "if nothing went wrong" are no longer offered.
 NOTE_INSTRUCTION_SINGLE = """Review your own work like a student writing an error note. The given correct answer is right: never call it a mislabel, a typo or a mistake in the question.
 Use these headings in this order, each starting on a new line. Keep the whole note short, about 200 words at most, and do not write a solution.
 
 What the image shows: list the facts this problem needs, checking each one against the image.
 Image reading: CORRECT, MISREAD or UNSURE. Write MISREAD if your earlier solution used a fact the image does not show, even if its final answer was right.
-Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION, NO_FINAL_ANSWER or NONE. Use NO_FINAL_ANSWER when the grading result says your final answer was not accepted or the solution was cut off.
-What went wrong: the exact step and why. If nothing went wrong, say what was done properly.
+Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION or NO_FINAL_ANSWER. Use NO_FINAL_ANSWER when the grading result says your final answer was not accepted or the solution was cut off.
+What went wrong: the exact step and why.
 Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option. Name the specific rule, fact or reading step that would have prevented the error; do not only say to verify or double-check."""
 RESOLVE_INSTRUCTION_SINGLE = ('Solve the question below from the start. Reason step by step, then write exactly one final '
                               'answer on the last line as "Final Answer: ...". Do not mention the lesson or this review.')
 
 
-def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str) -> str:
-    """Prospective SINGLE feedback separates parser rejection from absence of a written answer."""
+# v8 (2026-11-06 cycle-2 review): the note input shows the value the grader read, so a format cause is visible.
+GRADER_READ_LINE = "The grader read your final answer as: {read}"
+GRADER_READ_NONE = "no final answer"
+
+
+def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str, *, read: str | None) -> str:
+    """Prospective SINGLE feedback separates parser rejection from absence of a written answer; v8 adds the
+    grader-read value (``read``, None when no single final answer was read) right after the grading result."""
     if not p0_text.strip() or not gold.strip():
         raise ValueError("single note: nonblank P0 and gold required")
     if status not in SINGLE_VERDICT_LABELS:
         raise ValueError(f"no single verdict label for status {status!r}")
+    shown = GRADER_READ_NONE if read is None or not str(read).strip() else " ".join(str(read).split())
     return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {SINGLE_VERDICT_LABELS[status]}\n"
-            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
+            f"{GRADER_READ_LINE.format(read=shown)}\nCorrect answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
 
 
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)
@@ -448,7 +456,23 @@ def hint_leak_single(lesson: str, gold: str, choices: tuple[str, ...] | list[str
                 return "OPTION_TEXT:" + letter
     if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
         raise ValueError("single lesson: nonempty source aliases required")
-    return "SOURCE_ALIAS" if any(_has_words(text, alias) for alias in aliases) else None
+    if any(_has_words(text, alias) for alias in aliases):
+        return "SOURCE_ALIAS"
+    # v8: a word stem of the gold or of any option inside a lesson word (metal -> "metallic", bronchus ->
+    # "bronchial"). Over-rejects on purpose (e.g. "metabolism"): a rejected note only costs its re-solve.
+    words = re.findall(r"[a-z]+", text.casefold())
+    stem = next((stem for stem in lesson_stems(gold, *choices) if any(stem in word for word in words)), None)
+    return None if stem is None else "STEM:" + stem
+
+
+LESSON_STEM_RULE = "lowercase [a-z]+ words of gold and every option, length >= 5 -> first max(4, len-2) letters; " \
+                   "flag when the stem occurs inside any lesson word"
+
+
+def lesson_stems(*texts: str) -> list[str]:
+    """LESSON_STEM_RULE stems of the given texts, sorted."""
+    words = {word for value in texts for word in re.findall(r"[a-z]+", unicodedata.normalize("NFKC", value).casefold())}
+    return sorted({word[:max(4, len(word) - 2)] for word in words if len(word) >= 5})
 
 
 def resolve_prompt(p0_text: str, lesson: str) -> str:
@@ -474,13 +498,28 @@ _IMAGE_ONLY_HEDGE = re.compile(
 _ANSWER_DENIAL = re.compile(r"\b(mislabel\w*|misrender\w*|typos?|misprint\w*|answer key|i don't know why|labeling error)\b")
 
 
+# v8: a solution that calls the question or its answer wrong is not an RL success (T1) or an A1/A2 target.
+DENIAL_PHRASES = ("question is incomplete", "not explicitly drawn", "mistake in the problem", "question is flawed",
+                  "mislabel", "misprint", "typo in the")
+
+
+def answer_denial(text: str) -> str | None:
+    """The first DENIAL_PHRASES entry starting at a word boundary ("mislabeled" matches "mislabel"), else None.
+    Markdown emphasis is dropped first: "the question is **incomplete**" (ai2d:000006) is a denial."""
+    lowered = " ".join(re.sub(r"[*_`]", "", text.lower().replace("’", "'")).split())
+    return next((phrase for phrase in DENIAL_PHRASES if re.search(rf"\b{re.escape(phrase)}", lowered)), None)
+
+
 def a2_target_problem(text: str, lesson: str) -> str | None:
     """Why a correct SINGLE re-solve may not be an A2 target (trained under the hint-free P0); None when it may."""
     if (phrase := resolve_leaked_phrase(text)) is not None:
         return "RESOLVE_LEAK:" + phrase
     lowered = text.lower()
-    if (phrase := next((p for p in _REVIEW_REFERENCES if p in lowered), None)) is not None:
+    # v8: whole words only ("has personal" is not "as per").
+    if (phrase := next((p for p in _REVIEW_REFERENCES if re.search(rf"\b{re.escape(p)}\b", lowered)), None)) is not None:
         return "REVIEW_REFERENCE:" + phrase
+    if (phrase := answer_denial(text)) is not None:
+        return "ANSWER_DENIAL:" + phrase
     words, hint = lowered.split(), lesson.lower().split()
     copied = {tuple(hint[i:i + 8]) for i in range(len(hint) - 7)}
     if any(tuple(words[i:i + 8]) in copied for i in range(len(words) - 7)):

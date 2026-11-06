@@ -307,6 +307,33 @@ class SingleRewardGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "program gate"):
                 single.validate_single_reward(forged)
 
+    def test_v5_gate_committed_answer_is_never_uncommitted_and_denial_earns_zero(self):
+        owner = tiny_factory()
+        rows, _ = block(owner, count=1)
+        long_ids = list(range(100, 140))
+        denial = "The diagram is mislabeled, so I use the angle sum. Final answer: 32"
+        cases = (  # status, extracted, text, reward, penalty, reason
+            ("INVALID_MULTIPLE", "new york, connecticut, and massachusetts", None, 0, None, "T1_NOT_CORRECT"),
+            ("INVALID_NO_FINAL", "a committed answer too long to compare", None, 0, None, "T1_NOT_CORRECT"),
+            ("INVALID_NO_FINAL", None, None, -1, "NO_COMMITTED_ANSWER", "T1_NOT_CORRECT"),
+            ("CORRECT", "32", denial, 0, None, "T1_ANSWER_DENIAL:mislabel"),
+            ("CORRECT", "32", "The angle sum gives 32 degrees here. Final answer: 32", 1, None, None))
+        for status, extracted, text, reward, penalty, reason in cases:
+            with self.subTest(status=status, extracted=extracted, text=text):
+                row = copy.deepcopy(rows[0])
+                row.update(status=status, prompt="Question: authored CPU fixture", target_source="T1",
+                           image_paths=["fixture.png"], image_sha256=["a" * 64], subject="Biology", source="authored-test")
+                row["generation"]["completion_token_ids"] = long_ids
+                row["target"] = row["generation"]["text"] = text or "Authored final answer: B"
+                t1 = {"text": row["target"], "generation": row["generation"], "prompt": row["prompt"],
+                      "status": status, "finish_reason": "stop", "extracted": extracted}
+                single.bind_single_reward(row, t1, PROVENANCE)
+                decision = row["reward_evidence"]["decision"]
+                self.assertEqual((row["reward"], decision["penalty"], decision["reason"]), (reward, penalty, reason))
+                self.assertEqual(single.validate_single_reward(row), decision)
+                if reason is None:  # the same denial-free target is also an admissible A1
+                    self.assertIsNone(single.answer_denial(row["target"]))
+
     def test_negative_reward_pushes_the_bare_answer_down(self):
         owner = tiny_factory()
         rows, contract = block(owner, count=1)

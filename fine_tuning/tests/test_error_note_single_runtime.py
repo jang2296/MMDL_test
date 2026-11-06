@@ -150,6 +150,27 @@ class RuntimeTests(unittest.TestCase):
                 if stage != "note":
                     self.assertNotIn("p1:B", closed["row_decisions"])  # B follows its A2
 
+    def test_v8_a1_answer_denial_and_grader_read_note_input(self):
+        original = self.stream
+
+        def authored(requests, stats, stop_after):
+            for request, output in original(requests, stats, stop_after):
+                if request["stage"] == "t1" and request["problem_id"] == "p0":
+                    output["text"] = output["generation"]["text"] = "The figure is mislabeled. " + output["text"]
+                yield request, output
+
+        with patch.object(self, "stream", new=authored):
+            state = self.run_block()
+        closed = json.loads((self.out / state["rows_path"]).read_text())
+        self.assertEqual(closed["row_decisions"]["p0:A1"],
+                         {"accepted": False, "method": "program", "reason": "A1_ANSWER_DENIAL:mislabel"})
+        rl_row = next(r for r in closed["rows"] if r["problem_id"] == "p0" and r["kind"] == "RL")
+        self.assertEqual((rl_row["reward"], rl_row["reward_evidence"]["decision"]["reason"]),
+                         (0, "T1_ANSWER_DENIAL:mislabel"))
+        note = next(r for r in self.seen if r["stage"] == "note")
+        self.assertIn("\nGrading result: WRONG\nThe grader read your final answer as: A\nCorrect answer: B",
+                      note["messages"][0]["content"][-1]["text"])
+
     def test_fixed2_then10_reuses_first2_and_only_adds_next8(self):
         self.assertEqual(self.run_block()["status"], "ROWS_READY")
         result = self.run_block(limit=10)
@@ -455,7 +476,7 @@ print('guard boundary PASS; no model loaded')
         self.assertEqual(target_problem("B", [11], "stop", "CORRECT"), "TOO_SHORT")
         self.assertEqual(self.protocol["training_contract"]["length_policy"]["min_target_tokens"], 32)
         self.assertEqual(self.protocol["training_contract"]["answer_contracts"],
-                         {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1|training-answer-v2"})
+                         {"mcq": "p0-eval-aligned-v1", "open": "v8-extract+normalize+training-compare-v1"})
         for kind in ("A1", "A2", "B"):
             record = record_for(correct=kind == "A1")
             stage = {"A1": "t1", "A2": "resolve", "B": "note"}[kind]

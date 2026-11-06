@@ -1,4 +1,4 @@
-"""Same-policy, single-response RL + self-note SFT with program-only row admission (protocol SINGLE v7).
+"""Same-policy, single-response RL + self-note SFT with program-only row admission (protocol SINGLE v8).
 
 The CLI collects a preregistered local prefix and proves backward without an optimizer.
 Rows are admitted by program checks only (graded correct, normal stop, no loop, no lesson leak);
@@ -21,10 +21,10 @@ from .collect import ResourceLog, StreamStats, hf_single_stream_builder, install
 from .collect_v3 import file_sha, generation_identity
 from .collect_v4 import run_single_requests
 from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS, ROUTE_FULL, ROUTE_LM,
-                       a2_target_problem, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
+                       a2_target_problem, answer_denial, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
                        resolve_prompt_single, sample_seed)
-from .protocol import (ARM, SINGLE_ANSWER_UNION, SINGLE_NOTE_MAX_TOKENS, SINGLE_REWARD_GATE, VERSION_SINGLE,
-                       plain_protocol_single, single_blocks, single_prompts_sha256)
+from .protocol import (ARM, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE, SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER,
+                       SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -37,11 +37,19 @@ UNVERIFIABLE = "UNVERIFIABLE"
 NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
 
 
-def grade_answer(verifier: Any, contract: str, pid: str, text: str, finish_reason: str, mode: str) -> tuple[str, Any]:
-    """One response, one grade. The v7 open union keeps the V8 result unless it is not CORRECT and the unit-aware
-    training contract grades the same text CORRECT (V8 rejects e.g. "3.84 billion euros" or "three")."""
+def grade_answer(verifier: Any, contract: str, pid: str, text: str, finish_reason: str, mode: str, *,
+                 actor: Any = None) -> tuple[str, Any]:
+    """One response, one grade. v8 open answers delegate to single_grading.grade_single (needs the actor). The v7
+    open union keeps the V8 result unless it is not CORRECT and the unit-aware training contract grades the same
+    text CORRECT; a plain contract name grades with that contract only."""
     from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
 
+    if contract == SINGLE_OPEN_SCORER:
+        from .single_grading import grade_single
+
+        if actor is None:
+            raise ValueError("single grading: the v8 open scorer needs the item actor")
+        return grade_single(verifier, actor, pid, text, finish_reason, mode)
     union = contract == SINGLE_ANSWER_UNION
     value = verifier.grade(pid, text, finish_reason, mode, answer_contract=TURN1_EVAL_CONTRACT if union else contract)
     if union and value.status != "CORRECT":
@@ -162,14 +170,16 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
             problem = target_problem(row["target"], row["generation"]["completion_token_ids"], t1["finish_reason"],
                                      "CORRECT", min_tokens=SOLUTION_MIN_TOKENS)
             reason = None if _candidate(record, "A1") is not None else "T1_INELIGIBLE_" + (problem or "EMPTY_TARGET")
+            if reason is None and (phrase := answer_denial(row["target"])) is not None:
+                reason = "T1_ANSWER_DENIAL:" + phrase  # v5: a correct answer that calls the question wrong earns 0
         # v7: a correct answer is never pushed down (v5's -1 on correct bare answers lowered the answer tokens);
         # nor is an UNVERIFIABLE one, which may be correct. Truncation without a loop stays 0.
         penalty, stopped = None, t1["finish_reason"] == "stop"
         if row["status"] not in ("CORRECT", UNVERIFIABLE):
             if stopped and len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS:
                 penalty = "BARE_WRONG"
-            elif stopped and row["status"] in NO_COMMITTED:
-                penalty = "NO_COMMITTED_ANSWER"
+            elif stopped and row["status"] in NO_COMMITTED and t1.get("extracted") is None:
+                penalty = "NO_COMMITTED_ANSWER"  # v5: never when the grader read one committed answer
             elif is_loop(row["target"]):
                 penalty = "LOOP"
         return {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
@@ -205,10 +215,27 @@ def validate_single_reward(row: dict) -> dict:
     return decision
 
 
-def note_program_decision(audit: dict) -> dict:
-    """Program-only note admission: parsed note that stopped normally and passed every bounded leak check."""
+def note_cause_problem(note_text: str, t1_status: str) -> str | None:
+    """v8: why a note may not be a B row because of its Cause (notes exist only for wrong answers, so NONE is never
+    right; an unaccepted or cut-off answer is NO_FINAL_ANSWER). The note still drives its one re-solve."""
+    parsed = parse_note_v2(note_text)
+    if parsed is None:
+        return "NOTE_FORMAT_INVALID"
+    if parsed.cause in SINGLE_NOTE_CAUSE_RULE["reject_cause"]:
+        return "NOTE_CAUSE_NONE"
+    if (t1_status in SINGLE_NOTE_CAUSE_RULE["unaccepted_statuses"]
+            and parsed.cause != SINGLE_NOTE_CAUSE_RULE["unaccepted_cause"]):
+        return "NOTE_CAUSE_MISMATCH"
+    return None
+
+
+def note_program_decision(audit: dict, record: dict) -> dict:
+    """Program-only note admission for the re-solve: parsed note that stopped normally and passed every bounded leak
+    check. Its Cause is checked only when it would become a B row (note_cause_problem), so a NONE note's lesson is
+    still tried once (cycle-2 audit: rejecting it here removed almost every A2)."""
     base = audit["base_audit"]
-    if base["format"]["result"] != "PASS":
+    parsed = parse_note_v2(record["note"]["text"]) if base["format"]["result"] == "PASS" else None
+    if base["format"]["result"] != "PASS" or parsed is None:
         reason = "NOTE_FORMAT_INVALID"
     # Open items only: hint_leak_single re-runs the base hint_leak there without option letters. MCQ keeps the base
     # check, whose raw lesson/option comparison catches e.g. a gold option "x²" that the NFKC single check misses.
@@ -303,7 +330,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
 
     def note_prompt(pid: str) -> str:
         t1 = state["records"][pid]["t1"]
-        return note_prompt_single(state["records"][pid]["p0_text"], t1["text"], t1["status"], gold(pid))
+        return note_prompt_single(state["records"][pid]["p0_text"], t1["text"], t1["status"], gold(pid),
+                                  read=t1.get("extracted"))
 
     def note_decision(pid: str) -> tuple[dict, dict]:
         record, source = state["records"][pid], provenance[pid]
@@ -311,7 +339,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
                                   aliases=source.get("leak_aliases", ()),
                                   acronym_candidates=source.get("acronym_candidates", ()))
         validate_single_note_audit(audit, record, source)
-        return audit, note_program_decision(audit)
+        return audit, note_program_decision(audit, record)
 
     def is_wrong(pid: str) -> bool:
         return state["records"][pid]["t1"]["status"] not in ("CORRECT", UNVERIFIABLE)
@@ -387,12 +415,14 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         reason = None if row is not None else f"{kind}_NOT_ADMISSIBLE"
         if row is not None and kind == "A2" and (problem := a2_target_problem(row["target"], lesson(pid))):
             row, reason = None, "A2_" + problem
+        elif row is not None and kind == "A1" and (phrase := answer_denial(row["target"])) is not None:
+            row, reason = None, "A1_ANSWER_DENIAL:" + phrase
         decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
         if row is None:
             continue  # B follows its A2
         rows.append(row)
         if kind == "A2" and (note_row := _candidate(record, "B")) is not None:
-            problem = b_target_problem(note_row["target"])
+            problem = b_target_problem(note_row["target"]) or note_cause_problem(note_row["target"], record["t1"]["status"])
             decisions[f"{pid}:B"] = {"accepted": problem is None, "method": "program",
                                      "reason": None if problem is None else "B_" + problem}
             if problem is None:
@@ -727,7 +757,7 @@ def _main(args: argparse.Namespace) -> int:
 
             def grade(pid, text, finish_reason, mode):
                 return grade_answer(verifier, contracts["mcq" if actors[pid].choices else "open"], pid, text,
-                                    finish_reason, mode)
+                                    finish_reason, mode, actor=actors[pid])
 
             state = run_single_block(bundle, actors=actors, items=plan["fixed10"], provenance=sources, gold=gold, grade=grade,
                                      load_images=lambda actor: load_images(actor, args.build_root / "images"),

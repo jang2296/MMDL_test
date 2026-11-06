@@ -641,13 +641,13 @@ def main(argv: list[str] | None = None) -> int:
                                *[path for path in (args.pilot_gate,) if path is not None]])
             with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
                                  training_rules_sha256=args.training_rules_sha256) as verifier:
-                # MCQ: the V8-aligned evaluation contract only; open answers: V8 first, and the unit-aware training
-                # contract only when it turns a non-CORRECT V8 result CORRECT (protocol answer_union).
+                # MCQ: the V8-aligned evaluation contract only; open answers: the protocol's scorer (v8:
+                # single_grading, V8 extraction + recorded normalization + training comparison).
                 contracts = plan["protocol"]["training_contract"]["answer_contracts"]
 
                 def grade(pid, text, finish, mode):
                     return single.grade_answer(verifier, contracts["mcq" if actors[pid].choices else "open"], pid, text,
-                                               finish, mode)
+                                               finish, mode, actor=actors[pid])
 
                 result = run_campaign(plan, output=args.output, model_path=args.model_path, actors=actors, provenance=sources,
                     gold=gold.__getitem__, grade=grade, load_images=lambda actor: load_images(actor, args.build_root / "images"),
