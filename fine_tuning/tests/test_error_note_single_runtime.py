@@ -420,7 +420,7 @@ print('guard boundary PASS; no model loaded')
         self.assertEqual(target_problem("B", [11], "stop", "CORRECT"), "TOO_SHORT")
         self.assertEqual(self.protocol["training_contract"]["length_policy"]["min_target_tokens"], 32)
         self.assertEqual(self.protocol["training_contract"]["answer_contracts"],
-                         {"mcq": "p0-eval-aligned-v1", "open": "training-answer-v2"})
+                         {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1"})
         for kind in ("A1", "A2", "B"):
             record = record_for(correct=kind == "A1")
             stage = {"A1": "t1", "A2": "resolve", "B": "note"}[kind]

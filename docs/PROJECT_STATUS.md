@@ -73,6 +73,13 @@
   checkpoint-75 메타 해시=상태 기록. 병합 가중치(8.3GB)는 체크포인트+원본으로 재생성 가능해 제외. 원장
   `/home/jang2/mmdl-artifacts/self-note-single-20261105/pod-single-main-4jbm59pjzm4zc5/`(분석 `analysis-paired-f0.json` df3efd64…).
   **포드 4jbm59pjzm4zc5 삭제(204), 포드 목록 0대 확인.** 청구 조회 3.92달러(반영 지연, 약 7.4시간×0.59≈4.4달러 예상).
+- **SINGLE v5 (2026-11-06 사용자 지시 "분석 후 바로 코드를 수정하고 런포드에서 진행", 900은 한 번에, 67 목표):**
+  분석 `claudedocs/analysis_single_rlsft_failure_20261106.md` — 손실 원인은 V3 노트 지시문의 "이미지만" 태도(MMMU 226/900, 그 226문항 82 vs F0 110;
+  나머지 674문항 440 vs 431), 학습 중단 원인은 맞힌 답만 보상한 짧은 답 쏠림. 67점(603)은 근거 없음으로 보고.
+  학습 커밋 MMDL_test `6b40d9b`(V2 노트 지시문, 정상 종료 32토큰 미만 T1 보상 −1, `--direct-main`/plan `single-direct`, notebook_rl=0c1ed78 동일,
+  로컬 prepare PREPARED 3,500/219), 평가 커밋 `36b682f`(prereg v8: 900 정렬 ID 한 번 실행, stage stopped). Codex 검토 불가 → 독립 Opus 검토 반영(CLI --all-subset 등).
+  포드 A40 `0m240cf3uqstor`(CA-MTL-1, 0.59달러/시, 10:09:22Z 생성), 잔액 14.0 가정. 학습 작업 `single-v5`(예약금 1.6, 최대 72,000초) 10:25Z 시작;
+  06:05Z(11-07) 미완료면 체크포인트 저장 직후 정상 중단 → 대기 세션 `eval-v5`가 재로딩(중단 시)·내보내기·v8 900 1회(예약금 0.2) 자동 실행.
 
 ## 2026-11-05 — 10:44Z 사용자 요청으로 저장 후 중단, Claude 인계
 

@@ -134,14 +134,18 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # v5 (2026-11-06, main v4 run stopped at slot 75): V2 note instruction (V3 taught image-only hedging) and reward -1
 # for a normally finished T1 under 32 tokens (bare answers rose 28% -> 44% with no penalty), see
 # claudedocs/analysis_single_rlsft_failure_20261106.md.
-VERSION_SINGLE = "error-note-single-response-v5"
+# v6 (2026-11-06): open answers also use the V8-aligned contract MMMU scores with. training-answer-v2 rejected
+# common final-answer notation (emoji/bold/heading, a repeated boxed value): on the stored v4 T1, 262 of 514 open
+# answers were INVALID, so their notes reviewed parser output; V8 grading gives +33 correct open answers
+# (-24 bare range lines) and A2-eligible re-solves 50 -> 76.
+VERSION_SINGLE = "error-note-single-response-v6"
 SINGLE_REWARD_GATE = "single-t1-program-gate-v3"
 SINGLE_REPLAY = "stored-generation-support-v1"
 SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
 SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
 SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS = 64
 SINGLE_REPLAY_MAX_ATOL = 3.0
-SINGLE_ANSWER_CONTRACTS = {"mcq": "p0-eval-aligned-v1", "open": "training-answer-v2"}
+SINGLE_ANSWER_CONTRACTS = {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1"}
 SINGLE_CONTRACT_HASHES = frozenset(("source", "dataset", "order", "data_admission"))
 SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
 
