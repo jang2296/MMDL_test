@@ -231,6 +231,13 @@ class SingleCampaignEvaluation(unittest.TestCase):
                                _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
         self.assertFalse((self.root / "x18").exists() or (self.root / "x19").exists())
 
+    def test_single_stage_allows_a_stopped_main_checkpoint_only_after_the_pilot(self) -> None:
+        self.assertEqual([pe._single_stage(*case) for case in ((19, 300, 219), (219, 3500, 219), (75, 1200, 219))],
+                         ["pilot", "final", "stopped"])
+        for case in ((18, 288, 219), (19, 304, 219), (0, 0, 219), (220, 3500, 219)):
+            with self.assertRaisesRegex(ValueError, "or the final"):
+                pe._single_stage(*case)
+
     # ------------------------------------------------------------------ external dev F0 / HYB
     def test_hybrid_registration_pins_dev_retention_and_pilot_export(self) -> None:
         dev = self.registered["dev"]
