@@ -1,4 +1,4 @@
-"""Same-policy, single-response RL + self-note SFT with program-only row admission (SINGLE v3).
+"""Same-policy, single-response RL + self-note SFT with program-only row admission (protocol SINGLE v7).
 
 The CLI collects a preregistered local prefix and proves backward without an optimizer.
 Rows are admitted by program checks only (graded correct, normal stop, no loop, no lesson leak);
@@ -21,8 +21,10 @@ from .collect import ResourceLog, StreamStats, hf_single_stream_builder, install
 from .collect_v3 import file_sha, generation_identity
 from .collect_v4 import run_single_requests
 from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS, ROUTE_FULL, ROUTE_LM,
-                       note_prompt_single, parse_note_v2, resolve_prompt, sample_seed)
-from .protocol import ARM, SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256
+                       a2_target_problem, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
+                       resolve_prompt_single, sample_seed)
+from .protocol import (ARM, SINGLE_ANSWER_UNION, SINGLE_NOTE_MAX_TOKENS, SINGLE_REWARD_GATE, VERSION_SINGLE,
+                       plain_protocol_single, single_blocks, single_prompts_sha256)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -32,6 +34,21 @@ GRADED = frozenset(("CORRECT", "INCORRECT", "TRUNCATED", "INVALID_NO_FINAL", "IN
 SOLUTION_MIN_TOKENS = MIN_TARGET_TOKENS
 # The verifier could not compare (e.g. an unbound unit): reward 0, no note (no truthful wrong/right feedback exists).
 UNVERIFIABLE = "UNVERIFIABLE"
+NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
+
+
+def grade_answer(verifier: Any, contract: str, pid: str, text: str, finish_reason: str, mode: str) -> tuple[str, Any]:
+    """One response, one grade. The v7 open union keeps the V8 result unless it is not CORRECT and the unit-aware
+    training contract grades the same text CORRECT (V8 rejects e.g. "3.84 billion euros" or "three")."""
+    from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
+
+    union = contract == SINGLE_ANSWER_UNION
+    value = verifier.grade(pid, text, finish_reason, mode, answer_contract=TURN1_EVAL_CONTRACT if union else contract)
+    if union and value.status != "CORRECT":
+        second = verifier.grade(pid, text, finish_reason, mode, answer_contract=TRAINING_ANSWER_CONTRACT)
+        if second.status == "CORRECT":
+            value = second
+    return value.status, value.extracted
 
 
 @contextmanager
@@ -125,7 +142,7 @@ def _candidate(record: dict, kind: str) -> dict | None:
 
 def _single_reward_decision(row: dict, evidence: dict) -> dict:
     """Rebuild the program gate from the original T1: R=1 iff graded CORRECT and an admissible A1 target,
-    R=-1 for a normally finished T1 under SOLUTION_MIN_TOKENS, else 0."""
+    R=-1 iff a not-CORRECT T1 carries a penalty (bare wrong, uncommitted stop, loop), else 0."""
     try:
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
@@ -145,16 +162,24 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
             problem = target_problem(row["target"], row["generation"]["completion_token_ids"], t1["finish_reason"],
                                      "CORRECT", min_tokens=SOLUTION_MIN_TOKENS)
             reason = None if _candidate(record, "A1") is not None else "T1_INELIGIBLE_" + (problem or "EMPTY_TARGET")
-        # v5: a normally finished bare answer (under 32 tokens, any grade) is pushed down; accepted rows never are.
-        bare = (t1["finish_reason"] == "stop"
-                and len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS)
-        return {"accepted": reason is None, "reason": reason, "bare": bare, "bindings": bindings, "method": "program"}
+        # v7: a correct answer is never pushed down (v5's -1 on correct bare answers lowered the answer tokens);
+        # nor is an UNVERIFIABLE one, which may be correct. Truncation without a loop stays 0.
+        penalty, stopped = None, t1["finish_reason"] == "stop"
+        if row["status"] not in ("CORRECT", UNVERIFIABLE):
+            if stopped and len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS:
+                penalty = "BARE_WRONG"
+            elif stopped and row["status"] in NO_COMMITTED:
+                penalty = "NO_COMMITTED_ANSWER"
+            elif is_loop(row["target"]):
+                penalty = "LOOP"
+        return {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
+                "method": "program"}
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("single reward: malformed original-T1 evidence") from error
 
 
 def _reward_value(decision: dict) -> int:
-    return 1 if decision["accepted"] else -1 if decision["bare"] else 0
+    return 1 if decision["accepted"] else -1 if decision["penalty"] else 0
 
 
 def bind_single_reward(row: dict, t1: dict, provenance: dict) -> dict:
@@ -185,7 +210,11 @@ def note_program_decision(audit: dict) -> dict:
     base = audit["base_audit"]
     if base["format"]["result"] != "PASS":
         reason = "NOTE_FORMAT_INVALID"
-    elif (failed := next((key for key, value in base["checks"].items() if value is not None), None)) is not None:
+    # Open items only: hint_leak_single re-runs the base hint_leak there without option letters. MCQ keeps the base
+    # check, whose raw lesson/option comparison catches e.g. a gold option "x²" that the NFKC single check misses.
+    elif (failed := next((key for key, value in base["checks"].items()
+                          if value is not None and (key != "hint_leak" or base["leak_inputs"]["choices"])),
+                         None)) is not None:
         reason = "NOTE_" + failed.upper()
     elif audit["single_hint_leak"] is not None:
         reason = "LESSON_LEAK_" + audit["single_hint_leak"]
@@ -252,7 +281,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
 
     def request(pid: str, stage: str, prompt: str) -> dict:
         return {"request_id": f"{pid}:{stage}", "problem_id": pid, "block_id": block_id, "stage": stage,
-                "seed": sample_seed(pid, "t1" if stage == "t1" else stage), "max_tokens": MAX_NEW_TOKENS,
+                "seed": sample_seed(pid, "t1" if stage == "t1" else stage),
+                "max_tokens": SINGLE_NOTE_MAX_TOKENS if stage == "note" else MAX_NEW_TOKENS,
                 "messages": [user_message(prompt, len(actors[pid].image_paths))], "images": load_images(actors[pid]),
                 "prompt": prompt}
 
@@ -311,7 +341,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             if stage == "t1" and is_wrong(pid):
                 return [submit(request(pid, "note", note_prompt(pid)))]
             if stage == "note" and note_decision(pid)[1]["accepted"]:
-                return [submit(request(pid, "resolve", resolve_prompt(state["records"][pid]["p0_text"], lesson(pid))))]
+                return [submit(request(pid, "resolve", resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))))]
             return []
 
         run_single_requests([submit(request(pid, "t1", state["records"][pid]["p0_text"])) for pid in active], stream,
@@ -338,7 +368,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     for pid in wrong:
         audits[pid], note_decisions[pid] = note_decision(pid)
     approved = [pid for pid in wrong if note_decisions[pid]["accepted"]]
-    if not generate("resolve", {pid: resolve_prompt(state["records"][pid]["p0_text"], lesson(pid))
+    if not generate("resolve", {pid: resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))
                                 for pid in approved}):
         return checkpoint("INCOMPLETE_RESOLVE", note_audits=audits, note_decisions=note_decisions)
     if policy_sha256(bundle) != policy:
@@ -354,13 +384,19 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         if kind == "A2" and pid not in approved:
             continue
         row = _candidate(record, kind)
-        decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program",
-                                       "reason": None if row is not None else f"{kind}_NOT_ADMISSIBLE"}
+        reason = None if row is not None else f"{kind}_NOT_ADMISSIBLE"
+        if row is not None and kind == "A2" and (problem := a2_target_problem(row["target"], lesson(pid))):
+            row, reason = None, "A2_" + problem
+        decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
         if row is None:
-            continue
+            continue  # B follows its A2
         rows.append(row)
         if kind == "A2" and (note_row := _candidate(record, "B")) is not None:
-            rows.append(note_row)
+            problem = b_target_problem(note_row["target"])
+            decisions[f"{pid}:B"] = {"accepted": problem is None, "method": "program",
+                                     "reason": None if problem is None else "B_" + problem}
+            if problem is None:
+                rows.append(note_row)
     contract = protocol["training_contract"] | {"expected_problem_ids": active, "policy_sha256": policy,
         "reward_provenance_sha256": {pid: digest(provenance[pid]) for pid in active},
         "reward_evidence_sha256": {row["problem_id"]: digest(row["reward_evidence"]) for row in rows if row["kind"] == "RL"}}
@@ -690,9 +726,8 @@ def _main(args: argparse.Namespace) -> int:
             contracts = plan["protocol"]["training_contract"]["answer_contracts"]
 
             def grade(pid, text, finish_reason, mode):
-                contract = contracts["mcq" if actors[pid].choices else "open"]
-                result = verifier.grade(pid, text, finish_reason, mode, answer_contract=contract)
-                return result.status, result.extracted
+                return grade_answer(verifier, contracts["mcq" if actors[pid].choices else "open"], pid, text,
+                                    finish_reason, mode)
 
             state = run_single_block(bundle, actors=actors, items=plan["fixed10"], provenance=sources, gold=gold, grade=grade,
                                      load_images=lambda actor: load_images(actor, args.build_root / "images"),

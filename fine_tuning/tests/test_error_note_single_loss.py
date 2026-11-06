@@ -240,13 +240,13 @@ class SingleRewardGate(unittest.TestCase):
     def test_program_gate_rewards_only_admissible_correct_and_keeps_originals(self):
         owner = tiny_factory()
         rows, _ = block(owner, count=1)
-        for status, reward in (("CORRECT", 1), ("INCORRECT", 0), ("TRUNCATED", 0), ("INVALID_NO_FINAL", 0)):
+        for status, reward in (("CORRECT", 1), ("INCORRECT", 0), ("TRUNCATED", 0), ("INVALID_NO_FINAL", -1)):
             row = copy.deepcopy(rows[0])
             row["status"] = status
             original = copy.deepcopy(row["generation"])
             bind_reward_fixture(row)
             self.assertEqual(row["reward"], reward)
-            self.assertEqual(single.validate_single_reward(row)["accepted"], bool(reward))
+            self.assertEqual(single.validate_single_reward(row)["accepted"], reward == 1)
             self.assertEqual(row["reward_evidence"]["decision"]["method"], "program")
             self.assertEqual(row["generation"], original)
             self.assertNotIn("text", row["reward_evidence"]["t1_metadata"])
@@ -264,25 +264,46 @@ class SingleRewardGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "malformed"):
                 single.validate_single_reward(row)
 
-    def test_bare_answer_gets_negative_reward_under_the_32_token_rule_and_truncation_does_not(self):
+    def test_v7_reward_table_penalizes_only_wrong_bare_uncommitted_or_looping_answers(self):
         owner = tiny_factory()
         rows, _ = block(owner, count=1)
+        long_ids = list(range(100, 140))
+        loop_text = "Wait, let me count again. " * 200
+        cases = (  # status, finish, completion ids, text, reward, penalty
+            ("CORRECT", "stop", None, None, 0, None),  # correct bare answer: 0 (v5 gave -1)
+            ("INCORRECT", "stop", None, None, -1, "BARE_WRONG"),
+            ("INVALID_NO_FINAL", "stop", None, None, -1, "BARE_WRONG"),
+            ("INCORRECT", "stop", long_ids, None, 0, None),
+            ("INVALID_NO_FINAL", "stop", long_ids, None, -1, "NO_COMMITTED_ANSWER"),
+            ("INVALID_MULTIPLE", "stop", long_ids, None, -1, "NO_COMMITTED_ANSWER"),
+            ("TRUNCATED", "length", long_ids, None, 0, None),  # cut off without a loop
+            ("TRUNCATED", "length", long_ids, loop_text, -1, "LOOP"),
+            ("INCORRECT", "stop", long_ids, loop_text, -1, "LOOP"),
+            ("CORRECT", "stop", long_ids, loop_text, 0, None),  # a correct answer never gets a penalty
+            ("UNVERIFIABLE", "stop", None, None, 0, None),  # may be correct: never penalized
+        )
         with patch.object(single, "SOLUTION_MIN_TOKENS", 32):
-            for status, reason in (("CORRECT", "TOO_SHORT"), ("INCORRECT", "T1_NOT_CORRECT")):
-                row = copy.deepcopy(rows[0])
-                row["status"] = status
-                bind_reward_fixture(row)
-                self.assertEqual(row["reward"], -1, status)
-                self.assertIs(row["reward_evidence"]["decision"]["bare"], True)
-                self.assertIn(reason, row["reward_evidence"]["decision"]["reason"])
-                self.assertEqual(single.validate_single_reward(row)["accepted"], False)
-            row = copy.deepcopy(rows[0])
-            bind_reward_fixture(row, finish_reason="length")
-            self.assertEqual(row["reward"], 0)  # a cut-off answer is not a bare answer
-            self.assertIs(row["reward_evidence"]["decision"]["bare"], False)
+            for status, finish, ids, text, reward, penalty in cases:
+                with self.subTest(status=status, finish=finish, long=ids is not None, loop=text is not None):
+                    row = copy.deepcopy(rows[0])
+                    row["status"] = status
+                    if ids is not None:
+                        row["generation"]["completion_token_ids"] = ids
+                    if text is not None:
+                        row["target"] = row["generation"]["text"] = text
+                    bind_reward_fixture(row, finish_reason=finish)
+                    decision = row["reward_evidence"]["decision"]
+                    self.assertEqual((row["reward"], decision["penalty"]), (reward, penalty))
+                    self.assertNotIn("bare", decision)
+                    self.assertEqual(single.validate_single_reward(row), decision)
             forged = copy.deepcopy(rows[0])
+            forged["status"] = "INCORRECT"
             bind_reward_fixture(forged)
             forged["reward"] = 0
+            with self.assertRaisesRegex(ValueError, "program gate"):
+                single.validate_single_reward(forged)
+            forged["reward"] = -1
+            forged["reward_evidence"]["decision"]["penalty"] = None
             with self.assertRaisesRegex(ValueError, "program gate"):
                 single.validate_single_reward(forged)
 
@@ -291,7 +312,9 @@ class SingleRewardGate(unittest.TestCase):
         rows, contract = block(owner, count=1)
         with patch.object(single, "SOLUTION_MIN_TOKENS", 32):
             row = copy.deepcopy(rows[0])
+            row["status"] = "INCORRECT"
             bind_reward_fixture(row)
+        self.assertEqual(row["reward"], -1)
         logprobs = torch.tensor([-0.5, -1.0], requires_grad=True)
         term = rl.single_pg(logprobs, row["reward"], problem_count=1, token_scale=4.0)
         term.backward()

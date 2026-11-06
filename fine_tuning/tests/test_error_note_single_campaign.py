@@ -615,5 +615,34 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
         self.assertTrue(torch.equal(checkpoint.capture_rng()["torch"], reference_rng["torch"]))
 
 
+class UnionGradingTests(unittest.TestCase):
+    """The campaign/CLI grade closure: one response, V8 first, training-answer-v2 only to turn it CORRECT."""
+
+    def grade(self, contract, v8, training):
+        calls = []
+
+        class Verifier:
+            def grade(self, pid, text, finish, mode, *, answer_contract):
+                calls.append(answer_contract)
+                status = {"p0-eval-aligned-v1": v8, "training-answer-v2": training}[answer_contract]
+                return SimpleNamespace(status=status, extracted=answer_contract)
+
+        return single.grade_answer(Verifier(), contract, "p", "3.84 billion euros", "stop", "plain"), calls
+
+    def test_open_union_mcq_v8_only(self):
+        union = "p0-eval-aligned-v1|training-answer-v2"
+        self.assertEqual(self.grade(union, "CORRECT", "INCORRECT"),
+                         (("CORRECT", "p0-eval-aligned-v1"), ["p0-eval-aligned-v1"]))
+        self.assertEqual(self.grade(union, "INCORRECT", "CORRECT"),
+                         (("CORRECT", "training-answer-v2"), ["p0-eval-aligned-v1", "training-answer-v2"]))
+        self.assertEqual(self.grade(union, "INVALID_NO_FINAL", "INCORRECT")[0], ("INVALID_NO_FINAL", "p0-eval-aligned-v1"))
+        self.assertEqual(self.grade(union, "UNVERIFIABLE", "INVALID_NO_FINAL")[0], ("UNVERIFIABLE", "p0-eval-aligned-v1"))
+        self.assertEqual(self.grade("p0-eval-aligned-v1", "INCORRECT", "CORRECT"),
+                         (("INCORRECT", "p0-eval-aligned-v1"), ["p0-eval-aligned-v1"]))
+        protocol = plain_protocol_single("bf16", 1, contracts={k: "a" * 64 for k in ("source", "dataset", "order",
+                                                                                      "data_admission")}, token_scale=1024.)
+        self.assertEqual(protocol["training_contract"]["answer_contracts"]["open"], union)
+
+
 if __name__ == "__main__":
     unittest.main()

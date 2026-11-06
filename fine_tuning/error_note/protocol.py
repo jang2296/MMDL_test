@@ -10,11 +10,11 @@ import hashlib
 import json
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION
-from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT
+from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
 
 from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
-                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, RESOLVE_HEADER,
-                       SINGLE_VERDICT_LABELS)
+                       MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_SINGLE, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3,
+                       RESOLVE_HEADER, RESOLVE_INSTRUCTION_SINGLE, SINGLE_VERDICT_LABELS)
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
 MERGERS = ["model.visual.merger", "model.visual.deepstack_merger_list.0",
@@ -138,20 +138,28 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # common final-answer notation (emoji/bold/heading, a repeated boxed value): on the stored v4 T1, 262 of 514 open
 # answers were INVALID, so their notes reviewed parser output; V8 grading gives +33 correct open answers
 # (-24 bare range lines) and A2-eligible re-solves 50 -> 76.
-VERSION_SINGLE = "error-note-single-response-v6"
-SINGLE_REWARD_GATE = "single-t1-program-gate-v3"
+# v7 (2026-11-06, cycle-1 64-item review): open answers V8 first, then training-answer-v2 only to turn a non-CORRECT
+# V8 result CORRECT (unit/word false negatives); reward -1 only for a wrong bare answer, a stopped answer the parser
+# could not commit to, or a looping wrong answer (correct bare answers 0); notes capped at 1024 tokens; note and
+# re-solve instructions; program filters on A2 (lesson echo, image-only hedging) and B (answer denial).
+VERSION_SINGLE = "error-note-single-response-v7"
+SINGLE_REWARD_GATE = "single-t1-program-gate-v4"
+SINGLE_NOTE_MAX_TOKENS = 1024
+SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"
+SINGLE_REWARD_VALUES = {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1, "other": 0}
 SINGLE_REPLAY = "stored-generation-support-v1"
 SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
 SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
 SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS = 64
 SINGLE_REPLAY_MAX_ATOL = 3.0
-SINGLE_ANSWER_CONTRACTS = {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1"}
+SINGLE_ANSWER_CONTRACTS = {"mcq": TURN1_EVAL_CONTRACT, "open": SINGLE_ANSWER_UNION}
 SINGLE_CONTRACT_HASHES = frozenset(("source", "dataset", "order", "data_admission"))
 SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
 
 
 def single_prompts_sha256() -> str:
-    return _digest({"note": NOTE_INSTRUCTION_V2, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER})
+    return _digest({"note": NOTE_INSTRUCTION_SINGLE, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER,
+                    "resolve_instruction": RESOLVE_INSTRUCTION_SINGLE})
 
 
 def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[list[str]]:
@@ -189,15 +197,17 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
              "training_contract": {
                  "version": VERSION_SINGLE, "hashes": dict(contracts), "master_seed": MASTER_SEED, "per_update_items": PER_UPDATE_ITEMS_V2,
                  "generation_counts": {"t1": 1, "note": 1, "resolve": 1}, "sampling": dict(SINGLE_SAMPLING),
+                 "max_tokens": {"t1": MAX_NEW_TOKENS, "resolve": MAX_NEW_TOKENS}, "note_max_tokens": SINGLE_NOTE_MAX_TOKENS,
                  "rl": {"method": "reinforce", "baseline": 0.0, "token_scale": float(token_scale),
                         "beta": float(beta), "reward": SINGLE_REWARD_GATE,
-                        "reward_values": {"accepted": 1, "bare_stop_under_min_tokens": -1, "other": 0},
+                        "reward_values": dict(SINGLE_REWARD_VALUES),
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes"},
                  "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
                  "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,
                                    "max_target_tokens": MAX_TARGET_TOKENS,
                                    "content_acceptance": "program_checks_only_content_unverified"},
                  "answer_contracts": dict(SINGLE_ANSWER_CONTRACTS),
+                 "answer_union": {"name": SINGLE_ANSWER_UNION, "rule": "first_result_unless_not_CORRECT_and_second_CORRECT"},
                  "renormalize_missing_kind": False, "replay": "original_actions_same_live_policy_once",
                  "replay_support": {"method": SINGLE_REPLAY, "block_mean_atol": SINGLE_REPLAY_BLOCK_MEAN_ATOL,
                                     "row_mean_atol": SINGLE_REPLAY_ROW_MEAN_ATOL,

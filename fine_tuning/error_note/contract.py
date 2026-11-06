@@ -302,16 +302,28 @@ SINGLE_VERDICT_LABELS = VERDICT_LABELS | {key: "NOT ACCEPTED BY THE FINAL-ANSWER
     for key in ("INVALID_NO_FINAL", "INVALID_MULTIPLE")}
 
 
+# v7 (2026-11-06 cycle-1 review): NOTE_INSTRUCTION_V2 plus exactly three sentences (answer denial, ignored parser/cut-off
+# feedback, generic "verify" lessons). No visible-detail/outside-knowledge wording: that V3 text taught image-only hedging.
+NOTE_INSTRUCTION_SINGLE = """Review your own work like a student writing an error note. The given correct answer is right: never call it a mislabel, a typo or a mistake in the question.
+Use these headings in this order, each starting on a new line. Keep the whole note short, about 200 words at most, and do not write a solution.
+
+What the image shows: list the facts this problem needs, checking each one against the image.
+Image reading: CORRECT, MISREAD or UNSURE. Write MISREAD if your earlier solution used a fact the image does not show, even if its final answer was right.
+Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION, NO_FINAL_ANSWER or NONE. Use NO_FINAL_ANSWER when the grading result says your final answer was not accepted or the solution was cut off.
+What went wrong: the exact step and why. If nothing went wrong, say what was done properly.
+Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option. Name the specific rule, fact or reading step that would have prevented the error; do not only say to verify or double-check."""
+RESOLVE_INSTRUCTION_SINGLE = ('Solve the question below from the start. Reason step by step, then write exactly one final '
+                              'answer on the last line as "Final Answer: ...". Do not mention the lesson or this review.')
+
+
 def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str) -> str:
     """Prospective SINGLE feedback separates parser rejection from absence of a written answer."""
     if not p0_text.strip() or not gold.strip():
         raise ValueError("single note: nonblank P0 and gold required")
     if status not in SINGLE_VERDICT_LABELS:
         raise ValueError(f"no single verdict label for status {status!r}")
-    # v5 (2026-11-06): the V3 wording ("distinguish outside knowledge", "only directly visible details") taught
-    # image-only hedging (226/900 MMMU answers, 2 under the V2 model), so SINGLE notes use the V2 instruction.
     return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {SINGLE_VERDICT_LABELS[status]}\n"
-            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V2}")
+            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
 
 
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)
@@ -376,6 +388,11 @@ def hint_leak(lesson: str, gold: str, choices: tuple[str, ...] | list[str]) -> s
     match = _PAREN_LETTER.search(lesson)
     if match:
         return f"PAREN_LETTER:{match[1].upper()}"
+    return _hint_leak_text(lesson, gold, choices)
+
+
+def _hint_leak_text(lesson: str, gold: str, choices: tuple[str, ...] | list[str]) -> str | None:
+    """hint_leak after its option-letter checks."""
     normal = _normal(lesson)
     phrase = next((p for p in _ANSWER_PHRASES if p in normal), None)
     if phrase:
@@ -413,8 +430,9 @@ def hint_leak_single(lesson: str, gold: str, choices: tuple[str, ...] | list[str
 
     These bounded text checks cannot certify a whole lesson. The source-bound review remains required.
     """
-    text = unicodedata.normalize("NFKC", lesson)
-    reason = hint_leak(text, unicodedata.normalize("NFKC", gold), choices)
+    text, gold = unicodedata.normalize("NFKC", lesson), unicodedata.normalize("NFKC", gold)
+    # v7: an open item has no options, so "answer a ..." / "(a)" letter matches are not option references there.
+    reason = hint_leak(text, gold, choices) if choices else _hint_leak_text(text, gold, choices)
     if reason is not None:
         return reason
     if choices:
@@ -423,6 +441,11 @@ def hint_leak_single(lesson: str, gold: str, choices: tuple[str, ...] | list[str
             return "DIRECTED_OPTION:" + next(value.upper() for value in match.groups() if value)
         if _SINGLE_POSITION_REFERENCE.search(text):
             return "OPTION_POSITION"
+        # v7: the content of ANY option (wrong ones steer the re-solve too), unless it is a short single word.
+        for letter, choice in zip(OPTION_LETTERS, choices):
+            normal = _normal(unicodedata.normalize("NFKC", choice))
+            if (len(normal.split()) >= 2 or len(normal) >= 5) and _has_words(text, normal):
+                return "OPTION_TEXT:" + letter
     if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
         raise ValueError("single lesson: nonempty source aliases required")
     return "SOURCE_ALIAS" if any(_has_words(text, alias) for alias in aliases) else None
@@ -435,6 +458,40 @@ def resolve_prompt(p0_text: str, lesson: str) -> str:
     if not lesson.strip():
         raise ValueError("lesson is blank")
     return f"{RESOLVE_HEADER}{lesson.strip()}\n\n{p0_text}"
+
+
+def resolve_prompt_single(p0_text: str, lesson: str) -> str:
+    """SINGLE v7 re-solve input: lesson, a solve-from-the-start instruction, then the unchanged P0 text."""
+    resolve_prompt(p0_text, lesson)  # the same blank-input checks
+    return f"{RESOLVE_HEADER}{lesson.strip()}\n\n{RESOLVE_INSTRUCTION_SINGLE}\n\n{p0_text}"
+
+
+_REVIEW_REFERENCES = ("as per", "my own review", "the review")
+_IMAGE_ONLY_HEDGE = re.compile(
+    r"(strictly|solely|purely) (on|from|based)|image alone|without (introducing |any )?external"
+    r"|external (knowledge|assumption)|cannot be (verified|determined)|not determinable"
+    r"|visual (content|inspection|evidence) alone|based strictly", re.IGNORECASE)
+_ANSWER_DENIAL = re.compile(r"\b(mislabel\w*|misrender\w*|typos?|misprint\w*|answer key|i don't know why|labeling error)\b")
+
+
+def a2_target_problem(text: str, lesson: str) -> str | None:
+    """Why a correct SINGLE re-solve may not be an A2 target (trained under the hint-free P0); None when it may."""
+    if (phrase := resolve_leaked_phrase(text)) is not None:
+        return "RESOLVE_LEAK:" + phrase
+    lowered = text.lower()
+    if (phrase := next((p for p in _REVIEW_REFERENCES if p in lowered), None)) is not None:
+        return "REVIEW_REFERENCE:" + phrase
+    words, hint = lowered.split(), lesson.lower().split()
+    copied = {tuple(hint[i:i + 8]) for i in range(len(hint) - 7)}
+    if any(tuple(words[i:i + 8]) in copied for i in range(len(words) - 7)):
+        return "LESSON_COPY"
+    return "IMAGE_ONLY_HEDGE" if _IMAGE_ONLY_HEDGE.search(text) else None
+
+
+def b_target_problem(note_text: str) -> str | None:
+    """A note that denies the given answer may not be a B target; None when it may."""
+    match = _ANSWER_DENIAL.search(note_text.lower().replace("’", "'"))
+    return None if match is None else "ANSWER_DENIAL:" + match[1]
 
 
 def is_loop(text: str, window: int = LOOP_WINDOW, ratio: float = LOOP_RATIO) -> bool:

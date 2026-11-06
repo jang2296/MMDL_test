@@ -115,6 +115,41 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.run_block()["status"], "ROWS_READY")
         self.assertEqual(len(self.seen), 4)  # a completed block never generates again
 
+    def test_v7_note_cap_resolve_instruction_and_a2_b_program_filters(self):
+        from fine_tuning.error_note.contract import resolve_prompt_single
+        from fine_tuning.notebook_rl.prompts import p0_eval_text
+
+        self.run_block()
+        caps = {r["stage"]: r["max_tokens"] for r in self.seen}
+        self.assertEqual(caps, {"t1": 8192, "note": 1024, "resolve": 8192})
+        retry = next(r for r in self.seen if r["stage"] == "resolve")
+        self.assertEqual(retry["messages"][0]["content"][-1]["text"], resolve_prompt_single(
+            p0_eval_text("Authored question 1", ("red", "blue")), "Read each label before comparing the curves."))
+        root, original = self.out, self.stream
+        for name, stage, text, kinds, reason in (
+                ("echo", "resolve", "As per the lesson, read each label. " + " ".join(f"s{j}" for j in range(38))
+                 + " Final answer: B", ["RL", "A1", "RL"], "A2_RESOLVE_LEAK:lesson"),
+                ("hedge", "resolve", "Based solely on the image " + " ".join(f"s{j}" for j in range(38))
+                 + " Final answer: B", ["RL", "A1", "RL"], "A2_IMAGE_ONLY_HEDGE"),
+                ("denial", "note", None, ["RL", "A1", "RL", "A2"], "B_ANSWER_DENIAL:mislabel")):
+            self.out, self.seen = root / name, []
+
+            def authored(requests, stats, stop_after, stage=stage, text=text):
+                for request, output in original(requests, stats, stop_after):
+                    if request["stage"] == stage:
+                        new = text or output["text"].replace("confused two labels.", "confused two labels; a mislabel.")
+                        output["text"] = output["generation"]["text"] = new
+                    yield request, output
+
+            with self.subTest(name=name), patch.object(self, "stream", new=authored):
+                state = self.run_block()
+                closed = json.loads((self.out / state["rows_path"]).read_text())
+                self.assertEqual([r["kind"] for r in closed["rows"]], kinds)
+                key = "p1:B" if stage == "note" else "p1:A2"
+                self.assertEqual(closed["row_decisions"][key], {"accepted": False, "method": "program", "reason": reason})
+                if stage != "note":
+                    self.assertNotIn("p1:B", closed["row_decisions"])  # B follows its A2
+
     def test_fixed2_then10_reuses_first2_and_only_adds_next8(self):
         self.assertEqual(self.run_block()["status"], "ROWS_READY")
         result = self.run_block(limit=10)
@@ -420,7 +455,7 @@ print('guard boundary PASS; no model loaded')
         self.assertEqual(target_problem("B", [11], "stop", "CORRECT"), "TOO_SHORT")
         self.assertEqual(self.protocol["training_contract"]["length_policy"]["min_target_tokens"], 32)
         self.assertEqual(self.protocol["training_contract"]["answer_contracts"],
-                         {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1"})
+                         {"mcq": "p0-eval-aligned-v1", "open": "p0-eval-aligned-v1|training-answer-v2"})
         for kind in ("A1", "A2", "B"):
             record = record_for(correct=kind == "A1")
             stage = {"A1": "t1", "A2": "resolve", "B": "note"}[kind]
