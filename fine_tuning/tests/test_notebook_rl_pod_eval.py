@@ -484,7 +484,7 @@ class EvalStagePlanTests(unittest.TestCase):
         return found
 
     def test_runs_and_arguments_match_the_preregistered_design(self):
-        statistical = [v for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical']
+        statistical = proof_eval.FAST_VARIANTS  # no prereg file at plan time: the 8k variants, never b2
         self.assertEqual({(a, v, 'wrong') for a in ('F0', 'FT-NOTE') for v in statistical},
                          self.planned_runs())  # within proof_eval.build_preregistration's runs (no course run)
         steps = {stage: eval_stage.plan(stage, self.params(stage))['steps'] for stage in eval_stage.STAGES}
@@ -534,7 +534,7 @@ class EvalStagePlanTests(unittest.TestCase):
         self.assertEqual({f"{REPO}/{row['path']}": row['sha256'] for row in prereg['protocol_variants'].values()},
                          planned_files)  # every planned protocol file is byte-identical to the preregistered one
         self.assertEqual({v: row['concurrency'] for v, row in prereg['protocol_variants'].items()},
-                         {v: row[2] for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical'})
+                         {v: proof_eval.VARIANTS[v][2] for v in prereg['protocol_variants']})
 
     def test_eval_stage_seeds_and_arm_run_ids(self):
         def runs(stage, **changes):
@@ -588,6 +588,35 @@ class EvalStagePlanTests(unittest.TestCase):
         wrong_file = self.params('eval-f0', subset_tag='rest') | {'subset_tag': 'wrong'}
         with self.assertRaisesRegex(ValueError, 'proof-eval-subset-v1'):
             eval_stage.plan('eval-f0', wrong_file)
+
+    def test_runs_follow_the_pinned_preregistration(self):
+        b2, fast = proof_eval.FINAL_VARIANT_V8, proof_eval.FAST_VARIANTS
+        prereg = Path(self.volume)/'eval-data/proof/prereg.json'
+        prereg.parent.mkdir(parents=True, exist_ok=True)
+
+        def plan(runs, **changes):
+            raw = json.dumps({'runs': [{'arm': a, 'variant': v, 'subset': t, 'role': 'statistical'} for a, v, t in runs]})
+            prereg.write_text(raw)
+            params = self.params('eval-ft', arm='FT-SINGLE', seeds=[3407], vllm_inprocess=True, reuse_export=True,
+                                 ft_model_ref_sha256='9'*64, prereg_sha256=common.sha256_file(prereg)) | changes
+            steps = eval_stage.plan('eval-ft', params)['steps']
+            return ([s['argv'] for s in steps if s['name'].startswith('ledger-')],
+                    [s['argv'] for s in steps if s['name'].startswith('eval-')])
+
+        v8 = [(a, b2, 'wrong') for a in ('F0', 'FT-SINGLE')]  # a v8-shaped fixture on the fixture subset
+        ledgers, evals = plan(v8)
+        self.assertEqual([(b2, 'nbrl-proof-v1-ft-single-b2-s3407-wrong-evaluation')],
+                         [(a[a.index('--variant')+1], a[a.index('--run-id')+1]) for a in ledgers])
+        self.assertEqual([f'{REPO}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml'],
+                         [a[a.index('--protocol')+1] for a in evals])
+        self.assertEqual(SUBSET_IDS, sample_ids(evals[0]))
+        self.assertEqual([[fast[0]]], [[a[a.index('--variant')+1] for a in plan([('FT-SINGLE', fast[0], 'wrong')])[0]]])
+        for runs in ([('FT-SINGLE', b2, 'rest')], [('F0', b2, 'wrong')], [('FT-SINGLE', fast[1], 'wrong')], []):
+            with self.assertRaisesRegex(ValueError, 'lists no run', msg=runs):
+                plan(runs)
+        # bytes that are not the pinned ones are never read as runs: the 8k plan of before (chain pin refuses them)
+        ledgers, _ = plan(v8, prereg_sha256='b'*64)
+        self.assertEqual([fast[0]], [a[a.index('--variant')+1] for a in ledgers])
 
     def test_eval_slots_prefix_only_the_run_eval_argv(self):
         for stage in eval_stage.STAGES:
