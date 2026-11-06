@@ -27,6 +27,7 @@ IDS = sorted(f"validation_{s}_{k}" for s in SUBJECTS for k in range(1, 31))
 SUBSET = IDS[:342]  # the synthetic B2 below answers exactly these wrong
 REST = IDS[342:]  # ... and exactly these right
 FAST = [f"mmmu-val-v8-8k-seed{s}-v2" for s in (3407, 3408, 3409)]
+B2 = "mmmu-val-v8-b2-seed3407-v1"  # prereg v8: the B2 conditions, 32 config slots
 C16_FILES = [pe.HERE / f"eval_configs/mmmu_val_v8_c16_seed{s}.yaml" for s in (3407, 3408, 3409)]
 ARM_BY_PREFIX = {"f0": "F0", "note": "FT-NOTE", "solution": "FT-SOLUTION"}
 
@@ -176,8 +177,11 @@ class ProofAnalysisTests(unittest.TestCase):
 
         base = flatten(variant_cfg(pe.COURSE))
         self.assertEqual(pe.VARIANTS[pe.COURSE][0], pe.ROOT / "configs/eval/mmmu_val_v8.yaml")
-        self.assertEqual([v for v, row in pe.VARIANTS.items() if row[3] == "statistical"], FAST)
-        self.assertEqual(set(pe.REGISTERED), set(FAST))
+        self.assertEqual([v for v, row in pe.VARIANTS.items() if row[3] == "statistical"], [*FAST, B2])
+        self.assertEqual((set(pe.REGISTERED), list(pe.FAST_VARIANTS), pe.FINAL_VARIANT_V8), ({*FAST, B2}, FAST, B2))
+        b2 = flatten(variant_cfg(B2))  # the B2 config itself, with 32 config slots
+        self.assertEqual({k for k in base if b2[k] != base[k]}, {"protocol_id", "execution.batch_size"})
+        self.assertEqual((b2["protocol_id"], b2["execution.batch_size"], b2["status"]), (B2, 32, "FROZEN"))
         self.assertEqual(pe.FAST_PIXELS, {"min_pixels": 262144, "max_pixels": 1310720})
         fast = {"execution.batch_size": 32, "generation.max_new_tokens": 8192, "image.min_pixels": 262144,
                 "image.max_pixels": 1310720, "execution.max_model_len": 24576}
@@ -840,7 +844,7 @@ class ProofRunEvalTests(unittest.TestCase):
                           "40960_context": changed(fast, execution__max_model_len=40960),
                           "v4_parser": changed(fast, parser="team-final-answer-v4"),
                           "official_resize": changed(fast, image__resize_owner="official_processor")}
-        registered = {vid: variant_cfg(vid) for vid in FAST}
+        registered = {vid: variant_cfg(vid) for vid in [*FAST, B2]}
         tables = copy.deepcopy((contracts.CONTROL_IMAGES, contracts.EXECUTION_PROFILES))
         functions = (contracts.validate_configs, VLLMBackend.__init__)
         outside = {(c, h): validation_outcome(cfgs[c], hws[h]) for c in cfgs for h in hws}
@@ -889,6 +893,40 @@ class ProofRunEvalTests(unittest.TestCase):
         self.assertEqual(wide.max_model_len, 24576)
         self.assertIs(wide.cfg, fast)
         self.assertEqual(recorded, [True])
+
+    def test_b2_variant_has_the_b2_limits_in_validation_backend_slots_and_registration(self):
+        from mmdl.evaluation.backends.vllm_backend import VLLMBackend
+
+        hw, b2 = yaml.safe_load(A40.read_text()), variant_cfg(B2)
+        bad = {"8k_output": changed(b2, generation__max_new_tokens=8192),
+               "small_pixels": changed(b2, image__min_pixels=262144, image__max_pixels=1310720),
+               "small_max_pixels": changed(b2, image__max_pixels=1310720),
+               "8k_context": changed(b2, execution__max_model_len=24576),
+               "two_slots": changed(b2, execution__batch_size=2), "wrong_seed": changed(b2, generation__seed=3408)}
+        self.assertIn("named fixed protocol", validation_outcome(b2, hw)[1])  # unknown outside run-eval
+        FakeLLM.calls.clear()
+        with backend_mocks(), pe.registered_variants(slots=16):
+            self.assertEqual(validation_outcome(b2, hw), validation_outcome(variant_cfg(pe.COURSE), hw))
+            for name, cfg in bad.items():
+                outcome = validation_outcome(cfg, hw)
+                self.assertIn("32768 output tokens, 1003520..4014080 pixels, 40960 context", outcome[1], name)
+            wide = VLLMBackend("model", b2, hw)
+        self.assertEqual([(c["max_num_seqs"], c["max_model_len"], c["mm_processor_kwargs"]["size"]) for c in FakeLLM.calls],
+                         [(16, 40960, {"shortest_edge": 1003520, "longest_edge": 4014080})])
+        self.assertEqual((wide.batch_size, wide.cfg["execution"]["batch_size"]), (16, 32))
+        # auto slots: mean context 12000, floor 8 (an A40 feeds 16); the 8k formula is unchanged
+        self.assertEqual((pe.auto_slots(A40_MIB / 1024, B2), pe.auto_slots(A40_MIB / 1024)), (16, 40))
+        self.assertEqual((pe.auto_slots(24.0, B2), pe.auto_slots(79.1, B2)), (8, 32))
+        with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "auto"}):
+            registration = pe.variant_registration(B2)
+        self.assertEqual((registration["slots"], registration["slots_source"], registration["protocol_id"]),
+                         (16, "auto", B2))
+        self.assertEqual(registration["protocol_file_sha256"], sha256_file(pe.VARIANTS[B2][0]))
+        self.assertIn("32768 output tokens, 1003520..4014080 pixels, 40960 context",
+                      registration["patched"]["mmdl.runtime.contracts.validate_configs"])
+        self.assertEqual({pid: r["max_new_tokens"] for pid, r in registration["registered"].items()},
+                         dict.fromkeys(FAST, 8192) | {B2: 32768})
+        self.assertEqual(registration["registered"][B2]["execution_profile"]["max_model_len"], 40960)
 
     def test_auto_slots_follows_the_formula(self):
         def expected(gib):  # the formula written out once more: (0.90 * GiB - 8.68 - 5.0) * 7280 / 4800 / 8, floored to 8
@@ -1010,7 +1048,10 @@ class ProofRunEvalTests(unittest.TestCase):
                              (pe.ROOT, "a40_48gb", Path("manifests/models/baseline.json")))
             self.assertEqual([(call["max_num_seqs"], call["max_model_len"]) for call in FakeLLM.calls], [(32, 24576)])
             self.assertEqual(registration, pe.variant_registration(FAST[1]))
-            self.assertEqual(set(registration["registered"]), set(FAST))
+            self.assertEqual(set(registration["registered"]), {*FAST, B2})
+            self.assertEqual(registration["registered"][B2]["max_new_tokens"], 32768)
+            self.assertIn("8192 output tokens, 262144..1310720 pixels, 24576 context",
+                          registration["patched"]["mmdl.runtime.contracts.validate_configs"])
             self.assertEqual(registration["proof_eval_sha256"], sha256_file(Path(pe.__file__)))
             self.assertEqual(set(registration["src_files"]), set(pe.PATCHED_SRC))
             self.assertEqual((Path.cwd(), sys.argv), (cwd, saved_argv))
