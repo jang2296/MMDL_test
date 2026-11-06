@@ -116,8 +116,8 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     if (not isinstance(seeds, list) or not seeds or any(type(x) is not int or x not in proof_eval.SEEDS for x in seeds)
             or len(set(seeds)) != len(seeds)):
         raise ValueError(f"seeds must be a non-empty list of distinct values from {list(proof_eval.SEEDS)}")
-    if params["subset_tag"] not in proof_eval.SUBSETS:
-        raise ValueError(f"subset_tag must be one of {list(proof_eval.SUBSETS)}")
+    if params["subset_tag"] not in proof_eval.SUBSET_FILES:
+        raise ValueError(f"subset_tag must be one of {list(proof_eval.SUBSET_FILES)}")
     for key in (keys | (OPTIONAL[stage] & set(params))) - NOT_PATHS:
         value = params[key]
         if not isinstance(value, str):
@@ -159,7 +159,7 @@ def subset_ids(params: dict[str, Any]) -> list[str]:
         raise ValueError("subset file sha256 differs from params.subset_sha256")
     loaded = json.loads(raw)
     ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
-    version = proof_eval.SUBSETS[params["subset_tag"]][0]
+    version = proof_eval.SUBSET_FILES[params["subset_tag"]][0]
     if (loaded.get("version") != version or not isinstance(ids, list) or not ids
             or loaded.get("count") != len(ids) or ids != sorted(set(ids))
             or not all(isinstance(i, str) and MMMU_ID.match(i) for i in ids)):
