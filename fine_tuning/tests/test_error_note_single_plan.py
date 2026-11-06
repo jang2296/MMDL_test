@@ -47,6 +47,10 @@ MAIN_EXTRA = {
     "pilot_gate_path": "/workspace/private/gate.json", "pilot_gate_sha256": "5" * 64,
     "timeouts": {"cpu": 77, "advance_main": 88, "reload": 99, "export": 111},
 }
+DIRECT_EXTRA = {"timeouts": {"cpu": 12, "advance_first": 23, "advance_pilot": 34, "advance_main": 45, "reload": 56,
+                             "export": 67}}
+DIRECT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "advance-1", "reload-1",
+                "advance-pilot", "reload-19", "advance-main", "reload-219", "export-219"]
 PILOT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules",
                "pin-dev-manifest", "pin-dev-rules", "advance-1", "reload-1", "advance-pilot", "reload-19",
                "export-19", "dev-prereg", "dev-f0", "dev-f0-grade", "dev-hyb", "dev-hyb-grade", "dev-analyze"]
@@ -59,7 +63,7 @@ PILOT_KIND = {"advance-1": "advance_first", "advance-pilot": "advance_pilot", "r
 
 def params(stage: str, **changes: object) -> dict:
     value = copy.deepcopy(BASE)
-    value.update(copy.deepcopy(PILOT_EXTRA if stage == "single-pilot" else MAIN_EXTRA))
+    value.update(copy.deepcopy({"single-pilot": PILOT_EXTRA, "single-direct": DIRECT_EXTRA}.get(stage, MAIN_EXTRA)))
     value.update(changes)
     return value
 
@@ -123,6 +127,27 @@ class SingleStagePlanTests(unittest.TestCase):
         for step in spec["steps"]:
             self.assertEqual(step["timeout_seconds"], p["timeouts"][kinds.get(step["name"], "cpu")], step["name"])
 
+    def test_direct_steps_train_all_3500_without_a_gate_file_under_the_main_job_stage(self) -> None:
+        spec = planner.plan("single-direct", params("single-direct"))
+        self.assertIs(chain.check_spec(spec), spec)
+        self.assertEqual((spec["meta"]["stage"], spec["meta"]["job_stage"]), ("single-direct", "single-main"))
+        self.assertEqual([step["name"] for step in spec["steps"]], DIRECT_NAMES)
+        steps = {step["name"]: step for step in spec["steps"]}
+        self.assert_pins(steps, params("single-direct"), ("order", "frozen_approval", "source_provenance", "training_rules"))
+        for name, blocks in (("advance-1", "1"), ("advance-pilot", "18"), ("advance-main", "200")):
+            self.assertEqual(value_after(steps[name]["argv"], "--max-blocks"), blocks, name)
+        main = steps["advance-main"]["argv"]
+        self.assertIn("--continue-main", main)
+        self.assertIn("--direct-main", main)
+        self.assertNotIn("--pilot-gate", main)
+        self.assertNotIn("--direct-main", steps["advance-pilot"]["argv"])
+        self.assertEqual(steps["advance-main"]["expect_files"], [f"{CAMPAIGN_DIR}/checkpoint-219/metadata.json"])
+        self.assertEqual(value_after(steps["export-219"]["argv"], "--output"), EXPORT_FINAL)
+        for step in spec["steps"]:
+            self.assertFalse(any("error_note.evaluate" in arg or "run-eval" in arg for arg in step["argv"]), step["name"])
+        with self.assertRaises(ValueError):  # a gate file is not a direct-stage input
+            planner.plan("single-direct", params("single-direct", **MAIN_EXTRA))
+
     def test_reload_steps_capture_receipt(self) -> None:
         pilot = {step["name"]: step for step in planner.plan("single-pilot", params("single-pilot"))["steps"]}
         main = {step["name"]: step for step in planner.plan("single-main", params("single-main"))["steps"]}
@@ -155,7 +180,7 @@ class SingleStagePlanTests(unittest.TestCase):
                         self.assertEqual(wrapped[2], planner.CAMPAIGN)
                         single_campaign.build_parser().parse_args(wrapped[3:])
                         counts["reload"] += 1
-        self.assertEqual(counts, {"campaign": 3, "reload": 3, "evaluate": 6})
+        self.assertEqual(counts, {"campaign": 6, "reload": 6, "evaluate": 6})
 
     def test_refusals(self) -> None:
         for stage in planner.SINGLE_STAGES:
@@ -187,6 +212,7 @@ class SingleStagePlanTests(unittest.TestCase):
     def test_job_stages_require_training_data(self) -> None:
         now = dt.datetime.now(dt.timezone.utc)
         for stage in planner.SINGLE_STAGES:
+            stage = planner.plan(stage, params(stage))["meta"]["job_stage"]
             value = {"version": job.VERSION, "commit": "a" * 40, "volume_root": "/workspace/volume",
                      "run_dir": "/workspace/run", "stage": stage, "smoke": ["python", "smoke"], "main": ["python", "main"],
                      "max_main_seconds": 600, "min_free_gib": 1,

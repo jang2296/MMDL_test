@@ -409,7 +409,7 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
                 or generation.get("input_sha256") != row.get("input_sha256")
                 or generation.get("input_sha256") != _single_encoded_input_sha256(row)
                 or row["input_ids"].tolist() != prompt + actions or row["target_len"] != len(actions)
-                or row.get("complete") is not True or type(row.get("reward")) is not int or row["reward"] not in (0, 1)
+                or row.get("complete") is not True or type(row.get("reward")) is not int or row["reward"] not in (-1, 0, 1)
                 or row.get("status") not in {*VERDICT_LABELS, "LOOP_STOPPED", "UNVERIFIABLE"}
                 or len(generation.get("sampling_logprobs", [])) != len(actions)
                 or len(generation.get("support_sha256", [])) != len(actions)

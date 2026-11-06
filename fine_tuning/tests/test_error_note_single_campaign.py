@@ -523,6 +523,17 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
         self.assertIn("rl_kl", sessions[0].calls)
 
     def test_pilot_boundary_preserves_actual_weights_moments_lr_rng_and_prefix(self):
+        self._pilot_boundary(direct=False)
+
+    def test_direct_main_continues_past_the_pilot_on_the_recorded_user_decision(self):
+        self._pilot_boundary(direct=True)
+        state = single._state(self.out / "campaign-state.json")
+        self.assertEqual(state["main_gate"]["version"], campaign.DIRECT_GATE_VERSION)
+        self.assertEqual(state["main_gate"]["decision"], campaign.DIRECT_DECISION)
+        self.assertEqual(state["main_gate"]["pilot_checkpoint"], state["pilot_checkpoint"])
+        self.assertEqual(state["main_gate"]["campaign_sha256"], self.plan["sha256"])
+
+    def _pilot_boundary(self, *, direct: bool) -> None:
         import warnings
 
         self.plan = plan_for(316, "train")
@@ -572,6 +583,12 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
             self.assertEqual(len(pilot["cursor"]["consumed_problem_ids"]), 300)
             with self.assertRaisesRegex(ValueError, "gate required"):
                 self.execute_train(continue_main=True)
+            with self.assertRaisesRegex(ValueError, "direct main requires --continue-main"):
+                self.execute_train(direct_main=True)
+            if direct:
+                with self.assertRaisesRegex(ValueError, "no pilot/dev gate file"):
+                    self.execute_train(continue_main=True, direct_main=True, pilot_gate={"file_sha256": "0" * 64})
+                final = self.execute_train(continue_main=True, direct_main=True)
             gate = {"version": campaign.GATE_VERSION, "campaign_sha256": self.plan["sha256"], "rule": campaign.GATE_RULE,
                 "pilot_checkpoint": pilot["checkpoint"], "dev_ids_sha256": "c" * 64, "retention_ids_sha256": "d" * 64,
                 "functional_checks": {name: True for name in ("data", "probability", "gradients", "function")},
@@ -580,7 +597,8 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
                             "hybrid": {"correct": 2, "retention_correct": 1, "no_final": 0, "token_cap": 0}}}
             gate_path = self.out / "gate.json"
             gate_path.write_text(json.dumps(gate))
-            final = self.execute_train(continue_main=True, pilot_gate=campaign._descriptor(gate_path))
+            if not direct:
+                final = self.execute_train(continue_main=True, pilot_gate=campaign._descriptor(gate_path))
         self.assertEqual(update.call_count, 2)
         self.assertEqual(final["cursor"]["consumed_problem_ids"], [f"p{i}" for i in range(316)])
         # Retention: only the pilot checkpoint (19, also the parent) and the newest child survive.

@@ -3,7 +3,7 @@ import copy
 import unittest
 
 from fine_tuning.error_note import single
-from fine_tuning.error_note.contract import (NOTE_INSTRUCTION_V3, SINGLE_VERDICT_LABELS, VERDICT_LABELS,
+from fine_tuning.error_note.contract import (NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3, SINGLE_VERDICT_LABELS, VERDICT_LABELS,
                                             hint_leak, hint_leak_single, note_prompt_single, note_prompt_v3)
 from fine_tuning.error_note.protocol import (SINGLE_REWARD_GATE, VERSION_SINGLE, _digest,
                                             plain_protocol_single, single_blocks, single_prompts_sha256)
@@ -73,10 +73,11 @@ class SingleProtocolTests(unittest.TestCase):
             old, new = note_prompt_v3(p0, raw, status, gold), note_prompt_single(p0, raw, status, gold)
             prefix = f"{p0}\n\nYour earlier solution:\n{raw}\n\nGrading result: "
             self.assertEqual(old, prefix + "NO CLEAR FINAL ANSWER\n" + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V3}")
-            self.assertEqual(new, prefix + SINGLE_VERDICT_LABELS[status] + "\n" + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V3}")
+            self.assertEqual(new, prefix + SINGLE_VERDICT_LABELS[status] + "\n" + f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V2}")
             self.assertIn("This does not establish that no final answer was written; inspect the original response.", new)
-        for status in ("CORRECT", "INCORRECT", "TRUNCATED"):
-            self.assertEqual(note_prompt_single(p0, raw, status, gold), note_prompt_v3(p0, raw, status, gold))
+        for status in ("CORRECT", "INCORRECT", "TRUNCATED"):  # v5: the v3 feedback with the V2 instruction
+            self.assertEqual(note_prompt_single(p0, raw, status, gold),
+                             note_prompt_v3(p0, raw, status, gold).removesuffix(NOTE_INSTRUCTION_V3) + NOTE_INSTRUCTION_V2)
         self.assertEqual(VERDICT_LABELS["INVALID_NO_FINAL"], "NO CLEAR FINAL ANSWER")
 
 

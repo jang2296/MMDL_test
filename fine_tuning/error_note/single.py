@@ -124,7 +124,8 @@ def _candidate(record: dict, kind: str) -> dict | None:
 
 
 def _single_reward_decision(row: dict, evidence: dict) -> dict:
-    """Rebuild the program gate from the original T1: R=1 iff graded CORRECT and an admissible A1 target."""
+    """Rebuild the program gate from the original T1: R=1 iff graded CORRECT and an admissible A1 target,
+    R=-1 for a normally finished T1 under SOLUTION_MIN_TOKENS, else 0."""
     try:
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
@@ -144,9 +145,16 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
             problem = target_problem(row["target"], row["generation"]["completion_token_ids"], t1["finish_reason"],
                                      "CORRECT", min_tokens=SOLUTION_MIN_TOKENS)
             reason = None if _candidate(record, "A1") is not None else "T1_INELIGIBLE_" + (problem or "EMPTY_TARGET")
-        return {"accepted": reason is None, "reason": reason, "bindings": bindings, "method": "program"}
+        # v5: a normally finished bare answer (under 32 tokens, any grade) is pushed down; accepted rows never are.
+        bare = (t1["finish_reason"] == "stop"
+                and len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS)
+        return {"accepted": reason is None, "reason": reason, "bare": bare, "bindings": bindings, "method": "program"}
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("single reward: malformed original-T1 evidence") from error
+
+
+def _reward_value(decision: dict) -> int:
+    return 1 if decision["accepted"] else -1 if decision["bare"] else 0
 
 
 def bind_single_reward(row: dict, t1: dict, provenance: dict) -> dict:
@@ -157,7 +165,7 @@ def bind_single_reward(row: dict, t1: dict, provenance: dict) -> dict:
     evidence: dict = {"version": SINGLE_REWARD_GATE, "t1_metadata": {k: v for k, v in t1.items()
                 if k not in {"text", "generation", "prompt", "status"}}, "provenance": provenance, "decision": None}
     evidence["decision"] = _single_reward_decision(row, evidence)
-    row.update(reward=int(evidence["decision"]["accepted"]), reward_evidence=evidence)
+    row.update(reward=_reward_value(evidence["decision"]), reward_evidence=evidence)
     return row
 
 
@@ -167,7 +175,7 @@ def validate_single_reward(row: dict) -> dict:
         raise ValueError("single reward: original-T1 program-gate evidence required")
     decision = _single_reward_decision(row, evidence)
     if (evidence["decision"] != decision or type(row.get("reward")) is not int
-            or row["reward"] != int(decision["accepted"])):
+            or row["reward"] != _reward_value(decision)):
         raise ValueError("single reward: reward/decision differs from the program gate on the original solution")
     return decision
 

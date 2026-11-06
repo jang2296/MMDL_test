@@ -180,7 +180,7 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
         if v3_protocol != expected or metadata["step"] != expected["optimizer"]["total_steps"]:
             tag = "v3" if version == "error-note-protocol-v3" else "v4"
             raise ValueError(f"proof_eval: {tag} export requires the final BF16 checkpoint of its fixed protocol")
-    campaign = _single_campaign_export(metadata, plan, checkpoint) if plan is not None or version == _single_version() else None
+    campaign = _single_campaign_export(metadata, plan) if plan is not None or version == _single_version() else None
     if campaign is not None:
         v3_protocol = metadata["protocol"]
     output.mkdir(parents=True, exist_ok=False)
@@ -231,22 +231,8 @@ def _binding_file(path: Path) -> tuple[dict, dict | None]:
     return (loaded["binding"] if isinstance(loaded, dict) and "binding" in loaded else loaded), None
 
 
-def _single_stage(slot: int, consumed: int, last: int) -> str:
-    """pilot (slot 19, 300 items), final (the last slot) or stopped: a main checkpoint after the pilot of a
-    campaign the user ended early (2026-11-06, length collapse), evaluated once like a final one."""
-    if slot == last:
-        return "final"
-    if (slot, consumed) == SINGLE_PILOT:
-        return "pilot"
-    if SINGLE_PILOT[0] < slot < last:
-        return "stopped"
-    raise ValueError("proof_eval: single-response export requires the pilot (slot 19, 300 items) or the final "
-                     "campaign checkpoint, or the newest checkpoint of a stopped main run")
-
-
-def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path) -> dict:
-    """The pilot, final or stopped checkpoint of the one campaign whose sealed plan binds it. A stopped one must
-    be the campaign's newest committed checkpoint (campaign-state.json beside it), so no earlier one is picked."""
+def _single_campaign_export(metadata: dict, plan: dict | None) -> dict:
+    """The pilot (slot 19 = 300 items) or final checkpoint of the one campaign whose sealed plan binds it."""
     from fine_tuning.error_note import single_campaign
     from fine_tuning.error_note.order import _ids_sha256
 
@@ -255,15 +241,10 @@ def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path)
     cursor = metadata["cursor"].get("single", {})
     single_campaign._cursor(plan, cursor, cursor.get("policy_sha256"))
     slot, consumed, last = cursor["slot"], cursor["consumed_problem_ids"], len(plan["blocks"])
-    stage = _single_stage(slot, len(consumed), last)
-    if metadata["step"] != slot:
-        raise ValueError("proof_eval: single-response checkpoint step differs from its campaign slot")
-    if stage == "stopped":
-        state = json.loads((Path(checkpoint).parent / "campaign-state.json").read_text(encoding="utf-8"))
-        if (state.get("plan_sha256") != plan["sha256"] or state["cursor"]["slot"] != slot or state.get("pending")
-                or state["checkpoint"]["file_sha256"] != sha256_file(Path(checkpoint) / "metadata.json")):
-            raise ValueError("proof_eval: a stopped single-response export must be the campaign's newest checkpoint")
-    return {"version": plan["version"], "plan_sha256": plan["sha256"], "stage": stage,
+    if metadata["step"] != slot or (slot, len(consumed)) != SINGLE_PILOT and slot != last:
+        raise ValueError("proof_eval: single-response export requires the pilot (slot 19, 300 items) or the final "
+                         "campaign checkpoint")
+    return {"version": plan["version"], "plan_sha256": plan["sha256"], "stage": "final" if slot == last else "pilot",
             "slot": slot, "updates": cursor["updates"], "consumed_ids_sha256": _ids_sha256(consumed),
             "policy_sha256": cursor["policy_sha256"]}
 
@@ -329,9 +310,8 @@ def _single_model_ref(path: Path) -> tuple[dict, dict]:
     if (ref.get("kind") != "merged" or ref.get("dtype") != "bfloat16" or not ref.get("files")
             or ref.get("base") != {"id": MODEL_ID, "revision": MODEL_REVISION}
             or ref.get("processor_revision") != MODEL_REVISION or export.get("arm") != ARM
-            or export.get("step") != campaign.get("slot") or campaign.get("stage") not in ("final", "stopped")
-            or type(campaign.get("slot")) is not int
-            or campaign["stage"] != _single_stage(campaign["slot"], 0, protocol["training_contract"]["total_slots"])
+            or campaign.get("stage") != "final" or export.get("step") != campaign.get("slot")
+            or campaign.get("slot") != protocol["training_contract"]["total_slots"]
             or ref.get("train_config_sha256") != digest(protocol)
             or binding.get("protocol_sha256") != protocol["sha256"]
             or binding.get("prompts_sha256") != protocol["prompts_sha256"]
@@ -397,7 +377,7 @@ def verify_v3_export(model_ref: Path, checkpoint: Path, binding_file: Path, prer
             or metadata["arm"] != ref["export"]["arm"] or metadata["step"] != ref["export"]["step"]
             or manifest["checkpoint_files"] != {p.name: sha256_file(p) for p in Path(checkpoint).iterdir()}
             or manifest["checkpoint_state_sha256"] != metadata["state_sha256"]
-            or arm == ARM_SINGLE and _single_campaign_export(metadata, plan, checkpoint) != ref["export"]["campaign"]):
+            or arm == ARM_SINGLE and _single_campaign_export(metadata, plan) != ref["export"]["campaign"]):
         raise ValueError(f"proof_eval: {tag} export checkpoint metadata or binding differs")
 
 

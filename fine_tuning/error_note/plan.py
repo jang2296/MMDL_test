@@ -34,6 +34,8 @@ run/grade -> analyze-hybrid. The pilot-gate JSON is built afterwards by the oper
 single-main: pins (incl. the gate) -> advance --continue-main --max-blocks 200 -> reload receipt -> export the final
 checkpoint to <volume_root>/eval-data/proof/export-single-final. The one MMMU pass is a separate eval-ft job (arm FT-SINGLE,
 prereg v7): a training job never carries an MMMU evaluation.
+single-direct (v5, user 2026-11-06; runs under job stage single-main): pins -> advance 1 -> reload -> advance 18 ->
+reload checkpoint-19 -> advance --continue-main --direct-main 200 (no external-dev gate) -> reload -> export the final checkpoint.
 """
 from __future__ import annotations
 
@@ -54,7 +56,7 @@ SPEC_VERSION = "pod-chain-spec-v1"
 PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
 V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
-SINGLE_STAGES = ("single-pilot", "single-main")
+SINGLE_STAGES = ("single-pilot", "single-main", "single-direct")
 STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES)
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
@@ -88,7 +90,8 @@ SINGLE_ENGINE_KEYS = {"name", "kv_cache_gib", "gpu_memory_utilization", "sleep"}
 SINGLE_EXTRA = {"single-pilot": (("dev_manifest_path", "dev_vault_root", "dev_rules_path"),
                                  ("dev_manifest_sha256", "dev_rules_sha256"),
                                  ("cpu", "advance_first", "advance_pilot", "reload", "export", "evaluate")),
-                "single-main": (("pilot_gate_path",), ("pilot_gate_sha256",), ("cpu", "advance_main", "reload", "export"))}
+                "single-main": (("pilot_gate_path",), ("pilot_gate_sha256",), ("cpu", "advance_main", "reload", "export")),
+                "single-direct": ((), (), ("cpu", "advance_first", "advance_pilot", "advance_main", "reload", "export"))}
 PILOT_BLOCKS, MAIN_BLOCKS = 19, 200  # single_campaign: 219 slots of 16, PILOT_COMPLETE after slot 19 (300 items)
 
 
@@ -368,6 +371,19 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     pins += [(key.removesuffix("_path").replace("_", "-"), p[key], p[key.removesuffix("_path") + "_sha256"])
              for key in paths if key.endswith("_path")]
     steps = [step(f"pin-{name}", [*chain_cmd, "pin", "--file", path, "--sha256", sha], [], "cpu") for name, path, sha in pins]
+    if stage == "single-direct":
+        last = PILOT_BLOCKS + MAIN_BLOCKS
+        return steps + [
+            step("advance-1", advance(1), [f"{campaign_dir}/checkpoint-1/metadata.json"], "advance_first"),
+            reload(1),
+            step("advance-pilot", advance(PILOT_BLOCKS - 1), [f"{campaign_dir}/checkpoint-{PILOT_BLOCKS}/metadata.json"],
+                 "advance_pilot"),
+            reload(PILOT_BLOCKS),
+            step("advance-main", advance(MAIN_BLOCKS, "--continue-main", "--direct-main"),
+                 [f"{campaign_dir}/checkpoint-{last}/metadata.json"], "advance_main"),
+            reload(last),
+            export(last, f"{p['volume_root']}/eval-data/proof/export-single-final"),
+        ]
     if stage == "single-main":
         last = PILOT_BLOCKS + MAIN_BLOCKS
         return steps + [
@@ -482,7 +498,9 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
 def _spec(stage: str, p: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
     canonical = json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return {"version": SPEC_VERSION,
-            "meta": {"stage": stage, "job_stage": stage, "params_sha256": sha256_bytes(canonical.encode()),
+            # single-direct runs under the existing single-main job stage (pod/job.py stays byte-identical)
+            "meta": {"stage": stage, "job_stage": "single-main" if stage == "single-direct" else stage,
+                     "params_sha256": sha256_bytes(canonical.encode()),
                      "generator": "fine_tuning.error_note.plan",
                      "total_timeout_seconds": sum(step["timeout_seconds"] for step in steps)},
             "steps": steps}

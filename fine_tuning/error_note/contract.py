@@ -308,8 +308,10 @@ def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str) -> st
         raise ValueError("single note: nonblank P0 and gold required")
     if status not in SINGLE_VERDICT_LABELS:
         raise ValueError(f"no single verdict label for status {status!r}")
+    # v5 (2026-11-06): the V3 wording ("distinguish outside knowledge", "only directly visible details") taught
+    # image-only hedging (226/900 MMMU answers, 2 under the V2 model), so SINGLE notes use the V2 instruction.
     return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {SINGLE_VERDICT_LABELS[status]}\n"
-            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V3}")
+            f"Correct answer: {gold}\n\n{NOTE_INSTRUCTION_V2}")
 
 
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)

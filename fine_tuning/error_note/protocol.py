@@ -131,8 +131,11 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # v3 (user 2026-11-05): program-only row admission; RL replay over the stored generation-time support.
 # v4: MCQ graded by the V8-aligned contract, >=32-token solutions for reward/A1/A2 (pilot v3 collapsed to bare
 # answers), replay drift bounded per block and on long rows (one-token rows measure engine noise, not binding).
-VERSION_SINGLE = "error-note-single-response-v4"
-SINGLE_REWARD_GATE = "single-t1-program-gate-v2"
+# v5 (2026-11-06, main v4 run stopped at slot 75): V2 note instruction (V3 taught image-only hedging) and reward -1
+# for a normally finished T1 under 32 tokens (bare answers rose 28% -> 44% with no penalty), see
+# claudedocs/analysis_single_rlsft_failure_20261106.md.
+VERSION_SINGLE = "error-note-single-response-v5"
+SINGLE_REWARD_GATE = "single-t1-program-gate-v3"
 SINGLE_REPLAY = "stored-generation-support-v1"
 SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
 SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
@@ -144,7 +147,7 @@ SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_pena
 
 
 def single_prompts_sha256() -> str:
-    return _digest({"note": NOTE_INSTRUCTION_V3, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER})
+    return _digest({"note": NOTE_INSTRUCTION_V2, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER})
 
 
 def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[list[str]]:
@@ -184,6 +187,7 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "generation_counts": {"t1": 1, "note": 1, "resolve": 1}, "sampling": dict(SINGLE_SAMPLING),
                  "rl": {"method": "reinforce", "baseline": 0.0, "token_scale": float(token_scale),
                         "beta": float(beta), "reward": SINGLE_REWARD_GATE,
+                        "reward_values": {"accepted": 1, "bare_stop_under_min_tokens": -1, "other": 0},
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes"},
                  "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
                  "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,

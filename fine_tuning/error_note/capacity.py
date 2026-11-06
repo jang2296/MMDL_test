@@ -482,7 +482,7 @@ class Capture:
                      "image_grids": row["image_grid_thw"].tolist()} for row in rows]
         with self.measure(phase, shape(encoded_shapes(rows)), digest(workload)) as sample:
             sample.update(kind=kind, work_ids=[row["row_id"] for row in rows],
-                          pg_rows=sum(row["reward"] == 1 for row in rows) if kind == "RL" else 0)
+                          pg_rows=sum(row["reward"] != 0 for row in rows) if kind == "RL" else 0)
             yield
             sample.update(complete=True, full_kl=full_kl)
 

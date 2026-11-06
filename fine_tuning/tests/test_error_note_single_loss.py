@@ -264,14 +264,41 @@ class SingleRewardGate(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "malformed"):
                 single.validate_single_reward(row)
 
-    def test_bare_correct_answer_earns_no_reward_under_the_32_token_rule(self):
+    def test_bare_answer_gets_negative_reward_under_the_32_token_rule_and_truncation_does_not(self):
         owner = tiny_factory()
         rows, _ = block(owner, count=1)
         with patch.object(single, "SOLUTION_MIN_TOKENS", 32):
+            for status, reason in (("CORRECT", "TOO_SHORT"), ("INCORRECT", "T1_NOT_CORRECT")):
+                row = copy.deepcopy(rows[0])
+                row["status"] = status
+                bind_reward_fixture(row)
+                self.assertEqual(row["reward"], -1, status)
+                self.assertIs(row["reward_evidence"]["decision"]["bare"], True)
+                self.assertIn(reason, row["reward_evidence"]["decision"]["reason"])
+                self.assertEqual(single.validate_single_reward(row)["accepted"], False)
+            row = copy.deepcopy(rows[0])
+            bind_reward_fixture(row, finish_reason="length")
+            self.assertEqual(row["reward"], 0)  # a cut-off answer is not a bare answer
+            self.assertIs(row["reward_evidence"]["decision"]["bare"], False)
+            forged = copy.deepcopy(rows[0])
+            bind_reward_fixture(forged)
+            forged["reward"] = 0
+            with self.assertRaisesRegex(ValueError, "program gate"):
+                single.validate_single_reward(forged)
+
+    def test_negative_reward_pushes_the_bare_answer_down(self):
+        owner = tiny_factory()
+        rows, contract = block(owner, count=1)
+        with patch.object(single, "SOLUTION_MIN_TOKENS", 32):
             row = copy.deepcopy(rows[0])
             bind_reward_fixture(row)
-            self.assertEqual(row["reward"], 0)
-            self.assertIn("TOO_SHORT", row["reward_evidence"]["decision"]["reason"])
+        logprobs = torch.tensor([-0.5, -1.0], requires_grad=True)
+        term = rl.single_pg(logprobs, row["reward"], problem_count=1, token_scale=4.0)
+        term.backward()
+        self.assertGreater(float(logprobs.grad.min()), 0)  # minimizing the loss lowers these log probabilities
+        self.assertAlmostEqual(float(term), -1.5 / 4.0)
+        with self.assertRaises(ValueError):
+            rl.single_pg(logprobs.detach(), 2, problem_count=1, token_scale=4.0)
 
     def test_forged_reward_and_decision_stale_or_malformed_receipts_fail(self):
         owner = tiny_factory()

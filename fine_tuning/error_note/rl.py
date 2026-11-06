@@ -90,9 +90,9 @@ def policy_sha256(bundle) -> str:
 
 
 def single_pg(logprobs: torch.Tensor, reward: int, *, problem_count: int, token_scale: float) -> torch.Tensor:
-    """b=0 REINFORCE; wrong answers remain in the fixed B*C denominator."""
+    """b=0 REINFORCE (reward -1, 0 or 1); wrong answers remain in the fixed B*C denominator."""
     if (logprobs.ndim != 1 or not logprobs.numel() or not bool(torch.isfinite(logprobs).all())
-            or type(reward) is not int or reward not in (0, 1) or type(problem_count) is not int or problem_count < 1
+            or type(reward) is not int or reward not in (-1, 0, 1) or type(problem_count) is not int or problem_count < 1
             or not math.isfinite(token_scale) or token_scale <= 0):
         raise ValueError("single RL: invalid reward, action log probabilities or fixed denominator")
     return -reward * logprobs.sum() / (problem_count * token_scale)
