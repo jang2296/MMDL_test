@@ -149,7 +149,12 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # training comparison); a committed answer never gets NO_COMMITTED_ANSWER; the note input shows the grader-read
 # value; notes with Cause NONE, or a non-NO_FINAL_ANSWER cause for an unaccepted/cut-off answer, are rejected;
 # lesson stem leak check; answer-denial phrases block T1 reward/A1 and A2; review phrases on word boundaries.
-VERSION_SINGLE = "error-note-single-response-v8"
+# v9 (2026-11-07, v8 main run stopped at block 27 of 219 on one row's vLLM-vs-HF replay mismatch, and the T1
+# answer-first share rose within sources as in v4): a block may drop up to two replay-failing RL rows from PG, KL and
+# the anchor (block mean still covers every row; fixed denominators), and the first T1 positions carry an
+# always-on raw F0 KL anchor so the reason-first/answer-first decision stays near the original model.
+VERSION_SINGLE_V8 = "error-note-single-response-v8"
+VERSION_SINGLE = "error-note-single-response-v9"
 SINGLE_REWARD_GATE = "single-t1-program-gate-v5"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
@@ -160,6 +165,10 @@ SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
 SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
 SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS = 64
 SINGLE_REPLAY_MAX_ATOL = 3.0
+SINGLE_REPLAY_ROW_FAILURE = "exclude_row_from_rl_kl"
+SINGLE_REPLAY_MAX_EXCLUDED_ROWS = 2
+SINGLE_FORMAT_ANCHOR_POSITIONS = 4
+SINGLE_FORMAT_ANCHOR_BETA = 0.5
 SINGLE_ANSWER_CONTRACTS = {"mcq": TURN1_EVAL_CONTRACT, "open": SINGLE_OPEN_SCORER}
 SINGLE_NOTE_CAUSE_RULE = {
     "reject_cause": ["NONE"], "unaccepted_statuses": ["INVALID_NO_FINAL", "INVALID_MULTIPLE", "TRUNCATED"],
@@ -214,7 +223,8 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "rl": {"method": "reinforce", "baseline": 0.0, "token_scale": float(token_scale),
                         "beta": float(beta), "reward": SINGLE_REWARD_GATE,
                         "reward_values": dict(SINGLE_REWARD_VALUES),
-                        "kl": "raw_F0_to_current_on_all_completed_T1_prefixes"},
+                        "kl": "raw_F0_to_current_on_all_completed_T1_prefixes",
+                        "format_anchor": {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}},
                  "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
                  "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,
                                    "max_target_tokens": MAX_TARGET_TOKENS,
@@ -233,7 +243,9 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "replay_support": {"method": SINGLE_REPLAY, "block_mean_atol": SINGLE_REPLAY_BLOCK_MEAN_ATOL,
                                     "row_mean_atol": SINGLE_REPLAY_ROW_MEAN_ATOL,
                                     "row_mean_min_tokens": SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
-                                    "row_max_atol": SINGLE_REPLAY_MAX_ATOL},
+                                    "row_max_atol": SINGLE_REPLAY_MAX_ATOL,
+                                    "row_failure": SINGLE_REPLAY_ROW_FAILURE,
+                                    "max_excluded_rows": SINGLE_REPLAY_MAX_EXCLUDED_ROWS},
                  "zero_signal": "consume_slot_without_optimizer_or_decay", "total_slots": total_slots,
                  "pilot_boundary": 300, "pilot_main_optimizer": "continuous",
                  "routes": {"RL": "LM", "A1": "LM", "A2_B": "accepted_note_self_report"}}}

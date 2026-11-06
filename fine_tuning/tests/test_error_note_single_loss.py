@@ -12,7 +12,9 @@ from fine_tuning.error_note import rl
 from fine_tuning.error_note import single
 from fine_tuning.error_note import train_v4 as train
 from fine_tuning.error_note.contract import ROUTE_FULL, ROUTE_LM
-from fine_tuning.error_note.protocol import SINGLE_REWARD_GATE, VERSION_SINGLE
+from fine_tuning.error_note.protocol import (SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
+                                             SINGLE_REPLAY_MAX_EXCLUDED_ROWS, SINGLE_REPLAY_ROW_FAILURE,
+                                             SINGLE_REWARD_GATE, VERSION_SINGLE, VERSION_SINGLE_V8)
 from fine_tuning.notebook_rl.input_preparation import digest
 from fine_tuning.tests.test_error_note_train import encoded, tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
@@ -86,9 +88,53 @@ def block(bundle, count=2, reward=1):
         row["generation"].update(sampling_logprobs=value["logprobs"].tolist())
         bind_reward_fixture(row)
     contract = {"expected_problem_ids": [r["problem_id"] for r in rows], "policy_sha256": rl.policy_sha256(bundle),
-                "sampling": SAMPLING, "rl": {"token_scale": 1024., "beta": .02},
+                "sampling": SAMPLING, "rl": {"token_scale": 1024., "beta": .02, "format_anchor": {
+                    "positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}},
+                "replay_support": {"row_failure": SINGLE_REPLAY_ROW_FAILURE,
+                                   "max_excluded_rows": SINGLE_REPLAY_MAX_EXCLUDED_ROWS},
                 "sft_weights": {"A1": .05, "A2": .5, "B": .05}}
     return rows, pin_reward_fixture(rows, contract)
+
+
+def as_v8(contract):
+    """The sealed v8 contract shape: no format anchor and no replay row exclusion."""
+    old = copy.deepcopy(contract) | {"version": VERSION_SINGLE_V8}
+    del old["rl"]["format_anchor"], old["replay_support"]
+    return old
+
+
+def perturbed_factory(*args):
+    """theta != F0: deterministic LoRA noise, so the raw F0 KL and the format anchor are nonzero."""
+    bundle = tiny_factory(*args)
+    generator = torch.Generator().manual_seed(5)
+    with torch.no_grad():
+        for parameter in bundle.params["L"]:
+            parameter.add_(torch.randn(parameter.shape, generator=generator, dtype=parameter.dtype) * .05)
+    return bundle
+
+
+def spiked(rows, contract, indices, nats):
+    """Authored per-row replay mismatch: every stored sampling log probability of the row moves by `nats`."""
+    rows = copy.deepcopy(rows)
+    for index in indices:
+        rows[index]["generation"]["sampling_logprobs"] = [v - nats for v in rows[index]["generation"]["sampling_logprobs"]]
+        bind_reward_fixture(rows[index])
+    return rows, pin_reward_fixture(rows, copy.deepcopy(contract))
+
+
+def manual_rl_gradients(bundle, rows, count):
+    """Fixed-denominator PG + raw KL + first-position anchor over `rows` only (B = count)."""
+    bundle.model.zero_grad(set_to_none=True)
+    bundle.model.train()
+    bundle.route.apply(False)
+    values = train.single_batch_statistics(bundle, rows, SAMPLING, reference=True)
+    loss = sum(-row["reward"] * value["logprobs"].sum() / (count * 1024.) + .02 * value["kl"].sum() / (count * 1024.)
+               + SINGLE_FORMAT_ANCHOR_BETA * value["kl"][:SINGLE_FORMAT_ANCHOR_POSITIONS].sum() / count
+               for row, value in zip(rows, values, strict=True))
+    loss.backward()
+    result = gradients(bundle)
+    bundle.model.zero_grad(set_to_none=True)
+    return result
 
 
 class SingleMath(unittest.TestCase):
@@ -488,8 +534,79 @@ class SingleTinyPolicy(unittest.TestCase):
         spike_contract = pin_reward_fixture(spike, copy.deepcopy(contract))
         with patch.object(train, "SINGLE_REPLAY_BLOCK_MEAN_ATOL", 10.):
             with self.assertRaisesRegex(ValueError, "row mean"):
-                train.backward_single_block(bundle, spike, spike_contract, components=("PG",))
+                train.backward_single_block(bundle, spike, as_v8(spike_contract), components=("PG",))
         self.assertTrue(all(p.grad is None for ps in bundle.params.values() for p in ps))
+
+    def test_v9_drops_one_failing_long_row_from_pg_kl_and_anchor_with_fixed_denominators(self):
+        bundle = perturbed_factory()
+        rows, contract = block(bundle, count=4)  # 3..6 action tokens; the authored rows count as long below
+        bad, bad_contract = spiked(rows, contract, [0], .15)  # row mean .15 > .1; block mean .45/18 < .05
+        with patch.object(train, "SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS", 1):
+            stats = train.backward_single_block(bundle, bad, bad_contract, components=("PG", "KL"))
+        excluded = stats["replay"]["excluded"]
+        self.assertEqual([(e["problem_id"], e["tokens"]) for e in excluded], [("item-0", 3)])
+        self.assertAlmostEqual(excluded[0]["row_mean"], .15, places=5)
+        self.assertTrue(stats["has_gradient"] and stats["replay_verified"])
+        expected = -sum(sum(row["generation"]["sampling_logprobs"]) for row in rows[1:]) / (4 * 1024.)
+        self.assertAlmostEqual(stats["rl"]["pg"], expected, places=6)
+        self.assertGreater(stats["rl"]["anchor"], 0)
+        self.assertAlmostEqual(stats["loss"], stats["rl"]["pg"] + stats["rl"]["kl"] + stats["rl"]["anchor"], places=9)
+        actual = gradients(bundle)
+        self.assertTrue(all(bool(torch.isfinite(value).all()) for value in actual.values()))
+        for name, value in manual_rl_gradients(bundle, rows[1:], 4).items():
+            torch.testing.assert_close(actual[name], value, atol=1e-7, rtol=1e-4)
+        bundle.model.zero_grad(set_to_none=True)
+        # The same mismatch on a short row (< 64 tokens, max <= 3) is engine noise, not a failure.
+        self.assertEqual(train.backward_single_block(bundle, bad, bad_contract, components=("PG",))["replay"]["excluded"], [])
+        bundle.model.zero_grad(set_to_none=True)
+        # Excluded rows still count in the unchanged block mean.
+        drift, drift_contract = spiked(rows, contract, [0], .5)
+        with patch.object(train, "SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS", 1), self.assertRaisesRegex(ValueError, "block mean"):
+            train.backward_single_block(bundle, drift, drift_contract, components=("PG",))
+        self.assertTrue(all(p.grad is None for ps in bundle.params.values() for p in ps))
+
+    def test_v9_holds_on_a_third_failing_row_and_v8_on_the_first(self):
+        bundle = tiny_factory()
+        rows, contract = block(bundle, count=4)
+        with patch.object(train, "SINGLE_REPLAY_BLOCK_MEAN_ATOL", 10.):
+            two, two_contract = spiked(rows, contract, [0, 2], 3.5)  # row max 3.5 > 3 at any length
+            stats = train.backward_single_block(bundle, two, two_contract, components=("PG",))
+            self.assertEqual(sorted(e["problem_id"] for e in stats["replay"]["excluded"]), ["item-0", "item-2"])
+            bundle.model.zero_grad(set_to_none=True)
+            three, three_contract = spiked(rows, contract, [0, 1, 2], 3.5)
+            with self.assertRaisesRegex(ValueError, "row mean .*RL HOLD"):
+                train.backward_single_block(bundle, three, three_contract, components=("PG",))
+            one, one_contract = spiked(rows, contract, [1], 3.5)
+            with self.assertRaisesRegex(ValueError, "row mean .*RL HOLD"):
+                train.backward_single_block(bundle, one, as_v8(one_contract), components=("PG",))
+        self.assertTrue(all(p.grad is None for ps in bundle.params.values() for p in ps))
+        malformed = copy.deepcopy(contract)
+        malformed["rl"]["format_anchor"]["beta"] = 0.
+        with self.assertRaisesRegex(ValueError, "v9 format anchor"):
+            train.backward_single_block(bundle, rows, malformed, components=("PG",))
+
+    def test_v9_format_anchor_is_beta_first_positions_raw_kl_over_b_and_zero_at_f0(self):
+        bundle = perturbed_factory()
+        rows, contract = block(bundle, count=4)  # 5 and 6 action tokens exceed the 4 anchored positions
+        with torch.no_grad():
+            values = train.single_batch_statistics(bundle, rows, SAMPLING, reference=True)
+        stats = train.backward_single_block(bundle, rows, contract, components=("KL",))
+        anchor = sum(SINGLE_FORMAT_ANCHOR_BETA * float(v["kl"][:SINGLE_FORMAT_ANCHOR_POSITIONS].sum()) for v in values) / 4
+        kl = sum(.02 * float(v["kl"].sum()) for v in values) / (4 * 1024.)
+        self.assertGreater(anchor, 0)
+        self.assertAlmostEqual(stats["rl"]["anchor"] / anchor, 1., places=5)
+        self.assertAlmostEqual(stats["rl"]["kl"] / kl, 1., places=5)
+        self.assertEqual((stats["rl"]["pg"], stats["replay"]["excluded"]), (0., []))
+        self.assertTrue(stats["has_gradient"])
+        old = train.backward_single_block(bundle, rows, as_v8(contract), components=("PG", "KL"))
+        self.assertNotIn("anchor", old["rl"])
+        self.assertNotIn("excluded", old["replay"])
+        self.assertAlmostEqual(old["loss"], old["rl"]["pg"] + old["rl"]["kl"], places=12)
+        fresh = tiny_factory()
+        f0_rows, f0_contract = block(fresh, count=4)
+        zero = train.backward_single_block(fresh, f0_rows, f0_contract, components=("KL",))
+        self.assertEqual((zero["rl"]["anchor"], zero["rl"]["kl"], zero["loss"]), (0., 0., 0.))
+        self.assertFalse(zero["has_gradient"])
 
     def test_nonzero_actual_or_configured_attention_and_lora_dropout_is_rejected(self):
         bundle = tiny_factory()

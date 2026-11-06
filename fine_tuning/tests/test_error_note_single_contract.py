@@ -185,7 +185,13 @@ class SingleV7Tests(unittest.TestCase):
         pins = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
         contract = plain_protocol_single("bf16", 2, contracts=pins, token_scale=1024)["training_contract"]
         self.assertEqual((VERSION_SINGLE, SINGLE_REWARD_GATE),
-                         ("error-note-single-response-v8", "single-t1-program-gate-v5"))
+                         ("error-note-single-response-v9", "single-t1-program-gate-v5"))
+        self.assertEqual(contract["rl"]["format_anchor"], {"positions": 4, "beta": .5})
+        self.assertEqual(contract["rl"]["beta"], .02)
+        self.assertEqual(contract["replay_support"], {
+            "method": "stored-generation-support-v1", "block_mean_atol": .05, "row_mean_atol": .1,
+            "row_mean_min_tokens": 64, "row_max_atol": 3., "row_failure": "exclude_row_from_rl_kl",
+            "max_excluded_rows": 2})
         self.assertEqual(contract["answer_contracts"],
                          {"mcq": "p0-eval-aligned-v1", "open": "v8-extract+normalize+training-compare-v1"})
         scorer = contract["answer_scorer"]

@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 import torch
 
-from fine_tuning.error_note import audit, rl, single, single_campaign as campaign
+from fine_tuning.error_note import audit, rl, single, single_campaign as campaign, train_v4
 from fine_tuning.error_note.protocol import _digest, plain_protocol_single, single_blocks
 from fine_tuning.notebook_rl import checkpoint
 from fine_tuning.tests import test_error_note_single_runtime as runtime_fixture
-from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, pin_reward_fixture
+from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, perturbed_factory, pin_reward_fixture
 from fine_tuning.tests.test_error_note_train import tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
 
@@ -333,6 +333,8 @@ class TrainCampaignTests(CampaignCase):
 
     def raw_rows(self, owner, ids):
         rows, contract = block(owner, count=len(ids), reward=getattr(self, "reward", 1))
+        if getattr(self, "spike", False):
+            rows[0]["generation"]["sampling_logprobs"][0] -= 3.5  # one replay-failing row; v9 drops it
         contract["total_slots"] = len(self.plan["blocks"])
         for row, pid in zip(rows, ids, strict=True):
             row.update(problem_id=pid, row_id=pid + ":RL")
@@ -469,6 +471,40 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
             recovered = self.execute_train()
         self.assertEqual((recovered["cursor"]["slot"], recovered["cursor"]["updates"]), (1, 1))
         self.assertEqual(update.call_count, 1)
+
+    def test_v9_excluded_row_and_anchor_stats_reconcile_on_crash_restart_and_v8_cannot_resume(self):
+        self.plan, self.spike = plan_for(2, "train"), True
+        real_save = single.save_single_continuation
+
+        def interrupted(*args, **kwargs):
+            if kwargs["path"].name == "checkpoint-1":
+                raise RuntimeError("authored post-step crash")
+            return real_save(*args, **kwargs)
+
+        sealed_path = self.out / "block-0" / "update-stats.json"
+        with patch.object(train_v4, "SINGLE_REPLAY_BLOCK_MEAN_ATOL", 10.):
+            with patch.object(single, "run_single_block", side_effect=self.real_closed), \
+                    patch.object(single, "save_single_continuation", side_effect=interrupted):
+                with self.assertRaisesRegex(RuntimeError, "post-step"):
+                    self.execute_train(policy_factory=perturbed_factory)
+            sealed = json.loads(sealed_path.read_text())
+            with patch.object(single, "run_single_block", side_effect=AssertionError("resampling pending rows")), \
+                    patch.object(single, "run_joint_single_update", wraps=single.run_joint_single_update) as update:
+                recovered = self.execute_train(policy_factory=perturbed_factory)
+        self.assertEqual(update.call_count, 1)  # the recomputed stats matched the sealed receipt
+        self.assertEqual((recovered["cursor"]["slot"], recovered["cursor"]["updates"]), (1, 1))
+        self.assertEqual(json.loads(sealed_path.read_text()), sealed)
+        stats = sealed["stats"]
+        self.assertEqual([(e["problem_id"], e["tokens"]) for e in stats["replay"]["excluded"]], [("p0", 3)])
+        self.assertGreater(stats["rl"]["anchor"], 0)
+        self.assertAlmostEqual(stats["loss"], stats["rl"]["pg"] + stats["rl"]["kl"] + stats["rl"]["anchor"]
+                               + sum(v["weighted_loss"] for v in stats["sft"].values()), places=12)
+        old = copy.deepcopy(self.plan)
+        old["protocol"]["version"] = old["protocol"]["training_contract"]["version"] = "error-note-single-response-v8"
+        old["protocol"]["sha256"] = _digest({k: v for k, v in old["protocol"].items() if k != "sha256"})
+        self.plan = reseal(old)
+        with self.assertRaisesRegex(ValueError, "invalid single-response protocol"):
+            self.execute_train(output=self.out / "v8")
 
     def test_partial_checkpoint_is_preserved_and_reports_recovery_required(self):
         self.plan = plan_for(2, "train")

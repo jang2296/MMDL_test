@@ -39,8 +39,10 @@ from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_uncha
 from . import rl
 from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, VERDICT_LABELS, update_groups
 from .order import read_order
-from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL,
-                       SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS, VERSION_V4, plain_protocol_v4)
+from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
+                       SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MAX_EXCLUDED_ROWS,
+                       SINGLE_REPLAY_ROW_FAILURE, SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
+                       VERSION_SINGLE, VERSION_SINGLE_V8, VERSION_V4, plain_protocol_v4)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
                     _commit, _encode_or_drop, _factory, _gradient_norms, _keep_before, _newest_checkpoint, _peak_gib,
@@ -371,11 +373,17 @@ def single_batch_statistics(bundle: PolicyBundle, rows: list[dict], sampling: di
 
 
 def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict) -> list[dict]:
-    from .protocol import SINGLE_REWARD_GATE, VERSION_SINGLE
+    from .protocol import SINGLE_REWARD_GATE
     from .single import validate_single_reward
 
-    if contract.get("version") != VERSION_SINGLE or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
+    if contract.get("version") not in (VERSION_SINGLE_V8, VERSION_SINGLE) or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
         raise ValueError("single train: SINGLE v4 program-gate reward contract required; v1-v3 cannot resume")
+    if contract["version"] == VERSION_SINGLE and (
+            contract["rl"].get("format_anchor") != {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}
+            or not isinstance(contract.get("replay_support"), dict)
+            or contract["replay_support"].get("row_failure") != SINGLE_REPLAY_ROW_FAILURE
+            or contract["replay_support"].get("max_excluded_rows") != SINGLE_REPLAY_MAX_EXCLUDED_ROWS):
+        raise ValueError("single train: v9 format anchor and replay row-failure contract required")
     expected = contract["expected_problem_ids"]
     if (not isinstance(expected, list) or not expected or len(set(expected)) != len(expected)
             or any(not isinstance(pid, str) or not pid for pid in expected)):
@@ -458,6 +466,9 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
         raise ValueError("single train: explicit finite nonnegative weights and positive token scale required")
     _require_single_zero_dropout(bundle)
     t1 = _validate_single_block(bundle, encoded, contract)
+    v9 = contract["version"] == VERSION_SINGLE  # v8 keeps the first-row replay HOLD and has no anchor
+    anchor = v9 and "KL" in selected
+    reference = "KL" in selected and (beta > 0 or anchor)  # the anchor reads the same exact raw F0 KL
     initial_route = bundle.route.vision_on
     was_training = bundle.model.training
     plan = plan_microbatches([row["input_ids"].numel() for row in t1], [row["route"] for row in t1], token_budget)
@@ -487,6 +498,9 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     stats: dict[str, Any] = {"rl": {"rows": len(t1), "problem_count": len(t1), "token_scale": scale,
                                      "action_tokens": sum(row["target_len"] for row in t1), "pg": 0., "kl": 0.},
                              "sft": {}, "replay_verified": False}
+    if v9:
+        stats["rl"]["anchor"] = 0.
+    excluded: list[dict] = []
     try:
         bundle.model.train()  # Qwen activation checkpointing requires training mode; checked zero dropout keeps replay exact.
         # Validate every sampled distribution before any component can leave a partial gradient.
@@ -509,24 +523,31 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                     replay_stats["over_0.1"] += int((gap > .1).sum())
                     long_row = gap.numel() >= SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS
                     if long_row and row_mean > SINGLE_REPLAY_ROW_MEAN_ATOL or row_max > SINGLE_REPLAY_MAX_ATOL:
-                        raise ValueError(f"single train: sampling logprob replay changed (row mean {row_mean:.4f}, "
-                                         f"max {row_max:.4f}); RL HOLD")
+                        if not v9 or len(excluded) == SINGLE_REPLAY_MAX_EXCLUDED_ROWS:
+                            raise ValueError(f"single train: sampling logprob replay changed (row mean {row_mean:.4f}, "
+                                             f"max {row_max:.4f}); RL HOLD")
+                        # v9: a rare per-row engine mismatch drops only that row; denominators stay fixed.
+                        excluded.append({"problem_id": row["problem_id"], "row_mean": row_mean, "row_max": row_max,
+                                         "tokens": gap.numel()})
         block_mean = replay_stats["abs_sum"] / max(1, replay_stats["tokens"])
         if block_mean > SINGLE_REPLAY_BLOCK_MEAN_ATOL:
             raise ValueError(f"single train: sampling logprob replay changed (block mean {block_mean:.4f}); RL HOLD")
-        stats["replay"] = replay_stats | {"mean_abs": block_mean}
+        stats["replay"] = replay_stats | {"mean_abs": block_mean} | ({"excluded": excluded} if v9 else {})
         stats["replay_verified"] = True
-        if "PG" in selected or "KL" in selected and beta:
+        dropped = {value["problem_id"] for value in excluded}
+        if "PG" in selected or reference:
             for indices in plan:
                 batch = [t1[i] for i in indices]
                 bundle.route.apply(False)
                 if capacity is not None:
                     capacity.check(encoded_shapes(batch), "rl_kl")
-                with capture.batch(batch, "rl_kl", "RL", full_kl=force_full_kl and "KL" in selected and beta > 0) if capture is not None else nullcontext():
-                    values = single_batch_statistics(bundle, batch, contract["sampling"], reference="KL" in selected and beta > 0,
+                with capture.batch(batch, "rl_kl", "RL", full_kl=force_full_kl and reference) if capture is not None else nullcontext():
+                    values = single_batch_statistics(bundle, batch, contract["sampling"], reference=reference,
                                                       force_full_kl=force_full_kl)
                     terms = []
                     for row, value in zip(batch, values, strict=True):
+                        if row["problem_id"] in dropped:
+                            continue  # the replay-validated forward keeps its batch; only this row's terms are dropped
                         if "PG" in selected:
                             term = rl.single_pg(value["logprobs"], row["reward"], problem_count=len(t1), token_scale=scale)
                             stats["rl"]["pg"] += float(term.detach())
@@ -535,6 +556,10 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                         if "KL" in selected and beta:
                             term = beta * value["kl"].sum() / (len(t1) * scale)
                             stats["rl"]["kl"] += float(term.detach())
+                            terms.append(term)
+                        if anchor:
+                            term = SINGLE_FORMAT_ANCHOR_BETA * value["kl"][:SINGLE_FORMAT_ANCHOR_POSITIONS].sum() / len(t1)
+                            stats["rl"]["anchor"] += float(term.detach())
                             terms.append(term)
                     if terms:
                         torch.stack(terms).sum().backward()
@@ -557,7 +582,7 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     finally:
         bundle.model.train(was_training)
         bundle.route.apply(initial_route)
-    stats["loss"] = stats["rl"]["pg"] + stats["rl"]["kl"] + sum(v["weighted_loss"] for v in stats["sft"].values())
+    stats["loss"] = stats["rl"]["pg"] + stats["rl"]["kl"] + stats["rl"].get("anchor", 0.) + sum(v["weighted_loss"] for v in stats["sft"].values())
     stats["has_gradient"] = any(p.grad is not None and bool(p.grad.abs().sum() > 0) for ps in bundle.params.values() for p in ps)
     return stats
 
