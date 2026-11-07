@@ -129,6 +129,38 @@
   (b) 첫 4토큰 F0 KL 고정(β0 0.5/B, 정답 토큰 보상 변경 없음 — v7에서 맞은 단답 −1을 뺀 이유 유지). F0에서 새 캠페인으로 다시 시작.
   guard v9: scienceqa/ai2d/nctcrc/slake/chartqa의 최근 6묶음 단답 비율이 0–5묶음보다 0.20 이상 높으면 FORMAT_DRIFT(v8 기록에서 14묶음에 발동 확인).
   사전 규칙: FORMAT_DRIFT 또는 비용 기한 도달 시 다음 커밋된 체크포인트에서 멈추고 그 최신 체크포인트 하나만 B2 MMMU 900으로 1회 평가.
+- **v9 커밋:** 학습 `adb19e7`(notebook_rl=0c1ed78), 평가 `1109977`(aeb9a14 재적용). Fable 감사 PASS, 깨끗한 커밋에서 SINGLE 시험 10모듈 OK.
+  감사 참고: 첫 토큰 고정 계수는 토큰당 PG의 약 512배라 첫 4토큰 분포가 사실상 F0에 고정됨(의도), 블록별 stats.rl.anchor 관찰 권고.
+- **v9 본학습:** A40 `hgqwu5eo8tb0r9` 재시작 실패 → 삭제, 새 A40 `47rjuim6dieshx`(0.59달러/시, 21:19:53Z), 잔액 10.59달러(21:20Z).
+  첫 job은 예산 검사 거절(max_main 40000초) → 38000초로 job `eaaaed18…`(spec `6681cc6e…`) 21:37:47Z 시작, 포드 정지 예약 07:55Z, 평가 대기(evalv9, eval commit `1109977`),
+  로컬 guard v9(형식 쏠림 포함)와 평가 후 자동 회수(`pod-v9-main-47rjuim6dieshx`).
+- **v9 실시간(00:52Z, 26묶음) — v8과 같은 문항 A/B:** 12–25묶음 220문항에서 단답 v8 107 → v9 66, 쏠림 5출처 단답 64/115 → 28/115(초반 20/100 수준),
+  T1 중앙값 71.5 → 163.5토큰, T1 정답 155 → 156, +1 행(=A1) 46 → 82, 재풀이 정답 12/44 → 16/44, 재생 제외 행 0. 첫 토큰 고정이 형식만 유지하고 정답률은 그대로.
+  로컬 실시간 미러 `pod-v9-main-47rjuim6dieshx/live`(10분마다 묶음 기록만, 가중치 제외).
+- **조사(2026-11-07 00:5xZ, Opus 5 + Fable 종합) `claudedocs/research_selfnote_v9_67_paths_20261107.md`:** 67.4 불가(높음), 558 초과 50% 미만(판단).
+  규칙 3항목 PASS(포드 `eval-data/proof/b2-predictions.jsonl`이 학습 차단 목록 밖 — 다음 판에서 차단). v8 손실 가중 A2 약 65%(종류당 총 가중 고정으로 1행이 0.5),
+  KL β .02 사실상 0, RL 보상 0 행 62%. 묶음 시간 생성 54%·갱신 29%·저장 17%. 학습 풀 13/30 과목 0개, MMMU 오답 46%가 그 과목.
+  공식식 무작위 대체의 기대 +21.9문항(프로토콜 몫 진단, V8 불변). 후보: EEE-Bench, PhysUniBench, MedXpertQA-MM, TAT-DQA, FinMME(미검증).
+- **다음(자율):** v10 로컬 준비 — 약점 과목 데이터(로컬 오염 검사 후 동결, 포드는 해시만), A2 행 수 비례 가중, 백그라운드 저장, 평가 파일 차단. 실행은 충전 필요(v9 후 잔액 약 1–2달러).
+- **v10 데이터 계획 `claudedocs/plan_v10_weak_subject_data_20261107.md`(Opus 3 + Fable):** Branch 1(규칙·고정 코드 그대로, notebook_rl 변경 없음) = 기존 어댑터
+  hf-bonemarrow 400·hf-ptbxl 400(Diagnostics), hf-cooperhewitt 150(Art/Design), hf-crello 200(Design) → 기대 수용 500–800, 신규 clevr→chartqa→mapqa에서 같은 수 감축.
+  자율 결정(권장안): TAT-DQA PDF·MET 사용자 보류 유지, CircuitVQA 제외(ChatGPT 질문 템플릿), 새 출처 품질 검토 생략하지 않음.
+  Branch 2(M4U·EEE-Bench 등 공학 test split)는 고정 검사기가 train 외 split을 거부(contamination.py:441-443) → 검사기 변경·사용자 결정 필요, 이번엔 제외.
+  2026-11-07 01:3xZ 빌드+오염 검사 기계 단계 시작(`v10-weak-v1/run_scan.sh`, 동결 임계값·보정 그대로).
+- **v10 오염 검사(로컬, 01:24–02:2xZ):** 빌드 1,165(검사 18분). 경고 610(모두 해제 가능, T1 0): T2 277(bonemarrow 52, ptbxl 225 — SigLIP 이미지 유사),
+  T3 333(타일 해시). T2만 MMMU/Pro와 직접 대조(Opus 39명, 2,804쌍 전부 DISTINCT; Fable 재확인 132쌍 변경 0, `review-t2/audit.json`), T3은 미검토 = UNRESOLVED 제외.
+  apply: 허용 823(bonemarrow 376/415, ptbxl 232/400, crello 123/200, cooperhewitt 92/150), DUPLICATE 0. human_verified=false.
+  남은 위험(Fable): 스캔된 교과서 ECG가 PTB-XL 기록의 재렌더일 가능성은 시트 해상도로 증명 불가(본 쌍은 모두 형태 불일치).
+- **v10 품질 검토 진행:** 출처별 60개(seed 3407 해시 순) 240카드, Opus 20 + Fable 엄격 방향 재확인, acceptance-sampling-v1(F≤2 실패 문항만 제외, F≥3 출처 제외).
+- **v10 품질 결과:** bonemarrow F=1, ptbxl F=0, cooperhewitt F=4(BLOCK), crello F=3(BLOCK). Fable 재확인 48행 변경 0(`quality/audit.json`).
+  첫 동결안(신규 clevr 302 → bonemarrow 151 + ptbxl 151, approval `9da54c00…` VALIDATED, prepare PREPARED)은 데이터 무결성 감사 PASS였으나,
+  bonemarrow는 2026-10-30 hf-pool-v3에서 3/60으로 출처 차단된 상태였고 이번 재표본 통과(합 4/120)는 "통과할 때까지 재시도"(§2.5 위반, tatqa-table 재시작 거절 선례)라 **자율 결정: bonemarrow 제외**.
+  재작업: ptbxl만(허용·품질 통과 train 전부, 최대 302) 추가, 같은 수만큼 신규 clevr 감축. 이전 산출물은 `-bonemarrow-rejected`로 보존.
+- **원인 분석 `claudedocs/analysis_why_rlsft_not_improving_20261107.md`(v9 55갱신 실측):** 가중 손실 A2 9.12 ≫ 고정 1.58 > B 0.62 > A1 0.57 ≫ PG 0.013 > KL 0.004.
+  RL은 토큰당 1/16384로 사실상 꺼짐, 갱신 방향은 묶음당 0–2개 재풀이 행이 결정. 보상 0이 51%, +1은 쉬운 출처 위주. 단답 28→35%.
+- **사용자 지시(2026-11-07): "그 개선안들 바로 v10에 반영해서 진행".** v10 코드: 출처별 고정 기준선(v9 0–54묶음 실측, `source-baseline-v10.json`, 전체 평균 0.30) 이점
+  A=r−b를 모든 T1 행에 적용, token_scale 1024→256, A2 행당 0.35(행 수로 나누지 않음), 포드 eval-data 경로 학습 차단. 고정·재생 제외·감시 유지.
+  v10 데이터: ptbxl 재작업 후 scienceqa·ai2d(쉬운 출처)를 순서 끝으로 이동(예산상 앞 ~1,300문항만 학습).
 
 ## 2026-11-05 — 10:44Z 사용자 요청으로 저장 후 중단, Claude 인계
 

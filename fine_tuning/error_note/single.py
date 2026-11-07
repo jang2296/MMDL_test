@@ -24,7 +24,8 @@ from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TO
                        a2_target_problem, answer_denial, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
                        resolve_prompt_single, sample_seed)
 from .protocol import (ARM, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE, SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER,
-                       SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256)
+                       SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256,
+                       SINGLE_TOKEN_SCALE_V10, single_source_baseline)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -154,7 +155,8 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
     try:
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
-                or not isinstance(evidence, dict) or set(evidence) != {"version", "t1_metadata", "provenance", "decision"}
+                or not isinstance(evidence, dict)
+                or set(evidence) - {"baseline"} != {"version", "t1_metadata", "provenance", "decision"}
                 or evidence["version"] != SINGLE_REWARD_GATE or not isinstance(evidence["t1_metadata"], dict)
                 or {"text", "generation", "prompt", "status"} & set(evidence["t1_metadata"])
                 or row["target"] != row["generation"]["text"]):
@@ -192,8 +194,10 @@ def _reward_value(decision: dict) -> int:
     return 1 if decision["accepted"] else -1 if decision["penalty"] else 0
 
 
-def bind_single_reward(row: dict, t1: dict, provenance: dict) -> dict:
-    """Attach evidence without duplicating response text or sampled actions in the target."""
+def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | None = None) -> dict:
+    """Attach evidence without duplicating response text or sampled actions in the target.
+
+    baseline (v10): the protocol's baseline pin; the row then carries b(source) and advantage = reward - b."""
     if any(t1[key] != row[field] for key, field in (("text", "target"), ("prompt", "prompt"),
                                                   ("generation", "generation"), ("status", "status"))):
         raise ValueError("single reward: original T1 differs from the RL row")
@@ -201,6 +205,9 @@ def bind_single_reward(row: dict, t1: dict, provenance: dict) -> dict:
                 if k not in {"text", "generation", "prompt", "status"}}, "provenance": provenance, "decision": None}
     evidence["decision"] = _single_reward_decision(row, evidence)
     row.update(reward=_reward_value(evidence["decision"]), reward_evidence=evidence)
+    if baseline is not None:
+        evidence["baseline"] = single_source_baseline(row["problem_id"], baseline)
+        row.update(baseline=evidence["baseline"]["value"], advantage=row["reward"] - evidence["baseline"]["value"])
     return row
 
 
@@ -212,6 +219,13 @@ def validate_single_reward(row: dict) -> dict:
     if (evidence["decision"] != decision or type(row.get("reward")) is not int
             or row["reward"] != _reward_value(decision)):
         raise ValueError("single reward: reward/decision differs from the program gate on the original solution")
+    if "baseline" in evidence or "baseline" in row or "advantage" in row:
+        bound = evidence.get("baseline")
+        pin = {key: bound.get(key) for key in ("method", "table_sha256")} if isinstance(bound, dict) else {}
+        expected = single_source_baseline(row["problem_id"], pin | {"unknown_source": "global_mean"})
+        if (bound != expected or type(row.get("baseline")) is not float or row["baseline"] != expected["value"]
+                or type(row.get("advantage")) is not float or row["advantage"] != row["reward"] - expected["value"]):
+            raise ValueError("single reward: RL baseline/advantage differs from the shipped source table")
     return decision
 
 
@@ -407,7 +421,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         rl_row = _candidate(record, "RL")
         if rl_row is None:
             raise ValueError("single runtime: original T1 is missing")
-        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid]))
+        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid],
+                                       protocol["training_contract"]["rl"]["baseline"]))
         kind = "A1" if record["t1"]["status"] == "CORRECT" else "A2"
         if kind == "A2" and pid not in approved:
             continue
@@ -675,7 +690,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--order-sha256", required=True)
     parser.add_argument("--mode", choices=("local-smoke", "frozen3500"), default="local-smoke")
-    parser.add_argument("--token-scale", type=float, default=1024.)
+    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V10)
     parser.add_argument("--limit", type=int, choices=(2, 10), default=2)
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
     parser.add_argument("--capacity-profile", type=Path)

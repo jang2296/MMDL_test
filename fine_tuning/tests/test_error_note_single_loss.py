@@ -14,7 +14,10 @@ from fine_tuning.error_note import train_v4 as train
 from fine_tuning.error_note.contract import ROUTE_FULL, ROUTE_LM
 from fine_tuning.error_note.protocol import (SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
                                              SINGLE_REPLAY_MAX_EXCLUDED_ROWS, SINGLE_REPLAY_ROW_FAILURE,
-                                             SINGLE_REWARD_GATE, VERSION_SINGLE, VERSION_SINGLE_V8)
+                                             SINGLE_REWARD_GATE, SINGLE_SFT_WEIGHTING_V10, SINGLE_SFT_WEIGHTS_V10,
+                                             SINGLE_TOKEN_SCALE_V10, VERSION_SINGLE, VERSION_SINGLE_V8,
+                                             VERSION_SINGLE_V9, single_baseline_contract, single_source_baseline)
+from fine_tuning.error_note import protocol as protocol_module
 from fine_tuning.notebook_rl.input_preparation import digest
 from fine_tuning.tests.test_error_note_train import encoded, tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
@@ -43,14 +46,14 @@ def gradients(bundle):
             for name, p in bundle.model.named_parameters() if id(p) in {id(q) for ps in bundle.params.values() for q in ps}}
 
 
-def bind_reward_fixture(row, *, finish_reason="stop"):
+def bind_reward_fixture(row, *, finish_reason="stop", baseline=None):
     for key, value in {"prompt": "Question: authored CPU fixture", "target": "Authored final answer: B", "target_source": "T1",
                        "image_paths": ["fixture.png"], "image_sha256": ["a" * 64], "subject": "Biology", "source": "authored-test"}.items():
         row.setdefault(key, value)
     row["generation"].setdefault("text", row["target"])
     t1 = {"text": row["target"], "generation": row["generation"], "prompt": row["prompt"], "status": row["status"],
           "finish_reason": finish_reason}
-    return single.bind_single_reward(row, t1, PROVENANCE)
+    return single.bind_single_reward(row, t1, PROVENANCE, baseline)
 
 
 def full_support(bundle, actions):
@@ -60,7 +63,7 @@ def full_support(bundle, actions):
 
 
 def pin_reward_fixture(rows, contract):
-    contract.update(version=VERSION_SINGLE,
+    contract.update(version=VERSION_SINGLE_V9,
         reward_provenance_sha256={row["problem_id"]: digest(row["reward_evidence"]["provenance"]) for row in rows if row["kind"] == "RL"},
         reward_evidence_sha256={row["problem_id"]: digest(row["reward_evidence"]) for row in rows if row["kind"] == "RL"})
     contract["rl"]["reward"] = SINGLE_REWARD_GATE
@@ -94,6 +97,19 @@ def block(bundle, count=2, reward=1):
                                    "max_excluded_rows": SINGLE_REPLAY_MAX_EXCLUDED_ROWS},
                 "sft_weights": {"A1": .05, "A2": .5, "B": .05}}
     return rows, pin_reward_fixture(rows, contract)
+
+
+def as_v10(rows, contract):
+    """The v10 block contract: shipped source baseline, token scale 256, A2 0.35 per row; RL rows rebound with b(source)."""
+    contract = copy.deepcopy(contract)
+    contract["rl"].update(token_scale=SINGLE_TOKEN_SCALE_V10, baseline=single_baseline_contract())
+    contract.update(sft_weights=dict(SINGLE_SFT_WEIGHTS_V10), sft_weighting=dict(SINGLE_SFT_WEIGHTING_V10))
+    for row in rows:
+        if row["kind"] == "RL":
+            bind_reward_fixture(row, baseline=contract["rl"]["baseline"])
+    pin_reward_fixture(rows, contract)
+    contract["version"] = VERSION_SINGLE
+    return contract
 
 
 def as_v8(contract):
@@ -745,6 +761,104 @@ class SingleTinyPolicy(unittest.TestCase):
         self.assertAlmostEqual(first["loss"], second["loss"], places=6)
         for name, value in gradients(bundle).items():
             torch.testing.assert_close(value, original_gradients[name], atol=2e-6, rtol=2e-4)
+
+
+
+class SingleV10Tests(unittest.TestCase):
+    """v10: fixed per-source baseline advantage on every RL row, token scale 256, A2 weight per row."""
+
+    def test_source_baseline_values_row_binding_and_tampered_table(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        pin = single_baseline_contract()
+        self.assertEqual(pin["table_sha256"], "74a6cc57589f0887fd01c0f8ce0dcc91babc312df8d7d4b272c94e3af8df2d45")
+        for pid, value in (("hf-scienceqa:7", .7551), ("hf-clevr:3", -.026), ("hf-slake:a:b", -.2778),
+                           ("hf-unlisted:1", .3002), ("authored-test-1", .3002)):
+            self.assertEqual(single_source_baseline(pid, pin)["value"], value)
+        rows, _ = block(tiny_factory(), count=1, reward=0)
+        row = rows[0]
+        row["problem_id"] = "hf-scienceqa:7"
+        bind_reward_fixture(row, baseline=pin)
+        self.assertEqual((row["reward"], row["baseline"], row["advantage"]), (0, .7551, -.7551))
+        self.assertEqual(row["reward_evidence"]["baseline"]["source"], "hf-scienceqa")
+        single.validate_single_reward(row)
+        for field, value in (("advantage", .5), ("baseline", .3002)):
+            forged = copy.deepcopy(row)
+            forged[field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "baseline/advantage"):
+                single.validate_single_reward(forged)
+        stripped = copy.deepcopy(row)
+        del stripped["reward_evidence"]["baseline"]
+        with self.assertRaisesRegex(ValueError, "baseline"):
+            single.validate_single_reward(stripped)
+        with tempfile.TemporaryDirectory() as directory:
+            table = json.loads(protocol_module.SINGLE_BASELINE_TABLE.read_text())
+            table["sources"]["hf-scienceqa"]["mean"] = 1.0
+            tampered = Path(directory) / "source_baseline_v10.json"
+            tampered.write_text(json.dumps(table))
+            with patch.object(protocol_module, "SINGLE_BASELINE_TABLE", tampered), \
+                    self.assertRaisesRegex(ValueError, "differs from the sealed baseline pin"):
+                single.validate_single_reward(row)
+
+    def test_zero_reward_rows_get_negative_advantage_pg_with_finite_gradients(self):
+        owner = tiny_factory()
+        rows, contract = block(owner, count=2, reward=0)
+        old = train.backward_single_block(owner, rows, contract, components=("PG",))  # v9: b=0, scale 1024
+        self.assertEqual((old["rl"]["pg"], old["rl"]["token_scale"], old["has_gradient"]), (0, 1024., False))
+        self.assertNotIn("pg_rows", old["rl"])
+        owner.model.zero_grad(set_to_none=True)
+        contract = as_v10(rows, contract)
+        b = .3002  # item-N is not a table source: global_mean
+        self.assertEqual([(row["reward"], row["advantage"]) for row in rows], [(0, -b), (0, -b)])
+        stats = train.backward_single_block(owner, rows, contract, components=("PG",))
+        expected = sum(b * sum(row["generation"]["sampling_logprobs"]) for row in rows) / (2 * 256.)
+        self.assertLess(expected, 0)
+        self.assertAlmostEqual(stats["rl"]["pg"], expected, places=6)
+        self.assertEqual((stats["rl"]["pg_rows"], stats["rl"]["token_scale"]), (2, 256.))
+        self.assertAlmostEqual(stats["rl"]["advantage_mean"], -b, places=12)
+        self.assertAlmostEqual(stats["rl"]["advantage_abs_mean"], b, places=12)
+        self.assertTrue(stats["has_gradient"])
+        grads = [p.grad for ps in owner.params.values() for p in ps if p.grad is not None]
+        self.assertTrue(grads and all(bool(torch.isfinite(g).all()) for g in grads))
+        for change in ({"token_scale": 1024.}, {"baseline": 0.0}):
+            bad = copy.deepcopy(contract)
+            bad["rl"].update(change)
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, "v10 source-baseline"):
+                train.backward_single_block(owner, rows, bad, components=("PG",))
+        # A changed shipped table no longer matches the sealed table SHA256: training refuses before any backward.
+        with patch.object(train, "single_baseline_contract", return_value={"method": "fixed-source-mean-v1",
+                          "table_sha256": "0" * 64, "unknown_source": "global_mean"}), \
+                self.assertRaisesRegex(ValueError, "v10 source-baseline"):
+            train.backward_single_block(owner, rows, contract, components=("PG",))
+
+    def test_a2_rows_each_carry_the_full_per_row_weight_and_v9_keeps_per_kind(self):
+        bundle = tiny_factory()
+        rows, contract = block(bundle, count=2)
+        nlls = []
+        bundle.route.apply(False)
+        for i, target in enumerate(((12,), (12, 13, 14))):
+            row = encoded(f"sft-A2-{i}", (7, 8), target, ROUTE_LM, "A2")
+            row["problem_id"] = f"item-{i}"
+            rows.append(row)
+            with torch.no_grad():
+                nlls.append(float(-train.batch_logprobs(bundle, [row])[0].mean()))
+        for version, weight, coefficient in (("v9", .5, .25), ("v10", .35, .35)):
+            if version == "v10":
+                contract = as_v10(rows, contract)
+            bundle.model.zero_grad(set_to_none=True)
+            with patch.object(train, "_backward_rows", wraps=train._backward_rows) as backward:
+                stats = train.backward_single_block(bundle, rows, contract, components=("A2",))
+            with self.subTest(version=version):
+                self.assertTrue(backward.call_args_list)
+                for call in backward.call_args_list:
+                    self.assertEqual(call.args[3], [coefficient, coefficient])
+                self.assertEqual(stats["sft"]["A2"]["weight"], weight)
+                total = sum(nlls) if version == "v10" else sum(nlls) / 2
+                self.assertAlmostEqual(stats["sft"]["A2"]["weighted_loss"], weight * total, places=6)
+        self.assertAlmostEqual(sum(call.args[3][0] for call in backward.call_args_list[:1]) * 2, .7)
+        self.assertEqual(stats["sft"]["A2"]["weighting"], "per_row")
 
 
 if __name__ == "__main__":

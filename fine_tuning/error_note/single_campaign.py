@@ -20,7 +20,7 @@ from . import single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import ARM, plain_protocol_single, single_blocks
+from .protocol import ARM, SINGLE_TOKEN_SCALE_V10, plain_protocol_single, single_blocks
 
 VERSION = "single-campaign-v2"
 GATE_VERSION = "single-pilot-main-gate-v1"
@@ -580,7 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name + "-sha256", required=True)
     parser.add_argument("--campaign-mode", choices=("proof", "train"), default="proof")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
-    parser.add_argument("--token-scale", type=float, default=1024.)
+    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V10)
     for name in ("capacity-profile", "pilot-gate"):
         parser.add_argument("--" + name, type=Path)
         parser.add_argument("--" + name + "-sha256")

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION
 from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
@@ -153,8 +154,19 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # answer-first share rose within sources as in v4): a block may drop up to two replay-failing RL rows from PG, KL and
 # the anchor (block mean still covers every row; fixed denominators), and the first T1 positions carry an
 # always-on raw F0 KL anchor so the reason-first/answer-first decision stays near the original model.
+# v10 (2026-11-07, claudedocs/analysis_why_rlsft_not_improving_20261107.md: over v9's 55 updates the weighted loss was
+# A2 9.12, anchor 1.58, B 0.62, A1 0.57, PG 0.013, KL 0.004 and 51% of rewards were 0): T1 PG uses a fixed per-source
+# baseline (mean v9 T1 reward of blocks 0-54, shipped as source_baseline_v10.json and pinned by SHA256), so every
+# non-excluded RL row carries A = reward - b(source); token scale 256 instead of 1024; A2 SFT weight 0.35 per row
+# instead of 0.5 shared by the block's A2 rows. Rewards, gates, prompts, anchor, KL and replay are v9's.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
-VERSION_SINGLE = "error-note-single-response-v9"
+VERSION_SINGLE_V9 = "error-note-single-response-v9"
+VERSION_SINGLE = "error-note-single-response-v10"
+SINGLE_TOKEN_SCALE_V10 = 256.0
+SINGLE_SFT_WEIGHTS_V10 = {"A1": 0.05, "A2": 0.35, "B": 0.05}
+SINGLE_SFT_WEIGHTING_V10 = {"A1": "per_kind_total", "A2": "per_row", "B": "per_kind_total"}
+SINGLE_BASELINE_METHOD = "fixed-source-mean-v1"
+SINGLE_BASELINE_TABLE = Path(__file__).with_name("source_baseline_v10.json")
 SINGLE_REWARD_GATE = "single-t1-program-gate-v5"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
@@ -184,6 +196,25 @@ def single_prompts_sha256() -> str:
                     "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE]})
 
 
+def single_baseline_contract() -> dict:
+    """The v10 RL baseline pin: method plus the SHA256 of the shipped per-source table bytes."""
+    return {"method": SINGLE_BASELINE_METHOD, "table_sha256": hashlib.sha256(SINGLE_BASELINE_TABLE.read_bytes()).hexdigest(),
+            "unknown_source": "global_mean"}
+
+
+def single_source_baseline(problem_id: str, pin: dict) -> dict:
+    """b(source) for one RL row from the shipped table; the table bytes must still match the sealed pin."""
+    raw = SINGLE_BASELINE_TABLE.read_bytes()
+    if pin != {"method": SINGLE_BASELINE_METHOD, "table_sha256": hashlib.sha256(raw).hexdigest(),
+               "unknown_source": "global_mean"}:
+        raise ValueError("single baseline: shipped source table differs from the sealed baseline pin")
+    if not isinstance(problem_id, str) or not problem_id:
+        raise ValueError("single baseline: problem ID required")
+    table, source = json.loads(raw), problem_id.split(":")[0]
+    value = table["sources"][source]["mean"] if source in table["sources"] else table["global_mean"]
+    return {"method": SINGLE_BASELINE_METHOD, "table_sha256": pin["table_sha256"], "source": source, "value": float(value)}
+
+
 def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[list[str]]:
     """Pilot and continuation close separate 16-item blocks; every original ID occurs once."""
     if (not problem_ids or any(not isinstance(pid, str) or not pid for pid in problem_ids)
@@ -196,12 +227,14 @@ def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[lis
 
 
 def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[str, str],
-                          token_scale: float, beta: float = 0.02,
+                          token_scale: float = SINGLE_TOKEN_SCALE_V10, beta: float = 0.02,
                           sft_weights: dict[str, float] | None = None) -> dict:
     """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission."""
     import math
 
-    weights = {"A1": 0.05, "A2": 0.5, "B": 0.05} if sft_weights is None else dict(sft_weights)
+    weights = dict(SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
+    if token_scale != SINGLE_TOKEN_SCALE_V10:
+        raise ValueError(f"single protocol: v10 fixes the PG token scale at {SINGLE_TOKEN_SCALE_V10}")
     if (set(contracts) != SINGLE_CONTRACT_HASHES or any(
             not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
             for value in contracts.values())):
@@ -220,12 +253,13 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "version": VERSION_SINGLE, "hashes": dict(contracts), "master_seed": MASTER_SEED, "per_update_items": PER_UPDATE_ITEMS_V2,
                  "generation_counts": {"t1": 1, "note": 1, "resolve": 1}, "sampling": dict(SINGLE_SAMPLING),
                  "max_tokens": {"t1": MAX_NEW_TOKENS, "resolve": MAX_NEW_TOKENS}, "note_max_tokens": SINGLE_NOTE_MAX_TOKENS,
-                 "rl": {"method": "reinforce", "baseline": 0.0, "token_scale": float(token_scale),
+                 "rl": {"method": "reinforce", "baseline": single_baseline_contract(), "token_scale": float(token_scale),
                         "beta": float(beta), "reward": SINGLE_REWARD_GATE,
                         "reward_values": dict(SINGLE_REWARD_VALUES),
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes",
                         "format_anchor": {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}},
-                 "sft_weights": weights, "sft_row": "mean_original_target_token_nll",
+                 "sft_weights": weights, "sft_weighting": dict(SINGLE_SFT_WEIGHTING_V10),
+                 "sft_row": "mean_original_target_token_nll",
                  "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,
                                    "max_target_tokens": MAX_TARGET_TOKENS,
                                    "content_acceptance": "program_checks_only_content_unverified"},

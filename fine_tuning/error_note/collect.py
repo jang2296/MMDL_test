@@ -265,8 +265,10 @@ def install_training_guards(build_root: Path, *, vllm_schema: dict | None = None
     import_module("bitsandbytes")
     hubs = {Path.home() / "mmdl-cache/huggingface/hub",
             Path(os.environ.get("HF_HUB_CACHE") or Path(os.environ.get("HF_HOME", Path.home() / ".cache/huggingface")) / "hub")}
+    pod_eval = Path("/workspace/mmdl-volume/eval-data")  # the pod volume's MMMU predictions/proof files
     forbidden = [Path.home() / "mmdl-data/evaluation",
-                 *(hub / name for hub in sorted(hubs) for name in ("datasets--MMMU--MMMU", "datasets--MMMU--MMMU_Pro"))]
+                 *(hub / name for hub in sorted(hubs) for name in ("datasets--MMMU--MMMU", "datasets--MMMU--MMMU_Pro")),
+                 *dict.fromkeys((pod_eval, Path(os.path.realpath(pod_eval))))]
     vaults = [Path(build_root) / split / name for split in SPLITS for name in ("verifier_private.jsonl", "lineage.jsonl")]
     vaults.extend(Path(path) for path in private_files)
     install_guards(forbidden_roots=forbidden, vault_files=vaults, allow_vault=False, allow_benchmark=False)

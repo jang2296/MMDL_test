@@ -28,7 +28,7 @@ from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE, example
 
 def protocol(count=219):
     return plain_protocol_single("bf16", count, contracts={k: "a"*64 for k in ("source", "dataset", "order", "data_admission")},
-                                 token_scale=1024.)
+                                 token_scale=256.)
 
 
 class RuntimeTests(unittest.TestCase):
@@ -305,6 +305,7 @@ with patch.object(quantized_policy, '_versions', return_value={}), \\
      patch.object(shared_smoke, '_prepare_hf_dependencies', return_value={}):
     forbidden = install_training_guards(root, private_files=[rules])
 assert any(benchmark.is_relative_to(path) for path in forbidden)
+assert pathlib.Path('/workspace/mmdl-volume/eval-data') in forbidden  # pod volume MMMU predictions/proof files
 for path in [root/'train'/'verifier_private.jsonl', rules, benchmark]:
     try: path.read_bytes()
     except PermissionError: pass
@@ -352,7 +353,7 @@ print('guard boundary PASS; no model loaded')
         config = model / "config.json"
         config.write_text(json.dumps({"model_type": "qwen3_vl", "torch_dtype": "bfloat16"}))
         args = SimpleNamespace(build_root=root, source_provenance=source, training_rules=rules, order_sha256="a"*64,
-                               model_path=model, output=self.out, mode="local-smoke", token_scale=1024.,
+                               model_path=model, output=self.out, mode="local-smoke", token_scale=256.,
                                max_num_seqs=1, max_num_batched_tokens=24576, token_budget=0, stop_after_seconds=None)
         with patch.object(single, "_validate_data", return_value=({"items": self.items}, {"authored_fixture": True})), \
                 patch("fine_tuning.notebook_rl.vault.read_actors", return_value=actors), \

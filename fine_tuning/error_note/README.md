@@ -223,7 +223,7 @@ SINGLE 노트의 parser-invalid 피드백은 “parser가 승인하지 않았다
 ```bash
 C=(--build-root "$BUILD" --order "$ORDER" --order-sha256 "$ORDER_SHA"
    --frozen-approval "$APPROVAL" --source-provenance "$SOURCE" --training-rules "$RULES"
-   --model-path "$SNAP" --mode local-smoke --precision nf4 --limit 2 --token-scale 1024
+   --model-path "$SNAP" --mode local-smoke --precision nf4 --limit 2 --token-scale 256
    --max-num-seqs 1 --max-num-batched-tokens 24576 --token-budget 49152)
 python -m fine_tuning.error_note.single collect "${C[@]}" --output "$OUT" \
   --capture-capacity "$PART/collect-1.json" --capacity-reserve-bytes "$RESERVE"

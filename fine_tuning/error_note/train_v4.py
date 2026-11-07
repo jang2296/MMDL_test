@@ -42,7 +42,8 @@ from .order import read_order
 from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
                        SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MAX_EXCLUDED_ROWS,
                        SINGLE_REPLAY_ROW_FAILURE, SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
-                       VERSION_SINGLE, VERSION_SINGLE_V8, VERSION_V4, plain_protocol_v4)
+                       SINGLE_SFT_WEIGHTING_V10, SINGLE_SFT_WEIGHTS_V10, SINGLE_TOKEN_SCALE_V10, VERSION_SINGLE,
+                       VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_V4, plain_protocol_v4, single_baseline_contract)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
                     _commit, _encode_or_drop, _factory, _gradient_norms, _keep_before, _newest_checkpoint, _peak_gib,
@@ -376,9 +377,18 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     from .protocol import SINGLE_REWARD_GATE
     from .single import validate_single_reward
 
-    if contract.get("version") not in (VERSION_SINGLE_V8, VERSION_SINGLE) or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
+    version = contract.get("version")
+    if version not in (VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE) or contract["rl"].get("reward") != SINGLE_REWARD_GATE:
         raise ValueError("single train: SINGLE v4 program-gate reward contract required; v1-v3 cannot resume")
-    if contract["version"] == VERSION_SINGLE and (
+    v10 = version == VERSION_SINGLE
+    if v10 and (contract["rl"].get("baseline") != single_baseline_contract()
+                or contract["rl"].get("token_scale") != SINGLE_TOKEN_SCALE_V10
+                or contract.get("sft_weights") != SINGLE_SFT_WEIGHTS_V10
+                or contract.get("sft_weighting") != SINGLE_SFT_WEIGHTING_V10):
+        raise ValueError("single train: v10 source-baseline table, token scale and A2 per-row weighting required")
+    if not v10 and (contract["rl"].get("baseline", 0.0) != 0.0 or "sft_weighting" in contract):
+        raise ValueError("single train: v8/v9 contracts keep b=0 and per-kind SFT weighting")
+    if version != VERSION_SINGLE_V8 and (
             contract["rl"].get("format_anchor") != {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}
             or not isinstance(contract.get("replay_support"), dict)
             or contract["replay_support"].get("row_failure") != SINGLE_REPLAY_ROW_FAILURE
@@ -428,6 +438,8 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
                     or any(type(token) is not int for token in support) or digest(support) != sha):
                 raise ValueError("single train: stored generation support changed or excludes its sampled action")
         validate_single_reward(row)
+        if ("baseline" in row["reward_evidence"]) != v10 or ("advantage" in row) != v10:
+            raise ValueError("single train: RL baseline/advantage binding differs from the contract version")
         if (digest(row["reward_evidence"]["provenance"]) != contract["reward_provenance_sha256"][row["problem_id"]]
                 or digest(row["reward_evidence"]) != contract["reward_evidence_sha256"][row["problem_id"]]):
             raise ValueError("single train: original reward source/evidence differs from the sealed contract")
@@ -453,7 +465,10 @@ def _require_single_zero_dropout(bundle: PolicyBundle) -> None:
 def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict, token_budget: int = 0,
                           components: Iterable[str] = ("PG", "KL", "A1", "A2", "B"), *,
                           capacity: Any = None, force_full_kl: bool = False, capture: Any = None) -> dict:
-    """One frozen-policy block, fixed B*C PG/raw KL and per-kind row-mean SFT; no optimizer or scheduler."""
+    """One frozen-policy block, fixed B*C PG/raw KL and per-kind row-mean SFT; no optimizer or scheduler.
+
+    v10: PG = -(reward - b(source)) * sum(logprobs) / (B * 256) on every non-excluded RL row, and A2 rows each carry
+    the full A2 weight (per_row) instead of sharing it."""
     selected = set(components)
     if capacity is not None and capture is not None:
         raise ValueError("single train: measured admission and calibration are separate transactions")
@@ -466,7 +481,9 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
         raise ValueError("single train: explicit finite nonnegative weights and positive token scale required")
     _require_single_zero_dropout(bundle)
     t1 = _validate_single_block(bundle, encoded, contract)
-    v9 = contract["version"] == VERSION_SINGLE  # v8 keeps the first-row replay HOLD and has no anchor
+    v9 = contract["version"] != VERSION_SINGLE_V8  # v8 keeps the first-row replay HOLD and has no anchor
+    v10 = contract["version"] == VERSION_SINGLE
+    per_row = contract.get("sft_weighting", {}) if v10 else {}
     anchor = v9 and "KL" in selected
     reference = "KL" in selected and (beta > 0 or anchor)  # the anchor reads the same exact raw F0 KL
     initial_route = bundle.route.vision_on
@@ -500,6 +517,7 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                              "sft": {}, "replay_verified": False}
     if v9:
         stats["rl"]["anchor"] = 0.
+    advantages: list[float] = []
     excluded: list[dict] = []
     try:
         bundle.model.train()  # Qwen activation checkpointing requires training mode; checked zero dropout keeps replay exact.
@@ -548,7 +566,13 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                     for row, value in zip(batch, values, strict=True):
                         if row["problem_id"] in dropped:
                             continue  # the replay-validated forward keeps its batch; only this row's terms are dropped
-                        if "PG" in selected:
+                        if "PG" in selected and v10:
+                            # Fixed source baseline: a zero reward on an easy source now pushes its actions down.
+                            term = -row["advantage"] * value["logprobs"].sum() / (len(t1) * scale)
+                            stats["rl"]["pg"] += float(term.detach())
+                            advantages.append(row["advantage"])
+                            terms.append(term)
+                        elif "PG" in selected:
                             term = rl.single_pg(value["logprobs"], row["reward"], problem_count=len(t1), token_scale=scale)
                             stats["rl"]["pg"] += float(term.detach())
                             if row["reward"]:
@@ -572,16 +596,22 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                 batch = [rows[i] for i in indices]
                 phase = "sft_full" if batch[0]["route"] == ROUTE_FULL else "sft_lm"
                 with capture.batch(batch, phase, kind) if capture is not None else nullcontext():
-                    values = _backward_rows(bundle, rows, [indices], [weights[kind] / len(rows)] * len(rows))
+                    coefficient = weights[kind] if per_row.get(kind) == "per_row" else weights[kind] / len(rows)
+                    values = _backward_rows(bundle, rows, [indices], [coefficient] * len(rows))
                 losses[kind] += values[kind]
             mean = losses[kind] / len(rows)
             if not math.isfinite(mean):
                 raise NonFiniteStop(f"single train: nonfinite {kind} loss")
             stats["sft"][kind] = {"rows": len(rows), "row_nll_mean": mean, "weight": weights[kind],
-                                   "weighted_loss": weights[kind] * mean}
+                                   "weighted_loss": weights[kind] * (losses[kind] if per_row.get(kind) == "per_row" else mean)}
+            if v10:
+                stats["sft"][kind]["weighting"] = per_row[kind]
     finally:
         bundle.model.train(was_training)
         bundle.route.apply(initial_route)
+    if v10:
+        stats["rl"].update(pg_rows=len(advantages), advantage_mean=sum(advantages) / len(advantages) if advantages else 0.,
+                           advantage_abs_mean=sum(map(abs, advantages)) / len(advantages) if advantages else 0.)
     stats["loss"] = stats["rl"]["pg"] + stats["rl"]["kl"] + stats["rl"].get("anchor", 0.) + sum(v["weighted_loss"] for v in stats["sft"].values())
     stats["has_gradient"] = any(p.grad is not None and bool(p.grad.abs().sum() > 0) for ps in bundle.params.values() for p in ps)
     return stats

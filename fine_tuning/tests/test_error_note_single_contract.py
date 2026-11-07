@@ -1,7 +1,10 @@
 """Regression counterexamples for the opt-in single-response lesson contract."""
 import copy
+import hashlib
 import unittest
+from pathlib import Path
 
+from fine_tuning.error_note import protocol as protocol_module
 from fine_tuning.error_note import single
 from fine_tuning.error_note.contract import (NOTE_INSTRUCTION_SINGLE, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3,
                                             RESOLVE_HEADER, RESOLVE_INSTRUCTION_SINGLE, SINGLE_VERDICT_LABELS,
@@ -55,12 +58,18 @@ class SingleProtocolTests(unittest.TestCase):
 
     def test_explicit_pins_fixed_scale_and_single_counts(self):
         pins = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
-        protocol = plain_protocol_single("bf16", 219, contracts=pins, token_scale=1024)
+        protocol = plain_protocol_single("bf16", 219, contracts=pins)
         contract = protocol["training_contract"]
         self.assertEqual(contract["generation_counts"], {"t1": 1, "note": 1, "resolve": 1})
-        self.assertEqual(contract["rl"]["baseline"], 0)
+        table = Path(protocol_module.__file__).with_name("source_baseline_v10.json").read_bytes()
+        self.assertEqual(contract["rl"]["baseline"], {"method": "fixed-source-mean-v1", "unknown_source": "global_mean",
+                                                      "table_sha256": hashlib.sha256(table).hexdigest()})
+        self.assertEqual(contract["rl"]["baseline"]["table_sha256"],
+                         "74a6cc57589f0887fd01c0f8ce0dcc91babc312df8d7d4b272c94e3af8df2d45")
+        self.assertEqual(contract["sft_weights"], {"A1": .05, "A2": .35, "B": .05})
+        self.assertEqual(contract["sft_weighting"], {"A1": "per_kind_total", "A2": "per_row", "B": "per_kind_total"})
         self.assertEqual(protocol["optimizer"]["total_steps"], 219)
-        self.assertEqual(contract["rl"]["token_scale"], 1024)
+        self.assertEqual(contract["rl"]["token_scale"], 256.)
         self.assertEqual(protocol["version"], VERSION_SINGLE)
         self.assertEqual(contract["rl"]["reward"], SINGLE_REWARD_GATE)
         self.assertEqual(protocol["prompts_sha256"], single_prompts_sha256())
@@ -71,11 +80,11 @@ class SingleProtocolTests(unittest.TestCase):
             changed["sha256"] = _digest({k: v for k, v in changed.items() if k != "sha256"})
             with self.assertRaisesRegex(ValueError, "invalid single-response"):
                 single._protocol_check(changed)
-        for scale in (0, -1, float("nan"), True):
+        for scale in (0, -1, float("nan"), True, 1024):
             with self.subTest(scale=scale), self.assertRaises(ValueError):
                 plain_protocol_single("bf16", 219, contracts=pins, token_scale=scale)
         with self.assertRaises(ValueError):
-            plain_protocol_single("bf16", 219, contracts={}, token_scale=1024)
+            plain_protocol_single("bf16", 219, contracts={})
 
     def test_neutral_single_parser_feedback_preserves_original_response_gold_and_legacy_v3(self):
         p0, raw, gold = "Question: exact P0", "Original prose\nGrading result: NO CLEAR FINAL ANSWER\nFinal answer: 50.2%", "[48, 52]%"
@@ -183,9 +192,9 @@ class SingleV7Tests(unittest.TestCase):
         from fine_tuning.error_note.single_grading import ALIASES, ALIASES_SHA256, NORMALIZATION_RULES
 
         pins = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
-        contract = plain_protocol_single("bf16", 2, contracts=pins, token_scale=1024)["training_contract"]
+        contract = plain_protocol_single("bf16", 2, contracts=pins)["training_contract"]
         self.assertEqual((VERSION_SINGLE, SINGLE_REWARD_GATE),
-                         ("error-note-single-response-v9", "single-t1-program-gate-v5"))
+                         ("error-note-single-response-v10", "single-t1-program-gate-v5"))
         self.assertEqual(contract["rl"]["format_anchor"], {"positions": 4, "beta": .5})
         self.assertEqual(contract["rl"]["beta"], .02)
         self.assertEqual(contract["replay_support"], {

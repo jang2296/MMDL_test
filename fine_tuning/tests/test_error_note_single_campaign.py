@@ -18,7 +18,8 @@ from fine_tuning.error_note import audit, rl, single, single_campaign as campaig
 from fine_tuning.error_note.protocol import _digest, plain_protocol_single, single_blocks
 from fine_tuning.notebook_rl import checkpoint
 from fine_tuning.tests import test_error_note_single_runtime as runtime_fixture
-from fine_tuning.tests.test_error_note_single_loss import bind_reward_fixture, block, perturbed_factory, pin_reward_fixture
+from fine_tuning.tests.test_error_note_single_loss import (as_v10, bind_reward_fixture, block, perturbed_factory,
+                                                     pin_reward_fixture)
 from fine_tuning.tests.test_error_note_train import tiny_factory
 from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE
 
@@ -43,7 +44,7 @@ def plan_for(count=32, mode="proof"):
     items = [{"problem_id": f"p{i}", "subject": "Biology", "source": "authored-test"} for i in range(count)]
     blocks = single_blocks([x["problem_id"] for x in items])
     protocol = plain_protocol_single("bf16", len(blocks),
-        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024.)
+        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=256.)
     body = {"version": campaign.VERSION, "mode": mode, "items": items, "blocks": blocks, "protocol": protocol,
             "source": {"authored_fixture": True}, "generation": {"model_files_sha256": "b" * 64},
             "capacity": {"max_num_seqs": 1, "max_num_batched_tokens": 24576, "token_budget": 0, "context_limit": 24576, "engine": "hf"},
@@ -294,7 +295,7 @@ class PrepareTests(CampaignCase):
         (model / "config.json").write_text('{"torch_dtype":"bfloat16"}')
         args = SimpleNamespace(build_root=root, model_path=model, output=self.out / "campaign", order=order_path,
             frozen_approval=approval_path, source_provenance=source_path, training_rules=rules_path,
-            campaign_mode="proof", precision="bf16", token_scale=1024., max_blocks=1, execution_max_blocks=1,
+            campaign_mode="proof", precision="bf16", token_scale=256., max_blocks=1, execution_max_blocks=1,
             pilot_ids_sha256=order._ids_sha256(ids[:300]), dev_ids_sha256="c" * 64, retention_ids_sha256="d" * 64,
             capacity_profile=None, capacity_profile_sha256=None, max_num_seqs=None, max_num_batched_tokens=None, token_budget=None)
         for name in ("order", "frozen_approval", "source_provenance", "training_rules"):
@@ -342,6 +343,8 @@ class TrainCampaignTests(CampaignCase):
             for name in ("input_ids", "pixel_values", "image_grid_thw"):
                 row[name] = row[name].tolist()
         pin_reward_fixture(rows, contract)
+        if getattr(self, "v10", False):
+            contract = as_v10(rows, contract)
         contract["expected_problem_ids"] = ids
         return rows, contract
 
@@ -472,8 +475,8 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
         self.assertEqual((recovered["cursor"]["slot"], recovered["cursor"]["updates"]), (1, 1))
         self.assertEqual(update.call_count, 1)
 
-    def test_v9_excluded_row_and_anchor_stats_reconcile_on_crash_restart_and_v8_cannot_resume(self):
-        self.plan, self.spike = plan_for(2, "train"), True
+    def test_v10_excluded_row_anchor_and_advantage_stats_reconcile_on_crash_restart_and_v8_v9_cannot_resume(self):
+        self.plan, self.spike, self.v10 = plan_for(2, "train"), True, True
         real_save = single.save_single_continuation
 
         def interrupted(*args, **kwargs):
@@ -499,12 +502,21 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
         self.assertGreater(stats["rl"]["anchor"], 0)
         self.assertAlmostEqual(stats["loss"], stats["rl"]["pg"] + stats["rl"]["kl"] + stats["rl"]["anchor"]
                                + sum(v["weighted_loss"] for v in stats["sft"].values()), places=12)
-        old = copy.deepcopy(self.plan)
-        old["protocol"]["version"] = old["protocol"]["training_contract"]["version"] = "error-note-single-response-v8"
-        old["protocol"]["sha256"] = _digest({k: v for k, v in old["protocol"].items() if k != "sha256"})
-        self.plan = reseal(old)
-        with self.assertRaisesRegex(ValueError, "invalid single-response protocol"):
-            self.execute_train(output=self.out / "v8")
+        # v10: one PG row per non-excluded RL row; authored-test is not in the table, so b = global_mean 0.3002.
+        self.assertEqual(stats["rl"]["pg_rows"], stats["rl"]["rows"] - len(stats["replay"]["excluded"]))
+        self.assertGreater(stats["rl"]["advantage_abs_mean"], 0)
+        self.assertLessEqual(abs(stats["rl"]["advantage_mean"]), stats["rl"]["advantage_abs_mean"])
+        closed = json.loads((self.out / "block-0" / "rows.json").read_text())
+        self.assertEqual(closed["contract"]["version"], "error-note-single-response-v10")
+        for row in (r for r in closed["rows"] if r["kind"] == "RL"):
+            self.assertEqual((row["baseline"], row["advantage"]), (.3002, row["reward"] - .3002))
+        for version in ("error-note-single-response-v8", "error-note-single-response-v9"):
+            old = copy.deepcopy(self.plan)
+            old["protocol"]["version"] = old["protocol"]["training_contract"]["version"] = version
+            old["protocol"]["sha256"] = _digest({k: v for k, v in old["protocol"].items() if k != "sha256"})
+            self.plan = reseal(old)
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "invalid single-response protocol"):
+                self.execute_train(output=self.out / version)
 
     def test_partial_checkpoint_is_preserved_and_reports_recovery_required(self):
         self.plan = plan_for(2, "train")
@@ -676,7 +688,7 @@ class UnionGradingTests(unittest.TestCase):
         self.assertEqual(self.grade("p0-eval-aligned-v1", "INCORRECT", "CORRECT"),
                          (("INCORRECT", "p0-eval-aligned-v1"), ["p0-eval-aligned-v1"]))
         protocol = plain_protocol_single("bf16", 1, contracts={k: "a" * 64 for k in ("source", "dataset", "order",
-                                                                                      "data_admission")}, token_scale=1024.)
+                                                                                      "data_admission")}, token_scale=256.)
         self.assertEqual(protocol["training_contract"]["answer_contracts"]["open"],
                          "v8-extract+normalize+training-compare-v1")
 
