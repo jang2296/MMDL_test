@@ -43,7 +43,8 @@ from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_FORMAT_ANCHOR_BETA, SING
                        SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MAX_EXCLUDED_ROWS,
                        SINGLE_REPLAY_ROW_FAILURE, SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
                        SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_VERSION_V11, SINGLE_NEGATIVE_LOGPROB_V11,
-                       SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5, SINGLE_ROW_TOKEN_CAP_V11, SINGLE_SFT_WEIGHTING_V10,
+                       SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5, SINGLE_ROW_TOKEN_CAP_EXEMPT_V11,
+                       SINGLE_ROW_TOKEN_CAP_V11, SINGLE_SFT_WEIGHTING_V10,
                        SINGLE_SFT_WEIGHTS_V10, SINGLE_TOKEN_SCALE_V10, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE,
                        VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_V4, plain_protocol_v4,
                        single_baseline_contract)
@@ -399,11 +400,12 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
                                                        "values": SINGLE_ADVANTAGE_V11}
                 or contract["rl"].get("token_scale") != SINGLE_TOKEN_SCALE_V11
                 or contract["rl"].get("row_token_cap") != SINGLE_ROW_TOKEN_CAP_V11
+                or contract["rl"].get("row_token_cap_exempt") != list(SINGLE_ROW_TOKEN_CAP_EXEMPT_V11)
                 or contract["rl"].get("negative_logprob") != SINGLE_NEGATIVE_LOGPROB_V11
                 or contract.get("sft_weights") != SINGLE_SFT_WEIGHTS_V10
                 or contract.get("sft_weighting") != SINGLE_SFT_WEIGHTING_V10):
-        raise ValueError("single train: v11 penalty table, token scale, row cap, raw negative log p and A2 per-row "
-                         "weighting required")
+        raise ValueError("single train: v11 penalty table, token scale, row cap with LOOP exemption, raw negative "
+                         "log p and A2 per-row weighting required")
     if version in (VERSION_SINGLE_V8, VERSION_SINGLE_V9) and (
             contract["rl"].get("baseline", 0.0) != 0.0 or "sft_weighting" in contract):
         raise ValueError("single train: v8/v9 contracts keep b=0 and per-kind SFT weighting")
@@ -540,7 +542,8 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     if v9:
         stats["rl"]["anchor"] = 0.
     if v11:
-        stats["rl"].update(pg_positive=0., pg_negative=0., pg_rows_positive=0, pg_rows_negative=0, capped_rows=0)
+        stats["rl"].update(pg_positive=0., pg_negative=0., pg_rows_positive=0, pg_rows_negative=0, capped_rows=0,
+                           cap_exempt_rows=0)
     advantages: list[float] = []
     excluded: list[dict] = []
     try:
@@ -596,13 +599,17 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
                             if advantage:
                                 # Negative rows read the raw distribution: a one-token stored support has log q = 0.
                                 sign = "positive" if advantage > 0 else "negative"
-                                weight = min(1.0, settings["row_token_cap"] / row["target_len"])
+                                capped = min(1.0, settings["row_token_cap"] / row["target_len"])
+                                # LOOP rows keep v9's full per-row mass; the cap would cut an 8192-token loop to 1/4.
+                                exempt = row["reward_evidence"]["decision"]["penalty"] in settings["row_token_cap_exempt"]
+                                weight = 1.0 if exempt else capped
                                 taken = value["logprobs"] if advantage > 0 else value["raw_logprobs"]
                                 term = -advantage * weight * taken.sum() / (len(t1) * scale)
                                 stats["rl"]["pg"] += float(term.detach())
                                 stats["rl"]["pg_" + sign] += float(term.detach())
                                 stats["rl"]["pg_rows_" + sign] += 1
                                 stats["rl"]["capped_rows"] += int(weight < 1)
+                                stats["rl"]["cap_exempt_rows"] += int(exempt and capped < 1)
                                 terms.append(term)
                         elif "PG" in selected and v10:
                             # Fixed source baseline: a zero reward on an easy source now pushes its actions down.

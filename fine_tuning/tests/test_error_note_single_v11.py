@@ -40,7 +40,8 @@ def as_v11(rows, contract, finish=None):
     contract = copy.deepcopy(contract)
     v11 = plain_protocol_single("bf16", 1, contracts=PINS)["training_contract"]
     contract["rl"].update({key: v11["rl"][key] for key in
-                           ("baseline", "advantage", "token_scale", "row_token_cap", "negative_logprob", "reward")})
+                           ("baseline", "advantage", "token_scale", "row_token_cap", "row_token_cap_exempt",
+                            "negative_logprob", "reward")})
     contract.update(version=VERSION_SINGLE, sft_weights=v11["sft_weights"], sft_weighting=v11["sft_weighting"])
     for row in rows:
         if row["kind"] == "RL":
@@ -53,6 +54,29 @@ def as_v11(rows, contract, finish=None):
 
 def trainable(bundle):
     return [p for ps in bundle.params.values() for p in ps if p.requires_grad]
+
+
+def long_rows(bundle, lengths):
+    """Negative RL rows of the given target lengths (end token included) with stored full-vocabulary sampling."""
+    rows, contract = block(bundle, count=len(lengths), reward=0)
+    vocab = bundle.model.get_base_model().lm_head.out_features
+    for index, length in enumerate(lengths):
+        tokens = tuple(9 + (i * 7 + index) % (vocab - 12) for i in range(length - 1))
+        row = encoded(f"item-{index}:RL", (7, 8), tokens, "LM", "RL", seed=index)
+        old = rows[index]
+        row.update({key: old[key] for key in old if key not in row})
+        actions = row["input_ids"][-row["target_len"]:].tolist()
+        row["input_sha256"] = train._single_encoded_input_sha256(row)
+        row["generation"] = dict(old["generation"], prompt_token_ids=row["input_ids"][:-row["target_len"]].tolist(),
+                                 completion_token_ids=actions, input_sha256=row["input_sha256"],
+                                 support_token_ids=[list(range(vocab))] * len(actions),
+                                 support_sha256=[digest(list(range(vocab)))] * len(actions))
+        rows[index] = row
+    bundle.route.apply(False)
+    with torch.no_grad():
+        for row, value in zip(rows, train.single_batch_statistics(bundle, rows, SAMPLING, chunk=512), strict=True):
+            row["generation"]["sampling_logprobs"] = value["logprobs"].tolist()
+    return rows, contract
 
 
 def pg_reference(bundle, rows, terms):
@@ -171,29 +195,13 @@ class RawNegativeGradient(unittest.TestCase):
 
     def test_row_cap_halves_a_4096_token_row_and_keeps_a_1000_token_row(self):
         bundle = tiny_factory()
-        rows, contract = block(bundle, count=2, reward=0)
-        vocab = bundle.model.get_base_model().lm_head.out_features
-        for index, length in enumerate((4096, 1000)):  # target_len counts the end token
-            tokens = tuple(9 + (i * 7 + index) % (vocab - 12) for i in range(length - 1))
-            row = encoded(f"item-{index}:RL", (7, 8), tokens, "LM", "RL", seed=index)
-            old = rows[index]
-            row.update({key: old[key] for key in old if key not in row})
-            actions = row["input_ids"][-row["target_len"]:].tolist()
-            row["input_sha256"] = train._single_encoded_input_sha256(row)
-            row["generation"] = dict(old["generation"], prompt_token_ids=row["input_ids"][:-row["target_len"]].tolist(),
-                                     completion_token_ids=actions, input_sha256=row["input_sha256"],
-                                     support_token_ids=[list(range(vocab))] * len(actions),
-                                     support_sha256=[digest(list(range(vocab)))] * len(actions))
-            rows[index] = row
-        bundle.route.apply(False)
-        with torch.no_grad():
-            for row, value in zip(rows, train.single_batch_statistics(bundle, rows, SAMPLING, chunk=512), strict=True):
-                row["generation"]["sampling_logprobs"] = value["logprobs"].tolist()
+        rows, contract = long_rows(bundle, (4096, 1000))  # target_len counts the end token
         contract = as_v11(rows, contract)
         self.assertEqual([(r["target_len"], r["advantage"]) for r in rows], [(4096, -.5), (1000, -.5)])
         bundle.model.zero_grad(set_to_none=True)
         stats = train.backward_single_block(bundle, rows, contract, components=("PG",))
-        self.assertEqual((stats["rl"]["capped_rows"], stats["rl"]["pg_rows_negative"]), (1, 2))
+        self.assertEqual((stats["rl"]["capped_rows"], stats["rl"]["cap_exempt_rows"], stats["rl"]["pg_rows_negative"]),
+                         (1, 0, 2))
         actual = gradients(bundle)
         weights = [.5, 1.]  # min(1, 2048/4096), min(1, 2048/1000)
         expected, values = pg_reference(bundle, rows, [("raw_logprobs", .5 * w / (2 * 1024.)) for w in weights])
@@ -201,6 +209,34 @@ class RawNegativeGradient(unittest.TestCase):
                                                       for w, v in zip(weights, values, strict=True)), places=5)
         for name, grad in expected.items():
             torch.testing.assert_close(actual[name], grad, atol=1e-8, rtol=1e-4)
+
+    def test_loop_rows_are_exempt_from_the_row_cap(self):
+        bundle = tiny_factory()
+        rows, contract = long_rows(bundle, (8192, 8192))
+        loop = "Wait, let me count again. " * 200
+        rows[0]["status"], rows[0]["target"] = "TRUNCATED", loop
+        rows[0]["generation"]["text"] = loop
+        contract = as_v11(rows, contract, finish={rows[0]["problem_id"]: "length"})
+        self.assertEqual([(r["target_len"], r["reward_evidence"]["decision"]["penalty"], r["advantage"]) for r in rows],
+                         [(8192, "LOOP", -1.), (8192, "REASONED_WRONG", -.5)])
+        self.assertEqual(contract["rl"]["row_token_cap_exempt"], ["LOOP"])
+        bundle.model.zero_grad(set_to_none=True)
+        stats = train.backward_single_block(bundle, rows, contract, components=("PG",))
+        self.assertEqual((stats["rl"]["capped_rows"], stats["rl"]["cap_exempt_rows"], stats["rl"]["pg_rows_negative"]),
+                         (1, 1, 2))
+        actual = gradients(bundle)
+        weights = [1., .25]  # LOOP keeps the full row; REASONED_WRONG gets min(1, 2048/8192)
+        coefficients = [-a * w / (2 * 1024.) for a, w in zip((-1., -.5), weights, strict=True)]
+        expected, values = pg_reference(bundle, rows, [("raw_logprobs", c) for c in coefficients])
+        self.assertAlmostEqual(stats["rl"]["pg"], sum(float(c * v["raw_logprobs"].detach().sum())
+                                                      for c, v in zip(coefficients, values, strict=True)), places=4)
+        for name, grad in expected.items():
+            torch.testing.assert_close(actual[name], grad, atol=1e-8, rtol=1e-4)
+        for bad_exempt in ([], ["LOOP", "TRUNCATED_NO_LOOP"], None):
+            bad = copy.deepcopy(contract)
+            bad["rl"]["row_token_cap_exempt"] = bad_exempt
+            with self.subTest(exempt=bad_exempt), self.assertRaisesRegex(ValueError, "LOOP exemption"):
+                train.backward_single_block(bundle, rows, bad, components=("PG",))
 
     def test_zero_advantage_rows_add_no_pg_but_keep_kl_and_anchor_and_positive_rows_use_stored_q(self):
         bundle = perturbed_factory()
@@ -260,6 +296,7 @@ class ProtocolAndReference(unittest.TestCase):
                          ("error-note-single-response-v11", VERSION_SINGLE, "single-t1-program-gate-v6"))
         self.assertEqual((rl["baseline"], rl["token_scale"], rl["row_token_cap"], rl["negative_logprob"], rl["beta"]),
                          ("none", 1024., 2048, "raw_full_vocab_log_softmax_T1_no_presence", .02))
+        self.assertEqual(rl["row_token_cap_exempt"], ["LOOP"])
         self.assertEqual(rl["advantage"], {"version": "penalty-table-v1", "values": SINGLE_ADVANTAGE_V11})
         self.assertEqual(len(rl["plan_exceptions"]), 2)
         self.assertEqual(rl["format_anchor"], {"positions": 4, "beta": .5})

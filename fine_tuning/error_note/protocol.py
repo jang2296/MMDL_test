@@ -162,7 +162,8 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # v11 (2026-11-08, claudedocs/plan_v11_20261108.md): no baseline; reward gate v6 adds REASONED_WRONG and
 # TRUNCATED_NO_LOOP penalties and a fixed advantage table (+1 / -1 / -0.5 / 0); negative rows use the raw
 # full-vocabulary log p (a one-token stored support gives log q = 0 and no gradient); per-row cap min(1, 2048/n);
-# token scale 1024; the note prompt may show a dataset reference after the correct answer.
+# token scale 1024; the note prompt may show a dataset reference after the correct answer. LOOP rows are exempt from
+# the row cap (weight 1.0, as in v9) so a long repetition loop keeps its full penalty mass.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
 VERSION_SINGLE_V9 = "error-note-single-response-v9"
 VERSION_SINGLE_V10 = "error-note-single-response-v10"
@@ -170,6 +171,7 @@ VERSION_SINGLE = "error-note-single-response-v11"
 SINGLE_TOKEN_SCALE_V10 = 256.0
 SINGLE_TOKEN_SCALE_V11 = 1024.0
 SINGLE_ROW_TOKEN_CAP_V11 = 2048
+SINGLE_ROW_TOKEN_CAP_EXEMPT_V11 = ("LOOP",)
 SINGLE_NEGATIVE_LOGPROB_V11 = "raw_full_vocab_log_softmax_T1_no_presence"
 SINGLE_ADVANTAGE_VERSION_V11 = "penalty-table-v1"
 SINGLE_ADVANTAGE_V11 = {"accepted": 1.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0, "LOOP": -1.0,
@@ -277,6 +279,7 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "rl": {"method": "reinforce", "baseline": "none",
                         "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V11, "values": dict(SINGLE_ADVANTAGE_V11)},
                         "token_scale": float(token_scale), "row_token_cap": SINGLE_ROW_TOKEN_CAP_V11,
+                        "row_token_cap_exempt": list(SINGLE_ROW_TOKEN_CAP_EXEMPT_V11),
                         "negative_logprob": SINGLE_NEGATIVE_LOGPROB_V11, "beta": float(beta), "reward": SINGLE_REWARD_GATE,
                         "reward_values": dict(SINGLE_REWARD_VALUES),
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes",
