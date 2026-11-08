@@ -28,7 +28,7 @@ from fine_tuning.tests.test_error_note_v3_audit import PROVENANCE, example
 
 def protocol(count=219):
     return plain_protocol_single("bf16", count, contracts={k: "a"*64 for k in ("source", "dataset", "order", "data_admission")},
-                                 token_scale=256.)
+                                 token_scale=1024.)
 
 
 class RuntimeTests(unittest.TestCase):
@@ -102,7 +102,9 @@ class RuntimeTests(unittest.TestCase):
                 self.assertNotIn("Lesson:", row["prompt"])
         self.assertEqual([row["route"] for row in closed["rows"] if row["kind"] in ("A2", "B")], ["FULL", "FULL"])
         original_wrong = next(row for row in closed["rows"] if row["kind"] == "RL" and row["problem_id"] == "p1")
-        self.assertEqual(original_wrong["reward"], 0)
+        # v11 gate v6: a stopped, reasoned (>= 32 tokens), non-looping wrong answer is REASONED_WRONG (-1, A -0.5).
+        self.assertEqual((original_wrong["reward"], original_wrong["advantage"]), (-1, -.5))
+        self.assertEqual(original_wrong["reward_evidence"]["decision"]["penalty"], "REASONED_WRONG")
         self.assertNotIn("review", original_wrong["reward_evidence"])
         self.assertTrue(closed["note_decisions"]["p1"]["accepted"])
         self.assertTrue(closed["row_decisions"]["p1:A2"]["accepted"])
@@ -353,7 +355,7 @@ print('guard boundary PASS; no model loaded')
         config = model / "config.json"
         config.write_text(json.dumps({"model_type": "qwen3_vl", "torch_dtype": "bfloat16"}))
         args = SimpleNamespace(build_root=root, source_provenance=source, training_rules=rules, order_sha256="a"*64,
-                               model_path=model, output=self.out, mode="local-smoke", token_scale=256.,
+                               model_path=model, output=self.out, mode="local-smoke", token_scale=1024.,
                                max_num_seqs=1, max_num_batched_tokens=24576, token_budget=0, stop_after_seconds=None)
         with patch.object(single, "_validate_data", return_value=({"items": self.items}, {"authored_fixture": True})), \
                 patch("fine_tuning.notebook_rl.vault.read_actors", return_value=actors), \

@@ -61,15 +61,19 @@ class SingleProtocolTests(unittest.TestCase):
         protocol = plain_protocol_single("bf16", 219, contracts=pins)
         contract = protocol["training_contract"]
         self.assertEqual(contract["generation_counts"], {"t1": 1, "note": 1, "resolve": 1})
+        # v11: no baseline; the v10 source table stays shipped and pinned for v10 blocks only.
         table = Path(protocol_module.__file__).with_name("source_baseline_v10.json").read_bytes()
-        self.assertEqual(contract["rl"]["baseline"], {"method": "fixed-source-mean-v1", "unknown_source": "global_mean",
-                                                      "table_sha256": hashlib.sha256(table).hexdigest()})
-        self.assertEqual(contract["rl"]["baseline"]["table_sha256"],
+        self.assertEqual(hashlib.sha256(table).hexdigest(),
                          "74a6cc57589f0887fd01c0f8ce0dcc91babc312df8d7d4b272c94e3af8df2d45")
+        self.assertEqual(contract["rl"]["baseline"], "none")
+        self.assertEqual(contract["rl"]["advantage"], {"version": "penalty-table-v1", "values": {
+            "accepted": 1.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0, "LOOP": -1.0, "REASONED_WRONG": -0.5,
+            "TRUNCATED_NO_LOOP": -0.5, "other": 0.0}})
+        self.assertEqual(contract["note_reference"], {"version": "none"})
         self.assertEqual(contract["sft_weights"], {"A1": .05, "A2": .35, "B": .05})
         self.assertEqual(contract["sft_weighting"], {"A1": "per_kind_total", "A2": "per_row", "B": "per_kind_total"})
         self.assertEqual(protocol["optimizer"]["total_steps"], 219)
-        self.assertEqual(contract["rl"]["token_scale"], 256.)
+        self.assertEqual(contract["rl"]["token_scale"], 1024.)
         self.assertEqual(protocol["version"], VERSION_SINGLE)
         self.assertEqual(contract["rl"]["reward"], SINGLE_REWARD_GATE)
         self.assertEqual(protocol["prompts_sha256"], single_prompts_sha256())
@@ -80,7 +84,7 @@ class SingleProtocolTests(unittest.TestCase):
             changed["sha256"] = _digest({k: v for k, v in changed.items() if k != "sha256"})
             with self.assertRaisesRegex(ValueError, "invalid single-response"):
                 single._protocol_check(changed)
-        for scale in (0, -1, float("nan"), True, 1024):
+        for scale in (0, -1, float("nan"), True, 256):
             with self.subTest(scale=scale), self.assertRaises(ValueError):
                 plain_protocol_single("bf16", 219, contracts=pins, token_scale=scale)
         with self.assertRaises(ValueError):
@@ -109,7 +113,11 @@ class SingleV7Tests(unittest.TestCase):
         added = (" The given correct answer is right: never call it a mislabel, a typo or a mistake in the question.",
                  " Use NO_FINAL_ANSWER when the grading result says your final answer was not accepted or the solution was cut off.",
                  " Name the specific rule, fact or reading step that would have prevented the error; do not only say to"
-                 " verify or double-check.")
+                 " verify or double-check.",
+                 # v11: exactly two dataset-reference sentences
+                 " If a dataset reference is shown, compare your earlier solution with it step by step and name the first"
+                 " fact or step where they differ.",
+                 " Do not copy sentences from the reference.")
         base = NOTE_INSTRUCTION_SINGLE
         for sentence in added:
             self.assertEqual(base.count(sentence), 1)
@@ -188,13 +196,13 @@ class SingleV7Tests(unittest.TestCase):
         self.assertTrue(decision("OPTION_LETTER:A", [])["accepted"])
 
     def test_protocol_records_scorer_reward_table_and_note_cap(self):
-        from fine_tuning.error_note.contract import DENIAL_PHRASES, GRADER_READ_LINE, GRADER_READ_NONE
+        from fine_tuning.error_note.contract import DENIAL_PHRASES, GRADER_READ_LINE, GRADER_READ_NONE, REFERENCE_HEADER
         from fine_tuning.error_note.single_grading import ALIASES, ALIASES_SHA256, NORMALIZATION_RULES
 
         pins = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
         contract = plain_protocol_single("bf16", 2, contracts=pins)["training_contract"]
         self.assertEqual((VERSION_SINGLE, SINGLE_REWARD_GATE),
-                         ("error-note-single-response-v10", "single-t1-program-gate-v5"))
+                         ("error-note-single-response-v11", "single-t1-program-gate-v6"))
         self.assertEqual(contract["rl"]["format_anchor"], {"positions": 4, "beta": .5})
         self.assertEqual(contract["rl"]["beta"], .02)
         self.assertEqual(contract["replay_support"], {
@@ -214,13 +222,14 @@ class SingleV7Tests(unittest.TestCase):
         self.assertIn("first max(4, len-2) letters", filters["lesson_stem"])
         self.assertNotIn("answer_union", contract)
         self.assertEqual(contract["rl"]["reward_values"],
-                         {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1, "other": 0})
+                         {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1, "REASONED_WRONG": -1,
+                          "TRUNCATED_NO_LOOP": -1, "other": 0})
         self.assertEqual(contract["note_max_tokens"], 1024)
         self.assertEqual(contract["max_tokens"], {"t1": 8192, "resolve": 8192})
         self.assertEqual(single_prompts_sha256(), _digest({
             "note": NOTE_INSTRUCTION_SINGLE, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER,
             "resolve_instruction": RESOLVE_INSTRUCTION_SINGLE,
-            "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE]}))
+            "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE], "note_reference": REFERENCE_HEADER}))
 
 
 if __name__ == "__main__":

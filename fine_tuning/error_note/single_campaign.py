@@ -16,11 +16,11 @@ import time
 from types import SimpleNamespace
 from typing import Callable
 
-from . import single
+from . import references, single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import ARM, SINGLE_TOKEN_SCALE_V10, plain_protocol_single, single_blocks
+from .protocol import ARM, SINGLE_TOKEN_SCALE_V11, plain_protocol_single, single_blocks
 
 VERSION = "single-campaign-v2"
 GATE_VERSION = "single-pilot-main-gate-v1"
@@ -28,6 +28,7 @@ GATE_RULE = "program-functional-all;missing=0;failures=0;dev>F0;retention>=F0;no
 # --direct-main (v5, 2026-11-06): the user's decision replaces the external-dev pilot gate; the pilot checkpoint is
 # still committed and reloaded in a fresh process before the main blocks run.
 DIRECT_GATE_VERSION = "single-direct-user-gate-v1"
+CAMPAIGN_INPUTS = ("order", "frozen_approval", "source_provenance", "training_rules", "note_reference_supplement")
 DIRECT_DECISION = ("user 2026-11-06: after the stopped v4 main run, train all 3,500 items without the external-dev "
                    "pilot comparison, then evaluate MMMU-val 900 once")
 
@@ -78,7 +79,7 @@ def _prepare(args: argparse.Namespace) -> dict:
         value = getattr(args, name)
         if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
             raise ValueError("single campaign: fixed pilot/dev/retention SHA256 registrations required")
-    for key in ("order", "frozen_approval", "source_provenance", "training_rules"):
+    for key in CAMPAIGN_INPUTS:
         _checked({"path": str(getattr(args, key)), "file_sha256": getattr(args, key + "_sha256")})
     approval = single._read(args.frozen_approval)
     order = read_order(args.order, expected_sha256=args.order_sha256)
@@ -89,6 +90,10 @@ def _prepare(args: argparse.Namespace) -> dict:
     lineages = read_lineage(args.build_root / "train")
     provenance = single._read(args.source_provenance)
     sources = provenance["items"]
+    # The supplement is verified by its file sha only: its annotations hash values with text_sha256, not digest.
+    supplement = references.read_supplement(args.note_reference_supplement, args.note_reference_supplement_sha256)
+    if not supplement.keys() <= {item["problem_id"] for item in order["items"]}:
+        raise ValueError("single campaign: reference supplement names an item outside the order")
     rules = single._read(args.training_rules)
     train_sha = file_sha(args.build_root / "train" / "manifest.yaml")
     if (len(order["items"]) != 3500 or provenance.get("version") != SOURCE_VERSION
@@ -124,7 +129,12 @@ def _prepare(args: argparse.Namespace) -> dict:
     blocks = single_blocks([item["problem_id"] for item in order["items"]])
     contracts = {"source": digest(source), "dataset": file_sha(args.build_root / "manifest.yaml"),
                  "order": args.order_sha256, "data_admission": digest(admission)}
-    protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale)
+    note_reference = {"version": references.REFERENCE_VERSION, "fields_sha256": references.fields_sha256(),
+                      "supplement_sha256": args.note_reference_supplement_sha256, "max_chars": references.REFERENCE_MAX_CHARS,
+                      "items_with_reference": sum(references.note_reference(sources[item["problem_id"]],
+                          supplement.get(item["problem_id"])) is not None for item in order["items"])}
+    protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
+                                     note_reference=note_reference)
     measured = args.capacity_profile is not None
     if measured != (args.capacity_profile_sha256 is not None):
         raise ValueError("single campaign: profile requires an external SHA256")
@@ -155,8 +165,7 @@ def _prepare(args: argparse.Namespace) -> dict:
         capacity["profile"] = _descriptor(args.capacity_profile)
     body = {"version": VERSION, "mode": args.campaign_mode, "items": order["items"], "blocks": blocks,
             "protocol": protocol, "source": source, "generation": generation, "data_admission": admission,
-            "inputs": {key: _descriptor(getattr(args, key)) for key in
-                       ("order", "frozen_approval", "source_provenance", "training_rules")},
+            "inputs": {key: _descriptor(getattr(args, key)) for key in CAMPAIGN_INPUTS},
             "build_root": str(args.build_root.absolute()), "model_path": str(args.model_path.absolute()),
             "capacity": capacity, "gate_rule": GATE_RULE, "pilot_ids_sha256": args.pilot_ids_sha256,
             "dev_ids_sha256": args.dev_ids_sha256, "retention_ids_sha256": args.retention_ids_sha256,
@@ -306,11 +315,13 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                  stream: Callable | None = None, encoder: Callable | None = None, device: str = "cpu",
                  max_blocks: int = 1, allow_update: bool = False, allow_save: bool = False,
                  continue_main: bool = False, pilot_gate: dict | None = None, stop_after: float | None = None,
-                 reload_only: bool = False, direct_main: bool = False) -> dict:
+                 reload_only: bool = False, direct_main: bool = False,
+                 reference: Callable[[str], str | None] | None = None) -> dict:
     """Execute an explicit bounded number of blocks, restoring durable state before any work.
 
     Factory/stream/encoder seams support authored CPU fixtures; defaults are the real production functions.
     A valid checkpoint is the commit authority. Uncertain generated requests are never retried.
+    ``reference`` (v11) maps a problem id to its dataset reference text; it reaches the note prompt only.
     """
     from fine_tuning.notebook_rl import checkpoint
     from fine_tuning.notebook_rl.policy import build_policy, enable_deterministic_execution
@@ -498,7 +509,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 started = time.monotonic()
                 state_block = single.run_single_block(bundle, actors=actors, items=[by_id[pid] for pid in ids],
                     provenance=provenance, gold=gold, grade=grade, load_images=load_images, protocol=plan["protocol"],
-                    output=block_output, block_id=slot, stream=stream, stream_args=args, stop_after=stop_after)
+                    output=block_output, block_id=slot, stream=stream, stream_args=args, stop_after=stop_after,
+                    reference=reference)
                 if state_block["status"] != "ROWS_READY":
                     state.update(status=state_block["status"], waiting=state_block.get("waiting", []))
                     _rng_save(output, state, state_block)
@@ -574,13 +586,15 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("prepare", "advance", "reload"), nargs="?", default="prepare")
-    for name in ("build-root", "order", "frozen-approval", "source-provenance", "training-rules", "model-path", "output"):
+    for name in ("build-root", "order", "frozen-approval", "source-provenance", "training-rules",
+                 "note-reference-supplement", "model-path", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
-    for name in ("order", "frozen-approval", "source-provenance", "training-rules", "pilot-ids", "dev-ids", "retention-ids"):
+    for name in ("order", "frozen-approval", "source-provenance", "training-rules", "note-reference-supplement",
+                 "pilot-ids", "dev-ids", "retention-ids"):
         parser.add_argument("--" + name + "-sha256", required=True)
     parser.add_argument("--campaign-mode", choices=("proof", "train"), default="proof")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
-    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V10)
+    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V11)
     for name in ("capacity-profile", "pilot-gate"):
         parser.add_argument("--" + name, type=Path)
         parser.add_argument("--" + name + "-sha256")
@@ -632,12 +646,16 @@ def main(argv: list[str] | None = None) -> int:
             gate_descriptor = (_descriptor(args.pilot_gate) | {"raw": args.pilot_gate.read_bytes()}) if args.pilot_gate else None
             actors = {actor.problem_id: actor for actor in read_actors(args.build_root / "train")}
             sources = single._read(args.source_provenance)["items"]
+            supplement = references.read_supplement(args.note_reference_supplement, args.note_reference_supplement_sha256)
+            note_references = {item["problem_id"]: references.note_reference(sources[item["problem_id"]],
+                                                                             supplement.get(item["problem_id"]))
+                               for item in plan["items"]}
             private = read_verifier(args.build_root / "train")
             gold = {item["problem_id"]: private[item["problem_id"]].gold for item in plan["items"]}
             del private
             # vLLM needs the reviewed OpenAI schema types (API clients stay denied) and is imported before the file guards.
             forbidden = install_training_guards(args.build_root, vllm_schema={} if args.engine == "vllm" else None,
-                private_files=[args.source_provenance, args.training_rules,
+                private_files=[args.source_provenance, args.training_rules, args.note_reference_supplement,
                                *[path for path in (args.pilot_gate,) if path is not None]])
             with VerifierService(args.build_root / "train", forbidden_roots=forbidden, training_rules_path=args.training_rules,
                                  training_rules_sha256=args.training_rules_sha256) as verifier:
@@ -653,7 +671,8 @@ def main(argv: list[str] | None = None) -> int:
                     gold=gold.__getitem__, grade=grade, load_images=lambda actor: load_images(actor, args.build_root / "images"),
                     device="cuda:0", max_blocks=args.max_blocks, allow_update=args.allow_update, allow_save=args.allow_save,
                     continue_main=args.continue_main, pilot_gate=gate_descriptor,
-                    stop_after=args.stop_after_seconds, reload_only=args.command == "reload", direct_main=args.direct_main)
+                    stop_after=args.stop_after_seconds, reload_only=args.command == "reload", direct_main=args.direct_main,
+                    reference=note_references.get)
             print(json.dumps({"status": result["status"], "slot": result["cursor"]["slot"], "updates": result["cursor"]["updates"]}))
             code = 0 if result["status"] in ("BOUNDED_STOP", "PILOT_COMPLETE", "COMPLETE", "RELOADED") else 2
     except BaseException:

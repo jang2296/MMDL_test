@@ -306,13 +306,13 @@ SINGLE_VERDICT_LABELS = VERDICT_LABELS | {key: "NOT ACCEPTED BY THE FINAL-ANSWER
 # feedback, generic "verify" lessons). No visible-detail/outside-knowledge wording: that V3 text taught image-only hedging.
 # v8: notes exist only for wrong answers, so Cause NONE and "if nothing went wrong" are no longer offered.
 NOTE_INSTRUCTION_SINGLE = """Review your own work like a student writing an error note. The given correct answer is right: never call it a mislabel, a typo or a mistake in the question.
-Use these headings in this order, each starting on a new line. Keep the whole note short, about 200 words at most, and do not write a solution.
+Use these headings in this order, each starting on a new line. Keep the whole note short, about 200 words at most, and do not write a solution. If a dataset reference is shown, compare your earlier solution with it step by step and name the first fact or step where they differ.
 
 What the image shows: list the facts this problem needs, checking each one against the image.
 Image reading: CORRECT, MISREAD or UNSURE. Write MISREAD if your earlier solution used a fact the image does not show, even if its final answer was right.
 Cause: IMAGE, REASONING, KNOWLEDGE, CALCULATION or NO_FINAL_ANSWER. Use NO_FINAL_ANSWER when the grading result says your final answer was not accepted or the solution was cut off.
 What went wrong: the exact step and why.
-Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option. Name the specific rule, fact or reading step that would have prevented the error; do not only say to verify or double-check."""
+Lesson: 1 to 3 general sentences on how to solve this kind of problem. They must be usable without knowing the answer: do not name or restate the correct answer, any option letter or the content of any option. Name the specific rule, fact or reading step that would have prevented the error; do not only say to verify or double-check. Do not copy sentences from the reference."""
 RESOLVE_INSTRUCTION_SINGLE = ('Solve the question below from the start. Reason step by step, then write exactly one final '
                               'answer on the last line as "Final Answer: ...". Do not mention the lesson or this review.')
 
@@ -320,18 +320,25 @@ RESOLVE_INSTRUCTION_SINGLE = ('Solve the question below from the start. Reason s
 # v8 (2026-11-06 cycle-2 review): the note input shows the value the grader read, so a format cause is visible.
 GRADER_READ_LINE = "The grader read your final answer as: {read}"
 GRADER_READ_NONE = "no final answer"
+# v11 (2026-11-08): dataset-provided solution/annotation text, shown only in the note step, after the correct answer.
+REFERENCE_HEADER = ("Reference from the dataset (written by people or generated from the dataset's own annotations; "
+                    "use it only to find where your solution went wrong):")
 
 
-def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str, *, read: str | None) -> str:
+def note_prompt_single(p0_text: str, t1_text: str, status: str, gold: str, *, read: str | None,
+                       reference: str | None = None) -> str:
     """Prospective SINGLE feedback separates parser rejection from absence of a written answer; v8 adds the
-    grader-read value (``read``, None when no single final answer was read) right after the grading result."""
+    grader-read value (``read``, None when no single final answer was read) right after the grading result.
+    v11: a nonblank ``reference`` follows the correct answer under REFERENCE_HEADER; None/blank adds nothing."""
     if not p0_text.strip() or not gold.strip():
         raise ValueError("single note: nonblank P0 and gold required")
     if status not in SINGLE_VERDICT_LABELS:
         raise ValueError(f"no single verdict label for status {status!r}")
     shown = GRADER_READ_NONE if read is None or not str(read).strip() else " ".join(str(read).split())
     return (f"{p0_text}\n\nYour earlier solution:\n{t1_text}\n\nGrading result: {SINGLE_VERDICT_LABELS[status]}\n"
-            f"{GRADER_READ_LINE.format(read=shown)}\nCorrect answer: {gold}\n\n{NOTE_INSTRUCTION_SINGLE}")
+            f"{GRADER_READ_LINE.format(read=shown)}\nCorrect answer: {gold}\n\n"
+            + (f"{REFERENCE_HEADER}\n{reference}\n\n" if isinstance(reference, str) and reference.strip() else "")
+            + NOTE_INSTRUCTION_SINGLE)
 
 
 _HEADING_PATTERNS_V2 = tuple(_heading_pattern(name) for name in HEADINGS_V2)

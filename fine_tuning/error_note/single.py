@@ -23,9 +23,10 @@ from .collect_v4 import run_single_requests
 from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS, ROUTE_FULL, ROUTE_LM,
                        a2_target_problem, answer_denial, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
                        resolve_prompt_single, sample_seed)
-from .protocol import (ARM, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE, SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER,
-                       SINGLE_REWARD_GATE, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256,
-                       SINGLE_TOKEN_SCALE_V10, single_source_baseline)
+from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_VERSION_V11, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE,
+                       SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5,
+                       SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256,
+                       single_source_baseline)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -151,13 +152,15 @@ def _candidate(record: dict, kind: str) -> dict | None:
 
 def _single_reward_decision(row: dict, evidence: dict) -> dict:
     """Rebuild the program gate from the original T1: R=1 iff graded CORRECT and an admissible A1 target,
-    R=-1 iff a not-CORRECT T1 carries a penalty (bare wrong, uncommitted stop, loop), else 0."""
+    R=-1 iff a not-CORRECT T1 carries a penalty, else 0. Gate v5 penalizes a bare wrong answer, an uncommitted stop
+    and a loop; gate v6 (v11) also every other wrong T1: cut off without a loop, or reasoned and wrong."""
     try:
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
                 or not isinstance(evidence, dict)
-                or set(evidence) - {"baseline"} != {"version", "t1_metadata", "provenance", "decision"}
-                or evidence["version"] != SINGLE_REWARD_GATE or not isinstance(evidence["t1_metadata"], dict)
+                or set(evidence) - {"baseline", "advantage"} != {"version", "t1_metadata", "provenance", "decision"}
+                or evidence["version"] not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE)
+                or not isinstance(evidence["t1_metadata"], dict)
                 or {"text", "generation", "prompt", "status"} & set(evidence["t1_metadata"])
                 or row["target"] != row["generation"]["text"]):
             raise ValueError("single reward: malformed or unsupported original-T1 evidence")
@@ -184,6 +187,10 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
                 penalty = "NO_COMMITTED_ANSWER"  # v5: never when the grader read one committed answer
             elif is_loop(row["target"]):
                 penalty = "LOOP"
+            elif evidence["version"] == SINGLE_REWARD_GATE and (row["status"] == "TRUNCATED" or not stopped):
+                penalty = "TRUNCATED_NO_LOOP"
+            elif evidence["version"] == SINGLE_REWARD_GATE:
+                penalty = "REASONED_WRONG"  # stopped, >= 32 tokens, no loop, a committed or read wrong answer
         return {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
                 "method": "program"}
     except (KeyError, TypeError, AttributeError) as error:
@@ -194,17 +201,30 @@ def _reward_value(decision: dict) -> int:
     return 1 if decision["accepted"] else -1 if decision["penalty"] else 0
 
 
-def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | None = None) -> dict:
+def single_advantage(decision: dict) -> float:
+    """v11 penalty table: accepted +1, bare/uncommitted/loop -1, reasoned-wrong/cut-off -0.5, anything else 0."""
+    return SINGLE_ADVANTAGE_V11["accepted" if decision["accepted"] else decision["penalty"] or "other"]
+
+
+def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | None = None, *,
+                       gate: str = SINGLE_REWARD_GATE) -> dict:
     """Attach evidence without duplicating response text or sampled actions in the target.
 
-    baseline (v10): the protocol's baseline pin; the row then carries b(source) and advantage = reward - b."""
+    gate v6 (v11): the row carries advantage = the penalty-table value. baseline (v10, gate v5 only): the protocol's
+    baseline pin; the row then carries b(source) and advantage = reward - b."""
+    if gate not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE) or (baseline is not None and gate != SINGLE_REWARD_GATE_V5):
+        raise ValueError("single reward: the v10 source baseline belongs to gate v5 only")
     if any(t1[key] != row[field] for key, field in (("text", "target"), ("prompt", "prompt"),
                                                   ("generation", "generation"), ("status", "status"))):
         raise ValueError("single reward: original T1 differs from the RL row")
-    evidence: dict = {"version": SINGLE_REWARD_GATE, "t1_metadata": {k: v for k, v in t1.items()
+    evidence: dict = {"version": gate, "t1_metadata": {k: v for k, v in t1.items()
                 if k not in {"text", "generation", "prompt", "status"}}, "provenance": provenance, "decision": None}
     evidence["decision"] = _single_reward_decision(row, evidence)
     row.update(reward=_reward_value(evidence["decision"]), reward_evidence=evidence)
+    if gate == SINGLE_REWARD_GATE:
+        value = single_advantage(evidence["decision"])
+        evidence["advantage"] = {"version": SINGLE_ADVANTAGE_VERSION_V11, "value": value}
+        row["advantage"] = value
     if baseline is not None:
         evidence["baseline"] = single_source_baseline(row["problem_id"], baseline)
         row.update(baseline=evidence["baseline"]["value"], advantage=row["reward"] - evidence["baseline"]["value"])
@@ -219,7 +239,15 @@ def validate_single_reward(row: dict) -> dict:
     if (evidence["decision"] != decision or type(row.get("reward")) is not int
             or row["reward"] != _reward_value(decision)):
         raise ValueError("single reward: reward/decision differs from the program gate on the original solution")
-    if "baseline" in evidence or "baseline" in row or "advantage" in row:
+    if evidence["version"] == SINGLE_REWARD_GATE:
+        value = single_advantage(decision)
+        if ("baseline" in evidence or "baseline" in row
+                or evidence.get("advantage") != {"version": SINGLE_ADVANTAGE_VERSION_V11, "value": value}
+                or type(row.get("advantage")) is not float or row["advantage"] != value):
+            raise ValueError("single reward: advantage differs from the v11 penalty table")
+    elif "advantage" in evidence:
+        raise ValueError("single reward: gate v5 evidence carries no penalty-table advantage")
+    elif "baseline" in evidence or "baseline" in row or "advantage" in row:
         bound = evidence.get("baseline")
         pin = {key: bound.get(key) for key in ("method", "table_sha256")} if isinstance(bound, dict) else {}
         expected = single_source_baseline(row["problem_id"], pin | {"unknown_source": "global_mean"})
@@ -273,11 +301,13 @@ def run_single_block(bundle: Any, **kwargs) -> dict:
 def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenance: dict, gold: Callable[[str], str],
                      grade: Callable, load_images: Callable, protocol: dict, output: Path, block_id: int = 0,
                      limit: int | None = None, stream: Callable | None = None,
-                     stream_args: argparse.Namespace | None = None, stop_after: float | None = None) -> dict:
+                     stream_args: argparse.Namespace | None = None, stop_after: float | None = None,
+                     reference: Callable[[str], str | None] | None = None) -> dict:
     """Collect at most 16 distinct items; resume completed actions; admit rows by program checks only.
 
     ``items`` is the immutable whole block, even when limit first requests its prefix of two.
     Gold is requested only while constructing the note/audit stage. It never reaches T1/retry requests.
+    ``reference`` (v11) gives the dataset reference text for a problem's note prompt only (None: no reference).
     """
     from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
     from .rl import policy_sha256
@@ -345,7 +375,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     def note_prompt(pid: str) -> str:
         t1 = state["records"][pid]["t1"]
         return note_prompt_single(state["records"][pid]["p0_text"], t1["text"], t1["status"], gold(pid),
-                                  read=t1.get("extracted"))
+                                  read=t1.get("extracted"), reference=reference(pid) if reference is not None else None)
 
     def note_decision(pid: str) -> tuple[dict, dict]:
         record, source = state["records"][pid], provenance[pid]
@@ -421,8 +451,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         rl_row = _candidate(record, "RL")
         if rl_row is None:
             raise ValueError("single runtime: original T1 is missing")
-        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid],
-                                       protocol["training_contract"]["rl"]["baseline"]))
+        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid]))
         kind = "A1" if record["t1"]["status"] == "CORRECT" else "A2"
         if kind == "A2" and pid not in approved:
             continue
@@ -690,7 +719,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--order-sha256", required=True)
     parser.add_argument("--mode", choices=("local-smoke", "frozen3500"), default="local-smoke")
-    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V10)
+    parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V11)
     parser.add_argument("--limit", type=int, choices=(2, 10), default=2)
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
     parser.add_argument("--capacity-profile", type=Path)

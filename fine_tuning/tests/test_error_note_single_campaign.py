@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 import torch
 
-from fine_tuning.error_note import audit, rl, single, single_campaign as campaign, train_v4
+from fine_tuning.error_note import audit, references, rl, single, single_campaign as campaign, train_v4
+from fine_tuning.error_note.contract import REFERENCE_HEADER
 from fine_tuning.error_note.protocol import _digest, plain_protocol_single, single_blocks
 from fine_tuning.notebook_rl import checkpoint
 from fine_tuning.tests import test_error_note_single_runtime as runtime_fixture
@@ -44,7 +45,7 @@ def plan_for(count=32, mode="proof"):
     items = [{"problem_id": f"p{i}", "subject": "Biology", "source": "authored-test"} for i in range(count)]
     blocks = single_blocks([x["problem_id"] for x in items])
     protocol = plain_protocol_single("bf16", len(blocks),
-        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=256.)
+        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024.)
     body = {"version": campaign.VERSION, "mode": mode, "items": items, "blocks": blocks, "protocol": protocol,
             "source": {"authored_fixture": True}, "generation": {"model_files_sha256": "b" * 64},
             "capacity": {"max_num_seqs": 1, "max_num_batched_tokens": 24576, "token_budget": 0, "context_limit": 24576, "engine": "hf"},
@@ -207,6 +208,46 @@ class CampaignTests(CampaignCase):
             self.assertEqual(again["status"], "COMPLETE")
             self.assertEqual(len(fixture.seen), 4)
 
+    def collect_with_reference(self, reference):
+        fixture = runtime_fixture.RuntimeTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        output, plan = Path(tempfile.mkdtemp(dir=self.out)), plan_for(2)
+        fixture.protocol = plan["protocol"]
+
+        def factory(*_):
+            fixture.owner = self.linear_factory(None, None, None)
+            return fixture.owner
+
+        with patch.object(single, "prove_single_backward", return_value={"status": "HOLD", "all_parameters_unchanged": True}):
+            state = campaign.run_campaign(plan, output=output, model_path=Path("unused"), actors=fixture.actors,
+                provenance={pid: PROVENANCE for pid in fixture.actors}, gold=lambda _: "B",
+                grade=lambda pid, text, finish, mode: ("CORRECT" if text.endswith("B") else "INCORRECT", text[-1]),
+                load_images=lambda _: [runtime_fixture.Image.new("RGB", (8, 8))], policy_factory=factory,
+                stream=fixture.stream, encoder=lambda owner, row: row, reference=reference)
+        self.assertEqual(state["status"], "COMPLETE")
+        note = single._state(output / "block-0" / "phase.json")["records"]["p1"]["note"]["prompt"]
+        rows = single._read(Path(single._read(output / "transaction-0.json")["rows"]["path"]))["rows"]
+        return fixture.seen, note, rows
+
+    def test_campaign_reference_reaches_only_the_stored_note_prompt(self):
+        text = "Solution: the dataset explains item p1."
+        shown = f"{REFERENCE_HEADER}\n{text}\n\n"
+        seen, note, rows = self.collect_with_reference({"p1": text}.get)
+        plain_seen, plain_note, plain_rows = self.collect_with_reference({}.get)  # no text for p1: exact old prompt
+        self.assertEqual([r["stage"] for r in seen], ["t1", "t1", "note", "resolve"])
+        for request in seen:
+            self.assertEqual(shown in request["messages"][0]["content"][-1]["text"], request["stage"] == "note", request["stage"])
+        self.assertTrue(all(REFERENCE_HEADER not in r["messages"][0]["content"][-1]["text"] for r in plain_seen))
+        self.assertIn(shown, note)
+        self.assertNotIn(REFERENCE_HEADER, plain_note)
+        self.assertEqual(note.replace(shown, ""), plain_note)
+        # SFT rows A1/A2 and the RL rows keep their P0 prompts; only the note row B carries the reference.
+        self.assertEqual({r["kind"]: REFERENCE_HEADER in r["prompt"] for r in rows},
+                         {"RL": False, "A1": False, "A2": False, "B": True})
+        self.assertTrue(all(REFERENCE_HEADER not in r["prompt"] for r in plain_rows))
+        self.assertTrue(all(REFERENCE_HEADER not in r["target"] for r in rows))
+
     def test_pending_collector_request_never_resamples(self):
         fixture = runtime_fixture.RuntimeTests()
         fixture.setUp()
@@ -290,15 +331,19 @@ class PrepareTests(CampaignCase):
         source_path.write_text(json.dumps({"version": source_evidence.VERSION, "items": sources}))
         rules_path = self.out / "rules.json"
         rules_path.write_text(json.dumps({"version": answer_contract.VERSION, "vault_manifest_sha256": train_sha, "items": {}}))
+        supplement_path = self.out / "supplement.json"
+        supplement_path.write_text(json.dumps({"version": references.SUPPLEMENT_VERSION, "fields_sha256": references.fields_sha256(),
+            "missing": [], "items": {"p1": {"source": "authored-test", "annotations": []},
+                                      "p7": {"source": "authored-test", "annotations": []}}}))
         model = self.out / "raw-model"
         model.mkdir()
         (model / "config.json").write_text('{"torch_dtype":"bfloat16"}')
         args = SimpleNamespace(build_root=root, model_path=model, output=self.out / "campaign", order=order_path,
             frozen_approval=approval_path, source_provenance=source_path, training_rules=rules_path,
-            campaign_mode="proof", precision="bf16", token_scale=256., max_blocks=1, execution_max_blocks=1,
+            note_reference_supplement=supplement_path, campaign_mode="proof", precision="bf16", token_scale=1024., max_blocks=1, execution_max_blocks=1,
             pilot_ids_sha256=order._ids_sha256(ids[:300]), dev_ids_sha256="c" * 64, retention_ids_sha256="d" * 64,
             capacity_profile=None, capacity_profile_sha256=None, max_num_seqs=None, max_num_batched_tokens=None, token_budget=None)
-        for name in ("order", "frozen_approval", "source_provenance", "training_rules"):
+        for name in campaign.CAMPAIGN_INPUTS:
             setattr(args, name + "_sha256", single.file_sha(getattr(args, name)))
         with ExitStack() as stack:
             checked = stack.enter_context(patch.object(frozen_data, "verify_frozen_data", return_value={"authored_cpu_fixture": True}))
@@ -308,8 +353,34 @@ class PrepareTests(CampaignCase):
             stack.enter_context(patch.object(single, "source_manifest", return_value={"base_commit": "a" * 40, "actual_files": {}}))
             stack.enter_context(patch.object(campaign, "generation_identity", return_value={"model_files_sha256": "b" * 64}))
             stack.enter_context(patch("fine_tuning.notebook_rl.policy.build_policy", side_effect=AssertionError("CPU prepare loaded model")))
+            # The authored source offers no real reference fields; a supplement entry stands for "a reference exists".
+            stack.enter_context(patch.object(references, "note_reference", side_effect=lambda item, extra=None: "ref" if extra else None))
             prepared = campaign.prepare(args)
             self.assertEqual(len(prepared["blocks"]), 219)
+            self.assertEqual(prepared["protocol"]["training_contract"]["note_reference"],
+                {"version": references.REFERENCE_VERSION, "fields_sha256": references.fields_sha256(),
+                 "supplement_sha256": args.note_reference_supplement_sha256, "max_chars": references.REFERENCE_MAX_CHARS,
+                 "items_with_reference": 2})
+            self.assertEqual(prepared["inputs"]["note_reference_supplement"], campaign._descriptor(supplement_path))
+            original_supplement, original_sha = supplement_path.read_text(), args.note_reference_supplement_sha256
+            args.note_reference_supplement_sha256 = "0" * 64
+            with self.assertRaisesRegex(ValueError, "identity changed"):
+                campaign.prepare(args)
+            foreign = json.loads(original_supplement)
+            foreign["items"]["p9999"] = foreign["items"]["p1"]
+            supplement_path.write_text(json.dumps(foreign))
+            args.note_reference_supplement_sha256 = single.file_sha(supplement_path)
+            with self.assertRaisesRegex(ValueError, "outside the order"):
+                campaign.prepare(args)
+            changed = json.loads(original_supplement)
+            del changed["items"]["p7"]  # a different supplement is a different sealed protocol
+            supplement_path.write_text(json.dumps(changed))
+            args.note_reference_supplement_sha256 = single.file_sha(supplement_path)
+            with self.assertRaisesRegex(ValueError, "immutable binding changed"):
+                campaign.prepare(args)
+            supplement_path.write_text(original_supplement)
+            args.note_reference_supplement_sha256 = original_sha
+            self.assertEqual(campaign.prepare(args), prepared)
             self.assertEqual(prepared["blocks"][19][0], "p300")
             self.assertEqual(prepared["capacity"]["max_num_seqs"], 1)
             self.assertEqual(checked.call_args.kwargs["expected_pilot_sha256"], args.pilot_ids_sha256)
@@ -688,7 +759,7 @@ class UnionGradingTests(unittest.TestCase):
         self.assertEqual(self.grade("p0-eval-aligned-v1", "INCORRECT", "CORRECT"),
                          (("INCORRECT", "p0-eval-aligned-v1"), ["p0-eval-aligned-v1"]))
         protocol = plain_protocol_single("bf16", 1, contracts={k: "a" * 64 for k in ("source", "dataset", "order",
-                                                                                      "data_admission")}, token_scale=256.)
+                                                                                      "data_admission")}, token_scale=1024.)
         self.assertEqual(protocol["training_contract"]["answer_contracts"]["open"],
                          "v8-extract+normalize+training-compare-v1")
 
@@ -700,6 +771,16 @@ class UnionGradingTests(unittest.TestCase):
         graded.assert_called_once_with("verifier", "actor", "p", "t", "stop", "plain")
         with self.assertRaisesRegex(ValueError, "needs the item actor"):
             single.grade_answer("verifier", scorer, "p", "t", "stop", "plain")
+
+
+class ParserDefaultTests(unittest.TestCase):
+    def test_cli_token_scale_defaults_build_the_v11_protocol(self):
+        """v11 pins the PG token scale; both CLIs must default to it or every default run fails at prepare."""
+        contracts = {key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}
+        for parser in (campaign.build_parser(), single.build_parser()):
+            default = parser.get_default("token_scale")
+            protocol = plain_protocol_single("bf16", 1, contracts=contracts, token_scale=default)
+            self.assertEqual(protocol["training_contract"]["rl"]["token_scale"], default)
 
 
 if __name__ == "__main__":

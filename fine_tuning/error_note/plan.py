@@ -27,7 +27,8 @@ settings remain schema fields for all stages. Note and solution reviews are crea
 
 Stages single-pilot and single-main (single-response RL + SFT campaign, error_note.single_campaign) take
 `error-note-plan-params-single-v1`: SINGLE_KEYS (+ the dev-evaluation inputs for single-pilot, + pilot_gate_path/sha256
-for single-main). The campaign directory is <out_root>/campaign; every campaign call carries the same pinned inputs.
+for single-main). The campaign directory is <out_root>/campaign; every campaign call carries the same pinned inputs,
+including the v11 note-reference supplement (note_reference_supplement_path/_sha256).
 single-pilot: pins -> advance --max-blocks 1 -> fresh-process reload receipt -> advance --max-blocks 18 (checkpoint-19 =
 PILOT_COMPLETE) -> fresh-process reload receipt -> export checkpoint-19 -> external-dev preregister-hybrid -> F0 and HYB
 run/grade -> analyze-hybrid. The pilot-gate JSON is built afterwards by the operator (evaluate pilot-gate).
@@ -78,7 +79,8 @@ PROOF = "fine_tuning.notebook_rl.proof_eval"
 CAMPAIGN = "fine_tuning.error_note.single_campaign"
 EVALUATE = "fine_tuning.error_note.evaluate"
 PARAMS_VERSION_SINGLE = "error-note-plan-params-single-v1"
-SINGLE_INPUTS = ("order", "frozen_approval", "source_provenance", "training_rules")  # <name>_path + <name>_sha256
+# <name>_path + <name>_sha256; the last one is the v11 dataset note-reference supplement (references.py)
+SINGLE_INPUTS = ("order", "frozen_approval", "source_provenance", "training_rules", "note_reference_supplement")
 SINGLE_PATHS = ("python", "repo_root", "build_root", "model_path", "out_root", "volume_root",
                 *(f"{name}_path" for name in SINGLE_INPUTS))
 SINGLE_HASHES = (*(f"{name}_sha256" for name in SINGLE_INPUTS), "pilot_ids_sha256", "dev_ids_sha256",

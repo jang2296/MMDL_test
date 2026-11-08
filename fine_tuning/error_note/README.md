@@ -278,6 +278,7 @@ C=(--build-root "$BUILD" --order "$ORDER" --order-sha256 "$ORDER_SHA"
    --frozen-approval "$APPROVAL" --frozen-approval-sha256 "$APPROVAL_SHA"
    --source-provenance "$SOURCE" --source-provenance-sha256 "$SOURCE_SHA"
    --training-rules "$RULES" --training-rules-sha256 "$RULES_SHA"
+   --note-reference-supplement "$SUPP" --note-reference-supplement-sha256 "$SUPP_SHA"
    --pilot-ids-sha256 "$PILOT_IDS_SHA" --dev-ids-sha256 "$DEV_IDS_SHA"
    --retention-ids-sha256 "$RETENTION_IDS_SHA" --model-path "$SNAP")
 P=(--output "$CAMPAIGN_PROOF" --campaign-mode proof --precision nf4 --max-blocks 1)
@@ -317,6 +318,18 @@ proof의 추가 무갱신 순회에도 `--continue-main`이 필요하며, 순회
 현재 연결 검증은 **작은 무작위 CPU 모델의57검사 통과**(CUDA 초기화 차단)다. 실제3,500문항 승인, 실제 Qwen GPU 실행,
 메모리 적합성·학습 효과를 인증한 결과가 아니다. NF4 train/checkpoint continuation은 명시적으로 HOLD이며 로컬 NF4는 무갱신 확인만 지원한다.
 이 CLI는 RunPod를 자동 생성·실행하지 않으며 기존 Pod의 SINGLE 미지원 거부를 완화하지 않는다.
+
+## SINGLE v11 (2026-11-08, `claudedocs/plan_v11_20261108.md`)
+
+- 보상 게이트 v6, 기준선 없음. `reward`는 부호(+1/0/−1), `advantage`는 표: 정답 수용 +1, 맨답 오답·답 미확정·반복 −1,
+  풀이를 쓴 오답(REASONED_WRONG)·반복 없는 잘림(TRUNCATED_NO_LOOP) −0.5, 그 밖의 정답·검증 불가 0(정답은 음수 금지).
+- PG = −A·min(1, 2048/n)·Σℓ/(16·1024). 양의 행 ℓ는 저장 후보 분포 log q, 음의 행 ℓ는 원래 분포 log p(T=1, 전체 어휘).
+  11-05 계획의 'q만 사용'·'길이와 무관한 고정 분모' 원칙의 명시적 예외(protocol `plan_exceptions`).
+- 노트 입력에만 데이터셋 참고 정보(`references.py`): ScienceQA 강의·풀이, CLEVR 장면·질문 프로그램, SLAKE 영상 종류·부위,
+  ChEBI 설명·SMILES(번들 `source-provenance.json`), PTB-XL 판독문·진단 문장(보충 파일, sha 고정). SSMR은 원자료에 ABC가
+  없어 참고 정보 0. 4,000자 상한(필드 단위 제외). MMMU/MMMU-Pro 13-gram 중복 검사 0건(제외 신호로만 사용).
+- 캠페인 필수 입력 `--note-reference-supplement`(+sha256), plan params `note_reference_supplement_path/_sha256`.
+- 그대로: 첫 4토큰 F0 고정, KL, 재생 검사·행 제외, SFT 가중(A1 .05, A2 .35 행당, B .05), T1·노트·재풀이 각 1회.
 
 ## 격리 원칙
 

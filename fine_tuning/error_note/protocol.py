@@ -15,8 +15,8 @@ from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL
 
 from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEED, MAX_NEW_TOKENS, MAX_TARGET_TOKENS,
                        MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_SINGLE, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3,
-                       RESOLVE_HEADER, RESOLVE_INSTRUCTION_SINGLE, SINGLE_VERDICT_LABELS, DENIAL_PHRASES, GRADER_READ_LINE,
-                       GRADER_READ_NONE, LESSON_STEM_RULE, _REVIEW_REFERENCES)
+                       REFERENCE_HEADER, RESOLVE_HEADER, RESOLVE_INSTRUCTION_SINGLE, SINGLE_VERDICT_LABELS, DENIAL_PHRASES,
+                       GRADER_READ_LINE, GRADER_READ_NONE, LESSON_STEM_RULE, _REVIEW_REFERENCES)
 from .single_grading import ALIASES, ALIASES_SHA256, NORMALIZATION_RULES, NUMBER_WORDS, SCORER, SUFFIX_STOP
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
@@ -159,19 +159,37 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # baseline (mean v9 T1 reward of blocks 0-54, shipped as source_baseline_v10.json and pinned by SHA256), so every
 # non-excluded RL row carries A = reward - b(source); token scale 256 instead of 1024; A2 SFT weight 0.35 per row
 # instead of 0.5 shared by the block's A2 rows. Rewards, gates, prompts, anchor, KL and replay are v9's.
+# v11 (2026-11-08, claudedocs/plan_v11_20261108.md): no baseline; reward gate v6 adds REASONED_WRONG and
+# TRUNCATED_NO_LOOP penalties and a fixed advantage table (+1 / -1 / -0.5 / 0); negative rows use the raw
+# full-vocabulary log p (a one-token stored support gives log q = 0 and no gradient); per-row cap min(1, 2048/n);
+# token scale 1024; the note prompt may show a dataset reference after the correct answer.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
 VERSION_SINGLE_V9 = "error-note-single-response-v9"
-VERSION_SINGLE = "error-note-single-response-v10"
+VERSION_SINGLE_V10 = "error-note-single-response-v10"
+VERSION_SINGLE = "error-note-single-response-v11"
 SINGLE_TOKEN_SCALE_V10 = 256.0
+SINGLE_TOKEN_SCALE_V11 = 1024.0
+SINGLE_ROW_TOKEN_CAP_V11 = 2048
+SINGLE_NEGATIVE_LOGPROB_V11 = "raw_full_vocab_log_softmax_T1_no_presence"
+SINGLE_ADVANTAGE_VERSION_V11 = "penalty-table-v1"
+SINGLE_ADVANTAGE_V11 = {"accepted": 1.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0, "LOOP": -1.0,
+                        "REASONED_WRONG": -0.5, "TRUNCATED_NO_LOOP": -0.5, "other": 0.0}
+SINGLE_PLAN_EXCEPTIONS_V11 = [
+    "2026-11-05 plan: PG used only the stored sampling distribution q; v11 negative-advantage rows use the raw "
+    "full-vocabulary log p (T=1, no presence penalty) so one-token supports still carry gradient",
+    "2026-11-05 plan: the PG denominator was length-independent and fixed; v11 scales each row by min(1, 2048/n) "
+    "so long rows do not dominate the block"]
 SINGLE_SFT_WEIGHTS_V10 = {"A1": 0.05, "A2": 0.35, "B": 0.05}
 SINGLE_SFT_WEIGHTING_V10 = {"A1": "per_kind_total", "A2": "per_row", "B": "per_kind_total"}
 SINGLE_BASELINE_METHOD = "fixed-source-mean-v1"
 SINGLE_BASELINE_TABLE = Path(__file__).with_name("source_baseline_v10.json")
-SINGLE_REWARD_GATE = "single-t1-program-gate-v5"
+SINGLE_REWARD_GATE_V5 = "single-t1-program-gate-v5"
+SINGLE_REWARD_GATE = "single-t1-program-gate-v6"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
 SINGLE_OPEN_SCORER = SCORER
-SINGLE_REWARD_VALUES = {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1, "other": 0}
+SINGLE_REWARD_VALUES = {"accepted": 1, "BARE_WRONG": -1, "NO_COMMITTED_ANSWER": -1, "LOOP": -1,
+                        "REASONED_WRONG": -1, "TRUNCATED_NO_LOOP": -1, "other": 0}
 SINGLE_REPLAY = "stored-generation-support-v1"
 SINGLE_REPLAY_BLOCK_MEAN_ATOL = 0.05
 SINGLE_REPLAY_ROW_MEAN_ATOL = 0.1
@@ -193,7 +211,7 @@ SINGLE_SAMPLING = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_pena
 def single_prompts_sha256() -> str:
     return _digest({"note": NOTE_INSTRUCTION_SINGLE, "note_feedback": SINGLE_VERDICT_LABELS, "resolve_header": RESOLVE_HEADER,
                     "resolve_instruction": RESOLVE_INSTRUCTION_SINGLE,
-                    "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE]})
+                    "note_grader_read": [GRADER_READ_LINE, GRADER_READ_NONE], "note_reference": REFERENCE_HEADER})
 
 
 def single_baseline_contract() -> dict:
@@ -227,14 +245,17 @@ def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[lis
 
 
 def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[str, str],
-                          token_scale: float = SINGLE_TOKEN_SCALE_V10, beta: float = 0.02,
-                          sft_weights: dict[str, float] | None = None) -> dict:
-    """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission."""
+                          token_scale: float = SINGLE_TOKEN_SCALE_V11, beta: float = 0.02,
+                          sft_weights: dict[str, float] | None = None, note_reference: dict | None = None) -> dict:
+    """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11)."""
     import math
 
     weights = dict(SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
-    if token_scale != SINGLE_TOKEN_SCALE_V10:
-        raise ValueError(f"single protocol: v10 fixes the PG token scale at {SINGLE_TOKEN_SCALE_V10}")
+    reference = {"version": "none"} if note_reference is None else note_reference
+    if token_scale != SINGLE_TOKEN_SCALE_V11:
+        raise ValueError(f"single protocol: v11 fixes the PG token scale at {SINGLE_TOKEN_SCALE_V11}")
+    if not isinstance(reference, dict) or not isinstance(reference.get("version"), str):
+        raise ValueError("single protocol: note_reference must be a dict with a string version")
     if (set(contracts) != SINGLE_CONTRACT_HASHES or any(
             not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
             for value in contracts.values())):
@@ -253,11 +274,15 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "version": VERSION_SINGLE, "hashes": dict(contracts), "master_seed": MASTER_SEED, "per_update_items": PER_UPDATE_ITEMS_V2,
                  "generation_counts": {"t1": 1, "note": 1, "resolve": 1}, "sampling": dict(SINGLE_SAMPLING),
                  "max_tokens": {"t1": MAX_NEW_TOKENS, "resolve": MAX_NEW_TOKENS}, "note_max_tokens": SINGLE_NOTE_MAX_TOKENS,
-                 "rl": {"method": "reinforce", "baseline": single_baseline_contract(), "token_scale": float(token_scale),
-                        "beta": float(beta), "reward": SINGLE_REWARD_GATE,
+                 "rl": {"method": "reinforce", "baseline": "none",
+                        "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V11, "values": dict(SINGLE_ADVANTAGE_V11)},
+                        "token_scale": float(token_scale), "row_token_cap": SINGLE_ROW_TOKEN_CAP_V11,
+                        "negative_logprob": SINGLE_NEGATIVE_LOGPROB_V11, "beta": float(beta), "reward": SINGLE_REWARD_GATE,
                         "reward_values": dict(SINGLE_REWARD_VALUES),
                         "kl": "raw_F0_to_current_on_all_completed_T1_prefixes",
-                        "format_anchor": {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA}},
+                        "format_anchor": {"positions": SINGLE_FORMAT_ANCHOR_POSITIONS, "beta": SINGLE_FORMAT_ANCHOR_BETA},
+                        "plan_exceptions": list(SINGLE_PLAN_EXCEPTIONS_V11)},
+                 "note_reference": dict(reference),
                  "sft_weights": weights, "sft_weighting": dict(SINGLE_SFT_WEIGHTING_V10),
                  "sft_row": "mean_original_target_token_nll",
                  "length_policy": {"min_target_tokens": MIN_TARGET_TOKENS, "note_min_target_tokens": 1,

@@ -14,9 +14,9 @@ from fine_tuning.error_note import train_v4 as train
 from fine_tuning.error_note.contract import ROUTE_FULL, ROUTE_LM
 from fine_tuning.error_note.protocol import (SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
                                              SINGLE_REPLAY_MAX_EXCLUDED_ROWS, SINGLE_REPLAY_ROW_FAILURE,
-                                             SINGLE_REWARD_GATE, SINGLE_SFT_WEIGHTING_V10, SINGLE_SFT_WEIGHTS_V10,
-                                             SINGLE_TOKEN_SCALE_V10, VERSION_SINGLE, VERSION_SINGLE_V8,
-                                             VERSION_SINGLE_V9, single_baseline_contract, single_source_baseline)
+                                             SINGLE_REWARD_GATE_V5, SINGLE_SFT_WEIGHTING_V10, SINGLE_SFT_WEIGHTS_V10,
+                                             SINGLE_TOKEN_SCALE_V10, VERSION_SINGLE_V8, VERSION_SINGLE_V9,
+                                             VERSION_SINGLE_V10, single_baseline_contract, single_source_baseline)
 from fine_tuning.error_note import protocol as protocol_module
 from fine_tuning.notebook_rl.input_preparation import digest
 from fine_tuning.tests.test_error_note_train import encoded, tiny_factory
@@ -46,14 +46,15 @@ def gradients(bundle):
             for name, p in bundle.model.named_parameters() if id(p) in {id(q) for ps in bundle.params.values() for q in ps}}
 
 
-def bind_reward_fixture(row, *, finish_reason="stop", baseline=None):
+def bind_reward_fixture(row, *, finish_reason="stop", baseline=None, gate=SINGLE_REWARD_GATE_V5):
+    """v8-v10 fixtures keep reward gate v5; v11 tests pass gate v6."""
     for key, value in {"prompt": "Question: authored CPU fixture", "target": "Authored final answer: B", "target_source": "T1",
                        "image_paths": ["fixture.png"], "image_sha256": ["a" * 64], "subject": "Biology", "source": "authored-test"}.items():
         row.setdefault(key, value)
     row["generation"].setdefault("text", row["target"])
     t1 = {"text": row["target"], "generation": row["generation"], "prompt": row["prompt"], "status": row["status"],
           "finish_reason": finish_reason}
-    return single.bind_single_reward(row, t1, PROVENANCE, baseline)
+    return single.bind_single_reward(row, t1, PROVENANCE, baseline, gate=gate)
 
 
 def full_support(bundle, actions):
@@ -66,7 +67,7 @@ def pin_reward_fixture(rows, contract):
     contract.update(version=VERSION_SINGLE_V9,
         reward_provenance_sha256={row["problem_id"]: digest(row["reward_evidence"]["provenance"]) for row in rows if row["kind"] == "RL"},
         reward_evidence_sha256={row["problem_id"]: digest(row["reward_evidence"]) for row in rows if row["kind"] == "RL"})
-    contract["rl"]["reward"] = SINGLE_REWARD_GATE
+    contract["rl"]["reward"] = SINGLE_REWARD_GATE_V5
     return contract
 
 
@@ -108,7 +109,7 @@ def as_v10(rows, contract):
         if row["kind"] == "RL":
             bind_reward_fixture(row, baseline=contract["rl"]["baseline"])
     pin_reward_fixture(rows, contract)
-    contract["version"] = VERSION_SINGLE
+    contract["version"] = VERSION_SINGLE_V10
     return contract
 
 
@@ -389,7 +390,7 @@ class SingleRewardGate(unittest.TestCase):
                 row["target"] = row["generation"]["text"] = text or "Authored final answer: B"
                 t1 = {"text": row["target"], "generation": row["generation"], "prompt": row["prompt"],
                       "status": status, "finish_reason": "stop", "extracted": extracted}
-                single.bind_single_reward(row, t1, PROVENANCE)
+                single.bind_single_reward(row, t1, PROVENANCE, gate=SINGLE_REWARD_GATE_V5)
                 decision = row["reward_evidence"]["decision"]
                 self.assertEqual((row["reward"], decision["penalty"], decision["reason"]), (reward, penalty, reason))
                 self.assertEqual(single.validate_single_reward(row), decision)

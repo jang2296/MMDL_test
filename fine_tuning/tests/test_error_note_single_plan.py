@@ -33,6 +33,8 @@ BASE = {
     "frozen_approval_path": "/workspace/private/frozen-approval.json", "frozen_approval_sha256": "c" * 64,
     "source_provenance_path": "/workspace/private/source-provenance.json", "source_provenance_sha256": "d" * 64,
     "training_rules_path": "/workspace/private/training-rules.json", "training_rules_sha256": "e" * 64,
+    "note_reference_supplement_path": "/workspace/private/note-reference-supplement.json",
+    "note_reference_supplement_sha256": "9" * 64,
     "pilot_ids_sha256": "f" * 64, "dev_ids_sha256": "1" * 64, "retention_ids_sha256": "2" * 64,
     "max_num_seqs": 16, "max_num_batched_tokens": 393216, "token_budget": 24000,
     "engine": {"name": "vllm", "kv_cache_gib": 16, "gpu_memory_utilization": 0.65, "sleep": True},
@@ -49,12 +51,12 @@ MAIN_EXTRA = {
 }
 DIRECT_EXTRA = {"timeouts": {"cpu": 12, "advance_first": 23, "advance_pilot": 34, "advance_main": 45, "reload": 56,
                              "export": 67}}
-DIRECT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "advance-1", "reload-1",
+DIRECT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "pin-note-reference-supplement", "advance-1", "reload-1",
                 "advance-pilot", "reload-19", "advance-main", "reload-219", "export-219"]
-PILOT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules",
+PILOT_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "pin-note-reference-supplement",
                "pin-dev-manifest", "pin-dev-rules", "advance-1", "reload-1", "advance-pilot", "reload-19",
                "export-19", "dev-prereg", "dev-f0", "dev-f0-grade", "dev-hyb", "dev-hyb-grade", "dev-analyze"]
-MAIN_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "pin-pilot-gate",
+MAIN_NAMES = ["pin-order", "pin-frozen-approval", "pin-source-provenance", "pin-training-rules", "pin-note-reference-supplement", "pin-pilot-gate",
               "advance-main", "reload-219", "export-219"]
 # Timeout kind per step; every step not listed here is a cpu step (pins, dev-prereg, grades, dev-analyze).
 PILOT_KIND = {"advance-1": "advance_first", "advance-pilot": "advance_pilot", "reload-1": "reload",

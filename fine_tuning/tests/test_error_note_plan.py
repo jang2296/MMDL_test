@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 from fine_tuning.error_note import plan as planner
+from fine_tuning.error_note import single_campaign
 from fine_tuning.notebook_rl.pod import chain
+from fine_tuning.tests.test_error_note_single_plan import params as single_params
 
 BASE = {
     "version": "error-note-plan-params-v1",
@@ -302,6 +304,43 @@ class NoteV2PlanTests(unittest.TestCase):
             self.assertEqual(code, 0, message)
             self.assertEqual(message.strip(), hashlib.sha256(output.read_bytes()).hexdigest())
             self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["meta"]["stage"], "note-v2")
+
+
+class SingleSupplementPlanTests(unittest.TestCase):
+    """v11: the note-reference supplement is a fifth pinned campaign input of every single stage."""
+
+    PATH, SHA = "/workspace/private/note-reference-supplement.json", "9" * 64
+
+    def params(self, stage: str, **changes: object) -> dict:
+        return single_params(stage, **({"note_reference_supplement_path": self.PATH,
+                                        "note_reference_supplement_sha256": self.SHA} | changes))
+
+    def test_every_campaign_call_carries_the_supplement_flags_and_a_pin_step(self) -> None:
+        for stage in planner.SINGLE_STAGES:
+            with self.subTest(stage=stage):
+                steps = planner.plan(stage, self.params(stage))["steps"]
+                pin = next(step for step in steps if step["name"] == "pin-note-reference-supplement")
+                self.assertEqual(pin["argv"][3:], ["pin", "--file", self.PATH, "--sha256", self.SHA])
+                campaigns = [step["argv"] for step in steps if step["argv"][2] == planner.CAMPAIGN]
+                self.assertTrue(campaigns)
+                for argv in campaigns:
+                    self.assertEqual(argv[argv.index("--note-reference-supplement") + 1], self.PATH)
+                    self.assertEqual(argv[argv.index("--note-reference-supplement-sha256") + 1], self.SHA)
+                    parsed = single_campaign.build_parser().parse_args(argv[3:])
+                    self.assertEqual((str(parsed.note_reference_supplement), parsed.note_reference_supplement_sha256),
+                                     (self.PATH, self.SHA))
+
+    def test_params_without_or_with_a_malformed_supplement_are_refused(self) -> None:
+        for stage in planner.SINGLE_STAGES:
+            full = self.params(stage)
+            for key in ("note_reference_supplement_path", "note_reference_supplement_sha256"):
+                with self.subTest(stage=stage, missing=key), self.assertRaisesRegex(ValueError, "missing"):
+                    planner.plan(stage, {name: value for name, value in full.items() if name != key})
+            for changes, message in (({"note_reference_supplement_sha256": "bad"}, "64 lowercase hex"),
+                                     ({"note_reference_supplement_path": "relative.json"}, "canonical absolute path"),
+                                     ({"note_reference_supplement_path": full["repo_root"] + "/s.json"}, "outside repo_root")):
+                with self.subTest(stage=stage, changes=changes), self.assertRaisesRegex(ValueError, message):
+                    planner.plan(stage, self.params(stage, **changes))
 
 
 if __name__ == "__main__":
