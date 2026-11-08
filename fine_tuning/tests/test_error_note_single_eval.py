@@ -231,6 +231,13 @@ class SingleCampaignEvaluation(unittest.TestCase):
                                _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
         self.assertFalse((self.root / "x18").exists() or (self.root / "x19").exists())
 
+    def test_single_stage_allows_a_stopped_main_checkpoint_only_after_the_pilot(self) -> None:
+        self.assertEqual([pe._single_stage(*case) for case in ((19, 300, 219), (219, 3500, 219), (75, 1200, 219))],
+                         ["pilot", "final", "stopped"])
+        for case in ((18, 288, 219), (19, 304, 219), (0, 0, 219), (220, 3500, 219)):
+            with self.assertRaisesRegex(ValueError, "or the final"):
+                pe._single_stage(*case)
+
     # ------------------------------------------------------------------ external dev F0 / HYB
     def test_hybrid_registration_pins_dev_retention_and_pilot_export(self) -> None:
         dev = self.registered["dev"]
@@ -351,10 +358,11 @@ class SingleCampaignEvaluation(unittest.TestCase):
             proof = volume / "eval-data/proof"
             proof.mkdir(parents=True)
             subset = Path(shutil.copyfile(wrong, proof / "wrong.json"))
+            pinned = Path(shutil.copyfile(prereg, proof / "prereg.json"))
             params = {"version": eval_stage.PARAMS_VERSION, "commit": "a" * 40, "repo_root": str(pe.ROOT),
                       "python": f"{volume}/venv-0123456789abcdef/bin/python", "volume_root": str(volume),
-                      "artifact_root": str(proof / "artifacts"), "prereg": str(proof / "prereg.json"),
-                      "prereg_sha256": "1" * 64, "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
+                      "artifact_root": str(proof / "artifacts"), "prereg": str(pinned),
+                      "prereg_sha256": evaluation.file_hash(pinned), "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
                       "subset": str(subset), "subset_sha256": evaluation.file_hash(subset), "subset_tag": "wrong",
                       "arm": pe.ARM_SINGLE, "seeds": [3407], "vllm_inprocess": True, "eval_slots": "auto",
                       "checkpoint": str(self.out / "checkpoint-20"), "checkpoint_metadata_sha256": "2" * 64,
@@ -367,8 +375,97 @@ class SingleCampaignEvaluation(unittest.TestCase):
             self.assertLess(verify, next(i for i, name in enumerate(names) if name.startswith("ledger-")))
             argv = spec["steps"][verify]["argv"]
             self.assertEqual(argv[argv.index("--binding") + 1], str(self.plan_file))
+            ledgers = [step["argv"] for step in spec["steps"] if step["name"].startswith("ledger-")]
+            self.assertEqual([a[a.index("--variant") + 1] for a in ledgers], [pe.GATE_62_VARIANT])  # v7: the 8k one
             with self.assertRaises(ValueError):
                 eval_stage.plan("eval-ft", {k: v for k, v in params.items() if k not in ("reuse_export", "ft_model_ref_sha256")})
+
+    def test_final_v8_evaluates_all_900_ids_in_one_run_with_the_same_gate(self) -> None:
+        from fine_tuning.notebook_rl.pod import chain, eval_stage
+
+        with tempfile.TemporaryDirectory(prefix="single-v8-") as tmp:
+            root = Path(tmp)
+            b2 = root / "b2.jsonl"
+            b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
+            wrong, rest = write_subset(root / "wrong.json", b2), write_subset(root / "rest.json", b2, kind="rest")
+            everything = root / "all.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pe.main(["make-subset", "--kind", "all", "--output", str(everything),
+                                          "--b2-predictions", str(b2)]), 0)
+            ref, prereg, ledger = self.exports[20] / "model_ref.json", root / "prereg.json", root / "ledger.jsonl"
+            with self.assertRaisesRegex(ValueError, "requires --all-subset"):
+                pe.preregister(root / "x.json", wrong, rest, b2, "v8", ft_single_model_ref=ref)
+            with self.assertRaisesRegex(ValueError, "v8-only"):
+                pe.preregister(root / "y.json", wrong, rest, b2, "v7", ft_single_model_ref=ref, all_subset=everything)
+            with self.assertRaises(ValueError):  # the 342 wrong IDs are not the one-run subset
+                pe.preregister(root / "z.json", wrong, rest, b2, "v8", ft_single_model_ref=ref, all_subset=wrong)
+            with contextlib.redirect_stdout(io.StringIO()):  # the CLI path passes --all-subset through
+                self.assertEqual(pe.main(["preregister", "--output", str(prereg), "--subset", str(wrong), "--rest-subset",
+                                          str(rest), "--b2-predictions", str(b2), "--format", "v8",
+                                          "--ft-single-model-ref", str(ref), "--all-subset", str(everything)]), 0)
+            loaded, _ = pe.load_preregistration(prereg)
+            self.assertEqual(loaded["mmmu_val_budget"]["runs"], 2)
+            self.assertEqual((loaded["format"], set(loaded["evaluation_subsets"])), (pe.FORMAT_V8, {"all"}))
+            self.assertEqual([(run["arm"], run["subset"]) for run in loaded["runs"]], [("F0", "all"), (pe.ARM_SINGLE, "all")])
+            self.assertEqual(loaded["evaluation_subsets"]["all"]["ids"], sorted(IDS))
+            self.assertEqual(loaded["gate_62"]["minimum_correct"], 559)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pe.main(["verify-single-export", "--model-ref", str(ref), "--checkpoint",
+                                          str(self.out / "checkpoint-20"), "--binding", str(self.plan_file),
+                                          "--prereg", str(prereg)]), 0)
+            self.assertEqual(set(loaded["protocol_variants"]), {pe.FINAL_VARIANT_V8})
+            self.assertEqual({run["variant"] for run in loaded["runs"]}, {pe.FINAL_VARIANT_V8})
+            self.assertEqual((loaded["gate_62"]["variant"], loaded["gate_67.4"]["variant"]), (pe.FINAL_VARIANT_V8,) * 2)
+            for variant, tag in ((pe.FINAL_VARIANT_V8, "wrong"), (pe.GATE_62_VARIANT, "all")):
+                with self.assertRaisesRegex(ValueError, "not a preregistered run"):
+                    pe.ledger_start(prereg, pe.ARM_SINGLE, variant, "ft-wrong", ledger, tag)
+            eight_k = root / "eight-k.json"  # a v8 preregistration on the 8k variant is refused
+            eight_k.write_text(prereg.read_text().replace(pe.FINAL_VARIANT_V8, pe.GATE_62_VARIANT))
+            Path(f"{eight_k}.sha256").write_text(evaluation.file_hash(eight_k) + "\n")
+            with self.assertRaisesRegex(ValueError, "v7 requires one declared"):
+                pe.load_preregistration(eight_k)
+            cfg = variant_cfg(pe.FINAL_VARIANT_V8)
+            with mock.patch.object(pe, "gpu_info", return_value=("NVIDIA A40", 46068)), mock.patch.dict(os.environ):
+                os.environ.pop(pe.SLOTS_ENV, None)
+                os.environ[pe.VLLM_INPROCESS_ENV] = "0"
+                model_sha = loaded["arms"][pe.ARM_SINGLE]["model_sha256"]
+                write_run(root, "ft-all", cfg, model_sha, lambda i: i < 559, ids=sorted(IDS))
+            pe.ledger_start(prereg, pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, "ft-all", ledger, "all")
+            report = pe.analyze(prereg, [root / "ft-all"], {pe.ARM_SINGLE: ref}, ledger)
+            self.assertEqual(report["full_900"][pe.ARM_SINGLE]["items"], 900)
+            gate = pe.gate_62(report, 541)
+            self.assertEqual((gate["status"], gate["ft_single"]["correct"], gate["items"], gate["variant"]),
+                             ("PASS", 559, 900, pe.FINAL_VARIANT_V8))
+            self.assertIn("B2 conditions", gate["note"])
+            changed = copy.deepcopy(report)
+            changed["full_900"][pe.ARM_SINGLE]["seeds"]["3407"]["correct"] = 558
+            self.assertEqual(pe.gate_62(changed)["status"], "FAIL")
+            with self.assertRaises(ValueError):  # one attempt per (arm, variant, subset)
+                pe.ledger_start(prereg, pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, "again", ledger, "all")
+
+            volume = root / "volume"
+            proof = volume / "eval-data/proof"
+            proof.mkdir(parents=True)
+            subset = Path(shutil.copyfile(everything, proof / "all.json"))
+            pinned = Path(shutil.copyfile(prereg, proof / "prereg.json"))
+            params = {"version": eval_stage.PARAMS_VERSION, "commit": "a" * 40, "repo_root": str(pe.ROOT),
+                      "python": f"{volume}/venv-0123456789abcdef/bin/python", "volume_root": str(volume),
+                      "artifact_root": str(proof / "artifacts"), "prereg": str(pinned),
+                      "prereg_sha256": evaluation.file_hash(pinned), "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
+                      "subset": str(subset), "subset_sha256": evaluation.file_hash(subset), "subset_tag": "all",
+                      "arm": pe.ARM_SINGLE, "seeds": [3407], "vllm_inprocess": True, "eval_slots": "auto",
+                      "checkpoint": str(self.out / "checkpoint-20"), "checkpoint_metadata_sha256": "2" * 64,
+                      "binding": str(self.plan_file), "binding_sha256": "3" * 64, "training_commit": "f" * 40,
+                      "ft_export": str(self.exports[20]), "reuse_export": True, "ft_model_ref_sha256": "4" * 64}
+            spec = eval_stage.plan("eval-ft", params)
+            self.assertIs(chain.check_spec(spec), spec)
+            runs = [step for step in spec["steps"] if step["name"].startswith("eval-")]
+            self.assertEqual([step["name"] for step in runs], ["eval-single-ft-single-b2-s3407-all-evaluation"])
+            argv = runs[0]["argv"]
+            self.assertEqual(argv[argv.index("--protocol") + 1], f"{pe.ROOT}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml")
+            self.assertEqual([argv[i + 1] for i, token in enumerate(argv) if token == "--sample-id"], sorted(IDS))
+            ledgers = [step["argv"] for step in spec["steps"] if step["name"].startswith("ledger-")]
+            self.assertEqual([a[a.index("--variant") + 1] for a in ledgers], [pe.FINAL_VARIANT_V8])
 
 
 if __name__ == "__main__":
