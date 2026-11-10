@@ -21,7 +21,7 @@ from . import references, single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import ARM, SINGLE_TOKEN_SCALE_V11, plain_protocol_single, single_blocks
+from .protocol import ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, plain_protocol_single, single_blocks
 
 VERSION = "single-campaign-v2"
 GATE_VERSION = "single-pilot-main-gate-v1"
@@ -194,12 +194,11 @@ def _prepare(args: argparse.Namespace) -> dict:
     blocks = single_blocks([item["problem_id"] for item in order["items"]])
     contracts = {"source": digest(source), "dataset": file_sha(args.build_root / "manifest.yaml"),
                  "order": args.order_sha256, "data_admission": digest(admission)}
-    note_reference = {"version": references.REFERENCE_VERSION, "fields_sha256": references.fields_sha256(),
-                      "supplement_sha256": args.note_reference_supplement_sha256, "max_chars": references.REFERENCE_MAX_CHARS,
-                      "items_with_reference": sum(references.note_reference(sources[item["problem_id"]],
-                          supplement.get(item["problem_id"])) is not None for item in order["items"])}
+    note_reference = references.note_reference_pin(sources, supplement, args.note_reference_supplement_sha256,
+                                                   [item["problem_id"] for item in order["items"]])
+    # New plans are SINGLE v12 (2026-11-11), as v11 replaced v10; sealed v11 plans still pass _plan_check.
     protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
-                                     note_reference=note_reference)
+                                     note_reference=note_reference, version=VERSION_SINGLE_V12)
     measured = args.capacity_profile is not None
     if measured != (args.capacity_profile_sha256 is not None):
         raise ValueError("single campaign: profile requires an external SHA256")
@@ -633,9 +632,10 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 update = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, closed["contract"], cursor=cursor,
                     block_ids=ids, allow_update=True, token_budget=args.token_budget, capacity=capacity)
                 seconds["update"] = round(time.monotonic() - started, 1)
+                kinds = ("RL", "A1", "A2", "B") + (("H",) if plan["protocol"]["version"] == VERSION_SINGLE_V12 else ())
                 single._sealed(block_output / "update-stats.json", {"transaction_sha256": digest(transaction),
                     "optimizer_steps": update["optimizer_steps"], "stats": update["stats"],
-                    "rows_by_kind": {kind: sum(row["kind"] == kind for row in closed["rows"]) for kind in ("RL", "A1", "A2", "B")}})
+                    "rows_by_kind": {kind: sum(row["kind"] == kind for row in closed["rows"]) for kind in kinds}})
                 started = time.monotonic()
                 single.save_single_continuation(bundle, optimizer, scheduler, cursor=cursor, path=next_path,
                     protocol=plan["protocol"], binding=_binding(plan), allow_save=True)

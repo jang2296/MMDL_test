@@ -37,17 +37,19 @@ from fine_tuning.notebook_rl.prompts import user_message
 from fine_tuning.notebook_rl.quantized_policy import assert_quantized_base_unchanged
 
 from . import rl
-from .contract import CONTEXT_LIMIT, IMAGE, MASTER_SEED, ROUTE_FULL, ROUTE_LM, VERDICT_LABELS, update_groups
+from .contract import (CONTEXT_LIMIT, HUMAN_TARGET_SOURCE, IMAGE, KIND_HUMAN, MASTER_SEED, MIN_TARGET_TOKENS, ROUTE_FULL,
+                       ROUTE_LM, VERDICT_LABELS, update_groups)
 from .order import read_order
 from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_FORMAT_ANCHOR_BETA, SINGLE_FORMAT_ANCHOR_POSITIONS,
                        SINGLE_REPLAY_BLOCK_MEAN_ATOL, SINGLE_REPLAY_MAX_ATOL, SINGLE_REPLAY_MAX_EXCLUDED_ROWS,
                        SINGLE_REPLAY_ROW_FAILURE, SINGLE_REPLAY_ROW_MEAN_ATOL, SINGLE_REPLAY_ROW_MEAN_MIN_TOKENS,
-                       SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_VERSION_V11, SINGLE_NEGATIVE_LOGPROB_V11,
-                       SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5, SINGLE_ROW_TOKEN_CAP_EXEMPT_V11,
-                       SINGLE_ROW_TOKEN_CAP_V11, SINGLE_SFT_WEIGHTING_V10,
-                       SINGLE_SFT_WEIGHTS_V10, SINGLE_TOKEN_SCALE_V10, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE,
-                       VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_V4, plain_protocol_v4,
-                       single_baseline_contract)
+                       SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_V12, SINGLE_ADVANTAGE_VERSION_V11,
+                       SINGLE_ADVANTAGE_VERSION_V12, SINGLE_NEGATIVE_LOGPROB_V11,
+                       SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE_V7, SINGLE_ROW_TOKEN_CAP_EXEMPT_V11,
+                       SINGLE_ROW_TOKEN_CAP_V11, SINGLE_SFT_WEIGHTING_V10, SINGLE_SFT_WEIGHTING_V12,
+                       SINGLE_SFT_WEIGHTS_V10, SINGLE_SFT_WEIGHTS_V12, SINGLE_TOKEN_SCALE_V10, SINGLE_TOKEN_SCALE_V11,
+                       VERSION_SINGLE, VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_SINGLE_V12,
+                       VERSION_V4, plain_protocol_v4, single_baseline_contract)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
                     _commit, _encode_or_drop, _factory, _gradient_norms, _keep_before, _newest_checkpoint, _peak_gib,
@@ -230,8 +232,34 @@ def _single_encoded_input_sha256(row: dict) -> str:
     return digest({key: tensor_identity(value) for key, value in values.items()})
 
 
+def _encode_human_row(processor: Any, model_config: Any, row: dict, images: list[Any]) -> dict:
+    """v12 H: an authored human-solution target has no sampled actions. Tokenize it and append the end token that
+    sampled rows end with (END_TOKEN, as encode_row_v4); the P0 prompt is encoded as for every other row."""
+    tokenizer = processor.tokenizer
+    if (row.get("route") != ROUTE_LM or row.get("target_source") != HUMAN_TARGET_SOURCE or "generation" in row
+            or not isinstance(row.get("target"), str) or not row["target"].strip()
+            or any(token in text for token in tokenizer.all_special_tokens for text in (row["prompt"], row["target"]))):
+        raise ValueError("single train: an H row is an LM-routed human target without generation or control tokens")
+    prepared, _ = prepare_protocol_inputs(processor, model_config, [user_message(row["prompt"], len(images))], images, IMAGE)
+    inputs = prepared["inputs"]
+    target = tokenizer.encode(row["target"], add_special_tokens=False)
+    if len(target) < MIN_TARGET_TOKENS:
+        raise ValueError("single train: H target below the admitted token minimum")
+    target.append(tokenizer.convert_tokens_to_ids(END_TOKEN))
+    result = dict(row)
+    result.update(input_ids=torch.cat([inputs["input_ids"][0], torch.tensor(target, dtype=torch.long)]),
+                  target_len=len(target), pixel_values=inputs["pixel_values"], image_grid_thw=inputs["image_grid_thw"],
+                  input_sha256=prepared["input_sha256"])
+    if _single_encoded_input_sha256(result) != prepared["input_sha256"]:
+        raise ValueError("single train: prepared inputs cannot be reproduced by the training forward")
+    return result
+
+
 def encode_single_row(processor: Any, model_config: Any, row: dict, images: list[Any]) -> dict:
-    """Preserve sampled actions, including actual EOS; targets never include the prompt or review material."""
+    """Preserve sampled actions, including actual EOS; targets never include the prompt or review material.
+    v12 H rows (no sampled actions) take _encode_human_row."""
+    if row.get("kind") == KIND_HUMAN:
+        return _encode_human_row(processor, model_config, row, images)
     generation = row["generation"]
     actions = _single_ids(generation.get("completion_token_ids"), "completion_token_ids")
     if any(getattr(model_config, name, None) in actions for name in ("image_token_id", "video_token_id")):
@@ -385,11 +413,11 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     from .single import single_advantage, validate_single_reward
 
     version = contract.get("version")
-    gate = SINGLE_REWARD_GATE if version == VERSION_SINGLE else SINGLE_REWARD_GATE_V5
-    if (version not in (VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_SINGLE)
+    gate = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7}.get(version, SINGLE_REWARD_GATE_V5)
+    if (version not in (VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_SINGLE, VERSION_SINGLE_V12)
             or contract["rl"].get("reward") != gate):
         raise ValueError("single train: SINGLE v4 program-gate reward contract required; v1-v3 cannot resume")
-    v10, v11 = version == VERSION_SINGLE_V10, version == VERSION_SINGLE
+    v10, v11, v12 = version == VERSION_SINGLE_V10, version == VERSION_SINGLE, version == VERSION_SINGLE_V12
     if v10 and (contract["rl"].get("baseline") != single_baseline_contract()
                 or contract["rl"].get("token_scale") != SINGLE_TOKEN_SCALE_V10
                 or contract.get("sft_weights") != SINGLE_SFT_WEIGHTS_V10
@@ -406,6 +434,22 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
                 or contract.get("sft_weighting") != SINGLE_SFT_WEIGHTING_V10):
         raise ValueError("single train: v11 penalty table, token scale, row cap with LOOP exemption, raw negative "
                          "log p and A2 per-row weighting required")
+    if v12:
+        from .references import human_solution_sha256
+
+        if (contract["rl"].get("baseline") != "none"
+                or contract["rl"].get("advantage") != {"version": SINGLE_ADVANTAGE_VERSION_V12,
+                                                       "values": SINGLE_ADVANTAGE_V12}
+                or contract["rl"].get("token_scale") != SINGLE_TOKEN_SCALE_V11
+                or contract["rl"].get("row_token_cap") != SINGLE_ROW_TOKEN_CAP_V11
+                or contract["rl"].get("row_token_cap_exempt") != list(SINGLE_ROW_TOKEN_CAP_EXEMPT_V11)
+                or contract["rl"].get("negative_logprob") != SINGLE_NEGATIVE_LOGPROB_V11
+                or contract.get("sft_weights") != SINGLE_SFT_WEIGHTS_V12
+                or contract.get("sft_weighting") != SINGLE_SFT_WEIGHTING_V12
+                or not isinstance(contract.get("human_solution"), dict)
+                or contract["human_solution"].get("fields_sha256") != human_solution_sha256()):
+            raise ValueError("single train: v12 penalty table, v11 PG settings, H weight 0.10 per kind and the "
+                             "sealed human-solution fields required")
     if version in (VERSION_SINGLE_V8, VERSION_SINGLE_V9) and (
             contract["rl"].get("baseline", 0.0) != 0.0 or "sft_weighting" in contract):
         raise ValueError("single train: v8/v9 contracts keep b=0 and per-kind SFT weighting")
@@ -435,9 +479,10 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     if len(set(pairs)) != len(pairs):
         raise ValueError("single train: multiple responses for a problem/kind")
     for row in encoded:
-        if (row["problem_id"] not in expected or row["kind"] not in KINDS
+        if (row["problem_id"] not in expected or row["kind"] not in KINDS + ((KIND_HUMAN,) if v12 else ())
                 or row["route"] not in (ROUTE_FULL, ROUTE_LM)
-                or row["kind"] in (KIND_RL, "A1") and row["route"] != ROUTE_LM):
+                or row["kind"] in (KIND_RL, "A1", KIND_HUMAN) and row["route"] != ROUTE_LM
+                or row["kind"] == KIND_HUMAN and (row.get("target_source") != HUMAN_TARGET_SOURCE or "generation" in row)):
             raise ValueError("single train: invalid kind, problem or route")
     for row in t1:
         generation = row["generation"]
@@ -460,7 +505,8 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
                 raise ValueError("single train: stored generation support changed or excludes its sampled action")
         decision = validate_single_reward(row)
         if (row["reward_evidence"]["version"] != gate or ("baseline" in row["reward_evidence"]) != v10
-                or ("advantage" in row) != (v10 or v11) or v11 and row["advantage"] != single_advantage(decision)):
+                or ("advantage" in row) != (v10 or v11 or v12)
+                or (v11 or v12) and row["advantage"] != single_advantage(decision, gate)):
             raise ValueError("single train: RL baseline/advantage binding differs from the contract version")
         if (digest(row["reward_evidence"]["provenance"]) != contract["reward_provenance_sha256"][row["problem_id"]]
                 or digest(row["reward_evidence"]) != contract["reward_evidence_sha256"][row["problem_id"]]):
@@ -485,28 +531,33 @@ def _require_single_zero_dropout(bundle: PolicyBundle) -> None:
 
 
 def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict, token_budget: int = 0,
-                          components: Iterable[str] = ("PG", "KL", "A1", "A2", "B"), *,
+                          components: Iterable[str] = ("PG", "KL", "A1", "A2", "B", KIND_HUMAN), *,
                           capacity: Any = None, force_full_kl: bool = False, capture: Any = None) -> dict:
     """One frozen-policy block, fixed B*C PG/raw KL and per-kind row-mean SFT; no optimizer or scheduler.
 
     v10: PG = -(reward - b(source)) * sum(logprobs) / (B * 256) on every non-excluded RL row, and A2 rows each carry
     the full A2 weight (per_row) instead of sharing it.
     v11: PG = -A * min(1, 2048/n) * sum(l) / (B * 1024) with A from the penalty table; l = stored-support log q when
-    A > 0, raw full-vocabulary log p when A < 0, no PG term when A == 0. SFT weighting is v10's."""
+    A > 0, raw full-vocabulary log p when A < 0, no PG term when A == 0. SFT weighting is v10's.
+    v12: v11's PG/KL/anchor with the v12 table; H rows (human solutions) are one more SFT kind (0.10 per kind
+    total) and never enter PG, KL, the anchor or replay."""
     selected = set(components)
     if capacity is not None and capture is not None:
         raise ValueError("single train: measured admission and calibration are separate transactions")
-    if selected - {"PG", "KL", "A1", "A2", "B"}:
+    if selected - {"PG", "KL", "A1", "A2", "B", KIND_HUMAN}:
         raise ValueError("single train: unknown loss component")
+    v12 = contract.get("version") == VERSION_SINGLE_V12
+    sft_kinds = SFT_KINDS + ((KIND_HUMAN,) if v12 else ())
     settings, weights = contract["rl"], contract["sft_weights"]
     scale, beta = settings["token_scale"], settings["beta"]
     if (not math.isfinite(scale) or scale <= 0 or not math.isfinite(beta) or beta < 0
-            or set(weights) != set(SFT_KINDS) or any(not math.isfinite(w) or w < 0 for w in weights.values())):
+            or set(weights) != set(sft_kinds) or any(not math.isfinite(w) or w < 0 for w in weights.values())):
         raise ValueError("single train: explicit finite nonnegative weights and positive token scale required")
     _require_single_zero_dropout(bundle)
     t1 = _validate_single_block(bundle, encoded, contract)
     v9 = contract["version"] != VERSION_SINGLE_V8  # v8 keeps the first-row replay HOLD and has no anchor
-    v10, v11 = contract["version"] == VERSION_SINGLE_V10, contract["version"] == VERSION_SINGLE
+    # v12 keeps v11's PG, KL, anchor and per-row/per-kind SFT weighting.
+    v10, v11 = contract["version"] == VERSION_SINGLE_V10, contract["version"] in (VERSION_SINGLE, VERSION_SINGLE_V12)
     per_row = contract.get("sft_weighting", {}) if v10 or v11 else {}
     anchor = v9 and "KL" in selected
     reference = "KL" in selected and (beta > 0 or anchor)  # the anchor reads the same exact raw F0 KL
@@ -523,7 +574,7 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     if capacity is not None:
         plan = capacity.partition(encoded_shapes(t1), plan, "rl_kl")
     sft_plans = {}
-    for kind in SFT_KINDS:
+    for kind in sft_kinds:
         rows = [row for row in encoded if row["kind"] == kind]
         if kind not in selected or not rows or not weights[kind]:
             continue

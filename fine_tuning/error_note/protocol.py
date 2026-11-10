@@ -164,10 +164,16 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # full-vocabulary log p (a one-token stored support gives log q = 0 and no gradient); per-row cap min(1, 2048/n);
 # token scale 1024; the note prompt may show a dataset reference after the correct answer. LOOP rows are exempt from
 # the row cap (weight 1.0, as in v9) so a long repetition loop keeps its full penalty mass.
+# v12 (2026-11-11, claudedocs/plan_v12_20261111.md items 1-4, 6): reward gate v7 (REASONED_WRONG 0, new CONTAINED_OPEN
+# 0 for an open answer that contains the gold's words), lesson leak rule v2 (wrong-option names allowed unless they
+# eliminate), B rows from every accepted note whatever the re-solve gave, and H rows: a dataset's human-written
+# solution (ScienceQA lecture + solution + one final-answer line) as LM-only SFT under P0, weight 0.02 per kind (0.10 gave an H gradient 7x the PG gradient in the local NF4 block, 2026-11-11).
+# Everything else is v11b. plain_protocol_single(version=VERSION_SINGLE) still builds the byte-identical v11 protocol.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
 VERSION_SINGLE_V9 = "error-note-single-response-v9"
 VERSION_SINGLE_V10 = "error-note-single-response-v10"
 VERSION_SINGLE = "error-note-single-response-v11"
+VERSION_SINGLE_V12 = "error-note-single-response-v12"
 SINGLE_TOKEN_SCALE_V10 = 256.0
 SINGLE_TOKEN_SCALE_V11 = 1024.0
 SINGLE_ROW_TOKEN_CAP_V11 = 2048
@@ -183,10 +189,20 @@ SINGLE_PLAN_EXCEPTIONS_V11 = [
     "so long rows do not dominate the block"]
 SINGLE_SFT_WEIGHTS_V10 = {"A1": 0.05, "A2": 0.35, "B": 0.05}
 SINGLE_SFT_WEIGHTING_V10 = {"A1": "per_kind_total", "A2": "per_row", "B": "per_kind_total"}
+SINGLE_ADVANTAGE_VERSION_V12 = "penalty-table-v2"
+SINGLE_ADVANTAGE_V12 = {"accepted": 1.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0, "LOOP": -1.0,
+                        "REASONED_WRONG": 0.0, "TRUNCATED_NO_LOOP": -0.5, "CONTAINED_OPEN": 0.0, "other": 0.0}
+SINGLE_CONTAINED_OPEN_RULE = ("open item (no options), T1 INCORRECT and stopped with a committed (extracted) answer whose "
+                              "tokens contain the gold's answer tokens contiguously while the sequences differ; gate v7 "
+                              "order: accepted, LOOP, TRUNCATED_NO_LOOP, NO_COMMITTED_ANSWER, CONTAINED_OPEN, BARE_WRONG, "
+                              "REASONED_WRONG; gold = the source-bound provenance label")
+SINGLE_SFT_WEIGHTS_V12 = SINGLE_SFT_WEIGHTS_V10 | {"H": 0.02}
+SINGLE_SFT_WEIGHTING_V12 = SINGLE_SFT_WEIGHTING_V10 | {"H": "per_kind_total"}
 SINGLE_BASELINE_METHOD = "fixed-source-mean-v1"
 SINGLE_BASELINE_TABLE = Path(__file__).with_name("source_baseline_v10.json")
 SINGLE_REWARD_GATE_V5 = "single-t1-program-gate-v5"
 SINGLE_REWARD_GATE = "single-t1-program-gate-v6"
+SINGLE_REWARD_GATE_V7 = "single-t1-program-gate-v7"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
 SINGLE_OPEN_SCORER = SCORER
@@ -248,11 +264,16 @@ def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[lis
 
 def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[str, str],
                           token_scale: float = SINGLE_TOKEN_SCALE_V11, beta: float = 0.02,
-                          sft_weights: dict[str, float] | None = None, note_reference: dict | None = None) -> dict:
-    """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11)."""
+                          sft_weights: dict[str, float] | None = None, note_reference: dict | None = None,
+                          version: str = VERSION_SINGLE) -> dict:
+    """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11, or
+    v12 with ``version=VERSION_SINGLE_V12``)."""
     import math
 
-    weights = dict(SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
+    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12):
+        raise ValueError("single protocol: version must be v11 or v12")
+    v12 = version == VERSION_SINGLE_V12
+    weights = dict(SINGLE_SFT_WEIGHTS_V12 if v12 else SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
     reference = {"version": "none"} if note_reference is None else note_reference
     if token_scale != SINGLE_TOKEN_SCALE_V11:
         raise ValueError(f"single protocol: v11 fixes the PG token scale at {SINGLE_TOKEN_SCALE_V11}")
@@ -265,7 +286,7 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
     if (isinstance(token_scale, bool) or not isinstance(token_scale, (int, float))
             or not math.isfinite(token_scale) or token_scale <= 0
             or isinstance(beta, bool) or not isinstance(beta, (int, float)) or not math.isfinite(beta) or beta < 0
-            or set(weights) != {"A1", "A2", "B"} or any(
+            or set(weights) != set(SINGLE_SFT_WEIGHTS_V12 if v12 else SINGLE_SFT_WEIGHTS_V10) or any(
                 isinstance(value, bool) or not isinstance(value, (int, float))
                 or not math.isfinite(value) or value < 0 for value in weights.values())):
         raise ValueError("single protocol: finite fixed normalization and nonnegative weights required")
@@ -311,4 +332,26 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "zero_signal": "consume_slot_without_optimizer_or_decay", "total_slots": total_slots,
                  "pilot_boundary": 300, "pilot_main_optimizer": "continuous",
                  "routes": {"RL": "LM", "A1": "LM", "A2_B": "accepted_note_self_report"}}}
+    if v12:
+        from .contract import (_ANSWER_DENIAL_V12, HUMAN_FINAL_LINE, LESSON_LEAK_RULE_V2, LESSON_LEAK_VERSION_V2,
+                               ANSWER_TOKEN_RULE)
+        from .references import HUMAN_SOLUTION_FIELDS, HUMAN_SOLUTION_VERSION, human_solution_sha256
+
+        contract = body["training_contract"]
+        body["version"] = contract["version"] = VERSION_SINGLE_V12
+        contract["rl"] |= {"reward": SINGLE_REWARD_GATE_V7, "reward_values": dict(SINGLE_REWARD_VALUES, CONTAINED_OPEN=0),
+                           "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V12, "values": dict(SINGLE_ADVANTAGE_V12)},
+                           "contained_open": {"rule": SINGLE_CONTAINED_OPEN_RULE, "tokens": ANSWER_TOKEN_RULE}}
+        contract["sft_weighting"] = dict(SINGLE_SFT_WEIGHTING_V12)
+        contract["program_filters"] |= {
+            "lesson_stem": LESSON_LEAK_RULE_V2, "lesson_leak": LESSON_LEAK_VERSION_V2,
+            "b_answer_denial": {"pattern": _ANSWER_DENIAL_V12.pattern, "match": "lowercase_whitespace_collapsed"}}
+        contract["b_rows"] = "every_program_accepted_note_whatever_the_resolve_result"
+        contract["human_solution"] = {
+            "version": HUMAN_SOLUTION_VERSION, "fields": {k: list(v) for k, v in HUMAN_SOLUTION_FIELDS.items()},
+            "fields_sha256": human_solution_sha256(), "target": "lecture?\\n\\nsolution\\n\\n" + HUMAN_FINAL_LINE,
+            "mcq_answer": "{gold letter}. {gold option text}", "min_target_tokens": MIN_TARGET_TOKENS,
+            "end_token": "appended_like_sampled_rows", "items": "every_block_item_of_a_mapped_source",
+            "excluded_from": ["PG", "KL", "format_anchor", "replay"]}
+        contract["routes"] = contract["routes"] | {"H": "LM"}
     return body | {"sha256": _digest(body)}

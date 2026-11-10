@@ -331,6 +331,31 @@ proof의 추가 무갱신 순회에도 `--continue-main`이 필요하며, 순회
 - 캠페인 필수 입력 `--note-reference-supplement`(+sha256), plan params `note_reference_supplement_path/_sha256`.
 - 그대로: 첫 4토큰 F0 고정, KL, 재생 검사·행 제외, SFT 가중(A1 .05, A2 .35 행당, B .05), T1·노트·재풀이 각 1회.
 
+## SINGLE v12 (2026-11-11, `claudedocs/plan_v12_20261111.md` 1–4·6)
+
+새 캠페인 계획은 v12로 봉인한다(`plain_protocol_single(..., version=VERSION_SINGLE_V12)`). 기본값(v11)과 봉인된 v11
+계획·행은 그대로 재현·검증된다.
+- 보상 게이트 v7, 표 `penalty-table-v2`: 정답 수용 +1, 맨답 오답·답 미확정·반복 −1, 반복 없는 잘림 −0.5,
+  풀이를 쓴 오답(REASONED_WRONG) **0**, 새 판정 **CONTAINED_OPEN 0**. CONTAINED_OPEN은 주관식(보기 0개)·T1 INCORRECT·
+  추출 답이 있고, 정답의 단어열(`contract.answer_tokens`: NFKC·casefold, `[a-z0-9]+`, 8.6 같은 소수는 한 토큰)이
+  추출 답 단어열 안에 연속으로 있고 두 단어열이 다를 때다. 판정 순서: 정답 수용 → LOOP → TRUNCATED_NO_LOOP →
+  NO_COMMITTED_ANSWER → CONTAINED_OPEN(정상 종료·답 확정만) → BARE_WRONG → REASONED_WRONG. 정답은 보상 증거에 이미 들어 있는
+  출처 정보의 `label`(sha256 확인), 보기 수는 증거의 `item.option_count`(P0 문구와 일치 검사). advantage 0인 행은 PG 없이
+  KL·첫 4토큰 고정만 받는다.
+- 교훈 누설 규칙 v2(`hint_leak_single_v2`): 정답 글·정답 어간·보기 글자/위치·정답 표현은 계속 차단. 다른 보기의 글·어간은
+  허용하되 보기 2개 이상에서 오답 보기를 max(1, 보기 수 − 1)개 이상 언급하면 `LESSON_LEAK_ELIMINATION`(보기 2개면 오답
+  하나만 말해도 차단). 기본 감사의
+  `NOTE_HINT_LEAK`(객관식만)은 보기 글자·정답 표현·정답 글자/보기 글만 보므로 바꾸지 않았다.
+- B 행: 프로그램 검사를 통과한 노트는 다시 풀기 결과와 무관하게 B 후보. B의 정답 탓 표현에 "error in the reference/answer/
+  question/image/dataset/label", "grader misread/is wrong/made", "reference/given/correct answer is/seems/appears
+  wrong/incorrect" 추가.
+- H 행(사람 풀이 SFT): `references.HUMAN_SOLUTION_FIELDS`(현재 hf-scienceqa의 lecture·solution, sha 봉인)만. 묶음의 해당
+  문항 전부(첫 풀이 정오 무관)에서 입력 P0, 목표 = lecture(있으면) + 빈 줄 + solution + 빈 줄 + `Final Answer: {답}`
+  (객관식은 `C. 보기 글`; v11c의 맞힌 ScienceQA 첫 풀이 끝 형식). solution 비어 있지 않음·32토큰 이상·특수 토큰 없음일 때만.
+  생성 표본이 없으므로 목표를 토큰화하고 끝 토큰을 붙인다. LM 경로만, 가중 0.02(종류 합; 로컬 NF4 실측에서 0.10은 H 기울기가 PG의 7배). RL·KL·고정·재생 검사 제외.
+- 그대로: v11b의 PG·행 길이 보정 2,048(LOOP 면제)·음의 행 log p·KL 0.02·고정·SFT 가중(A1 .05, A2 .35 행당, B .05).
+  자료 순서(계획 5)는 별도 작업이다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

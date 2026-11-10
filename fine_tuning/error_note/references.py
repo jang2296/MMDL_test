@@ -1,7 +1,8 @@
 """Dataset-provided reference text for the note step, plus a sealed supplement for PTB-XL and SSMR.
 
-Reference text is shown only in the note prompt after the gold answer. It is never a training
-target, never part of the solve or evaluation input, and nothing here reads MMMU or the network.
+Reference text is shown only in the note prompt after the gold answer. It is never part of the solve or
+evaluation input, and nothing here reads MMMU or the network. Since SINGLE v12 the human-written solution
+fields (HUMAN_SOLUTION_FIELDS) of a source also become H SFT targets; no other reference text is a target.
 """
 from __future__ import annotations
 
@@ -40,6 +41,36 @@ _RAW = {"hf-ptbxl": ("tirandazdylan__ptb-xl-ecg", "train-*.parquet", "ecg", ("re
 
 def fields_sha256() -> str:
     return digest({"fields": REFERENCE_FIELDS, "max_chars": REFERENCE_MAX_CHARS, "version": REFERENCE_VERSION})
+
+
+def note_reference_pin(sources: dict[str, dict], supplement: dict[str, dict], supplement_sha256: str,
+                       problem_ids: list[str]) -> dict:
+    """The protocol's note_reference pin for an order (the campaign's and the local CLI's)."""
+    return {"version": REFERENCE_VERSION, "fields_sha256": fields_sha256(), "supplement_sha256": supplement_sha256,
+            "max_chars": REFERENCE_MAX_CHARS,
+            "items_with_reference": sum(note_reference(sources[pid], supplement.get(pid)) is not None for pid in problem_ids)}
+
+
+# v12 H rows: human-written solution fields only, as (lecture, solution). Program-generated annotations (CLEVR scene and
+# program, SLAKE triples, ...) are never H targets.
+HUMAN_SOLUTION_VERSION = "dataset-human-solution-v1"
+HUMAN_SOLUTION_FIELDS: dict[str, tuple[str, str]] = {"hf-scienceqa": ("lecture", "solution")}
+
+
+def human_solution_sha256() -> str:
+    return digest({"fields": HUMAN_SOLUTION_FIELDS, "version": HUMAN_SOLUTION_VERSION})
+
+
+def human_solution(provenance_item: dict) -> dict[str, str] | None:
+    """{"lecture", "solution"} text of a mapped source from the item's own provenance annotations (blank when the
+    field is absent); None for every other source."""
+    names = HUMAN_SOLUTION_FIELDS.get(provenance_item.get("source"))
+    if names is None:
+        return None
+    values: dict[str, object] = {}
+    for annotation in provenance_item.get("annotations") or []:
+        values.setdefault(annotation.get("field"), annotation.get("value"))
+    return {"lecture": _text(values.get(names[0])), "solution": _text(values.get(names[1]))}
 
 
 def _text(value: object) -> str:

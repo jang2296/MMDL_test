@@ -61,6 +61,8 @@ def sample_seed(problem_id: str, stage: str, master_seed: int = MASTER_SEED) -> 
         key = f"{master_seed}:{problem_id}:note"
     elif stage == "resolve":
         key = f"{master_seed}:{problem_id}:resolve"
+    elif stage == "control":  # diagnostic no-lesson re-solve (single.run_no_lesson_control); never a training row
+        key = f"{master_seed}:{problem_id}:no-lesson-control"
     else:
         raise ValueError(f"unknown seed stage: {stage!r}")
     return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") % (2**31)
@@ -482,6 +484,86 @@ def lesson_stems(*texts: str) -> list[str]:
     return sorted({word[:max(4, len(word) - 2)] for word in words if len(word) >= 5})
 
 
+# v12 (2026-11-10 user decision): only the gold may not be named; naming wrong options is allowed unless the lesson
+# names all of them (the one wrong option of a two-option item included), which eliminates its way to the answer.
+LESSON_LEAK_VERSION_V2 = "single-lesson-leak-v2"
+LESSON_LEAK_RULE_V2 = ("v1 option-letter, option-position, answer-phrase, gold-text and source-alias checks; "
+                       "LESSON_STEM_RULE stems of the gold only (MCQ: of the gold option text); with >= 2 options, "
+                       "ELIMINATION when the lesson names >= max(1, options-1) distinct non-gold options (an option "
+                       "is named when its words occur as words or one of its stems occurs inside a lesson word)")
+
+
+def hint_leak_single_v2(lesson: str, gold: str, choices: tuple[str, ...] | list[str],
+                        *, aliases: tuple[str, ...] | list[str] = ()) -> str | None:
+    """LESSON_LEAK_RULE_V2; hint_leak_single (v1) stays the rule of v11 and earlier decisions."""
+    text, gold = unicodedata.normalize("NFKC", lesson), unicodedata.normalize("NFKC", gold)
+    reason = hint_leak(text, gold, choices) if choices else _hint_leak_text(text, gold, choices)
+    if reason is not None:
+        return reason
+    gold_index = None
+    if choices:
+        match = _SINGLE_LETTER_DIRECTIVE.search(text) or _SINGLE_LETTER_PREDICATE.search(text)
+        if match:
+            return "DIRECTED_OPTION:" + next(value.upper() for value in match.groups() if value)
+        if _SINGLE_POSITION_REFERENCE.search(text):
+            return "OPTION_POSITION"
+        letter = _GOLD_LETTER.fullmatch(gold.strip().strip("*").strip())
+        if letter is not None and OPTION_LETTERS.index(letter[1]) < len(choices):
+            gold_index = OPTION_LETTERS.index(letter[1])
+    if any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+        raise ValueError("single lesson: nonempty source aliases required")
+    if any(_has_words(text, alias) for alias in aliases):
+        return "SOURCE_ALIAS"
+    words = re.findall(r"[a-z]+", text.casefold())
+    gold_texts = (gold,) if gold_index is None else (gold, choices[gold_index])
+    stem = next((stem for stem in lesson_stems(*gold_texts) if any(stem in word for word in words)), None)
+    if stem is not None:
+        return "STEM:" + stem
+    others = [choice for index, choice in enumerate(choices) if index != gold_index]
+    named = sum(_has_words(text, unicodedata.normalize("NFKC", choice))
+                or any(stem in word for stem in lesson_stems(choice) for word in words) for choice in others)
+    return "ELIMINATION" if len(choices) >= 2 and named >= max(1, len(choices) - 1) else None
+
+
+# v12: answer tokens of the CONTAINED_OPEN reward category (single.py, reward gate v7).
+ANSWER_TOKEN_RULE = "NFKC, casefold; tokens are [a-z0-9]+ runs, except a digit run with .digit groups (8.6) is one token"
+_ANSWER_TOKEN = re.compile(r"\d+(?:\.\d+)+|[a-z0-9]+")
+
+
+def answer_tokens(text: str) -> list[str]:
+    """ANSWER_TOKEN_RULE tokens: "The country is Chile." -> [the, country, is, chile]; "8.6 kg" -> [8.6, kg]."""
+    return _ANSWER_TOKEN.findall(unicodedata.normalize("NFKC", text).casefold())
+
+
+def contained_answer(gold: str, extracted: str) -> bool:
+    """The gold's answer tokens occur as a contiguous run inside the extracted answer's and the two differ
+    ("Chile" in "the country ... is chile": True; "5" vs "25": False; equal sequences: False)."""
+    want, have = answer_tokens(gold), answer_tokens(extracted)
+    return bool(want) and want != have and any(have[i:i + len(want)] == want for i in range(len(have) - len(want) + 1))
+
+
+# v12 H rows: a dataset's human-written solution as an SFT target under the P0 prompt. The final line copies the plain
+# form v11c's correct ScienceQA first solutions ended with (e.g. "Final Answer: C. Solution A").
+KIND_HUMAN = "H"
+HUMAN_TARGET_SOURCE = "HUMAN_SOLUTION"
+HUMAN_FINAL_LINE = "Final Answer: {answer}"
+
+
+def human_solution_target(lecture: str, solution: str, gold: str, choices: tuple[str, ...] | list[str]) -> str | None:
+    """lecture (when nonblank), blank line, solution, blank line, HUMAN_FINAL_LINE. MCQ answers are "<letter>. <option
+    text>"; None when an MCQ gold names no option or the solution is blank."""
+    answer = gold.strip()
+    if choices:
+        letter = _GOLD_LETTER.fullmatch(answer.strip("*").strip())
+        if letter is None or OPTION_LETTERS.index(letter[1]) >= len(choices):
+            return None
+        answer = f"{letter[1]}. {choices[OPTION_LETTERS.index(letter[1])]}"
+    if not solution.strip() or not answer:
+        return None
+    return "\n\n".join([part.strip() for part in (lecture, solution) if part.strip()]
+                       + [HUMAN_FINAL_LINE.format(answer=answer)])
+
+
 def resolve_prompt(p0_text: str, lesson: str) -> str:
     """The re-solve input: the lesson block, then the unchanged P0 text. No gold, T1 text or grading result."""
     if not p0_text.strip():
@@ -534,9 +616,17 @@ def a2_target_problem(text: str, lesson: str) -> str | None:
     return "IMAGE_ONLY_HEDGE" if _IMAGE_ONLY_HEDGE.search(text) else None
 
 
-def b_target_problem(note_text: str) -> str | None:
-    """A note that denies the given answer may not be a B target; None when it may."""
-    match = _ANSWER_DENIAL.search(note_text.lower().replace("’", "'"))
+# v12: a B row no longer needs a correct re-solve, so notes that blame the reference or the grader are refused too.
+_ANSWER_DENIAL_V12 = re.compile(
+    r"\b(mislabel\w*|misrender\w*|typos?|misprint\w*|answer key|i don't know why|labeling error"
+    r"|error in the (?:reference|answer|question|image|dataset|label)|grader (?:misread|is wrong|made)"
+    r"|(?:reference|given|correct) answer (?:is|seems|appears) (?:wrong|incorrect))\b")
+
+
+def b_target_problem(note_text: str, *, v12: bool = False) -> str | None:
+    """A note that denies the given answer may not be a B target; None when it may (v12: _ANSWER_DENIAL_V12)."""
+    lowered = note_text.lower().replace("’", "'")
+    match = (_ANSWER_DENIAL_V12.search(" ".join(lowered.split())) if v12 else _ANSWER_DENIAL.search(lowered))
     return None if match is None else "ANSWER_DENIAL:" + match[1]
 
 

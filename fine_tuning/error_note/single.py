@@ -20,13 +20,17 @@ from .audit import audit_single_note, digest, single_note_review_bindings, text_
 from .collect import ResourceLog, StreamStats, hf_single_stream_builder, install_training_guards, write_json
 from .collect_v3 import file_sha, generation_identity
 from .collect_v4 import run_single_requests
-from .contract import (CONTEXT_LIMIT, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS, ROUTE_FULL, ROUTE_LM,
-                       a2_target_problem, answer_denial, b_target_problem, is_loop, note_prompt_single, parse_note_v2,
+from . import references
+from .contract import (CONTEXT_LIMIT, HUMAN_TARGET_SOURCE, KIND_HUMAN, MASTER_SEED, MAX_NEW_TOKENS, MIN_TARGET_TOKENS,
+                       RESOLVE_INSTRUCTION_SINGLE, ROUTE_FULL, ROUTE_LM, a2_target_problem, answer_denial,
+                       b_target_problem, contained_answer,
+                       hint_leak_single_v2, human_solution_target, is_loop, note_prompt_single, parse_note_v2,
                        resolve_prompt_single, sample_seed)
-from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_VERSION_V11, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE,
+from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_V12, SINGLE_ADVANTAGE_VERSION_V11,
+                       SINGLE_ADVANTAGE_VERSION_V12, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE,
                        SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5,
-                       SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, plain_protocol_single, single_blocks, single_prompts_sha256,
-                       single_source_baseline)
+                       SINGLE_REWARD_GATE_V7, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, VERSION_SINGLE_V12,
+                       plain_protocol_single, single_blocks, single_prompts_sha256, single_source_baseline)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -37,6 +41,13 @@ SOLUTION_MIN_TOKENS = MIN_TARGET_TOKENS
 # The verifier could not compare (e.g. an unbound unit): reward 0, no note (no truthful wrong/right feedback exists).
 UNVERIFIABLE = "UNVERIFIABLE"
 NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
+# Protocol version -> its T1 reward gate (v11 and v12 are the runnable SINGLE protocols).
+PROTOCOL_GATES = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7}
+CONTAINED_OPEN = "T1_CONTAINED_OPEN"
+SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12}
+NO_LESSON_CONTROL_VERSION = "no-lesson-control-diagnostic-v1"
+NO_LESSON_CONTROL_FILE = "diagnostic-no-lesson-control.json"
+_MCQ_P0_END = "\nPlease select the correct answer from the options above."  # prompts.p0_body, MCQ only
 
 
 def grade_answer(verifier: Any, contract: str, pid: str, text: str, finish_reason: str, mode: str, *,
@@ -119,11 +130,11 @@ def source_manifest() -> dict:
 def _protocol_check(protocol: dict) -> None:
     from .protocol import _digest
 
-    if (protocol.get("version") != VERSION_SINGLE
+    if (protocol.get("version") not in PROTOCOL_GATES
             or protocol.get("sha256") != _digest({k: v for k, v in protocol.items() if k != "sha256"})
             or protocol.get("prompts_sha256") != single_prompts_sha256()
-            or protocol["training_contract"].get("version") != VERSION_SINGLE
-            or protocol["training_contract"]["rl"].get("reward") != SINGLE_REWARD_GATE
+            or protocol["training_contract"].get("version") != protocol["version"]
+            or protocol["training_contract"]["rl"].get("reward") != PROTOCOL_GATES[protocol["version"]]
             or protocol["training_contract"]["generation_counts"] != {"t1": 1, "note": 1, "resolve": 1}):
         raise ValueError("single runtime: invalid single-response protocol")
 
@@ -153,13 +164,17 @@ def _candidate(record: dict, kind: str) -> dict | None:
 def _single_reward_decision(row: dict, evidence: dict) -> dict:
     """Rebuild the program gate from the original T1: R=1 iff graded CORRECT and an admissible A1 target,
     R=-1 iff a not-CORRECT T1 carries a penalty, else 0. Gate v5 penalizes a bare wrong answer, an uncommitted stop
-    and a loop; gate v6 (v11) also every other wrong T1: cut off without a loop, or reasoned and wrong."""
+    and a loop; gate v6 (v11) also every other wrong T1: cut off without a loop, or reasoned and wrong. Gate v7 (v12)
+    first gives an open INCORRECT answer that contains the gold's words reason CONTAINED_OPEN and no penalty; its
+    evidence carries the item's option count, and the gold is the source-bound provenance label."""
     try:
+        v7 = isinstance(evidence, dict) and evidence.get("version") == SINGLE_REWARD_GATE_V7
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
                 or not isinstance(evidence, dict)
-                or set(evidence) - {"baseline", "advantage"} != {"version", "t1_metadata", "provenance", "decision"}
-                or evidence["version"] not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE)
+                or set(evidence) - {"baseline", "advantage"} != {"version", "t1_metadata", "provenance", "decision",
+                                                                 *(("item",) if v7 else ())}
+                or evidence["version"] not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7)
                 or not isinstance(evidence["t1_metadata"], dict)
                 or {"text", "generation", "prompt", "status"} & set(evidence["t1_metadata"])
                 or row["target"] != row["generation"]["text"]):
@@ -180,16 +195,33 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
         # v7: a correct answer is never pushed down (v5's -1 on correct bare answers lowered the answer tokens);
         # nor is an UNVERIFIABLE one, which may be correct. Truncation without a loop stays 0.
         penalty, stopped = None, t1["finish_reason"] == "stop"
-        if row["status"] not in ("CORRECT", UNVERIFIABLE):
+        all_wrong = evidence["version"] == SINGLE_REWARD_GATE
+        open_item = v7 and _option_count(row, evidence["item"]) == 0
+        if v7 and row["status"] not in ("CORRECT", UNVERIFIABLE):
+            # v7 order: loop and cut-off penalties first (the one signal with a measured benefit), then an
+            # uncommitted stop; CONTAINED_OPEN only before BARE_WRONG / REASONED_WRONG.
+            if is_loop(row["target"]):
+                penalty = "LOOP"
+            elif row["status"] == "TRUNCATED" or not stopped:
+                penalty = "TRUNCATED_NO_LOOP"
+            elif row["status"] in NO_COMMITTED and t1.get("extracted") is None:
+                penalty = "NO_COMMITTED_ANSWER"
+            elif open_item and row["status"] == "INCORRECT" and _contains_gold(evidence["provenance"], t1.get("extracted")):
+                reason = CONTAINED_OPEN
+            elif len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS:
+                penalty = "BARE_WRONG"
+            else:
+                penalty = "REASONED_WRONG"
+        elif row["status"] not in ("CORRECT", UNVERIFIABLE):
             if stopped and len(row["generation"]["completion_token_ids"]) < SOLUTION_MIN_TOKENS:
                 penalty = "BARE_WRONG"
             elif stopped and row["status"] in NO_COMMITTED and t1.get("extracted") is None:
                 penalty = "NO_COMMITTED_ANSWER"  # v5: never when the grader read one committed answer
             elif is_loop(row["target"]):
                 penalty = "LOOP"
-            elif evidence["version"] == SINGLE_REWARD_GATE and (row["status"] == "TRUNCATED" or not stopped):
+            elif all_wrong and (row["status"] == "TRUNCATED" or not stopped):
                 penalty = "TRUNCATED_NO_LOOP"
-            elif evidence["version"] == SINGLE_REWARD_GATE:
+            elif all_wrong:
                 penalty = "REASONED_WRONG"  # stopped, >= 32 tokens, no loop, a committed or read wrong answer
         return {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
                 "method": "program"}
@@ -197,33 +229,67 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
         raise ValueError("single reward: malformed original-T1 evidence") from error
 
 
+def _option_count(row: dict, item: dict) -> int:
+    """Gate v7 evidence: the item's option count (0 = open), which must agree with the original P0 text."""
+    count = item.get("option_count") if isinstance(item, dict) and set(item) == {"option_count"} else None
+    if type(count) is not int or count < 0 or (count > 0) != row["prompt"].endswith(_MCQ_P0_END):
+        raise ValueError("single reward: gate v7 needs the item's option count matching its P0 text")
+    return count
+
+
+def _contains_gold(provenance: dict, extracted: Any) -> bool:
+    """Gate v7 CONTAINED_OPEN test: the committed answer contains the gold's answer tokens
+    (contract.contained_answer); the gold is the source-bound provenance label."""
+    if extracted is None or not str(extracted).strip():
+        return False
+    label = provenance.get("label")
+    if not isinstance(label, dict) or not isinstance(label.get("value"), str) or label.get("sha256") != text_sha256(label["value"]):
+        raise ValueError("single reward: gate v7 needs the source-bound gold label")
+    return contained_answer(label["value"], str(extracted))
+
+
 def _reward_value(decision: dict) -> int:
     return 1 if decision["accepted"] else -1 if decision["penalty"] else 0
 
 
-def single_advantage(decision: dict) -> float:
-    """v11 penalty table: accepted +1, bare/uncommitted/loop -1, reasoned-wrong/cut-off -0.5, anything else 0."""
+def single_advantage(decision: dict, gate: str = SINGLE_REWARD_GATE) -> float:
+    """v11 penalty table: accepted +1, bare/uncommitted/loop -1, reasoned-wrong/cut-off -0.5, anything else 0.
+    v12 (gate v7): reasoned-wrong 0 and CONTAINED_OPEN 0; the rest as v11."""
+    if gate == SINGLE_REWARD_GATE_V7:
+        key = ("accepted" if decision["accepted"] else decision["penalty"]
+               or ("CONTAINED_OPEN" if decision["reason"] == CONTAINED_OPEN else "other"))
+        return SINGLE_ADVANTAGE_V12[key]
     return SINGLE_ADVANTAGE_V11["accepted" if decision["accepted"] else decision["penalty"] or "other"]
 
 
+def _advantage_version(gate: str) -> str:
+    return SINGLE_ADVANTAGE_VERSION_V12 if gate == SINGLE_REWARD_GATE_V7 else SINGLE_ADVANTAGE_VERSION_V11
+
+
 def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | None = None, *,
-                       gate: str = SINGLE_REWARD_GATE) -> dict:
+                       gate: str = SINGLE_REWARD_GATE, option_count: int | None = None) -> dict:
     """Attach evidence without duplicating response text or sampled actions in the target.
 
-    gate v6 (v11): the row carries advantage = the penalty-table value. baseline (v10, gate v5 only): the protocol's
-    baseline pin; the row then carries b(source) and advantage = reward - b."""
-    if gate not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE) or (baseline is not None and gate != SINGLE_REWARD_GATE_V5):
+    gate v6 (v11) and v7 (v12): the row carries advantage = the penalty-table value; gate v7 also binds the item's
+    ``option_count`` (0 = open). baseline (v10, gate v5 only): the protocol's baseline pin; the row then carries
+    b(source) and advantage = reward - b."""
+    if (gate not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7)
+            or (baseline is not None and gate != SINGLE_REWARD_GATE_V5)):
         raise ValueError("single reward: the v10 source baseline belongs to gate v5 only")
+    if (option_count is None) != (gate != SINGLE_REWARD_GATE_V7):
+        raise ValueError("single reward: the item option count belongs to gate v7 only")
     if any(t1[key] != row[field] for key, field in (("text", "target"), ("prompt", "prompt"),
                                                   ("generation", "generation"), ("status", "status"))):
         raise ValueError("single reward: original T1 differs from the RL row")
     evidence: dict = {"version": gate, "t1_metadata": {k: v for k, v in t1.items()
                 if k not in {"text", "generation", "prompt", "status"}}, "provenance": provenance, "decision": None}
+    if gate == SINGLE_REWARD_GATE_V7:
+        evidence["item"] = {"option_count": option_count}
     evidence["decision"] = _single_reward_decision(row, evidence)
     row.update(reward=_reward_value(evidence["decision"]), reward_evidence=evidence)
-    if gate == SINGLE_REWARD_GATE:
-        value = single_advantage(evidence["decision"])
-        evidence["advantage"] = {"version": SINGLE_ADVANTAGE_VERSION_V11, "value": value}
+    if gate in (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7):
+        value = single_advantage(evidence["decision"], gate)
+        evidence["advantage"] = {"version": _advantage_version(gate), "value": value}
         row["advantage"] = value
     if baseline is not None:
         evidence["baseline"] = single_source_baseline(row["problem_id"], baseline)
@@ -239,12 +305,13 @@ def validate_single_reward(row: dict) -> dict:
     if (evidence["decision"] != decision or type(row.get("reward")) is not int
             or row["reward"] != _reward_value(decision)):
         raise ValueError("single reward: reward/decision differs from the program gate on the original solution")
-    if evidence["version"] == SINGLE_REWARD_GATE:
-        value = single_advantage(decision)
+    if evidence["version"] in (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7):
+        value = single_advantage(decision, evidence["version"])
         if ("baseline" in evidence or "baseline" in row
-                or evidence.get("advantage") != {"version": SINGLE_ADVANTAGE_VERSION_V11, "value": value}
+                or evidence.get("advantage") != {"version": _advantage_version(evidence["version"]), "value": value}
                 or type(row.get("advantage")) is not float or row["advantage"] != value):
-            raise ValueError("single reward: advantage differs from the v11 penalty table")
+            table = "v12" if evidence["version"] == SINGLE_REWARD_GATE_V7 else "v11"
+            raise ValueError(f"single reward: advantage differs from the {table} penalty table")
     elif "advantage" in evidence:
         raise ValueError("single reward: gate v5 evidence carries no penalty-table advantage")
     elif "baseline" in evidence or "baseline" in row or "advantage" in row:
@@ -271,10 +338,14 @@ def note_cause_problem(note_text: str, t1_status: str) -> str | None:
     return None
 
 
-def note_program_decision(audit: dict, record: dict) -> dict:
+def note_program_decision(audit: dict, record: dict, *, leak_v2: bool = False) -> dict:
     """Program-only note admission for the re-solve: parsed note that stopped normally and passed every bounded leak
     check. Its Cause is checked only when it would become a B row (note_cause_problem), so a NONE note's lesson is
-    still tried once (cycle-2 audit: rejecting it here removed almost every A2)."""
+    still tried once (cycle-2 audit: rejecting it here removed almost every A2).
+
+    ``leak_v2`` (v12): the lesson check is contract.hint_leak_single_v2 on the audit's own leak inputs instead of the
+    audit's stored v1 result. The base hint_leak (NOTE_HINT_LEAK, MCQ only) needs no narrowing: it flags option-letter
+    references, answer phrases and the gold letter/option text, never a non-gold option."""
     base = audit["base_audit"]
     parsed = parse_note_v2(record["note"]["text"]) if base["format"]["result"] == "PASS" else None
     if base["format"]["result"] != "PASS" or parsed is None:
@@ -285,11 +356,31 @@ def note_program_decision(audit: dict, record: dict) -> dict:
                           if value is not None and (key != "hint_leak" or base["leak_inputs"]["choices"])),
                          None)) is not None:
         reason = "NOTE_" + failed.upper()
-    elif audit["single_hint_leak"] is not None:
-        reason = "LESSON_LEAK_" + audit["single_hint_leak"]
+    elif (leak := audit["single_hint_leak"] if not leak_v2 else hint_leak_single_v2(
+            parsed.lesson, base["leak_inputs"]["gold"], base["leak_inputs"]["choices"],
+            aliases=base["leak_inputs"]["aliases"])) is not None:
+        reason = "LESSON_LEAK_" + leak
     else:
         reason = None
     return {"accepted": reason is None, "reason": reason, "method": "program", "audit_sha256": audit["sha256"]}
+
+
+def human_row(record: dict, fields: dict[str, str], gold: str, choices: tuple[str, ...] | list[str],
+              tokenizer: Any) -> tuple[dict | None, str | None]:
+    """v12 H row: the P0 prompt and the dataset's human-written solution (contract.human_solution_target); admitted
+    when the solution is nonblank, the target has >= 32 tokens and no special token. (row, None) or (None, reason)."""
+    target = human_solution_target(fields["lecture"], fields["solution"], gold, choices)
+    if not fields["solution"].strip():
+        return None, "H_SOLUTION_BLANK"
+    if target is None:
+        return None, "H_GOLD_NOT_AN_OPTION"
+    if any(token in target for token in tokenizer.all_special_tokens):
+        return None, "H_SPECIAL_TOKEN"
+    if len(tokenizer.encode(target, add_special_tokens=False)) < MIN_TARGET_TOKENS:
+        return None, "H_TOO_SHORT"
+    return {"row_id": record["problem_id"] + ":" + KIND_HUMAN, "kind": KIND_HUMAN, "route": ROUTE_LM,
+            **{k: record[k] for k in ("problem_id", "image_paths", "image_sha256", "subject", "source")},
+            "prompt": record["p0_text"], "target": target, "target_source": HUMAN_TARGET_SOURCE, "complete": True}, None
 
 
 def run_single_block(bundle: Any, **kwargs) -> dict:
@@ -306,13 +397,17 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     """Collect at most 16 distinct items; resume completed actions; admit rows by program checks only.
 
     ``items`` is the immutable whole block, even when limit first requests its prefix of two.
-    Gold is requested only while constructing the note/audit stage. It never reaches T1/retry requests.
+    Gold is requested only while constructing the note/audit stage and (v12) the H targets after all generation.
+    It never reaches T1/retry requests.
     ``reference`` (v11) gives the dataset reference text for a problem's note prompt only (None: no reference).
+    v12 H rows read the human-solution fields from ``provenance`` (references.human_solution) and count tokens with
+    ``bundle.processor.tokenizer``.
     """
     from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
     from .rl import policy_sha256
 
     _protocol_check(protocol)
+    v12 = protocol["version"] == VERSION_SINGLE_V12
     ids = [item["problem_id"] for item in items]
     if not 1 <= len(ids) <= 16 or len(set(ids)) != len(ids) or any(pid not in actors or pid not in provenance for pid in ids):
         raise ValueError("single runtime: unique, source-bound block of 1..16 actors required")
@@ -383,7 +478,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
                                   aliases=source.get("leak_aliases", ()),
                                   acronym_candidates=source.get("acronym_candidates", ()))
         validate_single_note_audit(audit, record, source)
-        return audit, note_program_decision(audit, record)
+        return audit, note_program_decision(audit, record, leak_v2=v12)
 
     def is_wrong(pid: str) -> bool:
         return state["records"][pid]["t1"]["status"] not in ("CORRECT", UNVERIFIABLE)
@@ -451,7 +546,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         rl_row = _candidate(record, "RL")
         if rl_row is None:
             raise ValueError("single runtime: original T1 is missing")
-        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid]))
+        gate = {"gate": SINGLE_REWARD_GATE_V7, "option_count": len(actors[pid].choices)} if v12 else {}
+        rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid], **gate))
         kind = "A1" if record["t1"]["status"] == "CORRECT" else "A2"
         if kind == "A2" and pid not in approved:
             continue
@@ -462,15 +558,25 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         elif row is not None and kind == "A1" and (phrase := answer_denial(row["target"])) is not None:
             row, reason = None, "A1_ANSWER_DENIAL:" + phrase
         decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
-        if row is None:
-            continue  # B follows its A2
-        rows.append(row)
+        if row is not None:
+            rows.append(row)
+        elif kind == "A1" or not v12:
+            continue  # v11: B follows its A2; v12: every accepted note is a B candidate
         if kind == "A2" and (note_row := _candidate(record, "B")) is not None:
-            problem = b_target_problem(note_row["target"]) or note_cause_problem(note_row["target"], record["t1"]["status"])
+            problem = (b_target_problem(note_row["target"], v12=v12)
+                       or note_cause_problem(note_row["target"], record["t1"]["status"]))
             decisions[f"{pid}:B"] = {"accepted": problem is None, "method": "program",
                                      "reason": None if problem is None else "B_" + problem}
             if problem is None:
                 rows.append(note_row)
+    for pid in active if v12 else ():
+        fields = references.human_solution(provenance[pid])
+        if fields is not None:
+            row, reason = human_row(state["records"][pid], fields, gold(pid), actors[pid].choices,
+                                    bundle.processor.tokenizer)
+            decisions[f"{pid}:{KIND_HUMAN}"] = {"accepted": row is not None, "method": "program", "reason": reason}
+            if row is not None:
+                rows.append(row)
     contract = protocol["training_contract"] | {"expected_problem_ids": active, "policy_sha256": policy,
         "reward_provenance_sha256": {pid: digest(provenance[pid]) for pid in active},
         "reward_evidence_sha256": {row["problem_id"]: digest(row["reward_evidence"]) for row in rows if row["kind"] == "RL"}}
@@ -480,6 +586,57 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     write_json(output / f"rows-{limit}.json", result)
     return checkpoint("ROWS_READY", note_audits=audits, note_decisions=note_decisions, row_decisions=decisions,
                       rows_path=f"rows-{limit}.json")
+
+
+def run_no_lesson_control(bundle: Any, *, block: Path, actors: dict, grade: Callable, load_images: Callable,
+                          protocol: dict, output: Path, stream: Callable | None = None,
+                          stream_args: argparse.Namespace | None = None, stop_after: float | None = None) -> dict:
+    """Diagnostic only (user 2026-11-11; local CLI ``--no-lesson-control``, never the campaign): after a block's rows
+    are sealed, one lesson-free re-solve (RESOLVE_INSTRUCTION_SINGLE + P0, seed tag "control") per item that got a
+    lesson re-solve, graded like it. Results go to ``output/NO_LESSON_CONTROL_FILE``; the generations have their own
+    ledger directory and never become rows, rewards or updates."""
+    from fine_tuning.notebook_rl.prompts import user_message
+    from .rl import policy_sha256
+
+    _protocol_check(protocol)
+    state, binding = _state(block / "phase.json"), _read(block / "binding.json")
+    policy = policy_sha256(bundle)
+    if (state.get("status") != "ROWS_READY" or state["binding_sha256"] != digest(binding)
+            or binding["protocol_sha256"] != protocol["sha256"] or binding["policy_sha256"] != policy):
+        raise ValueError("single control: needs the sealed rows of this block under the same policy and protocol")
+    records = state["records"]
+    ids = [item["problem_id"] for item in binding["items"][:state["limit"]] if "resolve" in records[item["problem_id"]]]
+    requests = []
+    for pid in ids:
+        prompt = f"{RESOLVE_INSTRUCTION_SINGLE}\n\n{records[pid]['p0_text']}"
+        requests.append({"request_id": f"{pid}:control", "problem_id": pid, "block_id": binding["block_id"],
+                         "stage": "control", "seed": sample_seed(pid, "control"), "max_tokens": MAX_NEW_TOKENS,
+                         "messages": [user_message(prompt, len(actors[pid].image_paths))],
+                         "images": load_images(actors[pid])})
+    stats = StreamStats()
+    if stream is None:
+        args = argparse.Namespace(**vars(stream_args)) if stream_args is not None else argparse.Namespace()
+        args.policy_sha256, args.protocol_sha256 = policy, protocol["sha256"]
+        stream = (getattr(args, "stream_builder", None) or hf_single_stream_builder)(bundle, args, stats)
+    results = run_single_requests(requests, stream, stats, output / "no-lesson-control", policy_sha256=policy,
+                                  protocol_sha256=protocol["sha256"], stop_after=stop_after) if requests else {}
+    entries = []
+    for pid in ids:
+        record, result = records[pid], results.get(f"{pid}:control")
+        entry = {"problem_id": pid, "source": record["source"], "t1_status": record["t1"]["status"],
+                 "lesson_resolve_status": record["resolve"]["status"], "control_status": None, "tokens": None}
+        if result is not None:
+            status, _ = grade(pid, result["text"], result["finish_reason"], actors[pid].mode)
+            entry.update(control_status=status, tokens=len(result["generation"]["completion_token_ids"]),
+                         control_finish_reason=result["finish_reason"])
+        entries.append(entry)
+    body = {"version": NO_LESSON_CONTROL_VERSION, "diagnostic_only": True, "training_rows": 0,
+            "status": "COMPLETE" if all(e["control_status"] is not None for e in entries) else "INCOMPLETE",
+            "block_binding_sha256": state["binding_sha256"], "rows_path": state["rows_path"],
+            "prompt": "RESOLVE_INSTRUCTION_SINGLE + blank line + P0 (no lesson header, no lesson)",
+            "seed_stage": "control", "items": entries}
+    write_json(output / NO_LESSON_CONTROL_FILE, body)
+    return body
 
 
 def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, precision: str,
@@ -496,7 +653,8 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
               "rows_by_kind": dict(Counter(row["kind"] for row in encoded)), "components": {}, "missing": []}
     try:
         check_base(bundle)
-        for name in COMPONENTS:
+        # v12 H rows exist only for sources with human solutions; a block without them is not missing a component.
+        for name in COMPONENTS + ((KIND_HUMAN,) if any(r["kind"] == KIND_HUMAN for r in encoded) else ()):
             started = time.monotonic()
             bundle.model.zero_grad(set_to_none=True)
             stats = backward_single_block(bundle, encoded, contract, token_budget, components=(name,), capacity=capacity)
@@ -670,7 +828,9 @@ def _prepare(args: argparse.Namespace) -> dict:
     if (document.get("version") != SOURCE_VERSION or rules.get("version") != RULES_VERSION
             or rules.get("vault_manifest_sha256") != train_sha):
         raise ValueError("single runtime: source evidence/rules are not bound to the approved training vault")
-    for item in order["items"][:10]:
+    # --limit 16 (v12 local check): the whole first order block, so v3-order ScienceQA items (positions 11-15) give H rows.
+    fixed = order["items"][:16 if getattr(args, "limit", None) == 16 else 10]
+    for item in fixed:
         pid = item["problem_id"]
         actor, evidence = actors.get(pid), sources.get(pid, {})
         if (actor is None or item["source"] != actor.source or evidence.get("source") != actor.source
@@ -687,9 +847,22 @@ def _prepare(args: argparse.Namespace) -> dict:
     generation = generation_identity(argparse.Namespace(engine="hf", model_path=args.model_path, code_commit=source["base_commit"])) | {"precision": precision}
     contracts = {"source": digest(source), "dataset": file_sha(args.build_root / "manifest.yaml"),
                  "order": args.order_sha256, "data_admission": digest(admission)}
-    protocol = plain_protocol_single(precision, len(blocks), contracts=contracts, token_scale=args.token_scale)
+    version = SINGLE_CLI_VERSIONS[getattr(args, "single_version", "v12")]
+    supplement_path = getattr(args, "note_reference_supplement", None)
+    supplement_sha = getattr(args, "note_reference_supplement_sha256", None)
+    if (supplement_path is None) != (supplement_sha is None):
+        raise ValueError("single runtime: note-reference supplement and its external SHA256 are required together")
+    note_reference = None
+    if supplement_path is not None:
+        supplement = references.read_supplement(supplement_path, supplement_sha)
+        if not supplement.keys() <= set(ids):
+            raise ValueError("single runtime: reference supplement names an item outside the order")
+        note_reference = references.note_reference_pin(sources, supplement, supplement_sha, ids)
+    protocol = plain_protocol_single(precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
+                                     note_reference=note_reference, version=version)
     body = {"version": VERSION, "mode": args.mode, "source": source, "generation": generation,
             "protocol": protocol, "data_admission": admission, "fixed10": order["items"][:10],
+            **({"fixed16": fixed} if getattr(args, "limit", None) == 16 else {}),
             "blocks": blocks, "source_provenance_sha256": digest(sources), "rules_sha256": file_sha(args.training_rules),
             "capacity": {"max_num_seqs": args.max_num_seqs, "padded_generation_token_budget": args.max_num_batched_tokens,
                          "training_token_budget": args.token_budget, "context_limit": CONTEXT_LIMIT,
@@ -720,7 +893,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--order-sha256", required=True)
     parser.add_argument("--mode", choices=("local-smoke", "frozen3500"), default="local-smoke")
     parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V11)
-    parser.add_argument("--limit", type=int, choices=(2, 10), default=2)
+    parser.add_argument("--limit", type=int, choices=(2, 10, 16), default=2,
+                        help="items of the first order block; 16 seals the whole block (fixed16)")
+    parser.add_argument("--single-version", choices=tuple(SINGLE_CLI_VERSIONS), default="v12")
+    parser.add_argument("--note-reference-supplement", type=Path)
+    parser.add_argument("--note-reference-supplement-sha256")
+    parser.add_argument("--no-lesson-control", action="store_true",
+                        help="diagnostic only (user 2026-11-11): after the rows are sealed, one lesson-free re-solve per "
+                             "lesson re-solve, written to " + NO_LESSON_CONTROL_FILE + "; never a row or a reward")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
     parser.add_argument("--capacity-profile", type=Path)
     parser.add_argument("--capacity-profile-sha256")
@@ -762,11 +942,19 @@ def _main(args: argparse.Namespace) -> int:
     torch.manual_seed(MASTER_SEED)
     actors = {a.problem_id: a for a in read_actors(args.build_root / "train")}
     sources = _read(args.source_provenance)["items"]
-    # The trusted controller keeps only fixed10 gold strings; model requests never receive this mapping.
+    items = plan.get("fixed16", plan["fixed10"])
+    # The trusted controller keeps only the fixed items' gold strings; model requests never receive this mapping.
     private = read_verifier(args.build_root / "train")
-    gold_values = {item["problem_id"]: private[item["problem_id"]].gold for item in plan["fixed10"]}
+    gold_values = {item["problem_id"]: private[item["problem_id"]].gold for item in items}
     del private
-    private_files = [args.training_rules, args.source_provenance]
+    note_references = {}
+    if getattr(args, "note_reference_supplement", None) is not None:
+        supplement = references.read_supplement(args.note_reference_supplement, args.note_reference_supplement_sha256)
+        note_references = {item["problem_id"]: references.note_reference(sources[item["problem_id"]],
+                                                                          supplement.get(item["problem_id"]))
+                           for item in items}
+    private_files = [args.training_rules, args.source_provenance,
+                     *([args.note_reference_supplement] if note_references else [])]
     forbidden = install_training_guards(args.build_root, private_files=private_files)
     profile = None
     if "measured_profile" in plan["capacity"]:
@@ -803,10 +991,17 @@ def _main(args: argparse.Namespace) -> int:
                 return grade_answer(verifier, contracts["mcq" if actors[pid].choices else "open"], pid, text,
                                     finish_reason, mode, actor=actors[pid])
 
-            state = run_single_block(bundle, actors=actors, items=plan["fixed10"], provenance=sources, gold=gold, grade=grade,
+            state = run_single_block(bundle, actors=actors, items=items, provenance=sources, gold=gold, grade=grade,
                                      load_images=lambda actor: load_images(actor, args.build_root / "images"),
                                      protocol=plan["protocol"], output=args.output / "block-0", limit=args.limit,
-                                     stream_args=args, stop_after=args.stop_after_seconds)
+                                     stream_args=args, stop_after=args.stop_after_seconds,
+                                     reference=note_references.get if note_references else None)
+            if getattr(args, "no_lesson_control", False) and state["status"] == "ROWS_READY":
+                control = run_no_lesson_control(
+                    bundle, block=args.output / "block-0", actors=actors, grade=grade,
+                    load_images=lambda actor: load_images(actor, args.build_root / "images"), protocol=plan["protocol"],
+                    output=args.output, stream_args=args, stop_after=args.stop_after_seconds)
+                print(json.dumps({"no_lesson_control": control["status"], "items": len(control["items"])}))
         if args.command == "dry-run" and state["status"] == "ROWS_READY":
             closed = _read(args.output / "block-0" / state["rows_path"])
             encoded = [encode_single_row(bundle.processor, bundle.model.config, row,
