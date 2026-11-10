@@ -7,6 +7,7 @@ Only checkpoint-0, the pilot checkpoint and the newest two checkpoints are kept 
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import math
 from pathlib import Path
@@ -31,6 +32,16 @@ DIRECT_GATE_VERSION = "single-direct-user-gate-v1"
 CAMPAIGN_INPUTS = ("order", "frozen_approval", "source_provenance", "training_rules", "note_reference_supplement")
 DIRECT_DECISION = ("user 2026-11-06: after the stopped v4 main run, train all 3,500 items without the external-dev "
                    "pilot comparison, then evaluate MMMU-val 900 once")
+# Warm start (v11c, 2026-11-10): a new plan that differs from a stopped campaign plan only in the code-source hash seals
+# one checkpoint of it as its starting point; the record replaces that slot's predecessor transaction/metadata checks.
+WARM_START_VERSION = "single-warm-start-v1"
+WARM_START_DECISION = ("user 2026-11-10: continue the stopped SINGLE v11b campaign from its slot-156 checkpoint (stopped "
+                       "by the preregistered FORMAT_DRIFT rule) on the remaining blocks with the unchanged v11b training "
+                       "method; the slot-155 predecessor metadata was not retrieved before the source pod was deleted")
+WARM_START_SAME = ("items", "blocks", "data_admission", "inputs", "build_root", "model_path", "capacity", "gate_rule",
+                   "pilot_ids_sha256", "dev_ids_sha256", "retention_ids_sha256", "execution_max_blocks", "mode")
+WARM_START_ARGS = ("warm_start_plan", "warm_start_plan_sha256", "warm_start_checkpoint", "warm_start_checkpoint_sha256",
+                   "warm_start_reload", "warm_start_reload_sha256")
 
 
 def _descriptor(path: Path) -> dict:
@@ -54,6 +65,57 @@ def _plan_check(plan: dict) -> None:
         raise ValueError("single campaign: invalid immutable campaign plan")
     if plan["mode"] == "train" and plan["protocol"]["precision"] != "bf16":
         raise ValueError("single campaign: HOLD NF4 training/checkpoint continuation is not validated")
+    warm = plan.get("warm_start")
+    if warm is not None and (
+            set(warm) != {"version", "decision", "source_plan", "source_plan_sha256", "source_binding", "checkpoint",
+                          "slot", "updates", "cursor_sha256", "reload_receipt"}
+            or warm["version"] != WARM_START_VERSION or warm["decision"] != WARM_START_DECISION or plan["mode"] != "train"
+            or type(warm["slot"]) is not int or not 1 <= warm["slot"] < len(plan["blocks"])
+            or type(warm["updates"]) is not int or warm["updates"] != warm["slot"]
+            or set(warm["source_binding"]) != {"protocol_sha256", "prompts_sha256", "data_sha256", "code_sha256"}
+            or not all(_hex64(value) for value in (warm["source_plan"]["file_sha256"], warm["source_plan_sha256"],
+                       warm["checkpoint"]["file_sha256"], warm["cursor_sha256"], warm["reload_receipt"]["file_sha256"],
+                       *warm["source_binding"].values()))):
+        raise ValueError("single campaign: invalid warm-start record")
+
+
+def _hex64(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def _without_source_hash(protocol: dict) -> dict:
+    stripped = copy.deepcopy(protocol)
+    del stripped["sha256"], stripped["training_contract"]["hashes"]["source"]
+    return stripped
+
+
+def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoint_path: Path, checkpoint_sha256: str,
+                      reload_path: Path, reload_sha256: str) -> dict:
+    """Seal a stopped campaign's committed checkpoint (``checkpoint_path`` is its metadata.json) as the plan's start."""
+    from fine_tuning.notebook_rl import checkpoint
+
+    old = single._read(_checked({"path": str(plan_path), "file_sha256": plan_sha256}))
+    _plan_check(old)
+    missing = object()
+    if (old["mode"] != "train" or any(old.get(key, missing) != body.get(key, missing) for key in WARM_START_SAME)
+            or old["generation"]["model_files_sha256"] != body["generation"]["model_files_sha256"]
+            or _without_source_hash(old["protocol"]) != _without_source_hash(body["protocol"])):
+        raise ValueError("single campaign: warm start needs a stopped train plan with the same items, blocks and protocol")
+    metadata = checkpoint.read_metadata(_checked({"path": str(checkpoint_path), "file_sha256": checkpoint_sha256}).parent,
+                                        binding=_binding(old))
+    cursor = metadata["cursor"].get("single", {})
+    slot = cursor.get("slot")
+    if (metadata["protocol"] != old["protocol"] or type(slot) is not int or not 1 <= slot < len(body["blocks"])
+            or type(cursor.get("updates")) is not int or cursor["updates"] != slot
+            or cursor.get("consumed_problem_ids") != [pid for block in body["blocks"][:slot] for pid in block]
+            or not _hex64(cursor.get("last_transaction_sha256"))):
+        raise ValueError("single campaign: warm-start checkpoint is not a committed prefix of this plan")
+    if single._read(_checked({"path": str(reload_path), "file_sha256": reload_sha256})) != {
+            "status": "RELOADED", "slot": slot, "updates": slot}:
+        raise ValueError("single campaign: warm-start checkpoint lacks its fresh-process reload receipt")
+    return {"version": WARM_START_VERSION, "decision": WARM_START_DECISION, "source_plan": _descriptor(plan_path),
+            "source_plan_sha256": old["sha256"], "source_binding": _binding(old), "checkpoint": _descriptor(checkpoint_path),
+            "slot": slot, "updates": slot, "cursor_sha256": digest(cursor), "reload_receipt": _descriptor(reload_path)}
 
 
 def prepare(args: argparse.Namespace) -> dict:
@@ -63,6 +125,9 @@ def prepare(args: argparse.Namespace) -> dict:
 
 def _prepare(args: argparse.Namespace) -> dict:
     """Validate all actual selected 3,500 items and seal the immutable campaign."""
+    warm = [getattr(args, name, None) for name in WARM_START_ARGS]
+    if None in warm and any(value is not None for value in warm):
+        raise ValueError("single campaign: warm start needs its plan, checkpoint and reload receipt with external SHA256s")
     from fine_tuning.notebook_rl.schema import to_json
     from fine_tuning.notebook_rl.vault import read_actors, read_lineage, read_verifier
     from .answer_contract import VERSION as RULES_VERSION, load_training_rules
@@ -170,6 +235,11 @@ def _prepare(args: argparse.Namespace) -> dict:
             "capacity": capacity, "gate_rule": GATE_RULE, "pilot_ids_sha256": args.pilot_ids_sha256,
             "dev_ids_sha256": args.dev_ids_sha256, "retention_ids_sha256": args.retention_ids_sha256,
             "execution_max_blocks": args.execution_max_blocks}
+    if warm[0] is not None:
+        body["warm_start"] = warm_start_record(body, plan_path=args.warm_start_plan,
+            plan_sha256=args.warm_start_plan_sha256, checkpoint_path=args.warm_start_checkpoint,
+            checkpoint_sha256=args.warm_start_checkpoint_sha256, reload_path=args.warm_start_reload,
+            reload_sha256=args.warm_start_reload_sha256)
     plan = body | {"sha256": digest(body)}
     _plan_check(plan)
     single._sealed(args.output / "campaign-plan.json", plan)
@@ -197,6 +267,12 @@ def _commit_check(plan: dict, output: Path, cursor: dict, descriptor: dict) -> N
     metadata = checkpoint.read_metadata(_checked(descriptor).parent, binding=_binding(plan))
     if metadata["cursor"].get("single") != cursor:
         raise ValueError("single campaign: checkpoint cursor changed")
+    warm = plan.get("warm_start")
+    if warm is not None and cursor["slot"] == warm["slot"]:
+        # The sealed warm-start record stands in for the source campaign's transaction and parent checkpoint.
+        if digest(cursor) != warm["cursor_sha256"]:
+            raise ValueError("single campaign: warm-start checkpoint cursor changed")
+        return
     if cursor["slot"]:
         transaction = single._read(output / f"transaction-{cursor['slot'] - 1}.json")
         parent = transaction["parent_checkpoint"]
@@ -357,6 +433,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
         if state is not None and state.get("plan_sha256") != plan["sha256"]:
             raise ValueError("single campaign: mode/source/order/model/profile changed")
         selected, reconciled = None, False
+        warm = plan.get("warm_start")  # train-only (_plan_check); its checkpoint takes checkpoint-0's place
+        first = output / f"checkpoint-{warm['slot'] if warm else 0}"
         if state is not None:
             _cursor(plan, state["cursor"], state["cursor"]["policy_sha256"])
             if train:
@@ -388,14 +466,16 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                         state["status"] = "RECOVERY_REQUIRED"
                         return single._state(state_path, state)
         elif train:
-            initial = output / "checkpoint-0"
-            if initial.exists():
-                selected = _descriptor(initial / "metadata.json")
-                saved = checkpoint.read_metadata(initial, binding=_binding(plan))["cursor"]["single"]
-                if (saved.get("slot") != 0 or saved.get("updates") != 0 or saved.get("consumed_problem_ids") != []
+            if first.exists():
+                selected = _descriptor(first / "metadata.json")
+                saved = checkpoint.read_metadata(first, binding=_binding(plan))["cursor"]["single"]
+                if warm is not None:
+                    if digest(saved) != warm["cursor_sha256"]:
+                        raise ValueError("single campaign: warm-start checkpoint cursor changed")
+                elif (saved.get("slot") != 0 or saved.get("updates") != 0 or saved.get("consumed_problem_ids") != []
                         or saved.get("last_transaction_sha256") is not None or saved.get("parent_checkpoint") is not None):
                     raise ValueError("single campaign: initial checkpoint is not fresh F0")
-            elif initial.with_name(initial.name + ".tmp").exists():
+            elif first.with_name(first.name + ".tmp").exists():
                 raise ValueError("single campaign: RECOVERY_REQUIRED partial initial checkpoint")
         enable_deterministic_execution()
         random.seed(MASTER_SEED)
@@ -417,7 +497,7 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
         if selected is not None:
             def checked_factory(*values):
                 fresh = factory(*values)
-                if state is None and policy_sha256(fresh) != saved["policy_sha256"]:
+                if state is None and warm is None and policy_sha256(fresh) != saved["policy_sha256"]:
                     raise ValueError("single campaign: initial checkpoint differs from fresh F0")
                 return fresh
 
@@ -426,6 +506,16 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 policy_factory=checked_factory)
             if state is not None and state["cursor"] != cursor:
                 raise ValueError("single campaign: state pointer differs from committed checkpoint")
+        elif warm is not None and state is None and not reload_only:
+            # The source checkpoint loads under its own protocol/binding; it is re-saved below under this plan's.
+            old = single._read(_checked(warm["source_plan"]))
+            if old.get("sha256") != warm["source_plan_sha256"] or _binding(old) != warm["source_binding"]:
+                raise ValueError("single campaign: warm-start source plan changed")
+            bundle, optimizer, scheduler, cursor = single.load_single_continuation(
+                model_path, _checked(warm["checkpoint"]).parent, old["protocol"], binding=warm["source_binding"],
+                device=device, policy_factory=factory)
+            if digest(cursor) != warm["cursor_sha256"] or cursor["slot"] != warm["slot"] or cursor["updates"] != warm["slot"]:
+                raise ValueError("single campaign: warm-start checkpoint cursor changed")
         else:
             bundle = factory(model_path, ARM, plan["protocol"])
             if plan["protocol"]["precision"] == "bf16":
@@ -439,12 +529,16 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             state = {"version": VERSION, "plan_sha256": plan["sha256"], "cursor": cursor, "checkpoint": None,
                      "pending": None, "rng": None, "proofs": [], "status": "READY"}
             if train:
-                path = output / "checkpoint-0"
+                path = first
                 if selected is None:
-                    optimizer, scheduler = checkpoint.make_optimizer(bundle, plan["protocol"])
+                    if warm is None:
+                        optimizer, scheduler = checkpoint.make_optimizer(bundle, plan["protocol"])
                     single.save_single_continuation(bundle, optimizer, scheduler, cursor=cursor, path=path,
                         protocol=plan["protocol"], binding=_binding(plan), allow_save=True)
                 state["checkpoint"] = _descriptor(path / "metadata.json")
+                if warm is not None:
+                    # A fixed main-gate anchor: the state["checkpoint"] fallback moves with every committed block.
+                    state |= {"warm_start": warm["checkpoint"], "pilot_checkpoint": state["checkpoint"]}
             single._state(state_path, state)
         elif reconciled:
             single._state(state_path, state)
@@ -595,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--campaign-mode", choices=("proof", "train"), default="proof")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
     parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V11)
-    for name in ("capacity-profile", "pilot-gate"):
+    for name in ("capacity-profile", "pilot-gate", "warm-start-plan", "warm-start-checkpoint", "warm-start-reload"):
         parser.add_argument("--" + name, type=Path)
         parser.add_argument("--" + name + "-sha256")
     for name in ("max-num-seqs", "max-num-batched-tokens", "token-budget"):
