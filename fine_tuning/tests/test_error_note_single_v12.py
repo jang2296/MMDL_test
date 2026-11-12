@@ -193,10 +193,10 @@ class AdvantageTableV12(TinyThreads):
 
     def test_option_count_belongs_to_gate_v7_only(self):
         row = copy.deepcopy(self.base)
-        with self.assertRaisesRegex(ValueError, "option count belongs to gate v7"):
+        with self.assertRaisesRegex(ValueError, "option count belongs to gates v7 and v8"):
             bind_v12(copy.deepcopy(row), option_count=None)
         for gate in (SINGLE_REWARD_GATE, "single-t1-program-gate-v5"):
-            with self.subTest(gate=gate), self.assertRaisesRegex(ValueError, "option count belongs to gate v7|v10 source"):
+            with self.subTest(gate=gate), self.assertRaisesRegex(ValueError, "option count belongs to gates v7 and v8|v10 source"):
                 bind_v12(copy.deepcopy(row), option_count=0, gate=gate)
         with self.assertRaisesRegex(ValueError, "option count"):
             bind_v12(copy.deepcopy(row), option_count=True)  # not an int
@@ -665,8 +665,8 @@ class ProtocolV12(unittest.TestCase):
         self.assertEqual(default["training_contract"]["sft_weights"], {"A1": .05, "A2": .35, "B": .05})
 
     def test_bad_version_or_weights_are_refused(self):
-        with self.assertRaisesRegex(ValueError, "version must be v11 or v12"):
-            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v13")
+        with self.assertRaisesRegex(ValueError, "version must be v11, v12 or v13"):
+            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v14")
         with self.assertRaisesRegex(ValueError, "nonnegative weights"):
             plain_protocol_single("bf16", 2, contracts=PINS, version=VERSION_SINGLE_V12,
                                   sft_weights={"A1": .05, "A2": .35, "B": .05})

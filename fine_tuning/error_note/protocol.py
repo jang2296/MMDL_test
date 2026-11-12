@@ -6,6 +6,7 @@ Version 2 (claudedocs/plan_self_note_v2_20261102.md section 4): the same model, 
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -169,11 +170,19 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # eliminate), B rows from every accepted note whatever the re-solve gave, and H rows: a dataset's human-written
 # solution (ScienceQA lecture + solution + one final-answer line) as LM-only SFT under P0, weight 0.02 per kind (0.10 gave an H gradient 7x the PG gradient in the local NF4 block, 2026-11-11).
 # Everything else is v11b. plain_protocol_single(version=VERSION_SINGLE) still builds the byte-identical v11 protocol.
+# v13 (2026-11-12, claudedocs/research_v12_drop_and_67_path_20261112.md section 7.3): the answers MMMU loses most are
+# self-doubt spirals ("Wait ..." after a finished first derivation until the token cap), so v13 trains finishing only.
+# Reward gate v8 = gate v7 plus two program fields: a LOOP / TRUNCATED_NO_LOOP row carries the spiral window (from the
+# third marker token, or token 1024 when there are fewer than three, for at most 2048 tokens) and its PG term reads the
+# raw log p of that window alone at advantage -1 with no row cap, so the first derivation is never pushed down; an
+# accepted row is praised (+1, and an A1 row) only when it has at least 256 tokens, shorter correct answers carry 0.
+# No H rows. Lesson leak rule v2, B rows, KL, anchor, replay, SFT weights and everything else are v12's.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
 VERSION_SINGLE_V9 = "error-note-single-response-v9"
 VERSION_SINGLE_V10 = "error-note-single-response-v10"
 VERSION_SINGLE = "error-note-single-response-v11"
 VERSION_SINGLE_V12 = "error-note-single-response-v12"
+VERSION_SINGLE_V13 = "error-note-single-response-v13"
 SINGLE_TOKEN_SCALE_V10 = 256.0
 SINGLE_TOKEN_SCALE_V11 = 1024.0
 SINGLE_ROW_TOKEN_CAP_V11 = 2048
@@ -198,11 +207,31 @@ SINGLE_CONTAINED_OPEN_RULE = ("open item (no options), T1 INCORRECT and stopped 
                               "REASONED_WRONG; gold = the source-bound provenance label")
 SINGLE_SFT_WEIGHTS_V12 = SINGLE_SFT_WEIGHTS_V10 | {"H": 0.02}
 SINGLE_SFT_WEIGHTING_V12 = SINGLE_SFT_WEIGHTING_V10 | {"H": "per_kind_total"}
+SINGLE_ADVANTAGE_VERSION_V13 = "penalty-table-v3"
+SINGLE_ADVANTAGE_V13 = {"accepted_praised": 1.0, "accepted": 0.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0,
+                        "LOOP": -1.0, "TRUNCATED_NO_LOOP": -1.0, "REASONED_WRONG": 0.0, "CONTAINED_OPEN": 0.0, "other": 0.0}
+# The pinned Qwen3-VL tokenizer's two single tokens that decode to "Wait" ("Wait", " Wait"); prepare re-checks them.
+SINGLE_SPIRAL_V13 = {"version": "spiral-window-v1", "marker": "Wait", "marker_token_ids": [13824, 14190],
+                     "marker_count": 3, "fallback_start": 1024, "window_tokens": 2048,
+                     "penalties": ["LOOP", "TRUNCATED_NO_LOOP"], "logprob": "raw", "row_weight": 1.0}
+SINGLE_PRAISE_V13 = {"version": "praise-v1", "min_tokens": 256, "applies_to": ["PG", "A1"]}
+
+
+def spiral_window(token_ids: list[int]) -> list[int]:
+    """v13: [start, end) of a cut-off or looping T1's penalized tokens. start = the index of the third marker token,
+    or min(1024, n // 2) with fewer than three markers; end = min(n, start + 2048)."""
+    if not isinstance(token_ids, list) or not token_ids or any(type(token) is not int for token in token_ids):
+        raise ValueError("single protocol: spiral window needs the sampled token IDs")
+    rule, count = SINGLE_SPIRAL_V13, len(token_ids)
+    marks = [index for index, token in enumerate(token_ids) if token in rule["marker_token_ids"]]
+    start = marks[rule["marker_count"] - 1] if len(marks) >= rule["marker_count"] else min(rule["fallback_start"], count // 2)
+    return [start, min(count, start + rule["window_tokens"])]
 SINGLE_BASELINE_METHOD = "fixed-source-mean-v1"
 SINGLE_BASELINE_TABLE = Path(__file__).with_name("source_baseline_v10.json")
 SINGLE_REWARD_GATE_V5 = "single-t1-program-gate-v5"
 SINGLE_REWARD_GATE = "single-t1-program-gate-v6"
 SINGLE_REWARD_GATE_V7 = "single-t1-program-gate-v7"
+SINGLE_REWARD_GATE_V8 = "single-t1-program-gate-v8"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
 SINGLE_OPEN_SCORER = SCORER
@@ -267,12 +296,13 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                           sft_weights: dict[str, float] | None = None, note_reference: dict | None = None,
                           version: str = VERSION_SINGLE) -> dict:
     """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11, or
-    v12 with ``version=VERSION_SINGLE_V12``)."""
+    v12 / v13 with ``version=VERSION_SINGLE_V12`` / ``VERSION_SINGLE_V13``)."""
     import math
 
-    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12):
-        raise ValueError("single protocol: version must be v11 or v12")
-    v12 = version == VERSION_SINGLE_V12
+    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13):
+        raise ValueError("single protocol: version must be v11, v12 or v13")
+    v13 = version == VERSION_SINGLE_V13
+    v12 = version == VERSION_SINGLE_V12  # H rows are v12 only; v13 shares v12's note filters and B rule below
     weights = dict(SINGLE_SFT_WEIGHTS_V12 if v12 else SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
     reference = {"version": "none"} if note_reference is None else note_reference
     if token_scale != SINGLE_TOKEN_SCALE_V11:
@@ -332,21 +362,26 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                  "zero_signal": "consume_slot_without_optimizer_or_decay", "total_slots": total_slots,
                  "pilot_boundary": 300, "pilot_main_optimizer": "continuous",
                  "routes": {"RL": "LM", "A1": "LM", "A2_B": "accepted_note_self_report"}}}
-    if v12:
+    if v12 or v13:
         from .contract import (_ANSWER_DENIAL_V12, HUMAN_FINAL_LINE, LESSON_LEAK_RULE_V2, LESSON_LEAK_VERSION_V2,
                                ANSWER_TOKEN_RULE)
         from .references import HUMAN_SOLUTION_FIELDS, HUMAN_SOLUTION_VERSION, human_solution_sha256
 
         contract = body["training_contract"]
-        body["version"] = contract["version"] = VERSION_SINGLE_V12
+        body["version"] = contract["version"] = version
         contract["rl"] |= {"reward": SINGLE_REWARD_GATE_V7, "reward_values": dict(SINGLE_REWARD_VALUES, CONTAINED_OPEN=0),
                            "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V12, "values": dict(SINGLE_ADVANTAGE_V12)},
                            "contained_open": {"rule": SINGLE_CONTAINED_OPEN_RULE, "tokens": ANSWER_TOKEN_RULE}}
-        contract["sft_weighting"] = dict(SINGLE_SFT_WEIGHTING_V12)
         contract["program_filters"] |= {
             "lesson_stem": LESSON_LEAK_RULE_V2, "lesson_leak": LESSON_LEAK_VERSION_V2,
             "b_answer_denial": {"pattern": _ANSWER_DENIAL_V12.pattern, "match": "lowercase_whitespace_collapsed"}}
         contract["b_rows"] = "every_program_accepted_note_whatever_the_resolve_result"
+    if v13:
+        contract["rl"] |= {"reward": SINGLE_REWARD_GATE_V8,
+                           "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V13, "values": dict(SINGLE_ADVANTAGE_V13)},
+                           "spiral_window": copy.deepcopy(SINGLE_SPIRAL_V13), "praise": copy.deepcopy(SINGLE_PRAISE_V13)}
+    if v12:
+        contract["sft_weighting"] = dict(SINGLE_SFT_WEIGHTING_V12)
         contract["human_solution"] = {
             "version": HUMAN_SOLUTION_VERSION, "fields": {k: list(v) for k, v in HUMAN_SOLUTION_FIELDS.items()},
             "fields_sha256": human_solution_sha256(), "target": "lecture?\\n\\nsolution\\n\\n" + HUMAN_FINAL_LINE,

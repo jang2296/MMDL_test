@@ -21,7 +21,8 @@ from . import references, single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, plain_protocol_single, single_blocks
+from .protocol import (ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, VERSION_SINGLE_V13, plain_protocol_single,
+                       single_blocks)
 
 VERSION = "single-campaign-v2"
 GATE_VERSION = "single-pilot-main-gate-v1"
@@ -196,9 +197,9 @@ def _prepare(args: argparse.Namespace) -> dict:
                  "order": args.order_sha256, "data_admission": digest(admission)}
     note_reference = references.note_reference_pin(sources, supplement, args.note_reference_supplement_sha256,
                                                    [item["problem_id"] for item in order["items"]])
-    # New plans are SINGLE v12 (2026-11-11), as v11 replaced v10; sealed v11 plans still pass _plan_check.
+    # New plans are SINGLE v13 (2026-11-12), as v12 replaced v11; sealed v11/v12 plans still pass _plan_check.
     protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
-                                     note_reference=note_reference, version=VERSION_SINGLE_V12)
+                                     note_reference=note_reference, version=VERSION_SINGLE_V13)
     measured = args.capacity_profile is not None
     if measured != (args.capacity_profile_sha256 is not None):
         raise ValueError("single campaign: profile requires an external SHA256")

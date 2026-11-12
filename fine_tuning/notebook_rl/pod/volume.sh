@@ -75,7 +75,16 @@ for i in "${!budget_command[@]}"; do [[ ${parent_command[i]:-} == "${budget_comm
 mountpoint -q "$workspace" || { printf '%s\n' 'Require persistent network volume'; exit 2; }
 mkdir "$volume_root"
 "$python" -m venv "$venv"
-"$venv/bin/python" -m pip install -r "$lock"
+# MMDL_POD_INSTALLER=uv (2026-11-12): the same exact lock installed by uv (parallel download/unpack; pip took about
+# 10 of the 15 prep minutes). unsafe-best-match makes uv look at both lock indexes for every pin, as pip does.
+# Any uv failure falls back to pip; pip check and the freeze below verify the result either way.
+if [[ ${MMDL_POD_INSTALLER:-pip} == uv ]] && command -v uv > /dev/null \
+    && uv pip install --python "$venv/bin/python" --index-strategy unsafe-best-match -r "$lock"; then
+  printf '%s\n' 'INSTALLER uv'
+else
+  "$venv/bin/python" -m pip install -r "$lock"
+  printf '%s\n' 'INSTALLER pip'
+fi
 "$venv/bin/python" -m pip check
 "$venv/bin/python" -m pip freeze --all > "$volume_root/pip-freeze.txt"
 export HF_HOME="$volume_root/hf-cache"

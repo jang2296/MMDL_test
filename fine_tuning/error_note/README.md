@@ -356,6 +356,28 @@ proof의 추가 무갱신 순회에도 `--continue-main`이 필요하며, 순회
 - 그대로: v11b의 PG·행 길이 보정 2,048(LOOP 면제)·음의 행 log p·KL 0.02·고정·SFT 가중(A1 .05, A2 .35 행당, B .05).
   자료 순서(계획 5)는 별도 작업이다.
 
+## SINGLE v13 (2026-11-12, `claudedocs/plan_v13_20261112.md`)
+
+새 캠페인 계획은 v13으로 봉인한다(`plain_protocol_single(..., version=VERSION_SINGLE_V13)`). 봉인된 v11·v12 계획·행은
+그대로 재현·검증된다. 로컬 `single` 명령은 `--single-version v13`을 줘야 v13이다(기본값 v12).
+- 목적: 끝맺기만 학습한다. MMMU에서 가장 많이 잃는 응답이 첫 풀이를 끝낸 뒤 "Wait…"로 되묻기를 이어 가다 토큰
+  한도에 걸리는 응답이기 때문이다(`claudedocs/research_v12_drop_and_67_path_20261112.md`).
+- 보상 게이트 v8 = 게이트 v7 판정 + 프로그램 필드 둘. `praise`: 수용된 정답이고 256토큰 이상. `window`: LOOP·
+  TRUNCATED_NO_LOOP 행의 되묻기 구간 `[start, end)`(`protocol.spiral_window`). start는 세 번째 표지 토큰
+  (`SINGLE_SPIRAL_V13.marker_token_ids` = 고정 토크나이저의 " Wait" 13824, "Wait" 14190), 표지가 셋 미만이면
+  min(1024, n // 2). end = min(n, start + 2048).
+- 표 `penalty-table-v3`: 칭찬받는 정답 +1, 256토큰 미만 정답 0, 맨답 오답·답 미확정·반복·잘림 −1, 풀이를 쓴 오답·
+  CONTAINED_OPEN·그 외 0.
+- PG: `window`가 있는 행은 그 구간의 raw log p 합만 쓰고 행 길이 보정을 하지 않는다(가중 1.0). 첫 풀이 부분은
+  깎이지 않는다. 그 밖의 행은 v11 식 그대로.
+- A1 행은 칭찬받는 정답에서만 만든다(`A1_NOT_PRAISED`). H 행 없음. 누설 규칙 v2, B 행, A2, KL, 첫 4토큰 고정,
+  재생 검사, SFT 가중(A1 .05, A2 .35 행당, B .05)은 v12와 같다.
+- 묶음 실행 전에 토크나이저가 표지 ID를 "Wait"로 풀어 내는지 확인한다(다르면 중단).
+- 자료 순서: 순서 v3 규칙 그대로, 앞 1,020문항(64묶음) 정원 Geometry3K 386, SSMR 250, GVLQA 150, ChEBI 50,
+  PTB-XL 70, NCT-CRC 60, ChartQA 54.
+- 포드 설치: `MMDL_POD_INSTALLER=uv`이면 `volume.sh`가 같은 잠금 파일을 uv로 설치한다(실패 시 pip, 뒤의 `pip check`·
+  목록 저장은 동일).
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

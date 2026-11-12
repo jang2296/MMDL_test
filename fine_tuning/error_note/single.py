@@ -29,8 +29,10 @@ from .contract import (CONTEXT_LIMIT, HUMAN_TARGET_SOURCE, KIND_HUMAN, MASTER_SE
 from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_V12, SINGLE_ADVANTAGE_VERSION_V11,
                        SINGLE_ADVANTAGE_VERSION_V12, SINGLE_ANSWER_UNION, SINGLE_NOTE_CAUSE_RULE,
                        SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5,
-                       SINGLE_REWARD_GATE_V7, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, VERSION_SINGLE_V12,
-                       plain_protocol_single, single_blocks, single_prompts_sha256, single_source_baseline)
+                       SINGLE_ADVANTAGE_V13, SINGLE_ADVANTAGE_VERSION_V13, SINGLE_PRAISE_V13, SINGLE_REWARD_GATE_V7,
+                       SINGLE_REWARD_GATE_V8, SINGLE_SPIRAL_V13, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, VERSION_SINGLE_V12,
+                       VERSION_SINGLE_V13, plain_protocol_single, single_blocks, single_prompts_sha256,
+                       single_source_baseline, spiral_window)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -42,9 +44,13 @@ SOLUTION_MIN_TOKENS = MIN_TARGET_TOKENS
 UNVERIFIABLE = "UNVERIFIABLE"
 NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
 # Protocol version -> its T1 reward gate (v11 and v12 are the runnable SINGLE protocols).
-PROTOCOL_GATES = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7}
+PROTOCOL_GATES = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7,
+                  VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8}
+# Gates whose decision carries the item's option count and the v7 order (gate v8 = v7 + praise and spiral window).
+GATES_V7 = (SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8)
+TABLE_GATES = (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8)  # rows carry a penalty-table advantage
 CONTAINED_OPEN = "T1_CONTAINED_OPEN"
-SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12}
+SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12, "v13": VERSION_SINGLE_V13}
 NO_LESSON_CONTROL_VERSION = "no-lesson-control-diagnostic-v1"
 NO_LESSON_CONTROL_FILE = "diagnostic-no-lesson-control.json"
 _MCQ_P0_END = "\nPlease select the correct answer from the options above."  # prompts.p0_body, MCQ only
@@ -166,15 +172,17 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
     R=-1 iff a not-CORRECT T1 carries a penalty, else 0. Gate v5 penalizes a bare wrong answer, an uncommitted stop
     and a loop; gate v6 (v11) also every other wrong T1: cut off without a loop, or reasoned and wrong. Gate v7 (v12)
     first gives an open INCORRECT answer that contains the gold's words reason CONTAINED_OPEN and no penalty; its
-    evidence carries the item's option count, and the gold is the source-bound provenance label."""
+    evidence carries the item's option count, and the gold is the source-bound provenance label. Gate v8 (v13)
+    is gate v7 plus ``praise`` (an accepted row of at least 256 tokens) and ``window`` (the spiral window of a LOOP or
+    TRUNCATED_NO_LOOP row, protocol.spiral_window on its sampled token IDs)."""
     try:
-        v7 = isinstance(evidence, dict) and evidence.get("version") == SINGLE_REWARD_GATE_V7
+        v7 = isinstance(evidence, dict) and evidence.get("version") in GATES_V7
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
                 or not isinstance(evidence, dict)
                 or set(evidence) - {"baseline", "advantage"} != {"version", "t1_metadata", "provenance", "decision",
                                                                  *(("item",) if v7 else ())}
-                or evidence["version"] not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7)
+                or evidence["version"] not in (SINGLE_REWARD_GATE_V5, *TABLE_GATES)
                 or not isinstance(evidence["t1_metadata"], dict)
                 or {"text", "generation", "prompt", "status"} & set(evidence["t1_metadata"])
                 or row["target"] != row["generation"]["text"]):
@@ -223,8 +231,13 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
                 penalty = "TRUNCATED_NO_LOOP"
             elif all_wrong:
                 penalty = "REASONED_WRONG"  # stopped, >= 32 tokens, no loop, a committed or read wrong answer
-        return {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
-                "method": "program"}
+        decision = {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
+                    "method": "program"}
+        if evidence["version"] == SINGLE_REWARD_GATE_V8:
+            actions = row["generation"]["completion_token_ids"]
+            decision["praise"] = reason is None and len(actions) >= SINGLE_PRAISE_V13["min_tokens"]
+            decision["window"] = spiral_window(actions) if penalty in SINGLE_SPIRAL_V13["penalties"] else None
+        return decision
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("single reward: malformed original-T1 evidence") from error
 
@@ -254,7 +267,12 @@ def _reward_value(decision: dict) -> int:
 
 def single_advantage(decision: dict, gate: str = SINGLE_REWARD_GATE) -> float:
     """v11 penalty table: accepted +1, bare/uncommitted/loop -1, reasoned-wrong/cut-off -0.5, anything else 0.
-    v12 (gate v7): reasoned-wrong 0 and CONTAINED_OPEN 0; the rest as v11."""
+    v12 (gate v7): reasoned-wrong 0 and CONTAINED_OPEN 0; the rest as v11.
+    v13 (gate v8): accepted +1 only when praised (>= 256 tokens), else 0; cut-off -1 like a loop; the rest as v12."""
+    if gate == SINGLE_REWARD_GATE_V8:
+        key = (("accepted_praised" if decision["praise"] else "accepted") if decision["accepted"] else decision["penalty"]
+               or ("CONTAINED_OPEN" if decision["reason"] == CONTAINED_OPEN else "other"))
+        return SINGLE_ADVANTAGE_V13[key]
     if gate == SINGLE_REWARD_GATE_V7:
         key = ("accepted" if decision["accepted"] else decision["penalty"]
                or ("CONTAINED_OPEN" if decision["reason"] == CONTAINED_OPEN else "other"))
@@ -263,7 +281,8 @@ def single_advantage(decision: dict, gate: str = SINGLE_REWARD_GATE) -> float:
 
 
 def _advantage_version(gate: str) -> str:
-    return SINGLE_ADVANTAGE_VERSION_V12 if gate == SINGLE_REWARD_GATE_V7 else SINGLE_ADVANTAGE_VERSION_V11
+    return {SINGLE_REWARD_GATE_V8: SINGLE_ADVANTAGE_VERSION_V13,
+            SINGLE_REWARD_GATE_V7: SINGLE_ADVANTAGE_VERSION_V12}.get(gate, SINGLE_ADVANTAGE_VERSION_V11)
 
 
 def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | None = None, *,
@@ -273,21 +292,21 @@ def bind_single_reward(row: dict, t1: dict, provenance: dict, baseline: dict | N
     gate v6 (v11) and v7 (v12): the row carries advantage = the penalty-table value; gate v7 also binds the item's
     ``option_count`` (0 = open). baseline (v10, gate v5 only): the protocol's baseline pin; the row then carries
     b(source) and advantage = reward - b."""
-    if (gate not in (SINGLE_REWARD_GATE_V5, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7)
+    if (gate not in (SINGLE_REWARD_GATE_V5, *TABLE_GATES)
             or (baseline is not None and gate != SINGLE_REWARD_GATE_V5)):
         raise ValueError("single reward: the v10 source baseline belongs to gate v5 only")
-    if (option_count is None) != (gate != SINGLE_REWARD_GATE_V7):
-        raise ValueError("single reward: the item option count belongs to gate v7 only")
+    if (option_count is None) != (gate not in GATES_V7):
+        raise ValueError("single reward: the item option count belongs to gates v7 and v8 only")
     if any(t1[key] != row[field] for key, field in (("text", "target"), ("prompt", "prompt"),
                                                   ("generation", "generation"), ("status", "status"))):
         raise ValueError("single reward: original T1 differs from the RL row")
     evidence: dict = {"version": gate, "t1_metadata": {k: v for k, v in t1.items()
                 if k not in {"text", "generation", "prompt", "status"}}, "provenance": provenance, "decision": None}
-    if gate == SINGLE_REWARD_GATE_V7:
+    if gate in GATES_V7:
         evidence["item"] = {"option_count": option_count}
     evidence["decision"] = _single_reward_decision(row, evidence)
     row.update(reward=_reward_value(evidence["decision"]), reward_evidence=evidence)
-    if gate in (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7):
+    if gate in TABLE_GATES:
         value = single_advantage(evidence["decision"], gate)
         evidence["advantage"] = {"version": _advantage_version(gate), "value": value}
         row["advantage"] = value
@@ -305,12 +324,12 @@ def validate_single_reward(row: dict) -> dict:
     if (evidence["decision"] != decision or type(row.get("reward")) is not int
             or row["reward"] != _reward_value(decision)):
         raise ValueError("single reward: reward/decision differs from the program gate on the original solution")
-    if evidence["version"] in (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7):
+    if evidence["version"] in TABLE_GATES:
         value = single_advantage(decision, evidence["version"])
         if ("baseline" in evidence or "baseline" in row
                 or evidence.get("advantage") != {"version": _advantage_version(evidence["version"]), "value": value}
                 or type(row.get("advantage")) is not float or row["advantage"] != value):
-            table = "v12" if evidence["version"] == SINGLE_REWARD_GATE_V7 else "v11"
+            table = {SINGLE_REWARD_GATE_V8: "v13", SINGLE_REWARD_GATE_V7: "v12"}.get(evidence["version"], "v11")
             raise ValueError(f"single reward: advantage differs from the {table} penalty table")
     elif "advantage" in evidence:
         raise ValueError("single reward: gate v5 evidence carries no penalty-table advantage")
@@ -407,13 +426,17 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     from .rl import policy_sha256
 
     _protocol_check(protocol)
-    v12 = protocol["version"] == VERSION_SINGLE_V12
+    v13 = protocol["version"] == VERSION_SINGLE_V13
+    v12 = v13 or protocol["version"] == VERSION_SINGLE_V12  # v13 keeps v12's note filter, B rule and item evidence
     ids = [item["problem_id"] for item in items]
     if not 1 <= len(ids) <= 16 or len(set(ids)) != len(ids) or any(pid not in actors or pid not in provenance for pid in ids):
         raise ValueError("single runtime: unique, source-bound block of 1..16 actors required")
     limit = len(ids) if limit is None else limit
     if type(limit) is not int or not 1 <= limit <= len(ids):
         raise ValueError("single runtime: requested prefix outside the fixed block")
+    if v13 and [bundle.processor.tokenizer.decode([token]).strip() for token in SINGLE_SPIRAL_V13["marker_token_ids"]] != (
+            [SINGLE_SPIRAL_V13["marker"]] * len(SINGLE_SPIRAL_V13["marker_token_ids"])):
+        raise ValueError("single runtime: the tokenizer's spiral marker tokens differ from the sealed v13 IDs")
     policy = policy_sha256(bundle)
     binding = {"version": VERSION, "block_id": block_id, "items": items, "protocol_sha256": protocol["sha256"],
                "policy_sha256": policy, "actors_sha256": digest({pid: vars(actors[pid]) for pid in ids}),
@@ -546,8 +569,9 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         rl_row = _candidate(record, "RL")
         if rl_row is None:
             raise ValueError("single runtime: original T1 is missing")
-        gate = {"gate": SINGLE_REWARD_GATE_V7, "option_count": len(actors[pid].choices)} if v12 else {}
+        gate = {"gate": PROTOCOL_GATES[protocol["version"]], "option_count": len(actors[pid].choices)} if v12 else {}
         rows.append(bind_single_reward(rl_row, record["t1"], provenance[pid], **gate))
+        praised = not v13 or rows[-1]["reward_evidence"]["decision"]["praise"]
         kind = "A1" if record["t1"]["status"] == "CORRECT" else "A2"
         if kind == "A2" and pid not in approved:
             continue
@@ -557,6 +581,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             row, reason = None, "A2_" + problem
         elif row is not None and kind == "A1" and (phrase := answer_denial(row["target"])) is not None:
             row, reason = None, "A1_ANSWER_DENIAL:" + phrase
+        elif row is not None and kind == "A1" and not praised:
+            row, reason = None, "A1_NOT_PRAISED"  # v13: a correct answer under 256 tokens is not copied either
         decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
         if row is not None:
             rows.append(row)
@@ -569,7 +595,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
                                      "reason": None if problem is None else "B_" + problem}
             if problem is None:
                 rows.append(note_row)
-    for pid in active if v12 else ():
+    for pid in active if v12 and not v13 else ():
         fields = references.human_solution(provenance[pid])
         if fields is not None:
             row, reason = human_row(state["records"][pid], fields, gold(pid), actors[pid].choices,
