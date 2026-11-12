@@ -23,7 +23,8 @@ from PIL import Image
 
 from fine_tuning.error_note import audit, rl, single, single_campaign as campaign
 from fine_tuning.error_note import evaluate as evaluation
-from fine_tuning.error_note.protocol import ARM
+from fine_tuning.error_note.protocol import (ARM, VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13,
+                                             plain_protocol_single)
 from fine_tuning.notebook_rl import checkpoint as ckpt, proof_eval as pe
 from fine_tuning.notebook_rl.pool_freeze import _RECORDS, _lines
 from fine_tuning.notebook_rl.vault import write_split
@@ -231,6 +232,13 @@ class SingleCampaignEvaluation(unittest.TestCase):
                                _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
         self.assertFalse((self.root / "x18").exists() or (self.root / "x19").exists())
 
+    def test_single_stage_allows_a_stopped_main_checkpoint_only_after_the_pilot(self) -> None:
+        self.assertEqual([pe._single_stage(*case) for case in ((19, 300, 219), (219, 3500, 219), (75, 1200, 219))],
+                         ["pilot", "final", "stopped"])
+        for case in ((18, 288, 219), (19, 304, 219), (0, 0, 219), (220, 3500, 219)):
+            with self.assertRaisesRegex(ValueError, "or the final"):
+                pe._single_stage(*case)
+
     # ------------------------------------------------------------------ external dev F0 / HYB
     def test_hybrid_registration_pins_dev_retention_and_pilot_export(self) -> None:
         dev = self.registered["dev"]
@@ -351,10 +359,11 @@ class SingleCampaignEvaluation(unittest.TestCase):
             proof = volume / "eval-data/proof"
             proof.mkdir(parents=True)
             subset = Path(shutil.copyfile(wrong, proof / "wrong.json"))
+            pinned = Path(shutil.copyfile(prereg, proof / "prereg.json"))
             params = {"version": eval_stage.PARAMS_VERSION, "commit": "a" * 40, "repo_root": str(pe.ROOT),
                       "python": f"{volume}/venv-0123456789abcdef/bin/python", "volume_root": str(volume),
-                      "artifact_root": str(proof / "artifacts"), "prereg": str(proof / "prereg.json"),
-                      "prereg_sha256": "1" * 64, "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
+                      "artifact_root": str(proof / "artifacts"), "prereg": str(pinned),
+                      "prereg_sha256": evaluation.file_hash(pinned), "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
                       "subset": str(subset), "subset_sha256": evaluation.file_hash(subset), "subset_tag": "wrong",
                       "arm": pe.ARM_SINGLE, "seeds": [3407], "vllm_inprocess": True, "eval_slots": "auto",
                       "checkpoint": str(self.out / "checkpoint-20"), "checkpoint_metadata_sha256": "2" * 64,
@@ -367,9 +376,282 @@ class SingleCampaignEvaluation(unittest.TestCase):
             self.assertLess(verify, next(i for i, name in enumerate(names) if name.startswith("ledger-")))
             argv = spec["steps"][verify]["argv"]
             self.assertEqual(argv[argv.index("--binding") + 1], str(self.plan_file))
+            ledgers = [step["argv"] for step in spec["steps"] if step["name"].startswith("ledger-")]
+            self.assertEqual([a[a.index("--variant") + 1] for a in ledgers], [pe.GATE_62_VARIANT])  # v7: the 8k one
             with self.assertRaises(ValueError):
                 eval_stage.plan("eval-ft", {k: v for k, v in params.items() if k not in ("reuse_export", "ft_model_ref_sha256")})
 
+    def test_final_v8_evaluates_all_900_ids_in_one_run_with_the_same_gate(self) -> None:
+        from fine_tuning.notebook_rl.pod import chain, eval_stage
+
+        with tempfile.TemporaryDirectory(prefix="single-v8-") as tmp:
+            root = Path(tmp)
+            b2 = root / "b2.jsonl"
+            b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
+            wrong, rest = write_subset(root / "wrong.json", b2), write_subset(root / "rest.json", b2, kind="rest")
+            everything = root / "all.json"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pe.main(["make-subset", "--kind", "all", "--output", str(everything),
+                                          "--b2-predictions", str(b2)]), 0)
+            ref, prereg, ledger = self.exports[20] / "model_ref.json", root / "prereg.json", root / "ledger.jsonl"
+            with self.assertRaisesRegex(ValueError, "requires --all-subset"):
+                pe.preregister(root / "x.json", wrong, rest, b2, "v8", ft_single_model_ref=ref)
+            with self.assertRaisesRegex(ValueError, "v8-only"):
+                pe.preregister(root / "y.json", wrong, rest, b2, "v7", ft_single_model_ref=ref, all_subset=everything)
+            with self.assertRaises(ValueError):  # the 342 wrong IDs are not the one-run subset
+                pe.preregister(root / "z.json", wrong, rest, b2, "v8", ft_single_model_ref=ref, all_subset=wrong)
+            with contextlib.redirect_stdout(io.StringIO()):  # the CLI path passes --all-subset through
+                self.assertEqual(pe.main(["preregister", "--output", str(prereg), "--subset", str(wrong), "--rest-subset",
+                                          str(rest), "--b2-predictions", str(b2), "--format", "v8",
+                                          "--ft-single-model-ref", str(ref), "--all-subset", str(everything)]), 0)
+            loaded, _ = pe.load_preregistration(prereg)
+            self.assertEqual(loaded["mmmu_val_budget"]["runs"], 2)
+            self.assertEqual((loaded["format"], set(loaded["evaluation_subsets"])), (pe.FORMAT_V8, {"all"}))
+            self.assertEqual([(run["arm"], run["subset"]) for run in loaded["runs"]], [("F0", "all"), (pe.ARM_SINGLE, "all")])
+            self.assertEqual(loaded["evaluation_subsets"]["all"]["ids"], sorted(IDS))
+            self.assertEqual(loaded["gate_62"]["minimum_correct"], 559)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pe.main(["verify-single-export", "--model-ref", str(ref), "--checkpoint",
+                                          str(self.out / "checkpoint-20"), "--binding", str(self.plan_file),
+                                          "--prereg", str(prereg)]), 0)
+            self.assertEqual(set(loaded["protocol_variants"]), {pe.FINAL_VARIANT_V8})
+            self.assertEqual({run["variant"] for run in loaded["runs"]}, {pe.FINAL_VARIANT_V8})
+            self.assertEqual((loaded["gate_62"]["variant"], loaded["gate_67.4"]["variant"]), (pe.FINAL_VARIANT_V8,) * 2)
+            for variant, tag in ((pe.FINAL_VARIANT_V8, "wrong"), (pe.GATE_62_VARIANT, "all")):
+                with self.assertRaisesRegex(ValueError, "not a preregistered run"):
+                    pe.ledger_start(prereg, pe.ARM_SINGLE, variant, "ft-wrong", ledger, tag)
+            eight_k = root / "eight-k.json"  # a v8 preregistration on the 8k variant is refused
+            eight_k.write_text(prereg.read_text().replace(pe.FINAL_VARIANT_V8, pe.GATE_62_VARIANT))
+            Path(f"{eight_k}.sha256").write_text(evaluation.file_hash(eight_k) + "\n")
+            with self.assertRaisesRegex(ValueError, "v7 requires one declared"):
+                pe.load_preregistration(eight_k)
+            cfg = variant_cfg(pe.FINAL_VARIANT_V8)
+            with mock.patch.object(pe, "gpu_info", return_value=("NVIDIA A40", 46068)), mock.patch.dict(os.environ):
+                os.environ.pop(pe.SLOTS_ENV, None)
+                os.environ[pe.VLLM_INPROCESS_ENV] = "0"
+                model_sha = loaded["arms"][pe.ARM_SINGLE]["model_sha256"]
+                write_run(root, "ft-all", cfg, model_sha, lambda i: i < 559, ids=sorted(IDS))
+            pe.ledger_start(prereg, pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, "ft-all", ledger, "all")
+            report = pe.analyze(prereg, [root / "ft-all"], {pe.ARM_SINGLE: ref}, ledger)
+            self.assertEqual(report["full_900"][pe.ARM_SINGLE]["items"], 900)
+            gate = pe.gate_62(report, 541)
+            self.assertEqual((gate["status"], gate["ft_single"]["correct"], gate["items"], gate["variant"]),
+                             ("PASS", 559, 900, pe.FINAL_VARIANT_V8))
+            self.assertIn("B2 conditions", gate["note"])
+            changed = copy.deepcopy(report)
+            changed["full_900"][pe.ARM_SINGLE]["seeds"]["3407"]["correct"] = 558
+            self.assertEqual(pe.gate_62(changed)["status"], "FAIL")
+            with self.assertRaises(ValueError):  # one attempt per (arm, variant, subset)
+                pe.ledger_start(prereg, pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, "again", ledger, "all")
+
+            volume = root / "volume"
+            proof = volume / "eval-data/proof"
+            proof.mkdir(parents=True)
+            subset = Path(shutil.copyfile(everything, proof / "all.json"))
+            pinned = Path(shutil.copyfile(prereg, proof / "prereg.json"))
+            params = {"version": eval_stage.PARAMS_VERSION, "commit": "a" * 40, "repo_root": str(pe.ROOT),
+                      "python": f"{volume}/venv-0123456789abcdef/bin/python", "volume_root": str(volume),
+                      "artifact_root": str(proof / "artifacts"), "prereg": str(pinned),
+                      "prereg_sha256": evaluation.file_hash(pinned), "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
+                      "subset": str(subset), "subset_sha256": evaluation.file_hash(subset), "subset_tag": "all",
+                      "arm": pe.ARM_SINGLE, "seeds": [3407], "vllm_inprocess": True, "eval_slots": "auto",
+                      "checkpoint": str(self.out / "checkpoint-20"), "checkpoint_metadata_sha256": "2" * 64,
+                      "binding": str(self.plan_file), "binding_sha256": "3" * 64, "training_commit": "f" * 40,
+                      "ft_export": str(self.exports[20]), "reuse_export": True, "ft_model_ref_sha256": "4" * 64}
+            spec = eval_stage.plan("eval-ft", params)
+            self.assertIs(chain.check_spec(spec), spec)
+            runs = [step for step in spec["steps"] if step["name"].startswith("eval-")]
+            self.assertEqual([step["name"] for step in runs], ["eval-single-ft-single-b2-s3407-all-evaluation"])
+            argv = runs[0]["argv"]
+            self.assertEqual(argv[argv.index("--protocol") + 1], f"{pe.ROOT}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml")
+            self.assertEqual([argv[i + 1] for i, token in enumerate(argv) if token == "--sample-id"], sorted(IDS))
+            ledgers = [step["argv"] for step in spec["steps"] if step["name"].startswith("ledger-")]
+            self.assertEqual([a[a.index("--variant") + 1] for a in ledgers], [pe.FINAL_VARIANT_V8])
+
+
+class SingleCampaignEvaluationV12(unittest.TestCase):
+    """The v11 export / v7 preregistration / gate-62 wiring above, on a sealed v12 campaign of 21 slots: checkpoint 19 is
+    the pilot, 20 a stopped main run (campaign-state.json names it the newest) and 21 the final. Authored fixtures only."""
+    STAGES = {19: "pilot", 20: "stopped", 21: "final"}
+    SINGLE_VERSION = VERSION_SINGLE_V12  # SingleCampaignEvaluationV13 reruns every check on a v13 plan
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        torch.set_num_threads(2)
+        tmp = tempfile.TemporaryDirectory(prefix="single-eval-v12-")
+        cls.addClassCleanup(tmp.cleanup)
+        root = cls.root = Path(tmp.name)
+        cls.base, cls.base_manifest, _, _ = fixture(root)
+        plan = plan_for(332, "train")  # 300 pilot items in 19 blocks, then 32 main items in 2 blocks
+        plan["protocol"] = plain_protocol_single("bf16", len(plan["blocks"]), version=cls.SINGLE_VERSION, token_scale=1024.,
+                                                 contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")})
+        plan["sha256"] = audit.digest({k: v for k, v in plan.items() if k != "sha256"})
+        out = cls.out = root / "campaign"
+        out.mkdir()
+        single._sealed(out / "campaign-plan.json", plan)
+        cls.plan, cls.plan_file = plan, out / "campaign-plan.json"
+        protocol, binding, blocks = plan["protocol"], campaign._binding(plan), plan["blocks"]
+        torch.manual_seed(3407)
+        bundle = fresh_tiny(cls.base, ARM, protocol)
+        optimizer, scheduler = ckpt.make_optimizer(bundle, protocol)
+        policy, done, parent = rl.policy_sha256(bundle), 0, None
+
+        def save(slot: int) -> dict:
+            nonlocal done, parent
+            with warnings.catch_warnings():  # authored zero-signal history: scheduler steps without optimizer steps
+                warnings.simplefilter("ignore")
+                for _ in range(slot - done):
+                    scheduler.step()
+            done = slot
+            cursor = {"slot": slot, "updates": slot, "consumed_problem_ids": [pid for block in blocks[:slot] for pid in block],
+                      "policy_sha256": policy, "last_transaction_sha256": None, "parent_checkpoint": parent}
+            path = out / f"checkpoint-{slot}"
+            single.save_single_continuation(bundle, optimizer, scheduler, cursor=cursor, path=path, protocol=protocol,
+                                           binding=binding, allow_save=True)
+            parent = campaign._descriptor(path / "metadata.json")
+            return cursor
+
+        cursors = {slot: save(slot) for slot in (18, 19, 20, 21)}
+        single._state(out / "campaign-state.json", {"version": campaign.VERSION, "plan_sha256": plan["sha256"],
+                      "cursor": cursors[20], "checkpoint": campaign._descriptor(out / "checkpoint-20/metadata.json"),
+                      "pending": None, "rng": None, "proofs": [], "status": "BOUNDED_STOP"})
+        cls.exports = {slot: root / f"export-{slot}" for slot in cls.STAGES}
+        for slot, target in cls.exports.items():
+            pe.export_for_eval(out / f"checkpoint-{slot}", cls.plan_file, cls.base, target, "f" * 40,
+                               _test_policy_factory=fresh_tiny, _test_base_manifest=cls.base_manifest)
+
+    def test_v12_exports_bind_plan_slot_and_refuse_other_checkpoints(self) -> None:
+        from fine_tuning.notebook_rl.export import validate_export_reference
+
+        for slot, stage in self.STAGES.items():
+            ref = json.loads((self.exports[slot] / "model_ref.json").read_text())
+            campaign_ref = ref["export"]["campaign"]
+            self.assertEqual((campaign_ref["stage"], campaign_ref["slot"], campaign_ref["plan_sha256"]),
+                             (stage, slot, self.plan["sha256"]))
+            self.assertEqual(ref["export"]["binding"], campaign._binding(self.plan))
+            self.assertEqual(ref["export"]["training_protocol"], self.plan["protocol"])
+            self.assertEqual(ref["export"]["training_protocol"]["version"], self.SINGLE_VERSION)
+            self.assertEqual(ref["data_manifest_sha256"], self.plan["sha256"])
+            validate_export_reference(self.exports[slot] / "model", ref)
+        with self.assertRaisesRegex(ValueError, "pilot \\(slot 19, 300 items\\) or the final"):
+            pe.export_for_eval(self.out / "checkpoint-18", self.plan_file, self.base, self.root / "x18", "f" * 40,
+                               _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
+        plain = write(self.root / "plain-binding.json", campaign._binding(self.plan))
+        with self.assertRaisesRegex(ValueError, "campaign-plan.json"):
+            pe.export_for_eval(self.out / "checkpoint-21", plain, self.base, self.root / "x21", "f" * 40,
+                               _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
+        # a stopped export must be the campaign's newest checkpoint: here the state names the pilot instead
+        shutil.copytree(self.out / "checkpoint-20", self.root / "alt/checkpoint-20")
+        single._state(self.root / "alt/campaign-state.json", single._read(self.out / "campaign-state.json")
+                      | {"checkpoint": campaign._descriptor(self.out / "checkpoint-19/metadata.json")})
+        with self.assertRaisesRegex(ValueError, "newest checkpoint"):
+            pe.export_for_eval(self.root / "alt/checkpoint-20", self.plan_file, self.base, self.root / "x20", "f" * 40,
+                               _test_policy_factory=fresh_tiny, _test_base_manifest=self.base_manifest)
+        self.assertFalse(any((self.root / name).exists() for name in ("x18", "x20", "x21")))
+
+    def test_v12_single_stage_follows_the_sealed_plan_length(self) -> None:
+        last = len(self.plan["blocks"])
+        self.assertEqual(last, 21)
+        self.assertEqual([pe._single_stage(*case) for case in ((19, 300, last), (20, 316, last), (last, 332, last))],
+                         ["pilot", "stopped", "final"])
+        for case in ((18, 288, last), (19, 304, last), (0, 0, last), (last + 1, 336, last)):
+            with self.assertRaisesRegex(ValueError, "or the final"):
+                pe._single_stage(*case)
+        self.assertEqual(pe._single_versions(), (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13))
+
+    def test_v12_unknown_protocol_versions_are_still_refused(self) -> None:
+        unknown = "error-note-single-response-v14"
+        ref = json.loads((self.exports[21] / "model_ref.json").read_text())
+        ref["export"]["training_protocol"]["version"] = unknown
+        with self.assertRaisesRegex(ValueError, "requires an error-note-single-response export"):
+            pe._single_model_ref(write(self.root / "unknown-ref/model_ref.json", ref))
+        changed = copy.deepcopy(self.plan)
+        changed["protocol"]["version"] = unknown
+        changed["sha256"] = audit.digest({k: v for k, v in changed.items() if k != "sha256"})
+        with self.assertRaisesRegex(ValueError, "invalid single-response protocol"):
+            pe.export_for_eval(self.out / "checkpoint-21", write(self.root / "unknown-plan.json", changed), self.base,
+                               self.root / "x-unknown", "f" * 40, _test_policy_factory=fresh_tiny,
+                               _test_base_manifest=self.base_manifest)
+        self.assertFalse((self.root / "x-unknown").exists())
+
+    def test_v12_final_v7_declares_one_export_verifies_it_and_passes_above_558(self) -> None:
+        self._v7_gate_62(21)
+
+    def test_v12_stopped_main_checkpoint_is_accepted_like_a_final_one_by_v7(self) -> None:
+        self._v7_gate_62(20)
+
+    def _v7_gate_62(self, slot: int) -> None:
+        from fine_tuning.notebook_rl.pod import chain, eval_stage
+
+        with tempfile.TemporaryDirectory(prefix="single-v12-v7-") as tmp:
+            root = Path(tmp)
+            b2 = root / "b2.jsonl"
+            b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
+            wrong, rest = write_subset(root / "wrong.json", b2), write_subset(root / "rest.json", b2, kind="rest")
+            ref, prereg, ledger = self.exports[slot] / "model_ref.json", root / "prereg.json", root / "ledger.jsonl"
+            checkpoint = self.out / f"checkpoint-{slot}"
+            with self.assertRaisesRegex(ValueError, "final BF16 single-campaign export"):
+                pe.preregister(root / "pilot.json", wrong, rest, b2, "v7", ft_single_model_ref=self.exports[19] / "model_ref.json")
+            pe.preregister(prereg, wrong, rest, b2, "v7", ft_single_model_ref=ref)
+            loaded, _ = pe.load_preregistration(prereg)
+            self.assertEqual((loaded["format"], set(loaded["arms"])), (pe.FORMAT_V7, {"F0", pe.ARM_SINGLE}))
+            self.assertEqual(loaded["arms"][pe.ARM_SINGLE]["campaign_plan_sha256"], self.plan["sha256"])
+            self.assertEqual(loaded["gate_62"]["minimum_correct"], 559)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(pe.main(["verify-single-export", "--model-ref", str(ref), "--checkpoint", str(checkpoint),
+                                          "--binding", str(self.plan_file), "--prereg", str(prereg)]), 0)
+            with self.assertRaisesRegex(ValueError, "checkpoint metadata or binding differs"):
+                pe.verify_v3_export(ref, self.out / "checkpoint-19", self.plan_file, prereg)
+            cfg = variant_cfg(pe.GATE_62_VARIANT)
+            with mock.patch.object(pe, "gpu_info", return_value=("NVIDIA A40", 46068)), mock.patch.dict(os.environ):
+                os.environ.pop(pe.SLOTS_ENV, None)
+                os.environ[pe.VLLM_INPROCESS_ENV] = "0"
+                model_sha = loaded["arms"][pe.ARM_SINGLE]["model_sha256"]
+                write_run(root, "ft-wrong", cfg, model_sha, lambda i: i < 1)
+                write_run(root, "ft-rest", cfg, model_sha, lambda i: True, ids=REST)
+            for name in ("ft-wrong", "ft-rest"):
+                pe.ledger_start(prereg, pe.ARM_SINGLE, pe.GATE_62_VARIANT, name, ledger, name.split("-")[-1])
+            report = pe.analyze(prereg, [root / "ft-wrong", root / "ft-rest"], {pe.ARM_SINGLE: ref}, ledger)
+            gate = pe.gate_62(report, 541)
+            self.assertEqual((gate["format"], gate["status"], gate["ft_single"]["correct"]),
+                             ("error-note-final-gate-single-v1", "PASS", 559))
+            self.assertEqual(gate["f0_reference"]["correct"], 541)
+            changed = copy.deepcopy(report)
+            changed["full_900"][pe.ARM_SINGLE]["seeds"]["3407"]["correct"] = 558
+            self.assertEqual(pe.gate_62(changed)["status"], "FAIL")
+            with self.assertRaises(ValueError):  # one attempt per (arm, variant, subset), even after a failure
+                pe.ledger_start(prereg, pe.ARM_SINGLE, pe.GATE_62_VARIANT, "again", ledger, "wrong")
+
+            volume = root / "volume"
+            proof = volume / "eval-data/proof"
+            proof.mkdir(parents=True)
+            subset = Path(shutil.copyfile(wrong, proof / "wrong.json"))
+            pinned = Path(shutil.copyfile(prereg, proof / "prereg.json"))
+            params = {"version": eval_stage.PARAMS_VERSION, "commit": "a" * 40, "repo_root": str(pe.ROOT),
+                      "python": f"{volume}/venv-0123456789abcdef/bin/python", "volume_root": str(volume),
+                      "artifact_root": str(proof / "artifacts"), "prereg": str(pinned),
+                      "prereg_sha256": evaluation.file_hash(pinned), "ledger": str(proof / "ledger.jsonl"), "run_prefix": "single",
+                      "subset": str(subset), "subset_sha256": evaluation.file_hash(subset), "subset_tag": "wrong",
+                      "arm": pe.ARM_SINGLE, "seeds": [3407], "vllm_inprocess": True, "eval_slots": "auto",
+                      "checkpoint": str(checkpoint), "checkpoint_metadata_sha256": "2" * 64,
+                      "binding": str(self.plan_file), "binding_sha256": "3" * 64, "training_commit": "f" * 40,
+                      "ft_export": str(self.exports[slot]), "reuse_export": True, "ft_model_ref_sha256": "4" * 64}
+            spec = eval_stage.plan("eval-ft", params)
+            self.assertIs(chain.check_spec(spec), spec)
+            names = [step["name"] for step in spec["steps"]]
+            verify = names.index("verify-single-export")
+            self.assertLess(verify, next(i for i, name in enumerate(names) if name.startswith("ledger-")))
+            argv = spec["steps"][verify]["argv"]
+            self.assertEqual(argv[argv.index("--binding") + 1], str(self.plan_file))
+            ledgers = [step["argv"] for step in spec["steps"] if step["name"].startswith("ledger-")]
+            self.assertEqual([a[a.index("--variant") + 1] for a in ledgers], [pe.GATE_62_VARIANT])
+            with self.assertRaises(ValueError):
+                eval_stage.plan("eval-ft", {k: v for k, v in params.items() if k not in ("reuse_export", "ft_model_ref_sha256")})
+
+
+class SingleCampaignEvaluationV13(SingleCampaignEvaluationV12):
+    """The same export / v7 preregistration / gate-62 checks on a sealed v13 campaign (gate v8, no H rows)."""
+    SINGLE_VERSION = VERSION_SINGLE_V13
 
 if __name__ == "__main__":
     unittest.main()
