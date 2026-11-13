@@ -15,7 +15,13 @@ refuses run role `evaluation` for a partial run). The course run (FT x mmmu-val-
 its code path here but stage `eval-course` is refused: it is not in the proof plan. Every stage pins its inputs
 first (`chain pin`: subset, prereg, ...), then appends all of its ledger STARTs, then runs; the ledger START of a
 run always precedes the run, and an omitted or replaced seed stays visible to `analyze --ledger`.
-Run ids: <run_prefix>-<arm lowercased>-8k-s<seed>-<subset_tag>-evaluation (job id = run id without -evaluation).
+The planned (arm, variant) pairs are the preregistration's runs of the arm, subset_tag and seeds (`_runs`): prereg
+v8 lists only the B2-condition variant (proof_eval.FINAL_VARIANT_V8, 32768 tokens, 1003520..4014080 pixels, 40960
+context, run with `run-eval` under the same slot rules), v3-v7 the 8k ones. Prereg v9 lists the same B2 variant on the
+ID-only halves "half-a" and "half-b" (one plan per half; half-a's job first): a half-b ledger step also passes
+`--artifact-root <artifact_root>`, so `ledger-start` refuses it unless the arm's finished half-a run, written under the
+same artifact_root and ledger by the earlier job, passes the preregistered screen gate (`proof_eval gate-screen`).
+Run ids: <run_prefix>-<arm lowercased>-<8k|b2>-s<seed>-<subset_tag>-evaluation (job id = run id without -evaluation).
 
 params (`eval-stage-params-v1`), absolute canonical paths:
   all stages   commit (40-hex clone commit, --require-commit), repo_root (the clone), python
@@ -24,7 +30,7 @@ params (`eval-stage-params-v1`), absolute canonical paths:
                prereg and subset under <volume_root>/eval-data/. `plan` reads the subset only after its
                sha256 equals subset_sha256. arm ("F0" for eval-f0; "FT-NOTE" or "FT-SOLUTION" for eval-ft),
                seeds (non-empty list of distinct ints from 3407, 3408, 3409: only these runs are planned),
-               subset_tag ("wrong" | "rest").
+               subset_tag ("wrong" | "rest"; prereg v8 "all"; prereg v9 "half-a" | "half-b").
   eval-ft      + checkpoint, checkpoint_metadata_sha256 (sha256 of <checkpoint>/metadata.json, which pins
                every checkpoint file), binding, binding_sha256, training_commit, ft_export (new dir)
                optional: reuse_export true (+ ft_model_ref_sha256): ft_export already holds the export of an
@@ -116,8 +122,8 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
     if (not isinstance(seeds, list) or not seeds or any(type(x) is not int or x not in proof_eval.SEEDS for x in seeds)
             or len(set(seeds)) != len(seeds)):
         raise ValueError(f"seeds must be a non-empty list of distinct values from {list(proof_eval.SEEDS)}")
-    if params["subset_tag"] not in proof_eval.SUBSETS:
-        raise ValueError(f"subset_tag must be one of {list(proof_eval.SUBSETS)}")
+    if params["subset_tag"] not in proof_eval.SUBSET_FILES:
+        raise ValueError(f"subset_tag must be one of {list(proof_eval.SUBSET_FILES)}")
     for key in (keys | (OPTIONAL[stage] & set(params))) - NOT_PATHS:
         value = params[key]
         if not isinstance(value, str):
@@ -147,9 +153,26 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
 
 
 def _runs(stage: str, params: dict[str, Any]) -> list[tuple[str, str]]:
-    """(arm, variant) of the requested seeds only, in the order of proof_eval.VARIANTS (= the preregistered runs)."""
-    return [(params["arm"], v) for v, (_, seed, _, role) in proof_eval.VARIANTS.items()
-            if role == "statistical" and seed in params["seeds"]]
+    """(arm, variant) of the preregistration's runs for the arm, subset_tag and requested seeds, in its order.
+
+    The preregistration is params['prereg'] when its bytes have params['prereg_sha256']. A file that is absent,
+    differs or lists no runs (fixtures) plans the 8k variants of the requested seeds, which is what every v3-v7
+    preregistration lists; the b2 variant is planned only from a preregistration that lists it. Every run is
+    checked again at run time: `chain pin` refuses other prereg bytes and `ledger-start` a run it does not list."""
+    seed_of = {v: seed for v, (_, seed, _, role) in proof_eval.VARIANTS.items() if role == "statistical"}
+    path = Path(params["prereg"])
+    raw = path.read_bytes() if path.is_file() else b""
+    loaded = json.loads(raw) if raw and sha256_bytes(raw) == params["prereg_sha256"] else None
+    runs = loaded.get("runs") if isinstance(loaded, dict) else None
+    if not isinstance(runs, list):
+        return [(params["arm"], v) for v in proof_eval.FAST_VARIANTS if seed_of[v] in params["seeds"]]
+    planned = [(params["arm"], r["variant"]) for r in runs
+               if isinstance(r, dict) and (r.get("arm"), r.get("subset")) == (params["arm"], params["subset_tag"])
+               and seed_of.get(r.get("variant")) in params["seeds"]]
+    if not planned:
+        raise ValueError(f"the preregistration lists no run of {params['arm']} on {params['subset_tag']} "
+                         f"for seeds {params['seeds']}")
+    return planned
 
 
 def subset_ids(params: dict[str, Any]) -> list[str]:
@@ -159,7 +182,7 @@ def subset_ids(params: dict[str, Any]) -> list[str]:
         raise ValueError("subset file sha256 differs from params.subset_sha256")
     loaded = json.loads(raw)
     ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
-    version = proof_eval.SUBSETS[params["subset_tag"]][0]
+    version = proof_eval.SUBSET_FILES[params["subset_tag"]][0]
     if (loaded.get("version") != version or not isinstance(ids, list) or not ids
             or loaded.get("count") != len(ids) or ids != sorted(set(ids))
             or not all(isinstance(i, str) and MMMU_ID.match(i) for i in ids)):
@@ -169,7 +192,7 @@ def subset_ids(params: dict[str, Any]) -> list[str]:
 
 def run_id(prefix: str, arm: str, variant: str, subset_tag: str) -> str:
     seed = proof_eval.VARIANTS[variant][1]
-    tag = "course" if variant == proof_eval.COURSE else "8k"
+    tag = {proof_eval.COURSE: "course", proof_eval.FINAL_VARIANT_V8: "b2"}.get(variant, "8k")
     return f"{prefix}-{arm.lower()}-{tag}-s{seed}-{subset_tag}-evaluation"
 
 
@@ -210,7 +233,9 @@ def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     for arm, variant, rid in runs:
         steps.append(_step(f"ledger-{rid}", [
             py, "-m", PROOF, "ledger-start", "--prereg", p["prereg"], "--arm", arm, "--variant", variant,
-            "--run-id", rid, "--subset", p["subset_tag"], "--ledger", p["ledger"]], [p["ledger"]]))
+            "--run-id", rid, "--subset", p["subset_tag"], "--ledger", p["ledger"],
+            # prereg v9: a half-b start re-checks the arm's finished half-a run under this root (the screen gate)
+            *(("--artifact-root", artifacts) if p["subset_tag"] == "half-b" else ())], [p["ledger"]]))
     for arm, variant, rid in runs:
         protocol = f"{repo}/{proof_eval._rel(proof_eval.VARIANTS[variant][0])}"
         flags = ["--protocol", protocol, "--hardware", f"{repo}/{HARDWARE}", "--model-ref", model_ref,
