@@ -51,6 +51,7 @@ def sampler(engine):
     value = SingleVllmSampler.__new__(SingleVllmSampler)
     value.engine, value.max_num_seqs, value.sleep, value.eos_token_ids = owner, 16, False, [EOS]
     value.loaded_policy, value.asleep = "c" * 64, False
+    value.image = {"min_pixels": 1003520, "max_pixels": 4014080}  # __init__ takes it from the plan's protocol
     return value
 
 
@@ -77,10 +78,14 @@ class StreamTests(unittest.TestCase):
         args = SimpleNamespace(policy_sha256="c" * 64, protocol_sha256="a" * 64)
         item = {"prompt_token_ids": PROMPT, "input_tokens": 3, "input_sha256": "b" * 64}
         with patch("fine_tuning.error_note.single_vllm.SingleVllmSampler.sync", return_value="c" * 64), \
-                patch("fine_tuning.notebook_rl.input_preparation.prepare_protocol_inputs", return_value=(item, [])):
+                patch("fine_tuning.notebook_rl.input_preparation.prepare_protocol_inputs",
+                      return_value=(item, [])) as prepare:
             stream = value.stream_builder(None, args, StreamStats())
             self.assertTrue(stream.continuous)
-            return list(stream([request("p0"), WAIT, request("p1")], StreamStats(), None)), engine
+            results = list(stream([request("p0"), WAIT, request("p1")], StreamStats(), None))
+        # every request is prepared with the sampler's own image config, never the module constant
+        self.assertTrue(prepare.call_args_list and all(call.args[-1] is value.image for call in prepare.call_args_list))
+        return results, engine
 
     def test_completion_records_actions_support_and_exact_prompt_and_passes_ledger_validation(self):
         good = SimpleNamespace(token_ids=[4, EOS], finish_reason="stop",

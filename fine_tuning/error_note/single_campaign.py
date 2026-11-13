@@ -21,7 +21,7 @@ from . import references, single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import (ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, VERSION_SINGLE_V13, plain_protocol_single,
+from .protocol import (ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, VERSION_SINGLE_V14, plain_protocol_single,
                        single_blocks)
 
 VERSION = "single-campaign-v2"
@@ -63,6 +63,11 @@ def _plan_check(plan: dict) -> None:
             or plan["mode"] not in ("proof", "train") or plan["blocks"] != single_blocks(ids)
             or plan["protocol"]["training_contract"]["total_slots"] != len(plan["blocks"])
             or plan["gate_rule"] != GATE_RULE):
+        raise ValueError("single campaign: invalid immutable campaign plan")
+    if plan["protocol"]["version"] == VERSION_SINGLE_V14 and not (
+            plan["protocol"]["optimizer"]["total_steps"] == plan["protocol"]["training_contract"]["schedule_steps"]
+            == plan.get("execution_max_blocks")):
+        # v14: the LR decays over exactly the blocks the plan may run (a bool or None never equals the int steps).
         raise ValueError("single campaign: invalid immutable campaign plan")
     if plan["mode"] == "train" and plan["protocol"]["precision"] != "bf16":
         raise ValueError("single campaign: HOLD NF4 training/checkpoint continuation is not validated")
@@ -197,9 +202,11 @@ def _prepare(args: argparse.Namespace) -> dict:
                  "order": args.order_sha256, "data_admission": digest(admission)}
     note_reference = references.note_reference_pin(sources, supplement, args.note_reference_supplement_sha256,
                                                    [item["problem_id"] for item in order["items"]])
-    # New plans are SINGLE v13 (2026-11-12), as v12 replaced v11; sealed v11/v12 plans still pass _plan_check.
+    # New plans are SINGLE v14 (2026-11-13), as v13 replaced v12; sealed v11/v12/v13 plans still pass _plan_check.
+    # The sealed order still holds all 219 blocks; v14's LR decays over the execution_max_blocks it may run.
     protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
-                                     note_reference=note_reference, version=VERSION_SINGLE_V13)
+                                     note_reference=note_reference, version=VERSION_SINGLE_V14,
+                                     schedule_steps=args.execution_max_blocks)
     measured = args.capacity_profile is not None
     if measured != (args.capacity_profile_sha256 is not None):
         raise ValueError("single campaign: profile requires an external SHA256")
@@ -493,7 +500,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             sampler = SingleVllmSampler(model_path, kv_cache_gib=plan["capacity"]["kv_cache_gib"],
                 max_num_seqs=plan["capacity"]["max_num_seqs"],
                 gpu_memory_utilization=plan["capacity"]["gpu_memory_utilization"],
-                sleep=plan["capacity"]["vllm_sleep"], eos_token_ids=eos if isinstance(eos, list) else [eos])
+                sleep=plan["capacity"]["vllm_sleep"], eos_token_ids=eos if isinstance(eos, list) else [eos],
+                image=plan["protocol"]["image"])
         if selected is not None:
             def checked_factory(*values):
                 fresh = factory(*values)
@@ -544,6 +552,7 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             single._state(state_path, state)
         capacity = None
         args = argparse.Namespace(**plan["capacity"])
+        args.image_cfg = plan["protocol"]["image"]  # the plan's image budget reaches the HF stream builder (v14: B2's)
         if sampler is not None:
             args.stream_builder = sampler.stream_builder
         if "profile" in plan["capacity"]:
@@ -565,7 +574,9 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             return state
         advanced = int(reconciled)
         by_id = {item["problem_id"]: item for item in plan["items"]}
-        while cursor["slot"] < len(plan["blocks"]) and advanced < max_blocks:
+        # v14's scheduler has exactly execution_max_blocks steps: no block at or past that slot is generated or updated.
+        last = plan["execution_max_blocks"] if plan["protocol"]["version"] == VERSION_SINGLE_V14 else len(plan["blocks"])
+        while cursor["slot"] < last and advanced < max_blocks:
             slot = cursor["slot"]
             if slot >= 19 and len(cursor["consumed_problem_ids"]) >= 300:
                 if train:
@@ -624,7 +635,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                     or closed["contract"]["policy_sha256"] != policy_sha256(bundle)):
                 raise ValueError("single campaign: closed rows differ from frozen block policy/order")
             encoded = [encoder(bundle, row) if encoder is not None else encode_single_row(
-                bundle.processor, bundle.model.config, row, load_images(actors[row["problem_id"]])) for row in closed["rows"]]
+                bundle.processor, bundle.model.config, row, load_images(actors[row["problem_id"]]),
+                image=plan["protocol"]["image"]) for row in closed["rows"]]
             if train:
                 cursor.update(last_transaction_sha256=digest(transaction), parent_checkpoint=state["checkpoint"])
                 if sampler is not None:
@@ -672,7 +684,7 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 if not train:
                     state["proof_summary"] = _proof_summary(state)
                 return single._state(state_path, state)
-        state["status"] = "COMPLETE" if cursor["slot"] == len(plan["blocks"]) else "BOUNDED_STOP"
+        state["status"] = "COMPLETE" if cursor["slot"] == last else "BOUNDED_STOP"
         if not train:
             state["proof_summary"] = _proof_summary(state)
         return single._state(state_path, state)

@@ -31,8 +31,9 @@ from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_V12, SINGLE_A
                        SINGLE_NOTE_MAX_TOKENS, SINGLE_OPEN_SCORER, SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V5,
                        SINGLE_ADVANTAGE_V13, SINGLE_ADVANTAGE_VERSION_V13, SINGLE_PRAISE_V13, SINGLE_REWARD_GATE_V7,
                        SINGLE_REWARD_GATE_V8, SINGLE_SPIRAL_V13, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, VERSION_SINGLE_V12,
-                       VERSION_SINGLE_V13, plain_protocol_single, single_blocks, single_prompts_sha256,
-                       single_source_baseline, spiral_window)
+                       VERSION_SINGLE_V13, SINGLE_A2_MIN_TOKENS_V14, SINGLE_ADVANTAGE_V14, SINGLE_ADVANTAGE_VERSION_V14,
+                       SINGLE_REWARD_GATE_V9, SINGLE_TAIL_PRAISE_V14, VERSION_SINGLE_V14, plain_protocol_single,
+                       single_blocks, single_prompts_sha256, single_source_baseline, spiral_window, tail_window)
 from .v4 import target_problem
 
 VERSION = "single-response-runtime-v3"
@@ -45,12 +46,16 @@ UNVERIFIABLE = "UNVERIFIABLE"
 NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
 # Protocol version -> its T1 reward gate (v11 and v12 are the runnable SINGLE protocols).
 PROTOCOL_GATES = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7,
-                  VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8}
-# Gates whose decision carries the item's option count and the v7 order (gate v8 = v7 + praise and spiral window).
-GATES_V7 = (SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8)
-TABLE_GATES = (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8)  # rows carry a penalty-table advantage
+                  VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8, VERSION_SINGLE_V14: SINGLE_REWARD_GATE_V9}
+# Gates whose decision carries the item's option count and the v7 order (gate v8 = v7 + praise and spiral window;
+# gate v9 = gate v8 + the tail window).
+GATES_V7 = (SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)
+GATES_V8 = (SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)  # decision carries praise and window
+# rows carry a penalty-table advantage
+TABLE_GATES = (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)
 CONTAINED_OPEN = "T1_CONTAINED_OPEN"
-SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12, "v13": VERSION_SINGLE_V13}
+SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12, "v13": VERSION_SINGLE_V13,
+                       "v14": VERSION_SINGLE_V14}
 NO_LESSON_CONTROL_VERSION = "no-lesson-control-diagnostic-v1"
 NO_LESSON_CONTROL_FILE = "diagnostic-no-lesson-control.json"
 _MCQ_P0_END = "\nPlease select the correct answer from the options above."  # prompts.p0_body, MCQ only
@@ -58,17 +63,17 @@ _MCQ_P0_END = "\nPlease select the correct answer from the options above."  # pr
 
 def grade_answer(verifier: Any, contract: str, pid: str, text: str, finish_reason: str, mode: str, *,
                  actor: Any = None) -> tuple[str, Any]:
-    """One response, one grade. v8 open answers delegate to single_grading.grade_single (needs the actor). The v7
+    """One response, one grade. v8 open answers (and v14's scorer v2, with unit aliases) delegate to
+    single_grading.grade_single (needs the actor). The v7
     open union keeps the V8 result unless it is not CORRECT and the unit-aware training contract grades the same
     text CORRECT; a plain contract name grades with that contract only."""
     from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
+    from .single_grading import SCORER_V2, grade_single
 
-    if contract == SINGLE_OPEN_SCORER:
-        from .single_grading import grade_single
-
+    if contract in (SINGLE_OPEN_SCORER, SCORER_V2):
         if actor is None:
             raise ValueError("single grading: the v8 open scorer needs the item actor")
-        return grade_single(verifier, actor, pid, text, finish_reason, mode)
+        return grade_single(verifier, actor, pid, text, finish_reason, mode, units=contract == SCORER_V2)
     union = contract == SINGLE_ANSWER_UNION
     value = verifier.grade(pid, text, finish_reason, mode, answer_contract=TURN1_EVAL_CONTRACT if union else contract)
     if union and value.status != "CORRECT":
@@ -174,7 +179,9 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
     first gives an open INCORRECT answer that contains the gold's words reason CONTAINED_OPEN and no penalty; its
     evidence carries the item's option count, and the gold is the source-bound provenance label. Gate v8 (v13)
     is gate v7 plus ``praise`` (an accepted row of at least 256 tokens) and ``window`` (the spiral window of a LOOP or
-    TRUNCATED_NO_LOOP row, protocol.spiral_window on its sampled token IDs)."""
+    TRUNCATED_NO_LOOP row, protocol.spiral_window on its sampled token IDs). Gate v9 (v14) adds ``tail``: the
+    protocol.tail_window of a CORRECT, normally stopped T1 of at least 256 tokens whose reason is one of the tail-praise
+    reasons (a correct answer that is no A1 target), else None."""
     try:
         v7 = isinstance(evidence, dict) and evidence.get("version") in GATES_V7
         if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
@@ -233,10 +240,16 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
                 penalty = "REASONED_WRONG"  # stopped, >= 32 tokens, no loop, a committed or read wrong answer
         decision = {"accepted": reason is None, "reason": reason, "penalty": penalty, "bindings": bindings,
                     "method": "program"}
-        if evidence["version"] == SINGLE_REWARD_GATE_V8:
+        if evidence["version"] in GATES_V8:
             actions = row["generation"]["completion_token_ids"]
             decision["praise"] = reason is None and len(actions) >= SINGLE_PRAISE_V13["min_tokens"]
             decision["window"] = spiral_window(actions) if penalty in SINGLE_SPIRAL_V13["penalties"] else None
+            if evidence["version"] == SINGLE_REWARD_GATE_V9:
+                # A repeating row never reaches the A1 answer-denial check above, so it is applied here as well.
+                decision["tail"] = tail_window(actions) if (
+                    row["status"] == "CORRECT" and stopped and reason in SINGLE_TAIL_PRAISE_V14["reasons"]
+                    and len(actions) >= SINGLE_TAIL_PRAISE_V14["min_tokens"]
+                    and answer_denial(row["target"]) is None) else None
         return decision
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError("single reward: malformed original-T1 evidence") from error
@@ -268,11 +281,20 @@ def _reward_value(decision: dict) -> int:
 def single_advantage(decision: dict, gate: str = SINGLE_REWARD_GATE) -> float:
     """v11 penalty table: accepted +1, bare/uncommitted/loop -1, reasoned-wrong/cut-off -0.5, anything else 0.
     v12 (gate v7): reasoned-wrong 0 and CONTAINED_OPEN 0; the rest as v11.
-    v13 (gate v8): accepted +1 only when praised (>= 256 tokens), else 0; cut-off -1 like a loop; the rest as v12."""
-    if gate == SINGLE_REWARD_GATE_V8:
-        key = (("accepted_praised" if decision["praise"] else "accepted") if decision["accepted"] else decision["penalty"]
-               or ("CONTAINED_OPEN" if decision["reason"] == CONTAINED_OPEN else "other"))
-        return SINGLE_ADVANTAGE_V13[key]
+    v13 (gate v8): accepted +1 only when praised (>= 256 tokens), else 0; cut-off -1 like a loop; the rest as v12.
+    v14 (gate v9): as v13, and an otherwise-0 row with a ``tail`` window is praised +1 (``tail_praised``)."""
+    if gate in GATES_V8:
+        if decision["accepted"]:
+            key = "accepted_praised" if decision["praise"] else "accepted"
+        elif decision["penalty"]:
+            key = decision["penalty"]
+        elif decision["reason"] == CONTAINED_OPEN:
+            key = "CONTAINED_OPEN"
+        elif gate == SINGLE_REWARD_GATE_V9 and decision["tail"] is not None:
+            key = "tail_praised"
+        else:
+            key = "other"
+        return (SINGLE_ADVANTAGE_V14 if gate == SINGLE_REWARD_GATE_V9 else SINGLE_ADVANTAGE_V13)[key]
     if gate == SINGLE_REWARD_GATE_V7:
         key = ("accepted" if decision["accepted"] else decision["penalty"]
                or ("CONTAINED_OPEN" if decision["reason"] == CONTAINED_OPEN else "other"))
@@ -281,7 +303,7 @@ def single_advantage(decision: dict, gate: str = SINGLE_REWARD_GATE) -> float:
 
 
 def _advantage_version(gate: str) -> str:
-    return {SINGLE_REWARD_GATE_V8: SINGLE_ADVANTAGE_VERSION_V13,
+    return {SINGLE_REWARD_GATE_V9: SINGLE_ADVANTAGE_VERSION_V14, SINGLE_REWARD_GATE_V8: SINGLE_ADVANTAGE_VERSION_V13,
             SINGLE_REWARD_GATE_V7: SINGLE_ADVANTAGE_VERSION_V12}.get(gate, SINGLE_ADVANTAGE_VERSION_V11)
 
 
@@ -329,7 +351,8 @@ def validate_single_reward(row: dict) -> dict:
         if ("baseline" in evidence or "baseline" in row
                 or evidence.get("advantage") != {"version": _advantage_version(evidence["version"]), "value": value}
                 or type(row.get("advantage")) is not float or row["advantage"] != value):
-            table = {SINGLE_REWARD_GATE_V8: "v13", SINGLE_REWARD_GATE_V7: "v12"}.get(evidence["version"], "v11")
+            table = {SINGLE_REWARD_GATE_V9: "v14", SINGLE_REWARD_GATE_V8: "v13",
+                     SINGLE_REWARD_GATE_V7: "v12"}.get(evidence["version"], "v11")
             raise ValueError(f"single reward: advantage differs from the {table} penalty table")
     elif "advantage" in evidence:
         raise ValueError("single reward: gate v5 evidence carries no penalty-table advantage")
@@ -419,6 +442,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     Gold is requested only while constructing the note/audit stage and (v12) the H targets after all generation.
     It never reaches T1/retry requests.
     ``reference`` (v11) gives the dataset reference text for a problem's note prompt only (None: no reference).
+    v14: an A2 row needs at least 256 sampled tokens (reason A2_UNDER_MIN_TOKENS), and a note is a B candidate only
+    when its own re-solve passed the v11 A2 checks (decided before the 256-token rule).
     v12 H rows read the human-solution fields from ``provenance`` (references.human_solution) and count tokens with
     ``bundle.processor.tokenizer``.
     """
@@ -426,7 +451,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     from .rl import policy_sha256
 
     _protocol_check(protocol)
-    v13 = protocol["version"] == VERSION_SINGLE_V13
+    v14 = protocol["version"] == VERSION_SINGLE_V14
+    v13 = v14 or protocol["version"] == VERSION_SINGLE_V13  # v14 keeps every v13 rule
     v12 = v13 or protocol["version"] == VERSION_SINGLE_V12  # v13 keeps v12's note filter, B rule and item evidence
     ids = [item["problem_id"] for item in items]
     if not 1 <= len(ids) <= 16 or len(set(ids)) != len(ids) or any(pid not in actors or pid not in provenance for pid in ids):
@@ -583,11 +609,14 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             row, reason = None, "A1_ANSWER_DENIAL:" + phrase
         elif row is not None and kind == "A1" and not praised:
             row, reason = None, "A1_NOT_PRAISED"  # v13: a correct answer under 256 tokens is not copied either
+        follows = row is not None and kind == "A2"  # v14: the re-solve passed every v11 A2 check
+        if v14 and follows and len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
+            row, reason = None, "A2_UNDER_MIN_TOKENS"
         decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
         if row is not None:
             rows.append(row)
-        elif kind == "A1" or not v12:
-            continue  # v11: B follows its A2; v12: every accepted note is a B candidate
+        elif kind == "A1" or not v12 or (v14 and not follows):
+            continue  # v11: B follows its A2; v12/v13: every accepted note is a B candidate; v14: B follows a passing A2
         if kind == "A2" and (note_row := _candidate(record, "B")) is not None:
             problem = (b_target_problem(note_row["target"], v12=v12)
                        or note_cause_problem(note_row["target"], record["t1"]["status"]))
@@ -885,7 +914,8 @@ def _prepare(args: argparse.Namespace) -> dict:
             raise ValueError("single runtime: reference supplement names an item outside the order")
         note_reference = references.note_reference_pin(sources, supplement, supplement_sha, ids)
     protocol = plain_protocol_single(precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
-                                     note_reference=note_reference, version=version)
+                                     note_reference=note_reference, version=version,
+                                     **({"schedule_steps": len(blocks)} if version == VERSION_SINGLE_V14 else {}))
     body = {"version": VERSION, "mode": args.mode, "source": source, "generation": generation,
             "protocol": protocol, "data_admission": admission, "fixed10": order["items"][:10],
             **({"fixed16": fixed} if getattr(args, "limit", None) == 16 else {}),
@@ -948,6 +978,7 @@ def main(argv: list[str] | None = None) -> int:
 def _main(args: argparse.Namespace) -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     plan = prepare(args)
+    args.image_cfg = plan["protocol"]["image"]  # collect.hf_single_stream_builder reads getattr(args, "image_cfg", IMAGE)
     if args.command == "prepare":
         print(json.dumps({"status": "PREPARED", "model_loaded": False, "cloud_ready": False}))
         return 0
@@ -1031,7 +1062,8 @@ def _main(args: argparse.Namespace) -> int:
         if args.command == "dry-run" and state["status"] == "ROWS_READY":
             closed = _read(args.output / "block-0" / state["rows_path"])
             encoded = [encode_single_row(bundle.processor, bundle.model.config, row,
-                                         load_images(actors[row["problem_id"]], args.build_root / "images")) for row in closed["rows"]]
+                                         load_images(actors[row["problem_id"]], args.build_root / "images"),
+                                         image=plan["protocol"]["image"]) for row in closed["rows"]]
             with ResourceLog(args.output / "backward-resources.jsonl"):
                 report = prove_single_backward(bundle, encoded, closed["contract"], precision=precision,
                                                token_budget=args.token_budget, capacity=capacity)

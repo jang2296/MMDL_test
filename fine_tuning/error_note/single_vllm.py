@@ -45,10 +45,14 @@ def support_from_logprobs(token: int, row: dict) -> tuple[float, list[int]]:
 
 
 class SingleVllmSampler:
-    """One engine for the whole campaign; `stream_builder` matches collect.hf_single_stream_builder's signature."""
+    """One engine for the whole campaign; `stream_builder` matches collect.hf_single_stream_builder's signature. The image config comes from the plan's protocol."""
 
     def __init__(self, model_path: Path, *, kv_cache_gib: float, max_num_seqs: int, gpu_memory_utilization: float,
-                 sleep: bool, eos_token_ids: Iterable[int]):
+                 sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None):
+        self.image = dict(IMAGE if image is None else image)
+        low, high = self.image.get("min_pixels"), self.image.get("max_pixels")
+        if not (isinstance(low, int) and isinstance(high, int) and 0 < low <= high):
+            raise ValueError("SINGLE vLLM: image config needs positive integer min_pixels <= max_pixels")
         from importlib import import_module
         from importlib.metadata import version
 
@@ -60,14 +64,14 @@ class SingleVllmSampler:
         from transformers import AutoConfig, AutoProcessor
 
         processor = AutoProcessor.from_pretrained(str(model_path), local_files_only=True,
-                                                  min_pixels=IMAGE["min_pixels"], max_pixels=IMAGE["max_pixels"])
-        processor.image_processor.size = {"shortest_edge": IMAGE["min_pixels"], "longest_edge": IMAGE["max_pixels"]}
+                                                  min_pixels=self.image["min_pixels"], max_pixels=self.image["max_pixels"])
+        processor.image_processor.size = {"shortest_edge": self.image["min_pixels"], "longest_edge": self.image["max_pixels"]}
         engine = VLLMRolloutEngine.__new__(VLLMRolloutEngine)  # reuse prepare/_prompt/_load_weights, own LLM kwargs
         InputPreparation.__init__(engine, processor, AutoConfig.from_pretrained(str(model_path), local_files_only=True),
-                                  IMAGE, CONTEXT_LIMIT)
+                                  self.image, CONTEXT_LIMIT)
         engine._weight_shapes = _weight_inventory(engine.model_config)
         engine.model_dir = Path(model_path).resolve()
-        kwargs = vllm_kwargs(Path(model_path), IMAGE, int(kv_cache_gib * 2**30), max_num_seqs, CONTEXT_LIMIT,
+        kwargs = vllm_kwargs(Path(model_path), self.image, int(kv_cache_gib * 2**30), max_num_seqs, CONTEXT_LIMIT,
                              gpu_memory_utilization=float(gpu_memory_utilization))
         with _nondeterministic():
             engine.llm = import_module("vllm").LLM(**kwargs, logprobs_mode="processed_logprobs",
@@ -123,7 +127,7 @@ class SingleVllmSampler:
         def prepare(request: dict) -> tuple[dict, Any, dict]:
             binding = single_request_binding(request)
             item, _ = prepare_protocol_inputs(engine.processor, engine.model_config, request["messages"],
-                                              request["images"], IMAGE)
+                                              request["images"], self.image)
             if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
                 raise ValueError("SINGLE vLLM: prompt plus completion exceeds the context limit")
             prepared = engine.prepare(RolloutRequest(binding["request_id"], None, request["messages"], request["images"],

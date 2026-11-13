@@ -442,7 +442,7 @@ print('guard boundary PASS; no model loaded')
                 patch.object(self.owner.model, "forward", side_effect=AssertionError("unexpected extra generation")), \
                 patch.object(single, "run_single_block", return_value={"status": "WAIT_NOTE_REVIEW"}) as run, \
                 patch.object(single, "prove_single_backward", return_value={"status": "HOLD", "optimizer_steps": 0}) as proof, \
-                patch("fine_tuning.error_note.train_v4.encode_single_row", side_effect=lambda processor, config, row, images: row), \
+                patch("fine_tuning.error_note.train_v4.encode_single_row", side_effect=lambda processor, config, row, images, image=None: row), \
                 patch("fine_tuning.notebook_rl.dataset.load_images", return_value=[]), \
                 patch.object(capacity, "capture_backward") as backward, redirect_stdout(io.StringIO()):
             self.assertEqual(single._main(args), 2)

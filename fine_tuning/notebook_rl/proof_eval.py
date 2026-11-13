@@ -1,8 +1,8 @@
 """Pre-registered F0 / FT-NOTE / FT-SOLUTION MMMU-val proof: merged export, 8k run wrapper, preregistration, analysis, gate.
 
-Nothing here trains or selects. ``run-eval`` only registers the statistical variant IDs (three 8k, one b2) inside
-its own process and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
-The 8k statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots (the configs' batch_size; a
+Nothing here trains or selects. ``run-eval`` only registers the three 8k variant IDs inside its own process
+and then calls the unchanged scripts/eval.sh entry point; src/ is never edited.
+The statistical (paired F0/FT) variants differ from mmmu-val-v8 only in seed, 32 slots (the configs' batch_size; a
 run executes MMDL_EVAL_SLOTS slots, see ``resolve_slots``), an 8192-token output cap, the image budget 262144..1310720 pixels (an evaluation budget, not the RL training budget) and a 24576
 context. The c16 variant files stay on disk but are not registered.
 Scope: every preregistered run is a ``--mode partial`` run on one of two subsets of the 900 MMMU-val items, both
@@ -26,9 +26,6 @@ final FT-HYB-V4 export of its last round (``verify-v4-export`` before ledger STA
 The single-response RL+SFT campaign (error_note.single_campaign) uses ``preregister --format v7 --ft-single-model-ref REF``:
 one final FT-SINGLE export, same variant/seed/subsets, PASS iff > 558 (``gate-62``); ``export`` and
 ``verify-single-export`` take the campaign's sealed campaign-plan.json as ``--binding``.
-``--format v8`` (user 2026-11-06) is v7 with one 900-item run per arm on the B2-condition variant
-mmmu-val-v8-b2-seed3407-v1 (FINAL_VARIANT_V8: mmmu-val-v8 with 32 config slots; 32768 output tokens,
-1003520..4014080 pixels, 40960 context), registered by ``run-eval`` like the 8k variants (VARIANT_LIMITS).
 Only F0 runs with the same evaluation code, registration and hardware are paired; historical counts are display only.
 
 Run ledger (append-only JSONL, hash-chained, fsynced): ``ledger-start --prereg P --arm A --variant V --subset S
@@ -82,10 +79,9 @@ FORMAT_V6 = "notebook-rl-proof-prereg-v6"  # error-note version 4 (RL + note SFT
 ARM_V4 = "FT-HYB-V4"
 ARMS_V6 = ("F0", ARM_V4)
 FORMAT_V7 = "notebook-rl-proof-prereg-v7"  # single-response RL + SFT campaign: arms F0 and FT-SINGLE
-FORMAT_V8 = "notebook-rl-proof-prereg-v8"  # v7 arms; one 900-item run per arm (subset "all")
 ARM_SINGLE = "FT-SINGLE"
 ALL_ARMS = ARMS + (ARM_V2, ARM_V3, ARM_V4, ARM_SINGLE)
-FINAL_ARMS = {FORMAT_V5: ARM_V3, FORMAT_V6: ARM_V4, FORMAT_V7: ARM_SINGLE, FORMAT_V8: ARM_SINGLE}  # one checkpoint declared before a single 900-item pass
+FINAL_ARMS = {FORMAT_V5: ARM_V3, FORMAT_V6: ARM_V4, FORMAT_V7: ARM_SINGLE}  # one checkpoint declared before a single 900-item pass
 # final arm -> (preregistration tag, export tag, checkpoint kind, gate format, gate result key)
 FINAL_TAGS = {ARM_V3: ("v5", "v3", "NOTE", "error-note-final-gate-v3", "ft_note_v3"),
               ARM_V4: ("v6", "v4", "hybrid", "error-note-final-gate-v4", "ft_hyb_v4"),
@@ -95,10 +91,6 @@ B2_CORRECT = 558
 VLLM_INPROCESS_ENV = "VLLM_ENABLE_V1_MULTIPROCESSING"
 # subset tag -> (file version, B2 key it must equal)
 SUBSETS = {"wrong": (SUBSET_VERSION, "wrong_ids"), "rest": (REST_SUBSET_VERSION, "right_ids")}
-# v8 (user 2026-11-06): one 900-item run per arm over the sorted original IDs instead of wrong first, then rest.
-# SUBSETS stays the v3-v7 shard pair; SUBSET_FILES adds the one-run subset file.
-ALL_SUBSET_VERSION = "proof-eval-subset-all-v1"
-SUBSET_FILES = SUBSETS | {"all": (ALL_SUBSET_VERSION, "all_ids")}
 SEEDS = (3407, 3408, 3409)
 # 300-item gate (claudedocs/research_self_note_finetuning_plan_20261101.md 6.3), fixed before any run
 GATE_PASS_DIFF = 6.5
@@ -106,27 +98,19 @@ GATE_COLLAPSE_TOKEN_RATIO = 0.5
 GATE_COLLAPSE_COUNT_RATIO = 1.10
 # gate-62 (claudedocs/plan_self_note_v2_20261102.md section 1): one seed, wrong + rest = 900 items, vs B2's 558
 GATE_62_VARIANT = "mmmu-val-v8-8k-seed3407-v2"
-_GATE_SE = ("one run per arm: a 900-item accuracy near 62% has a run-to-run standard error of about 1.6 points "
-            "(sqrt(0.62 * 0.38 / 900)), so exceeding 558 by 1-2 points (9-18 items) is not distinguishable from "
-            "chance; PASS is not proof of improvement. ")
-GATE_62_NOTE = _GATE_SE + ("The run also differs from B2 in the 8192-token cap, the 262144..1310720 image budget, "
-                           "the slots and the GPU")
-# prereg v8 (user 2026-11-06): the one final run uses the B2 conditions of configs/eval/mmmu_val_v8.yaml
-FINAL_VARIANT_V8 = "mmmu-val-v8-b2-seed3407-v1"
-GATE_B2_NOTE = _GATE_SE + ("The run has the B2 conditions (32768-token cap, 1003520..4014080 pixels, 40960 context) "
-                           "and differs from B2 in the checkpoint, the slots and the GPU")
-FINAL_VARIANT = {FORMAT_V8: FINAL_VARIANT_V8}  # final format -> its one variant; other final formats: GATE_62_VARIANT
+GATE_62_NOTE = ("one run per arm: a 900-item accuracy near 62% has a run-to-run standard error of about 1.6 points "
+                "(sqrt(0.62 * 0.38 / 900)), so exceeding 558 by 1-2 points (9-18 items) is not distinguishable from "
+                "chance; PASS is not proof of improvement. The run also differs from B2 in the 8192-token cap, the "
+                "262144..1310720 image budget, the slots and the GPU")
 # The evaluator's summary status of a run that finished every planned item: full runs end COMPLETE, partial
 # (--sample-id) runs end PARTIAL; anything else (INCOMPLETE, RUNNING, absent) is not finished.
 FINISHED = {"course": "COMPLETE", "statistical": "PARTIAL"}
 PARSER = "team-final-answer-v8"
 COURSE = "mmmu-val-v8"
 # variant id -> (config file, seed, max concurrent requests, role)
-FAST_VARIANTS = tuple(f"mmmu-val-v8-8k-seed{s}-v2" for s in SEEDS)
 VARIANTS = {COURSE: (ROOT / "configs/eval/mmmu_val_v8.yaml", 3407, 2, "course")} | {
-    vid: (HERE / f"eval_configs/mmmu_val_v8_8k_seed{s}.yaml", s, 32, "statistical")
-    for vid, s in zip(FAST_VARIANTS, SEEDS)} | {
-    FINAL_VARIANT_V8: (HERE / "eval_configs/mmmu_val_v8_b2_seed3407.yaml", 3407, 32, "statistical")}
+    f"mmmu-val-v8-8k-seed{s}-v2": (HERE / f"eval_configs/mmmu_val_v8_8k_seed{s}.yaml", s, 32, "statistical")
+    for s in SEEDS}
 B2_PREDICTIONS = ROOT / "analysis_exports/mmmu_20260924/team_final_v8/official_b2/predictions.jsonl"
 BASE_MODEL_REF = ROOT / "manifests/models/baseline.json"
 BOOTSTRAP_RESAMPLES = 10_000
@@ -196,7 +180,7 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
         if v3_protocol != expected or metadata["step"] != expected["optimizer"]["total_steps"]:
             tag = "v3" if version == "error-note-protocol-v3" else "v4"
             raise ValueError(f"proof_eval: {tag} export requires the final BF16 checkpoint of its fixed protocol")
-    campaign = _single_campaign_export(metadata, plan, checkpoint) if plan is not None or version in _single_versions() else None
+    campaign = _single_campaign_export(metadata, plan) if plan is not None or version == _single_version() else None
     if campaign is not None:
         v3_protocol = metadata["protocol"]
     output.mkdir(parents=True, exist_ok=False)
@@ -229,12 +213,10 @@ def export_for_eval(checkpoint: Path, binding_file: Path, base: Path, output: Pa
     return model_ref
 
 
-def _single_versions() -> tuple[str, ...]:
-    """Single-response campaign protocols an export may carry (v11 and, when the tree has them, v12 and v13)."""
-    from fine_tuning.error_note import protocol
+def _single_version() -> str:
+    from fine_tuning.error_note.protocol import VERSION_SINGLE
 
-    return tuple(v for v in (protocol.VERSION_SINGLE, getattr(protocol, "VERSION_SINGLE_V12", None),
-                             getattr(protocol, "VERSION_SINGLE_V13", None)) if v)
+    return VERSION_SINGLE
 
 
 def _binding_file(path: Path) -> tuple[dict, dict | None]:
@@ -249,22 +231,8 @@ def _binding_file(path: Path) -> tuple[dict, dict | None]:
     return (loaded["binding"] if isinstance(loaded, dict) and "binding" in loaded else loaded), None
 
 
-def _single_stage(slot: int, consumed: int, last: int) -> str:
-    """pilot (slot 19, 300 items), final (the last slot) or stopped: a main checkpoint after the pilot of a
-    campaign the user ended early (2026-11-06, length collapse), evaluated once like a final one."""
-    if slot == last:
-        return "final"
-    if (slot, consumed) == SINGLE_PILOT:
-        return "pilot"
-    if SINGLE_PILOT[0] < slot < last:
-        return "stopped"
-    raise ValueError("proof_eval: single-response export requires the pilot (slot 19, 300 items) or the final "
-                     "campaign checkpoint, or the newest checkpoint of a stopped main run")
-
-
-def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path) -> dict:
-    """The pilot, final or stopped checkpoint of the one campaign whose sealed plan binds it. A stopped one must
-    be the campaign's newest committed checkpoint (campaign-state.json beside it), so no earlier one is picked."""
+def _single_campaign_export(metadata: dict, plan: dict | None) -> dict:
+    """The pilot (slot 19 = 300 items) or final checkpoint of the one campaign whose sealed plan binds it."""
     from fine_tuning.error_note import single_campaign
     from fine_tuning.error_note.order import _ids_sha256
 
@@ -273,15 +241,10 @@ def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path)
     cursor = metadata["cursor"].get("single", {})
     single_campaign._cursor(plan, cursor, cursor.get("policy_sha256"))
     slot, consumed, last = cursor["slot"], cursor["consumed_problem_ids"], len(plan["blocks"])
-    stage = _single_stage(slot, len(consumed), last)
-    if metadata["step"] != slot:
-        raise ValueError("proof_eval: single-response checkpoint step differs from its campaign slot")
-    if stage == "stopped":
-        state = json.loads((Path(checkpoint).parent / "campaign-state.json").read_text(encoding="utf-8"))
-        if (state.get("plan_sha256") != plan["sha256"] or state["cursor"]["slot"] != slot or state.get("pending")
-                or state["checkpoint"]["file_sha256"] != sha256_file(Path(checkpoint) / "metadata.json")):
-            raise ValueError("proof_eval: a stopped single-response export must be the campaign's newest checkpoint")
-    return {"version": plan["version"], "plan_sha256": plan["sha256"], "stage": stage,
+    if metadata["step"] != slot or (slot, len(consumed)) != SINGLE_PILOT and slot != last:
+        raise ValueError("proof_eval: single-response export requires the pilot (slot 19, 300 items) or the final "
+                         "campaign checkpoint")
+    return {"version": plan["version"], "plan_sha256": plan["sha256"], "stage": "final" if slot == last else "pilot",
             "slot": slot, "updates": cursor["updates"], "consumed_ids_sha256": _ids_sha256(consumed),
             "policy_sha256": cursor["policy_sha256"]}
 
@@ -330,7 +293,7 @@ def _v4_model_ref(path: Path) -> tuple[dict, dict]:
 
 
 def _final_model_ref(path: Path, fmt: str) -> tuple[dict, dict]:
-    return {FORMAT_V6: _v4_model_ref, FORMAT_V7: _single_model_ref, FORMAT_V8: _single_model_ref}.get(fmt, _v3_model_ref)(path)
+    return {FORMAT_V6: _v4_model_ref, FORMAT_V7: _single_model_ref}.get(fmt, _v3_model_ref)(path)
 
 
 def _single_model_ref(path: Path) -> tuple[dict, dict]:
@@ -341,15 +304,14 @@ def _single_model_ref(path: Path) -> tuple[dict, dict]:
     ref = json.loads(Path(path).read_text(encoding="utf-8"))
     export = ref.get("export", {})
     protocol, campaign, binding = (export.get(key, {}) for key in ("training_protocol", "campaign", "binding"))
-    if protocol.get("version") not in _single_versions():
+    if protocol.get("version") != _single_version():
         raise ValueError("proof_eval: v7 evaluation requires an error-note-single-response export")
     single._protocol_check(protocol)
     if (ref.get("kind") != "merged" or ref.get("dtype") != "bfloat16" or not ref.get("files")
             or ref.get("base") != {"id": MODEL_ID, "revision": MODEL_REVISION}
             or ref.get("processor_revision") != MODEL_REVISION or export.get("arm") != ARM
-            or export.get("step") != campaign.get("slot") or campaign.get("stage") not in ("final", "stopped")
-            or type(campaign.get("slot")) is not int
-            or campaign["stage"] != _single_stage(campaign["slot"], 0, protocol["training_contract"]["total_slots"])
+            or campaign.get("stage") != "final" or export.get("step") != campaign.get("slot")
+            or campaign.get("slot") != protocol["training_contract"]["total_slots"]
             or ref.get("train_config_sha256") != digest(protocol)
             or binding.get("protocol_sha256") != protocol["sha256"]
             or binding.get("prompts_sha256") != protocol["prompts_sha256"]
@@ -415,12 +377,12 @@ def verify_v3_export(model_ref: Path, checkpoint: Path, binding_file: Path, prer
             or metadata["arm"] != ref["export"]["arm"] or metadata["step"] != ref["export"]["step"]
             or manifest["checkpoint_files"] != {p.name: sha256_file(p) for p in Path(checkpoint).iterdir()}
             or manifest["checkpoint_state_sha256"] != metadata["state_sha256"]
-            or arm == ARM_SINGLE and _single_campaign_export(metadata, plan, checkpoint) != ref["export"]["campaign"]):
+            or arm == ARM_SINGLE and _single_campaign_export(metadata, plan) != ref["export"]["campaign"]):
         raise ValueError(f"proof_eval: {tag} export checkpoint metadata or binding differs")
 
 
 # ---------------------------------------------------------------------------------------------
-# run wrapper: in-process registration of the statistical IDs (8k and b2); src/ files stay untouched
+# 8k run wrapper: in-process registration of exactly three IDs; src/ files stay untouched
 # ---------------------------------------------------------------------------------------------
 
 V8 = "mmmu-val-v8"
@@ -440,26 +402,17 @@ SLOT_STEP = 8
 FAST_MAX_NEW_TOKENS = 8192
 FAST_PIXELS = {"min_pixels": 262144, "max_pixels": 1310720}  # evaluation budget; the RL path (local_profile) keeps its own, smaller max_pixels
 FAST_MAX_MODEL_LEN = 24576
-# variant -> output tokens, pixels, context and the auto_slots inputs (mean context of a running request, slot floor)
-FAST_LIMITS = {"max_new_tokens": FAST_MAX_NEW_TOKENS, "pixels": FAST_PIXELS, "max_model_len": FAST_MAX_MODEL_LEN,
-               "mean_context": MEAN_CONTEXT_TOKENS, "slot_floor": FAST_SLOTS}
-B2_LIMITS = {"max_new_tokens": 32768, "pixels": {"min_pixels": 1003520, "max_pixels": 4014080}, "max_model_len": 40960,
-             "mean_context": 12000, "slot_floor": 8}  # B2 = configs/eval/mmmu_val_v8.yaml
-VARIANT_LIMITS = dict.fromkeys(FAST_VARIANTS, FAST_LIMITS) | {FINAL_VARIANT_V8: B2_LIMITS}
 REGISTERED = {vid: seed for vid, (_, seed, _, role) in VARIANTS.items() if role == "statistical"}
 PATCHED_SRC = ("src/mmdl/runtime/contracts.py", "src/mmdl/evaluation/backends/vllm_backend.py",
                "src/mmdl/evaluation/cli.py", "src/mmdl/evaluation/engine.py")
 REGISTRATION_FILE = "variant_registration.json"
 
 
-def auto_slots(total_gib: float, variant: str = GATE_62_VARIANT) -> int:
+def auto_slots(total_gib: float) -> int:
     """Slots a GPU of ``total_gib`` GiB can feed: KV memory left after weights and other vLLM memory, as running
-    requests of the variant's mean context, rounded down to a multiple of 8; never below the variant's floor
-    (8k: the 32 of the preregistered configs; b2: 8)."""
-    limits = VARIANT_LIMITS[variant]
+    requests of the mean context, rounded down to a multiple of 8; never below the 32 of the preregistered configs."""
     kv_gib = GPU_MEMORY_UTILIZATION * total_gib - WEIGHTS_GIB - OTHER_VLLM_GIB
-    return max(limits["slot_floor"],
-               math.floor(kv_gib * KV_TOKENS_PER_GIB / limits["mean_context"] / SLOT_STEP) * SLOT_STEP)
+    return max(FAST_SLOTS, math.floor(kv_gib * KV_TOKENS_PER_GIB / MEAN_CONTEXT_TOKENS / SLOT_STEP) * SLOT_STEP)
 
 
 def gpu_info() -> tuple[str | None, int | None]:
@@ -473,9 +426,8 @@ def gpu_info() -> tuple[str | None, int | None]:
         return None, None
 
 
-def resolve_slots(variant: str = GATE_62_VARIANT) -> dict:
-    """Slots of this run-eval process, resolved once: MMDL_EVAL_SLOTS = positive int | "auto" (auto_slots of the
-    variant) | unset (= 32)."""
+def resolve_slots() -> dict:
+    """Slots of this run-eval process, resolved once: MMDL_EVAL_SLOTS = positive int | "auto" | unset (= 32)."""
     raw = os.environ.get(SLOTS_ENV)
     name, total_mib = gpu_info()
     if raw is None:
@@ -483,7 +435,7 @@ def resolve_slots(variant: str = GATE_62_VARIANT) -> dict:
     elif raw == "auto":
         if total_mib is None:
             raise ValueError(f"proof_eval: {SLOTS_ENV}=auto needs nvidia-smi to report the GPU memory")
-        slots, source = auto_slots(total_mib / 1024, variant), "auto"
+        slots, source = auto_slots(total_mib / 1024), "auto"
     elif re.fullmatch(r"[1-9][0-9]*", raw):
         slots, source = int(raw), "env"
     else:
@@ -497,21 +449,21 @@ def variant_registration(protocol_id: str, resolved: dict | None = None) -> dict
     ``resolved`` = resolve_slots() (default: resolved now); its slots and GPU facts are part of the registration."""
     from mmdl.runtime import contracts
 
-    resolved = resolve_slots(protocol_id) if resolved is None else resolved
+    resolved = resolve_slots() if resolved is None else resolved
     inprocess = os.environ.get(VLLM_INPROCESS_ENV)
     return {
         **({"vllm_env": {VLLM_INPROCESS_ENV: inprocess}} if inprocess is not None else {}),
         "format": "proof-eval-variant-registration-v1", "protocol_id": protocol_id,
         "protocol_file_sha256": sha256_file(VARIANTS[protocol_id][0]),
         **resolved,
-        "registered": {pid: {"seed": seed, "parser": PARSER, "max_new_tokens": VARIANT_LIMITS[pid]["max_new_tokens"],
-                             "control_images": _fast_images(contracts, pid),
-                             "execution_profile": _fast_execution(contracts, resolved["slots"], pid)}
+        "registered": {pid: {"seed": seed, "parser": PARSER, "max_new_tokens": FAST_MAX_NEW_TOKENS,
+                             "control_images": _fast_images(contracts),
+                             "execution_profile": _fast_execution(contracts, resolved["slots"])}
                        for pid, seed in REGISTERED.items()},
         "patched": {
-            "mmdl.runtime.contracts.validate_configs": f"registered IDs: exact seed, config batch_size {FAST_SLOTS}, "
-                                                       f"{_limits_text(protocol_id)}, V8 parser; all else validated "
-                                                       "as the mmmu-val-v8 twin; other IDs unchanged",
+            "mmdl.runtime.contracts.validate_configs": "registered IDs: exact seed, config batch_size 32, 8192 output "
+                                                       "tokens, 262144..1310720 pixels, 24576 context, V8 parser; all "
+                                                       "else validated as the mmmu-val-v8 twin; other IDs unchanged",
             "mmdl.evaluation.backends.vllm_backend.VLLMBackend.__init__": "registered IDs: slot check sees 2, vLLM "
                                                                           "max_num_seqs=batch_size=slots; other IDs unchanged"},
         "src_files": {p: sha256_file(ROOT / p) for p in PATCHED_SRC},
@@ -532,24 +484,17 @@ def _record_registration(run_dir: Path, registration: dict) -> None:
     _write_once(path, json.dumps(registration, indent=2, sort_keys=True) + "\n")
 
 
-def _limits_text(pid: str) -> str:
-    limits = VARIANT_LIMITS[pid]
-    return (f"{limits['max_new_tokens']} output tokens, {limits['pixels']['min_pixels']}.."
-            f"{limits['pixels']['max_pixels']} pixels, {limits['max_model_len']} context")
+def _fast_images(contracts) -> dict:
+    return dict(contracts.CONTROL_IMAGES[V8], **FAST_PIXELS)
 
 
-def _fast_images(contracts, pid: str = GATE_62_VARIANT) -> dict:
-    return dict(contracts.CONTROL_IMAGES[V8], **VARIANT_LIMITS[pid]["pixels"])
-
-
-def _fast_execution(contracts, slots: int = FAST_SLOTS, pid: str = GATE_62_VARIANT) -> dict:
-    return dict(contracts.EXECUTION_PROFILES[V8], batch_size=slots, max_model_len=VARIANT_LIMITS[pid]["max_model_len"])
+def _fast_execution(contracts, slots: int = FAST_SLOTS) -> dict:
+    return dict(contracts.EXECUTION_PROFILES[V8], batch_size=slots, max_model_len=FAST_MAX_MODEL_LEN)
 
 
 @contextmanager
 def registered_variants(on_backend: Callable[[], None] | None = None, slots: int = FAST_SLOTS) -> Iterator[None]:
-    """Register exactly the statistical IDs (8k and b2, each with its VARIANT_LIMITS) in this process; tables and
-    functions are restored on exit.
+    """Register exactly the 8k IDs in this process; tables and functions are restored on exit.
 
     ``slots`` is what the backend executes. Registered configs keep batch_size 32 (their preregistered
     config_digest, so the resolved config of every run stays the preregistered one): the validator accepts
@@ -558,7 +503,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
     from mmdl.runtime import contracts
 
     if any(pid in contracts.CONTROL_IMAGES or pid in contracts.EXECUTION_PROFILES for pid in REGISTERED):
-        raise RuntimeError("proof_eval: statistical IDs already registered (nested use or src changed)")
+        raise RuntimeError("proof_eval: 8k IDs already registered (nested use or src changed)")
     original_validate = contracts.validate_configs
     original_init = vllm_backend.VLLMBackend.__init__
 
@@ -568,11 +513,12 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
             return original_validate(cfg, hw)
         seed, tokens = cfg["generation"].get("seed"), cfg["generation"].get("max_new_tokens")
         if (type(seed) is not int or seed != REGISTERED[pid] or cfg.get("parser") != PARSER
-                or type(tokens) is not int or tokens != VARIANT_LIMITS[pid]["max_new_tokens"]
+                or type(tokens) is not int or tokens != FAST_MAX_NEW_TOKENS
                 or cfg.get("image") != contracts.CONTROL_IMAGES[pid]
                 or cfg["execution"] != contracts.EXECUTION_PROFILES[pid]):
             raise ValueError(f"proof_eval: {pid} requires seed {REGISTERED[pid]}, config batch_size {FAST_SLOTS} "
-                             f"(this run executes {slots} slots), {_limits_text(pid)} and the V8 parser")
+                             f"(this run executes {slots} slots), 8192 output tokens, 262144..1310720 pixels, "
+                             "24576 context and the V8 parser")
         twin = copy.deepcopy(cfg)
         twin["protocol_id"], twin["generation"]["seed"], twin["generation"]["max_new_tokens"] = V8, 3407, 32768
         twin["image"] = dict(contracts.CONTROL_IMAGES[V8])
@@ -609,8 +555,8 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
 
     try:
         for pid in REGISTERED:
-            contracts.CONTROL_IMAGES[pid] = _fast_images(contracts, pid)
-            contracts.EXECUTION_PROFILES[pid] = _fast_execution(contracts, pid=pid)
+            contracts.CONTROL_IMAGES[pid] = _fast_images(contracts)
+            contracts.EXECUTION_PROFILES[pid] = _fast_execution(contracts)
         setattr(contracts, "validate_configs", validate_configs)
         setattr(vllm_backend.VLLMBackend, "__init__", init)
         yield
@@ -623,7 +569,7 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
 
 
 def run_eval(argv: list[str]) -> int:
-    """Same argv as scripts/eval.sh, for one of the registered statistical variant files only (8k or b2)."""
+    """Same argv as scripts/eval.sh, for one of the three 8k variant files only."""
     from mmdl.runtime.artifacts import default_path
 
     pre = argparse.ArgumentParser(prog="proof_eval run-eval", add_help=False)
@@ -634,11 +580,11 @@ def run_eval(argv: list[str]) -> int:
     protocol = known.protocol if known.protocol.is_absolute() else ROOT / known.protocol
     pid = yaml.safe_load(protocol.read_text(encoding="utf-8")).get("protocol_id")
     if pid not in REGISTERED or sha256_file(protocol) != sha256_file(VARIANTS[pid][0]):
-        raise ValueError("proof_eval: run-eval runs only the registered statistical variant files (8k, b2); "
+        raise ValueError("proof_eval: run-eval runs only the three preregistered 8k variant files; "
                          "the c2 course run (mmmu-val-v8) uses plain scripts/eval.sh")
     artifact_root = known.artifact_root if known.artifact_root.is_absolute() else ROOT / known.artifact_root
     run_dir = artifact_root / "runs" / known.run_id
-    resolved = resolve_slots(pid)
+    resolved = resolve_slots()
     registration = variant_registration(pid, resolved)
     print(f"proof_eval: {resolved['slots']} slots ({resolved['slots_source']}) on {resolved['gpu_name']} "
           f"{resolved['gpu_total_mib']} MiB", flush=True)
@@ -675,13 +621,12 @@ def _b2_split(path: Path) -> dict:
             or any(v != 30 for v in subjects.values()) or (len(wrong), len(right)) != (342, 558)):
         raise ValueError("proof_eval: frozen B2 V8 reference must be 900 items, 558 right / 342 wrong")
     return {"source": _rel(Path(path)), "sha256": sha256_file(path), "scoring": PARSER,
-            "wrong_ids": wrong, "right_ids": right, "all_ids": sorted(ids)}
+            "wrong_ids": wrong, "right_ids": right}
 
 
 def _subset(path: Path, b2: dict, tag: str = "wrong") -> dict:
-    """An evaluation subset file: exactly the sorted frozen B2 V8 wrong ("wrong"), right ("rest") or all ("all") IDs
-    of the same B2 file."""
-    version, key = SUBSET_FILES[tag]
+    """An evaluation subset file: exactly the sorted frozen B2 V8 wrong ("wrong") or right ("rest") IDs of the same B2 file."""
+    version, key = SUBSETS[tag]
     path = Path(path)
     loaded = json.loads(path.read_text(encoding="utf-8"))
     ids = loaded.get("sample_ids") if isinstance(loaded, dict) else None
@@ -696,8 +641,8 @@ def _subset(path: Path, b2: dict, tag: str = "wrong") -> dict:
 
 
 def make_subset(kind: str, output: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
-    """Write the "wrong" (342), "rest" (558) or "all" (900) subset file from the frozen B2 file; write-once."""
-    version, key = SUBSET_FILES[kind]
+    """Write the "wrong" (342) or "rest" (558) subset file from the frozen B2 file; write-once."""
+    version, key = SUBSETS[kind]
     b2 = _b2_split(b2_predictions)
     value = {"version": version, "purpose": f"MMMU-val evaluation subset ({kind}); evaluation only, never training",
              "source": b2["source"], "source_sha256": b2["sha256"], "count": len(b2[key]), "sample_ids": b2[key]}
@@ -735,7 +680,8 @@ def _scorer() -> dict:
 
 
 def build_preregistration(subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS) -> dict:
-    variants = {vid: _variant_entry(vid) for vid in FAST_VARIANTS}  # no course run, no b2 (v8 only)
+    variants = {vid: _variant_entry(vid) for vid, row in VARIANTS.items()
+                if row[3] == "statistical"}  # the course run is not in the proof plan
     statistical = list(variants)
     runs = [{"arm": arm, "variant": v, "subset": tag, "role": "statistical"}
             for arm in ARMS for v in statistical for tag in SUBSETS]
@@ -911,34 +857,6 @@ def build_preregistration_v7(subset: Path, rest_subset: Path, b2_predictions: Pa
     return value
 
 
-def build_preregistration_v8(subset: Path, rest_subset: Path, all_subset: Path, b2_predictions: Path,
-                             ft_model_ref: Path) -> dict:
-    """v7 with one 900-item run per arm over the sorted original IDs (the wrong/rest files only bind the B2 split)."""
-    value = build_preregistration_v7(subset, rest_subset, b2_predictions, ft_model_ref)
-    items = {"all": _subset(all_subset, _b2_split(b2_predictions), "all")}
-    value["format"] = FORMAT_V8
-    value["evaluation_subsets"] = items
-    value["protocol_variants"] = {FINAL_VARIANT_V8: _variant_entry(FINAL_VARIANT_V8)}
-    value["runs"] = [{"arm": name, "variant": FINAL_VARIANT_V8, "subset": "all", "role": "statistical"}
-                     for name in ("F0", ARM_SINGLE)]
-    for gate in ("gate_62", "gate_67.4"):
-        value[gate]["variant"] = FINAL_VARIANT_V8
-    value["paired_run_rules"] = [rule.replace("exactly the 342 (wrong) or 558 (rest) subset IDs",
-                                              "exactly the 900 sorted original IDs") for rule in value["paired_run_rules"]]
-    value["mmmu_val_budget"]["items_per_run"] = {"all": 900}
-    value["mmmu_val_budget"]["runs"] = len(value["runs"])
-    value["course_facing_run"]["rule"] = ("one final FT-SINGLE pass under the B2 conditions over the 900 sorted "
-                                          "original IDs in one run")
-    value["limitations"] = [GATE_B2_NOTE, "B2's 558 is a stored run of the same conditions with 2 concurrent requests "
-                                          "on an RTX 3090; an F0 re-run under this variant is the paired comparator "
-                                          "when it exists"]
-    value["notes"][1] = "one 900-item run per arm (user 2026-11-06: not the wrong subset first, then the rest)"
-    value["notes"].append(f"user decision 2026-11-06: the run uses the B2 conditions ({FINAL_VARIANT_V8}: "
-                          f"{_limits_text(FINAL_VARIANT_V8)}, V8 parser, P0, seed 3407), not the 8k variant; the "
-                          "historical 541 is an 8k count and stays display only")
-    return value
-
-
 def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictions: Path, arm: str, declared: dict,
                                    definition: str) -> dict:
     value = build_preregistration_v4(subset, rest_subset, b2_predictions)
@@ -957,20 +875,16 @@ def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictio
 
 def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS,
                 fmt: str = "v3", ft_v3_model_ref: Path | None = None, ft_v4_model_ref: Path | None = None,
-                ft_single_model_ref: Path | None = None, all_subset: Path | None = None) -> str:
+                ft_single_model_ref: Path | None = None) -> str:
     """Write-once preregistration plus ``<output>.sha256``; v5/v6/v7 pin a previously exported final model reference."""
     output = Path(output)
     if (fmt == "v5") != (ft_v3_model_ref is not None):
         raise ValueError("proof_eval: --format v5 requires --ft-v3-model-ref; the flag is v5-only")
     if (fmt == "v6") != (ft_v4_model_ref is not None):
         raise ValueError("proof_eval: --format v6 requires --ft-v4-model-ref; the flag is v6-only")
-    if (fmt in ("v7", "v8")) != (ft_single_model_ref is not None):
-        raise ValueError("proof_eval: --format v7/v8 requires --ft-single-model-ref; the flag is v7/v8-only")
-    if (fmt == "v8") != (all_subset is not None):
-        raise ValueError("proof_eval: --format v8 requires --all-subset; the flag is v8-only")
-    if all_subset is not None:
-        value = build_preregistration_v8(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref)
-    elif ft_single_model_ref is not None:
+    if (fmt == "v7") != (ft_single_model_ref is not None):
+        raise ValueError("proof_eval: --format v7 requires --ft-single-model-ref; the flag is v7-only")
+    if ft_single_model_ref is not None:
         value = build_preregistration_v7(subset, rest_subset, b2_predictions, ft_single_model_ref)
     elif ft_v4_model_ref is not None:
         value = build_preregistration_v6(subset, rest_subset, b2_predictions, ft_v4_model_ref)
@@ -997,19 +911,15 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
         raise ValueError("proof_eval: V8 scorer source changed since preregistration")
     if prereg["format"] in FINAL_ARMS:
         final = FINAL_ARMS[prereg["format"]]
-        tags = ("all",) if prereg["format"] == FORMAT_V8 else tuple(SUBSETS)
-        variant = FINAL_VARIANT.get(prereg["format"], GATE_62_VARIANT)
-        expected_runs = [{"arm": arm, "variant": variant, "subset": tag, "role": "statistical"}
-                         for arm in ("F0", final) for tag in tags]
+        expected_runs = [{"arm": arm, "variant": GATE_62_VARIANT, "subset": tag, "role": "statistical"}
+                         for arm in ("F0", final) for tag in SUBSETS]
         subsets = prereg["evaluation_subsets"]
-        b2_ids = sorted(prereg["b2_reference"]["wrong_ids"] + prereg["b2_reference"]["right_ids"])
-        expected_ids = ({"all": (b2_ids, 900)} if prereg["format"] == FORMAT_V8 else
-                        {"wrong": (prereg["b2_reference"]["wrong_ids"], 342), "rest": (prereg["b2_reference"]["right_ids"], 558)})
         if (set(prereg["arms"]) != {"F0", final} or prereg["runs"] != expected_runs
-                or prereg["protocol_variants"] != {variant: _variant_entry(variant)}
-                or set(subsets) != set(tags) or len(set(b2_ids)) != 900
-                or any(subsets[tag]["ids"] != ids or subsets[tag]["count"] != n for tag, (ids, n) in expected_ids.items())
-                or set().union(*(subsets[tag]["ids"] for tag in tags)) != set(b2_ids)):
+                or prereg["protocol_variants"] != {GATE_62_VARIANT: _variant_entry(GATE_62_VARIANT)}
+                or set(subsets) != set(SUBSETS)
+                or any(subsets[tag]["ids"] != prereg["b2_reference"][key] or subsets[tag]["count"] != n
+                       for tag, key, n in (("wrong", "wrong_ids", 342), ("rest", "right_ids", 558)))
+                or len(set(subsets["wrong"]["ids"]) | set(subsets["rest"]["ids"])) != 900):
             tag, _, kind, *_ = FINAL_TAGS[final]
             raise ValueError(f"proof_eval: {tag} requires one declared {kind} checkpoint, "
                              "seed 3407 and all 900 disjoint original IDs")
@@ -1042,7 +952,7 @@ def _check_event(events: list[dict], event: dict) -> None:
         return
     if not _RUN_ID.fullmatch(str(event["run_id"])) or event["run_id"] in starts:
         raise ValueError(f"proof_eval: ledger run_id invalid or already started: {event['run_id']}")
-    if event["arm"] not in ALL_ARMS or event["subset"] not in SUBSET_FILES:
+    if event["arm"] not in ALL_ARMS or event["subset"] not in SUBSETS:
         raise ValueError(f"proof_eval: ledger arm {event['arm']!r} or subset {event['subset']!r} is not known")
     if any(e["preregistration_sha256"] != event["preregistration_sha256"] for e in starts.values()):
         raise ValueError("proof_eval: one ledger serves one preregistration")
@@ -1349,15 +1259,9 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
     subsets = {tag: _subset_report(sorted(row["ids"]), {
         arm: {str(r["seed"]): r for key, r in runs.items() if key[0] == arm and key[2] == tag} for arm in arms
         if any(key[0] == arm and key[2] == tag for key in runs)}) for tag, row in prereg["evaluation_subsets"].items()}
+    total = subsets["wrong"]["n"] + subsets["rest"]["n"]
     full_900: dict[str, Any] = {}
-    for arm in arms if "all" in subsets else ():  # v8: the one 900-item run is the full count
-        cells = {s: {"correct": c["correct"], "accuracy": c["correct"] / subsets["all"]["n"]}
-                 for s, c in subsets["all"]["arms"].get(arm, {"seeds": {}})["seeds"].items()}
-        if cells:
-            full_900[arm] = {"items": subsets["all"]["n"], "seeds": cells,
-                             "mean_correct": _mean(c["correct"] for c in cells.values())}
-    for arm in arms if "all" not in subsets else ():
-        total = subsets["wrong"]["n"] + subsets["rest"]["n"]
+    for arm in arms:
         wrong = subsets["wrong"]["arms"].get(arm, {"seeds": {}})["seeds"]
         rest = subsets["rest"]["arms"].get(arm, {"seeds": {}})["seeds"]
         cells = {s: {"correct": wrong[s]["correct"] + rest[s]["correct"], "accuracy": (wrong[s]["correct"] + rest[s]["correct"]) / total,
@@ -1467,7 +1371,6 @@ def gate_v3(results: dict, target_percent: float, f0_reference: int | None = Non
                          "(v4: a v6 preregistration; single campaign: v7)")
     _require_same_slots_and_gpu(results.get("runs", []))
     arm = FINAL_ARMS[results["preregistration_format"]]
-    variant = FINAL_VARIANT.get(results["preregistration_format"], GATE_62_VARIANT)
     _, tag, _, gate_format, result_key = FINAL_TAGS[arm]
     seed = "3407"
     block = results["full_900"].get(arm, {})
@@ -1489,7 +1392,7 @@ def gate_v3(results: dict, target_percent: float, f0_reference: int | None = Non
         paired = {"correct": f0["correct"], "accuracy": f0["accuracy"], "ft_minus_f0": ft["correct"] - f0["correct"],
                   "mcnemar": mcnemar_exact(truth["F0"], truth[arm]), "conditions": "same current evaluation registration"}
     return {"format": gate_format, "not_proof_of_improvement": True,
-            "preregistration_sha256": results.get("preregistration_sha256"), "variant": variant, "seed": 3407,
+            "preregistration_sha256": results.get("preregistration_sha256"), "variant": GATE_62_VARIANT, "seed": 3407,
             "arm": arm, "items": 900, "target_percent": target_percent, "minimum_correct": minimum,
             "status": "PASS" if ft["correct"] >= minimum else "FAIL", result_key: ft,
             "rule": f"PASS iff the one final {arm} 900-item V8 correct count >= {minimum} (> {target_percent}%)",
@@ -1498,7 +1401,7 @@ def gate_v3(results: dict, target_percent: float, f0_reference: int | None = Non
                 "correct": f0_reference, "accuracy": f0_reference / 900,
                 "source": "historical F0 under different conditions/registration; display only, never paired or part of the rule"},
             "b2_correct": B2_CORRECT, "margin_vs_b2": ft["correct"] - B2_CORRECT,
-            "note": GATE_B2_NOTE if variant == FINAL_VARIANT_V8 else GATE_62_NOTE}
+            "note": GATE_62_NOTE}
 
 
 def render_markdown(report: dict) -> str:
@@ -1531,7 +1434,7 @@ def render_markdown(report: dict) -> str:
                   for s in subjects]
         lines.append("")
     if report["full_900"]:
-        lines += ["## Full 900 (wrong + rest, or the one v8 run; same arm and seed)", "", "| arm | seed | correct | accuracy |", "|---|---|---|---|"]
+        lines += ["## Full 900 (wrong + rest, same arm and seed)", "", "| arm | seed | correct | accuracy |", "|---|---|---|---|"]
         lines += [f"| {arm} | {seed} | {c['correct']} | {pct(c['accuracy'])}% |"
                   for arm, block in report["full_900"].items() for seed, c in block["seeds"].items()]
         lines.append("")
@@ -1560,7 +1463,7 @@ def main(argv: list[str] | None = None) -> int:
         for flag in ("model-ref", "checkpoint", "binding", "prereg"):
             check_export.add_argument(f"--{flag}", type=Path, required=True)
     mk = sub.add_parser("make-subset", help="write the wrong (342) or rest (558) evaluation subset file from the B2 file")
-    mk.add_argument("--kind", choices=tuple(SUBSET_FILES), required=True)
+    mk.add_argument("--kind", choices=tuple(SUBSETS), required=True)
     mk.add_argument("--output", type=Path, required=True)
     mk.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
     pre = sub.add_parser("preregister", help="write the frozen preregistration and its .sha256")
@@ -1568,11 +1471,9 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--subset", type=Path, required=True, help="proof-eval-subset-v1 JSON: the B2 V8 wrong IDs")
     pre.add_argument("--rest-subset", type=Path, required=True, help="proof-eval-subset-rest-v1 JSON: the B2 V8 right IDs")
     pre.add_argument("--b2-predictions", type=Path, default=B2_PREDICTIONS)
-    pre.add_argument("--all-subset", type=Path, help="v8 only: proof-eval-subset-all-v1 JSON, the 900 sorted original IDs")
-    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6", "v7", "v8"), default="v3",
+    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6", "v7"), default="v3",
                      help=f"v3 = {FORMAT}, v4 = {FORMAT_V4}, v5 = {FORMAT_V5} (final FT-NOTE-V3, declared checkpoint), "
-                          f"v6 = {FORMAT_V6} (final FT-HYB-V4), v7 = {FORMAT_V7} (final FT-SINGLE), "
-                          f"v8 = {FORMAT_V8} (final FT-SINGLE, one 900-item run)")
+                          f"v6 = {FORMAT_V6} (final FT-HYB-V4), v7 = {FORMAT_V7} (final FT-SINGLE)")
     pre.add_argument("--ft-v3-model-ref", type=Path, help="required for v5; final NOTE export fixed before evaluation")
     pre.add_argument("--ft-v4-model-ref", type=Path, help="required for v6; final hybrid export fixed before evaluation")
     pre.add_argument("--ft-single-model-ref", type=Path, help="required for v7; final campaign export fixed before evaluation")
@@ -1581,7 +1482,7 @@ def main(argv: list[str] | None = None) -> int:
     start.add_argument("--prereg", type=Path, required=True)
     start.add_argument("--arm", choices=ALL_ARMS, required=True)
     start.add_argument("--variant", required=True, help="a preregistered protocol variant id")
-    start.add_argument("--subset", choices=tuple(SUBSET_FILES), required=True)
+    start.add_argument("--subset", choices=tuple(SUBSETS), required=True)
     start.add_argument("--run-id", required=True, help="the run directory name artifact_root/runs/<run-id>")
     start.add_argument("--ledger", type=Path, required=True)
     fail = sub.add_parser("ledger-fail", help="record a started run as FAILED (refused for a finished COMPLETE/PARTIAL run)")
@@ -1627,7 +1528,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref, all_subset=args.all_subset)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset)
         print(f"LEDGER_STARTED {event['arm']} {event['variant']} {event['subset']} {event['run_id']}")

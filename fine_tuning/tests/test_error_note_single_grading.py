@@ -15,7 +15,8 @@ import unittest
 from fine_tuning.error_note import single
 from fine_tuning.error_note.contract import (a2_target_problem, answer_denial, hint_leak_single, note_prompt_single,
                                             parse_note_v2)
-from fine_tuning.error_note.single_grading import grade_single, normalize_final
+from fine_tuning.error_note.single_grading import (NORMALIZATION_RULES, NORMALIZATION_RULES_V2, SCORER, SCORER_V2,
+                                                   _bare, _canonical, grade_single, normalize_final)
 from fine_tuning.notebook_rl.schema import VerifierItem
 from fine_tuning.notebook_rl.verifier import Verifier
 from fine_tuning.tests.test_error_note_single_contract import note_record
@@ -274,6 +275,72 @@ class StoredCycleRegression(unittest.TestCase):
         for key in sorted(REVIEWED_WRONG & set(seen)):
             with self.subTest(wrong=key):
                 self.assertNotEqual(seen[key], "CORRECT")
+
+
+class ScorerV2Units(unittest.TestCase):
+    """Scorer v2 (units=True): a number with a length/area unit is the bare number; v1 (units=False) is unchanged."""
+
+    MEASURED = (  # gold, committed answer, scorer v1 status (observed before v2 existed)
+        ("855", "\\boxed{855} yd^2", "UNVERIFIABLE"), ("25.1", "\\boxed{25.1} in", "INCORRECT"),
+        ("21", "$ \\boxed{21} $ square feet", "INCORRECT"), ("8.6", "8.6 m", "INCORRECT"),
+        ("10", "\\boxed{10} inches", "INCORRECT"), ("46", "\\boxed{46} yards", "INCORRECT"),
+        ("162", "\\boxed{162} square meters", "INCORRECT"), ("1.5", "\\boxed{1.5} m^2", "UNVERIFIABLE"))
+
+    @staticmethod
+    def grade(gold, answer, units):
+        verifier = AuthoredVerifier()
+        actor = verifier.add("p", gold, "decimal", {"abs_tol": "0.000001"})
+        return grade_single(verifier, actor, "p", f"Compute the area.\n\nFinal Answer: {answer}", "stop", "plain",
+                            units=units)
+
+    def test_measured_forms_are_correct_under_v2_and_keep_their_v1_status(self):
+        for gold, answer, v1_status in self.MEASURED:
+            with self.subTest(answer=answer):
+                self.assertEqual(self.grade(gold, answer, False)[0], v1_status)
+                self.assertEqual(self.grade(gold, answer, True), ("CORRECT", gold))
+
+    def test_a_wrong_number_with_a_unit_stays_incorrect_and_nothing_is_converted(self):
+        for gold, answer in (("900", "\\boxed{855} yd^2"), ("5", "8.6 m"), ("21", "\\boxed{12} square feet"),
+                             ("855000", "\\boxed{855} m")):
+            with self.subTest(answer=answer):
+                self.assertEqual(self.grade(gold, answer, True)[0], "INCORRECT")
+
+    def test_bare_accepts_exponents_and_one_unit_abbreviation(self):
+        for text, number in (("855 yd^2", "855"), ("25.1 in", "25.1"), ("8.6 m", "8.6"), ("1.5 m^2", "1.5"),
+                             ("21 square feet", "21"), ("10 inches", "10"), ("162 square meters", "162"),
+                             ("12 cm^{2}", "12"), ("7 m2", "7"), ("3 ft", "3"), ("40%", "40"), ("28.5°", "28.5"),
+                             ("7 m²", "7")):
+            with self.subTest(text=text):
+                self.assertEqual(_bare(_canonical(text, True), True), number)
+        self.assertIsNone(_bare("8.6 m"))  # v1: unchanged
+        self.assertIsNone(_bare("25.1 in"))
+        self.assertIsNone(_bare("855 yd^2"))
+
+    def test_bare_keeps_v1_for_everything_that_is_not_a_unit(self):
+        for text in ("5 in 3", "3 to 4", "2 times", "5 m per s", "5 of 10", "x = 3", "10 m and 20 m", "5 m 2", "3 m^4",
+                     "2 times^2", "4 in the", "5 m^-1"):
+            with self.subTest(text=text):
+                self.assertIsNone(_bare(text, True))
+        for text in ("5 meters per second", "31.00 thousand", "3 parts"):  # multi-word suffixes follow v1's rule
+            with self.subTest(text=text):
+                self.assertEqual(_bare(text, True), _bare(text))
+                self.assertIsNotNone(_bare(text, True))
+
+    def test_canonical_moves_a_boxed_number_before_its_unit_text(self):
+        for text, expected in (("\\boxed{855} yd^2", "855 yd^2"), ("$ \\boxed{21} $ square feet", "21 square feet"),
+                               ("\\boxed{855}", "855"), ("\\boxed{1,234} m", "1234 m"),
+                               ("$\\boxed{10}\\ \\text{inches}$", "10 inches"),
+                               ("\\boxed{x+1} cm", "\\boxed{x+1} cm"), ("area \\boxed{5} cm", "area \\boxed{5} cm"),
+                               ("\\boxed{1} \\boxed{2} cm", "\\boxed{1} \\boxed{2} cm")):
+            with self.subTest(text=text):
+                self.assertEqual(_canonical(text, True), expected)
+        self.assertEqual(_canonical("\\boxed{855} yd^2"), "\\boxed{855} yd^2")  # v1: unchanged
+        self.assertEqual(_canonical("$ \\boxed{21} $ square feet"), "$ \\boxed{21} $ square feet")
+
+    def test_scorer_names_and_rules(self):
+        self.assertNotEqual(SCORER_V2, SCORER)
+        self.assertEqual(NORMALIZATION_RULES_V2[:len(NORMALIZATION_RULES)], NORMALIZATION_RULES)
+        self.assertGreater(len(NORMALIZATION_RULES_V2), len(NORMALIZATION_RULES))
 
 
 if __name__ == "__main__":

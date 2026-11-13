@@ -15,8 +15,10 @@ from unittest.mock import patch
 import torch
 
 from fine_tuning.error_note import audit, references, rl, single, single_campaign as campaign, train_v4
-from fine_tuning.error_note.contract import REFERENCE_HEADER
-from fine_tuning.error_note.protocol import _digest, plain_protocol_single, single_blocks
+from fine_tuning.error_note.contract import IMAGE, REFERENCE_HEADER
+from fine_tuning.error_note.protocol import (SINGLE_IMAGE_V14, VERSION_SINGLE_V14, _digest, plain_protocol_single,
+                                            single_blocks)
+from fine_tuning.error_note.single_grading import SCORER_V2
 from fine_tuning.notebook_rl import checkpoint
 from fine_tuning.tests import test_error_note_single_runtime as runtime_fixture
 from fine_tuning.tests.test_error_note_single_loss import (as_v10, bind_reward_fixture, block, perturbed_factory,
@@ -41,15 +43,19 @@ def setUpModule():
 def tearDownModule():
     _SHORT.stop()
 
-def plan_for(count=32, mode="proof"):
+def plan_for(count=32, mode="proof", execution_max_blocks=None):
+    """A v11 fixture plan; with ``execution_max_blocks`` a v14 plan whose LR schedule spans exactly that many blocks."""
     items = [{"problem_id": f"p{i}", "subject": "Biology", "source": "authored-test"} for i in range(count)]
     blocks = single_blocks([x["problem_id"] for x in items])
+    v14 = {} if execution_max_blocks is None else {"version": VERSION_SINGLE_V14, "schedule_steps": execution_max_blocks}
     protocol = plain_protocol_single("bf16", len(blocks),
-        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024.)
+        contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024., **v14)
     body = {"version": campaign.VERSION, "mode": mode, "items": items, "blocks": blocks, "protocol": protocol,
             "source": {"authored_fixture": True}, "generation": {"model_files_sha256": "b" * 64},
             "capacity": {"max_num_seqs": 1, "max_num_batched_tokens": 24576, "token_budget": 0, "context_limit": 24576, "engine": "hf"},
             "gate_rule": campaign.GATE_RULE, "dev_ids_sha256": "c" * 64, "retention_ids_sha256": "d" * 64}
+    if execution_max_blocks is not None:
+        body["execution_max_blocks"] = execution_max_blocks
     return body | {"sha256": audit.digest(body)}
 
 
@@ -357,6 +363,12 @@ class PrepareTests(CampaignCase):
             stack.enter_context(patch.object(references, "note_reference", side_effect=lambda item, extra=None: "ref" if extra else None))
             prepared = campaign.prepare(args)
             self.assertEqual(len(prepared["blocks"]), 219)
+            # A new plan is SINGLE v14: the LR schedule spans the plan's execution_max_blocks, not all 219 slots.
+            self.assertEqual(prepared["protocol"]["version"], VERSION_SINGLE_V14)
+            self.assertEqual(prepared["protocol"]["optimizer"]["total_steps"], args.execution_max_blocks)
+            self.assertEqual(prepared["protocol"]["training_contract"]["schedule_steps"], args.execution_max_blocks)
+            self.assertEqual(prepared["protocol"]["training_contract"]["total_slots"], 219)
+            self.assertEqual(prepared["protocol"]["image"], SINGLE_IMAGE_V14)
             self.assertEqual(prepared["protocol"]["training_contract"]["note_reference"],
                 {"version": references.REFERENCE_VERSION, "fields_sha256": references.fields_sha256(),
                  "supplement_sha256": args.note_reference_supplement_sha256, "max_chars": references.REFERENCE_MAX_CHARS,
@@ -733,6 +745,73 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
                 torch.testing.assert_close(restored[key], original[key], rtol=0, atol=0)
         self.assertTrue(torch.equal(checkpoint.capture_rng()["torch"], reference_rng["torch"]))
 
+    # v14: the LR schedule spans execution_max_blocks, the campaign never passes that slot, images follow the plan.
+    def test_plan_check_requires_schedule_steps_to_equal_the_execution_block_limit(self):
+        plan = plan_for(34, "train", execution_max_blocks=2)
+        campaign._plan_check(plan)
+        self.assertEqual((plan["protocol"]["optimizer"]["total_steps"],
+                          plan["protocol"]["training_contract"]["schedule_steps"], len(plan["blocks"])), (2, 2, 3))
+        for limit in (1, 3, None, True):
+            changed = copy.deepcopy(plan)
+            changed["execution_max_blocks"] = limit
+            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "invalid immutable campaign plan"):
+                campaign._plan_check(reseal(changed))
+        del plan["execution_max_blocks"]
+        with self.assertRaisesRegex(ValueError, "invalid immutable campaign plan"):
+            campaign._plan_check(reseal(plan))
+        campaign._plan_check(plan_for(34, "train"))  # a v11 plan carries no schedule_steps and is checked as before
+
+    def test_campaign_stops_at_the_execution_limit_and_a_further_advance_runs_no_block(self):
+        self.plan = plan_for(34, "train", execution_max_blocks=2)
+        with patch.object(single, "run_single_block", side_effect=self.real_closed) as collect:
+            first = self.execute_train()
+            self.assertEqual((first["status"], first["cursor"]["slot"], first["cursor"]["updates"]), ("BOUNDED_STOP", 1, 1))
+            last = self.execute_train()
+            self.assertEqual((last["status"], last["cursor"]["slot"], last["cursor"]["updates"]), ("COMPLETE", 2, 2))
+            with patch.object(single, "run_joint_single_update", side_effect=AssertionError("block past the schedule")):
+                again = self.execute_train()
+        self.assertEqual((again["status"], again["cursor"]["slot"]), ("COMPLETE", 2))
+        self.assertEqual(collect.call_count, 2)  # slot 2 (the third block) was never generated
+        self.assertEqual(again["cursor"]["consumed_problem_ids"], [f"p{i}" for i in range(32)])
+        self.assertFalse((self.out / "block-2").exists())
+        runtime = torch.load(self.out / "checkpoint-2/runtime.pt", weights_only=True)
+        self.assertEqual(runtime["scheduler"]["last_epoch"], 2)  # the scheduler took exactly its schedule_steps
+
+    def test_plan_image_config_reaches_generation_and_training_inputs(self):
+        for limit, expected in ((1, SINGLE_IMAGE_V14), (None, IMAGE)):
+            with self.subTest(v14=limit is not None):
+                self.plan = plan_for(2, "train", execution_max_blocks=limit)
+                self.assertEqual(self.plan["protocol"]["image"], expected)
+                seen = {}
+
+                def collect(owner, **kwargs):
+                    seen["image_cfg"] = kwargs["stream_args"].image_cfg
+                    return self.real_closed(owner, **kwargs)
+
+                def encode(processor, model_config, row, images, *, image=None):
+                    seen["encode_image"] = image
+                    return self.encode(None, row)
+
+                output = self.out / f"image-{limit}"
+                with patch.object(single, "run_single_block", side_effect=collect), \
+                        patch.object(train_v4, "encode_single_row", side_effect=encode):
+                    campaign.run_campaign(self.plan, output=output, model_path=Path("unused"), actors={"p0": object(),
+                        "p1": object()}, provenance={}, gold=lambda _: "B", grade=lambda *args: ("CORRECT", "B"),
+                        load_images=lambda _: [], policy_factory=tiny_factory, allow_update=True, allow_save=True)
+                self.assertEqual(seen, {"image_cfg": expected, "encode_image": expected})
+
+    def test_vllm_sampler_is_built_with_the_plan_image_config(self):
+        from fine_tuning.error_note import single_vllm
+
+        self.plan = plan_for(2, "train", execution_max_blocks=1)
+        self.plan["capacity"] |= {"engine": "vllm", "kv_cache_gib": 1., "gpu_memory_utilization": .5, "vllm_sleep": False}
+        reseal(self.plan)
+        with patch.object(single, "run_single_block", side_effect=self.real_closed), \
+                patch("transformers.GenerationConfig.from_pretrained", return_value=SimpleNamespace(eos_token_id=[7])), \
+                patch.object(single_vllm, "SingleVllmSampler") as sampler:
+            self.execute_train()
+        self.assertEqual(sampler.call_args.kwargs["image"], SINGLE_IMAGE_V14)
+
 
 class UnionGradingTests(unittest.TestCase):
     """The campaign/CLI grade closure: one response, V8 first, training-answer-v2 only to turn it CORRECT."""
@@ -768,7 +847,11 @@ class UnionGradingTests(unittest.TestCase):
         with patch("fine_tuning.error_note.single_grading.grade_single", return_value=("CORRECT", "3.84")) as graded:
             self.assertEqual(single.grade_answer("verifier", scorer, "p", "t", "stop", "plain", actor="actor"),
                              ("CORRECT", "3.84"))
-        graded.assert_called_once_with("verifier", "actor", "p", "t", "stop", "plain")
+        # grade_answer now passes the unit switch explicitly: off for the v8 scorer, on for v14's scorer v2.
+        graded.assert_called_once_with("verifier", "actor", "p", "t", "stop", "plain", units=False)
+        with patch("fine_tuning.error_note.single_grading.grade_single", return_value=("CORRECT", "3.84")) as graded_v2:
+            single.grade_answer("verifier", SCORER_V2, "p", "t", "stop", "plain", actor="actor")
+        graded_v2.assert_called_once_with("verifier", "actor", "p", "t", "stop", "plain", units=True)
         with self.assertRaisesRegex(ValueError, "needs the item actor"):
             single.grade_answer("verifier", scorer, "p", "t", "stop", "plain")
 

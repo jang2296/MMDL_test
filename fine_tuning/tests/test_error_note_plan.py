@@ -343,5 +343,67 @@ class SingleSupplementPlanTests(unittest.TestCase):
                     planner.plan(stage, self.params(stage, **changes))
 
 
+def _after(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+class SingleDirectBlocksTests(unittest.TestCase):
+    """Optional execution_max_blocks (single-direct only): absent keeps the 219-block plan."""
+
+    @staticmethod
+    def steps(**changes: object) -> list[dict]:
+        return planner.plan("single-direct", single_params("single-direct", **changes))["steps"]
+
+    def test_absent_key_keeps_the_219_block_plan(self) -> None:
+        steps = {step["name"]: step for step in self.steps()}
+        campaign = single_params("single-direct")["out_root"] + "/campaign"
+        flagged = [step for step in steps.values() if "--execution-max-blocks" in step["argv"]]
+        self.assertEqual(len(flagged), 6)
+        for step in flagged:
+            self.assertEqual(_after(step["argv"], "--execution-max-blocks"), "219", step["name"])
+        self.assertEqual(_after(steps["advance-main"]["argv"], "--max-blocks"), "200")
+        self.assertEqual(steps["advance-main"]["expect_files"], [f"{campaign}/checkpoint-219/metadata.json"])
+        self.assertEqual(_after(steps["export-219"]["argv"], "--checkpoint"), f"{campaign}/checkpoint-219")
+
+    def test_explicit_219_equals_absent_key(self) -> None:
+        self.assertEqual(self.steps(execution_max_blocks=219), self.steps())
+        self.assertIn("export-219", [step["name"] for step in self.steps(execution_max_blocks=219)])
+
+    def test_short_campaign_uses_its_length_in_every_step(self) -> None:
+        spec = planner.plan("single-direct", single_params("single-direct", execution_max_blocks=64))
+        self.assertIs(chain.check_spec(spec), spec)
+        steps = spec["steps"]
+        default = [step["name"] for step in self.steps() if not step["name"].startswith("export")]
+        names = [step["name"] for step in steps]
+        self.assertEqual(names, [name.replace("219", "64") for name in default])
+        self.assertFalse(any(name.startswith("export") for name in names))
+        self.assertEqual(names[-1], "reload-64")
+        by_name = {step["name"]: step for step in steps}
+        flagged = [step for step in steps if "--execution-max-blocks" in step["argv"]]
+        self.assertEqual(len(flagged), 6)
+        for step in flagged:
+            self.assertEqual(_after(step["argv"], "--execution-max-blocks"), "64", step["name"])
+        campaign = single_params("single-direct")["out_root"] + "/campaign"
+        self.assertEqual(_after(by_name["advance-1"]["argv"], "--max-blocks"), "1")
+        self.assertEqual(_after(by_name["advance-pilot"]["argv"], "--max-blocks"), "18")
+        self.assertEqual(_after(by_name["advance-main"]["argv"], "--max-blocks"), "45")
+        self.assertIn("--direct-main", by_name["advance-main"]["argv"])
+        self.assertEqual(by_name["advance-main"]["expect_files"], [f"{campaign}/checkpoint-64/metadata.json"])
+
+    def test_refused_values(self) -> None:
+        for value in (19, 220, True, "64", 64.0):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                    ValueError, "execution_max_blocks must be an integer in 20..219"):
+                self.steps(execution_max_blocks=value)
+        for value in (20, 219):
+            with self.subTest(value=value):
+                self.assertTrue(self.steps(execution_max_blocks=value))
+
+    def test_key_refused_for_single_main_and_single_pilot(self) -> None:
+        for stage in ("single-main", "single-pilot"):
+            with self.subTest(stage=stage), self.assertRaisesRegex(ValueError, "unknown.*execution_max_blocks"):
+                planner.plan(stage, single_params(stage, execution_max_blocks=64))
+
+
 if __name__ == "__main__":
     unittest.main()

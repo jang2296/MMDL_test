@@ -37,6 +37,8 @@ checkpoint to <volume_root>/eval-data/proof/export-single-final. The one MMMU pa
 prereg v7): a training job never carries an MMMU evaluation.
 single-direct (v5, user 2026-11-06; runs under job stage single-main): pins -> advance 1 -> reload -> advance 18 ->
 reload checkpoint-19 -> advance --continue-main --direct-main 200 (no external-dev gate) -> reload -> export the final checkpoint.
+Optional `execution_max_blocks` (integer 20..219, this stage only) replaces the 219-block total: every campaign call carries it,
+advance-main runs total-19 blocks instead of 200, and the final checkpoint is checkpoint-<total>; a shorter campaign's checkpoint is exported by the evaluation stage, not by this plan.
 """
 from __future__ import annotations
 
@@ -293,7 +295,8 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
 def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     paths, hashes, kinds = SINGLE_EXTRA[stage]
     keys = SINGLE_KEYS | set(paths) | set(hashes)
-    missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys)
+    optional = {"execution_max_blocks"} if stage == "single-direct" else set()
+    missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys - optional)
     if missing or unknown:
         raise ValueError(f"params keys: missing {missing}, unknown {unknown}")
     if params["version"] != PARAMS_VERSION_SINGLE:
@@ -320,6 +323,10 @@ def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     _positive_int(params, "token_budget", 0)
     if params["max_num_seqs"] > 16:
         raise ValueError("max_num_seqs must be <= 16")
+    if "execution_max_blocks" in params:  # reaches here only for single-direct (see the unknown-key check)
+        blocks = params["execution_max_blocks"]
+        if type(blocks) is not int or not PILOT_BLOCKS < blocks <= PILOT_BLOCKS + MAIN_BLOCKS:
+            raise ValueError("execution_max_blocks must be an integer in 20..219")
     engine = params["engine"]
     if (not isinstance(engine, dict) or set(engine) != SINGLE_ENGINE_KEYS or engine["name"] not in ("hf", "vllm")
             or isinstance(engine["kv_cache_gib"], bool) or not isinstance(engine["kv_cache_gib"], (int, float))
@@ -336,6 +343,7 @@ def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
 
 def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     py, out, model, commit, t = p["python"], p["out_root"], p["model_path"], p["commit"], p["timeouts"]
+    total = p.get("execution_max_blocks", PILOT_BLOCKS + MAIN_BLOCKS)  # campaign length; only single-direct may set it
     campaign_dir, chain_cmd = f"{out}/campaign", [py, "-m", CHAIN]
     plan_file = f"{campaign_dir}/campaign-plan.json"
 
@@ -353,7 +361,7 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
                 "--engine", p["engine"]["name"], "--kv-cache-gib", str(p["engine"]["kv_cache_gib"]),
                 "--gpu-memory-utilization", str(p["engine"]["gpu_memory_utilization"]),
                 "--vllm-sleep" if p["engine"]["sleep"] else "--no-vllm-sleep",
-                "--execution-max-blocks", "219", "--allow-model-run", *extra]
+                "--execution-max-blocks", str(total), "--allow-model-run", *extra]
 
     def advance(blocks: int, *extra: str) -> list[str]:
         return campaign("advance", "--allow-update", "--allow-save", "--max-blocks", str(blocks), *extra)
@@ -374,17 +382,19 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
              for key in paths if key.endswith("_path")]
     steps = [step(f"pin-{name}", [*chain_cmd, "pin", "--file", path, "--sha256", sha], [], "cpu") for name, path, sha in pins]
     if stage == "single-direct":
-        last = PILOT_BLOCKS + MAIN_BLOCKS
+        last = total
+        # proof_eval exports only slot 19 or 219 at the training commit; a shorter campaign is exported elsewhere
+        exported = [export(last, f"{p['volume_root']}/eval-data/proof/export-single-final")] if total == PILOT_BLOCKS + MAIN_BLOCKS else []
         return steps + [
             step("advance-1", advance(1), [f"{campaign_dir}/checkpoint-1/metadata.json"], "advance_first"),
             reload(1),
             step("advance-pilot", advance(PILOT_BLOCKS - 1), [f"{campaign_dir}/checkpoint-{PILOT_BLOCKS}/metadata.json"],
                  "advance_pilot"),
             reload(PILOT_BLOCKS),
-            step("advance-main", advance(MAIN_BLOCKS, "--continue-main", "--direct-main"),
+            step("advance-main", advance(total - PILOT_BLOCKS, "--continue-main", "--direct-main"),
                  [f"{campaign_dir}/checkpoint-{last}/metadata.json"], "advance_main"),
             reload(last),
-            export(last, f"{p['volume_root']}/eval-data/proof/export-single-final"),
+            *exported,
         ]
     if stage == "single-main":
         last = PILOT_BLOCKS + MAIN_BLOCKS

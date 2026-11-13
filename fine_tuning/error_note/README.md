@@ -378,6 +378,39 @@ proof의 추가 무갱신 순회에도 `--continue-main`이 필요하며, 순회
 - 포드 설치: `MMDL_POD_INSTALLER=uv`이면 `volume.sh`가 같은 잠금 파일을 uv로 설치한다(실패 시 pip, 뒤의 `pip check`·
   목록 저장은 동일).
 
+## SINGLE v14 (2026-11-13, `claudedocs/plan_v14_20261113.md`)
+
+v14는 v13의 검토된 결함을 고친 판이다. 앞 1,020문항과 순서는 v13과 같다.
+새 캠페인 계획은 v14로 봉인한다(`single_campaign prepare`, `plain_protocol_single(..., version=VERSION_SINGLE_V14, ...)`).
+봉인된 v11·v12·v13 계획과 행은 그대로 재현·검증된다. 로컬 `single` 명령은 `--single-version v14`를 줘야 v14다(기본값 v12).
+- 보상 게이트 v9 = 게이트 v8(v13) 판정 + 프로그램 필드 `tail`.
+  `tail`은 T1 행이 `status == "CORRECT"`이고 `stop`으로 끝났으며 256토큰 이상이고, `decision["reason"]`이
+  `SINGLE_TAIL_PRAISE_V14["reasons"]`에 있으며, 답 전체에 문제를 부정하는 표현이 없을 때(`answer_denial(...) is None`, A1과 같은 규칙)만
+  `tail_window` 값을 갖는다. 그 밖에는 `None`이다.
+  대상은 A1 대상이 되지 못한 정답 가운데 반복하거나 너무 길어서 그렇게 된 행이다.
+- 꼬리 창(`tail_window(token_ids) -> [start, n] | None`): 마지막 `Wait` 표지 뒤의 토큰 가운데 최대 마지막 1,024토큰을 쓴다.
+  창이 32토큰 이상이고 반복하지 않을 때만 창을 준다.
+- 표 `penalty-table-v4`: 수용되지 않고 벌점도 없으며 CONTAINED_OPEN이 아니고 `tail`이 있는 행은 `other`(0) 대신
+  `tail_praised`(+1.0)를 받는다. `row["reward"]`는 바뀌지 않는다(0).
+- PG: 꼬리 행은 창 `[start, end)`의 저장된 지지(stored-support) 로그 q 합만 쓴다. 식은
+  `-A * sum(log q over [start, end)) / (B * token_scale)`이고, `end`는 행의 행동 수와 같다.
+  행 가중은 1.0이며 `min(1, 2048/n)` 상한이 없다. 꼬리 행으로 A1 행을 만들지 않는다.
+- 이미지: v14 계획의 학습 이미지(생성 입력도 같다)는 `protocol["image"]`(= `SINGLE_IMAGE_V14`)로 준비한다.
+  B2 평가 픽셀 예산이며 최소 1003520, 최대 4014080이다. 모듈 상수 `contract.IMAGE`는 쓰지 않는다.
+  v11–v13 계획에서는 두 값이 같아 바뀌는 것이 없다.
+- 학습률: `protocol["optimizer"]["total_steps"]`는 `training_contract["schedule_steps"]`(계획의 `execution_max_blocks`)와 같다.
+  학습률은 그 칸에서 0이 된다. v14 캠페인은 그 칸 이후의 블록을 실행하지 않는다.
+- A2 행은 샘플된 토큰이 256개 이상이어야 한다. 더 짧은 재풀이는 `A2_UNDER_MIN_TOKENS` 사유로 버린다.
+- B 행: 노트는 자기 재풀이가 v11의 A2 검사를 모두 통과했을 때만 B 후보다. 이 판정은 256토큰 규칙보다 먼저 하므로,
+  정답이지만 짧은 재풀이의 노트도 B 후보가 된다.
+- 채점: 열린 답(선택지 없음)은 채점기 v2(`SCORER_V2`, `grade_single(..., units=True)`)로 채점한다.
+  상자 안 숫자 뒤의 단위, 단위어의 지수 2·3, `UNIT_ABBREVIATIONS`의 길이 약어를 인정한다.
+  단위는 일반 숫자 정답에 대해서만 떼어 낸다. MMMU 평가 파서(V8)는 바뀌지 않았다.
+- v13에서 그대로 두는 것: 나선형 되묻기 구간 벌점, 256토큰 이상 정답 칭찬(PG와 A1), 교훈 누설 규칙 v2, KL,
+  앵커, 재생, SFT 가중치, H 행 없음.
+- 상태: 로컬에서 구현되었고 CPU에서 테스트되었다. v14 GPU 실행은 아직 없다.
+  노트와 풀이의 내용은 검증되지 않았다(프로그램 검사만 있음).
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

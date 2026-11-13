@@ -18,7 +18,8 @@ from .contract import (CONTEXT_LIMIT, IMAGE, LOOP_RATIO, LOOP_WINDOW, MASTER_SEE
                        MIN_TARGET_TOKENS, NOTE_INSTRUCTION, NOTE_INSTRUCTION_SINGLE, NOTE_INSTRUCTION_V2, NOTE_INSTRUCTION_V3,
                        REFERENCE_HEADER, RESOLVE_HEADER, RESOLVE_INSTRUCTION_SINGLE, SINGLE_VERDICT_LABELS, DENIAL_PHRASES,
                        GRADER_READ_LINE, GRADER_READ_NONE, LESSON_STEM_RULE, _REVIEW_REFERENCES)
-from .single_grading import ALIASES, ALIASES_SHA256, NORMALIZATION_RULES, NUMBER_WORDS, SCORER, SUFFIX_STOP
+from .single_grading import (ALIASES, ALIASES_SHA256, NORMALIZATION_RULES, NORMALIZATION_RULES_V2, NUMBER_WORDS, SCORER,
+                             SCORER_V2, SUFFIX_STOP, UNIT_ABBREVIATIONS)
 
 ARM = "MOD-RV"  # installs Vision, LLM and Merger trainables; the per-item route decides who gets gradients
 MERGERS = ["model.visual.merger", "model.visual.deepstack_merger_list.0",
@@ -177,12 +178,21 @@ def plain_protocol_v3(precision: str, total_steps: int, *, arm: str, contracts: 
 # raw log p of that window alone at advantage -1 with no row cap, so the first derivation is never pushed down; an
 # accepted row is praised (+1, and an A1 row) only when it has at least 256 tokens, shorter correct answers carry 0.
 # No H rows. Lesson leak rule v2, B rows, KL, anchor, replay, SFT weights and everything else are v12's.
+# SINGLE v14 (user 2026-11-13, claudedocs/plan_v14_20261113.md): v13 with its reviewed defects fixed, on the same
+# 1,020-item head and order. Reward gate v9 = gate v8 + ``tail``: a CORRECT, stopped T1 of at least 256 tokens that is
+# no A1 target only because it repeats or is too long earns +1 on its conclusion alone (tail_window: the tokens after
+# its last "Wait" marker, at most the last 1,024, when that window has at least 32 tokens and does not repeat; PG on
+# the stored-support log q of that window at full row weight; never an A1 row). Training images use the B2 evaluation
+# pixel budget. The LR reaches 0 at ``schedule_steps`` (the blocks the plan may execute), not at all 219 slots. An A2
+# row needs at least 256 tokens. A note is a B row only when its own re-solve passes v11's A2 checks ("B follows its
+# A2", decided before the 256-token rule). Open answers are graded by scorer v2. Everything else is v13's.
 VERSION_SINGLE_V8 = "error-note-single-response-v8"
 VERSION_SINGLE_V9 = "error-note-single-response-v9"
 VERSION_SINGLE_V10 = "error-note-single-response-v10"
 VERSION_SINGLE = "error-note-single-response-v11"
 VERSION_SINGLE_V12 = "error-note-single-response-v12"
 VERSION_SINGLE_V13 = "error-note-single-response-v13"
+VERSION_SINGLE_V14 = "error-note-single-response-v14"
 SINGLE_TOKEN_SCALE_V10 = 256.0
 SINGLE_TOKEN_SCALE_V11 = 1024.0
 SINGLE_ROW_TOKEN_CAP_V11 = 2048
@@ -226,12 +236,55 @@ def spiral_window(token_ids: list[int]) -> list[int]:
     marks = [index for index, token in enumerate(token_ids) if token in rule["marker_token_ids"]]
     start = marks[rule["marker_count"] - 1] if len(marks) >= rule["marker_count"] else min(rule["fallback_start"], count // 2)
     return [start, min(count, start + rule["window_tokens"])]
+
+
+SINGLE_ADVANTAGE_VERSION_V14 = "penalty-table-v4"
+SINGLE_ADVANTAGE_V14 = SINGLE_ADVANTAGE_V13 | {"tail_praised": 1.0}
+# "reasons" are _single_reward_decision reasons: "T1_INELIGIBLE_" + a v4.target_problem code.
+SINGLE_TAIL_PRAISE_V14 = {"version": "tail-praise-v1",
+                          "reasons": ["T1_INELIGIBLE_REPETITION", "T1_INELIGIBLE_BLOCK_REPETITION", "T1_INELIGIBLE_LOOP",
+                                      "T1_INELIGIBLE_TOO_LONG"],
+                          "min_tokens": 256, "marker_token_ids": [13824, 14190], "window_tokens": 1024,
+                          "min_window_tokens": 32, "start": "max(last_marker_index + 1, n - window_tokens)",
+                          "window_filter": ["has_repetition", "has_block_repetition"],
+                          "answer_denial": "no_tail_when_the_whole_answer_denies_the_question", "logprob": "stored_support",
+                          "row_weight": 1.0, "applies_to": ["PG"]}
+SINGLE_A2_MIN_TOKENS_V14 = 256
+SINGLE_B_ROWS_V14 = "program_accepted_note_whose_resolve_passes_the_v11_a2_checks"
+SINGLE_IMAGE_V14 = {"min_pixels": 1003520, "max_pixels": 4014080, "preprocessing": IMAGE["preprocessing"]}  # B2's budget
+SINGLE_ANSWER_CONTRACTS_V14 = {"mcq": TURN1_EVAL_CONTRACT, "open": SCORER_V2}
+
+
+def tail_window(token_ids: list[int]) -> list[int] | None:
+    """v14: [start, n) of the praised conclusion of a correct T1 that is no A1 target, or None.
+
+    start = max(index of the last marker token + 1, n - 1024). None when there is no marker token, when the window
+    has fewer than 32 tokens, or when the window itself repeats (contract.has_repetition or v4.has_block_repetition
+    on the window's token IDs)."""
+    if not isinstance(token_ids, list) or not token_ids or any(type(token) is not int for token in token_ids):
+        raise ValueError("single protocol: tail window needs the sampled token IDs")
+    from .contract import has_repetition
+    from .v4 import has_block_repetition
+
+    rule = SINGLE_TAIL_PRAISE_V14
+    count = len(token_ids)
+    markers = [index for index, token in enumerate(token_ids) if token in rule["marker_token_ids"]]
+    if not markers:
+        return None
+    start = max(markers[-1] + 1, count - rule["window_tokens"])
+    window = token_ids[start:]
+    if len(window) < rule["min_window_tokens"] or has_repetition(window) or has_block_repetition(window):
+        return None
+    return [start, count]
+
+
 SINGLE_BASELINE_METHOD = "fixed-source-mean-v1"
 SINGLE_BASELINE_TABLE = Path(__file__).with_name("source_baseline_v10.json")
 SINGLE_REWARD_GATE_V5 = "single-t1-program-gate-v5"
 SINGLE_REWARD_GATE = "single-t1-program-gate-v6"
 SINGLE_REWARD_GATE_V7 = "single-t1-program-gate-v7"
 SINGLE_REWARD_GATE_V8 = "single-t1-program-gate-v8"
+SINGLE_REWARD_GATE_V9 = "single-t1-program-gate-v9"
 SINGLE_NOTE_MAX_TOKENS = 1024
 SINGLE_ANSWER_UNION = f"{TURN1_EVAL_CONTRACT}|{TRAINING_ANSWER_CONTRACT}"  # v7 open contract, kept for old callers
 SINGLE_OPEN_SCORER = SCORER
@@ -294,15 +347,22 @@ def single_blocks(problem_ids: list[str], *, pilot_count: int = 300) -> list[lis
 def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[str, str],
                           token_scale: float = SINGLE_TOKEN_SCALE_V11, beta: float = 0.02,
                           sft_weights: dict[str, float] | None = None, note_reference: dict | None = None,
-                          version: str = VERSION_SINGLE) -> dict:
+                          version: str = VERSION_SINGLE, schedule_steps: int | None = None) -> dict:
     """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11, or
-    v12 / v13 with ``version=VERSION_SINGLE_V12`` / ``VERSION_SINGLE_V13``)."""
+    v12 / v13 / v14 with ``version=VERSION_SINGLE_V12`` / ``VERSION_SINGLE_V13`` / ``VERSION_SINGLE_V14``).
+
+    ``schedule_steps`` (v14 only, required there): the optimizer steps the LR decays over, 1..total_slots; it replaces
+    ``optimizer.total_steps`` (v11-v13 keep total_slots there) and is recorded as ``training_contract.schedule_steps``."""
     import math
 
-    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13):
-        raise ValueError("single protocol: version must be v11, v12 or v13")
-    v13 = version == VERSION_SINGLE_V13
-    v12 = version == VERSION_SINGLE_V12  # H rows are v12 only; v13 shares v12's note filters and B rule below
+    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14):
+        raise ValueError("single protocol: version must be v11, v12, v13 or v14")
+    v14 = version == VERSION_SINGLE_V14
+    v13 = version in (VERSION_SINGLE_V13, VERSION_SINGLE_V14)  # v14 keeps every v13 branch below
+    if (schedule_steps is None) == v14 or (v14 and (
+            type(schedule_steps) is not int or not 1 <= schedule_steps <= total_slots)):
+        raise ValueError("single protocol: schedule_steps belongs to v14 and must be an integer in 1..total_slots")
+    v12 = version == VERSION_SINGLE_V12  # H rows are v12 only; v13 and v14 share v12's note filters and B rule below
     weights = dict(SINGLE_SFT_WEIGHTS_V12 if v12 else SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
     reference = {"version": "none"} if note_reference is None else note_reference
     if token_scale != SINGLE_TOKEN_SCALE_V11:
@@ -380,6 +440,19 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
         contract["rl"] |= {"reward": SINGLE_REWARD_GATE_V8,
                            "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V13, "values": dict(SINGLE_ADVANTAGE_V13)},
                            "spiral_window": copy.deepcopy(SINGLE_SPIRAL_V13), "praise": copy.deepcopy(SINGLE_PRAISE_V13)}
+    if v14:
+        body["image"] = dict(SINGLE_IMAGE_V14)
+        body["optimizer"] = body["optimizer"] | {"total_steps": schedule_steps}
+        contract["schedule_steps"] = schedule_steps
+        contract["rl"] |= {"reward": SINGLE_REWARD_GATE_V9,
+                           "advantage": {"version": SINGLE_ADVANTAGE_VERSION_V14, "values": dict(SINGLE_ADVANTAGE_V14)},
+                           "tail_praise": copy.deepcopy(SINGLE_TAIL_PRAISE_V14)}
+        contract["b_rows"] = SINGLE_B_ROWS_V14
+        contract["a2_min_tokens"] = SINGLE_A2_MIN_TOKENS_V14
+        contract["answer_contracts"] = dict(SINGLE_ANSWER_CONTRACTS_V14)
+        contract["answer_scorer"] = contract["answer_scorer"] | {"id": SCORER_V2, "rules": list(NORMALIZATION_RULES_V2),
+                                                                 "unit_abbreviations": list(UNIT_ABBREVIATIONS)}
+    # training_contract.total_slots stays total_slots; spiral_window and praise stay v13's.
     if v12:
         contract["sft_weighting"] = dict(SINGLE_SFT_WEIGHTING_V12)
         contract["human_solution"] = {

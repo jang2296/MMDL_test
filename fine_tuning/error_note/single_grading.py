@@ -21,6 +21,9 @@ MCQ is graded exactly as before (V8 contract p0-eval-aligned-v1). An open answer
 
 ``extracted`` is the committed value the grader read (None when no single committed answer exists), so a
 committed answer is never treated as missing (reward gate v5).
+
+Scorer v2 (``units=True``, SCORER_V2) is scorer v1 plus NORMALIZATION_RULES_V2: a boxed number followed by a length/area
+unit ("\\boxed{855} yd^2", "8.6 m") also yields the bare number, still only compared against a plain-number gold.
 """
 from __future__ import annotations
 
@@ -61,7 +64,24 @@ NORMALIZATION_RULES = (
     "a committed answer the training comparison cannot decide is INCORRECT when the V8 contract on the whole "
     "response grades it INCORRECT (as MMMU evaluation scores it), else keeps its status",
 )
+# Scorer v2 (SINGLE v14, ``units=True``): scorer v1 plus two rules for a number that carries a unit. v1 graded
+# "\boxed{855} yd^2", "\boxed{25.1} in", "8.6 m" and "\boxed{1.5} m^2" as not correct against the plain-number gold.
+# Like v1's unit words, a unit is only ever dropped against a plain-number gold; nothing is multiplied or converted.
+SCORER_V2 = "v8-extract+normalize+training-compare-v2"
+UNIT_ABBREVIATIONS = ("mm", "cm", "dm", "m", "km", "in", "ft", "yd", "mi")
+NORMALIZATION_RULES_V2 = NORMALIZATION_RULES + (
+    "v2: a boxed number followed by unit text, optionally inside $ $ ('\\boxed{855} yd^2', '$ \\boxed{21} $ square "
+    "feet') -> the number followed by that text ('855 yd^2', '21 square feet'); the box content must be one number",
+    "v2 bare number: a unit word may carry an exponent 2 or 3 ('^2', '^{3}', or the digit left by NFKC from a "
+    "superscript: 'm2'), and a suffix that is exactly one UNIT_ABBREVIATIONS token (with or without exponent) is a "
+    "unit even when it has one letter or is in SUFFIX_STOP ('8.6 m', '25.1 in', '855 yd^2' -> the number)",
+)
 _NUM = r"[+-]?(?:\d+(?:\.\d+)?|\.\d+)"
+# Scorer v2: "$ \boxed{N} $ unit text" with N one number (thousands separators allowed); the unit text has no further box.
+_BOXED_UNIT = re.compile(r"[\s$]*\\boxed\{\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|[+-]?\.\d+)\s*\}[\s$]*"
+                         r"((?![\s\S]*\\boxed)[^\s$][^$]*?)[\s$]*", re.S)
+# Scorer v2 unit token: letters, optionally with an exponent 2 or 3 ("^2", "^{3}", or the digit NFKC leaves from "m²").
+_UNIT_TOKEN = r"[A-Za-z]+(?:\s*\^\s*\{?\s*[23]\s*\}?|[23])?"
 _V8_ALTERNATIVES = frozenset(("multiple_answer_alternatives", "multiple_choice_alternatives"))
 _V8_REVOKED = frozenset(("negated_answer", "withdrawn_answer", "uncertain_answer", "no_committed_answer",
                          "unresolved_replacement", "no_asserted_declaration"))
@@ -69,14 +89,18 @@ _V8_DISAGREE = frozenset(("conflicting_declarations", "conflicting_or_invalid_bo
 _RANK = {"CORRECT": 0, "INCORRECT": 1, "UNVERIFIABLE": 2}
 
 
-def _canonical(value: str) -> str:
-    """NORMALIZATION_RULES except the bare-number step: the answer with its unit/scale/percent/degree suffix."""
+def _canonical(value: str, units: bool = False) -> str:
+    """NORMALIZATION_RULES except the bare-number step: the answer with its unit/scale/percent/degree suffix.
+    ``units`` (scorer v2): also the first NORMALIZATION_RULES_V2 rule (a boxed number followed by unit text)."""
     from fine_tuning.notebook_rl.v8_parser import _BOX
 
     text = unicodedata.normalize("NFKC", value).replace("**", "").replace("__", "").replace("`", "")
     text = re.sub(r"\\[,;:! ]", " ", text).replace("\\%", "%")
     for _ in range(4):
         text = re.sub(r"\\(?:text|mathrm|textbf|mathbf)\s*\{([^{}]*)\}", r"\1", text)
+    boxed = _BOXED_UNIT.fullmatch(text) if units else None
+    if boxed:
+        text = f"{boxed[1]} {boxed[2]}"
     for _ in range(8):
         before = text
         text = re.sub(r"^[\s#>\u2705\u2714\u2611]+|[\s.!\u2705\u2714]+$", "", text)
@@ -108,8 +132,18 @@ def _canonical(value: str) -> str:
     return text.strip()
 
 
-def _bare(text: str) -> str | None:
-    """The number of 'number [%|degree] [1-3 unit words]', else None (ranges, expressions, comparisons stay whole)."""
+def _bare(text: str, units: bool = False) -> str | None:
+    """The number of 'number [%|degree] [1-3 unit words]', else None (ranges, expressions, comparisons stay whole).
+    ``units`` (scorer v2): also the second NORMALIZATION_RULES_V2 rule (exponents and UNIT_ABBREVIATIONS)."""
+    if units:
+        match = re.fullmatch(rf"[£$€¥]?\s*({_NUM})\s*([%°]?)\s*((?:{_UNIT_TOKEN})(?:\s+{_UNIT_TOKEN}){{0,2}})?",
+                             text.strip())
+        if match is None:
+            return None
+        words = re.findall(r"[A-Za-z]+", match[3] or "")  # one letter group per token (exponents hold no letters)
+        if len(words) == 1 and words[0].casefold() in UNIT_ABBREVIATIONS:
+            return match[1]
+        return None if any(len(word) < 2 or word.casefold() in SUFFIX_STOP for word in words) else match[1]
     match = re.fullmatch(rf"[\u00a3$\u20ac\u00a5]?\s*({_NUM})\s*([%\u00b0]?)\s*([A-Za-z]{{2,}}(?:\s+[A-Za-z]{{2,}}){{0,2}})?",
                          text.strip())
     if match is None or any(word.casefold() in SUFFIX_STOP for word in (match[3] or "").split()):
@@ -194,8 +228,9 @@ def _scale_ambiguous(verifier: Any, pid: str, mode: str, bare: str) -> bool:
                for factor in (Fraction(100), Fraction(1, 100)))
 
 
-def grade_single(verifier: Any, actor: Any, pid: str, text: str, finish_reason: str, mode: str) -> tuple[str, Any]:
-    """One response, one committed answer, one status; see the module docstring."""
+def grade_single(verifier: Any, actor: Any, pid: str, text: str, finish_reason: str, mode: str, *,
+                 units: bool = False) -> tuple[str, Any]:
+    """One response, one committed answer, one status; see the module docstring. ``units``: scorer v2 (SCORER_V2)."""
     from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
 
     if actor.choices:
@@ -206,11 +241,11 @@ def grade_single(verifier: Any, actor: Any, pid: str, text: str, finish_reason: 
     value, status = _committed(text, finish_reason, actor.question)
     if value is None:
         return status, None
-    canonical = _canonical(value)
+    canonical = _canonical(value, units)
     canonical = ALIASES.get(actor.source, {}).get(canonical.casefold(), canonical)
     if not canonical:
         return "INVALID_NO_FINAL", None
-    forms = [canonical] + [form for form in (_bare(canonical),) if form is not None and form != canonical]
+    forms = [canonical] + [form for form in (_bare(canonical, units),) if form is not None and form != canonical]
     results = []
     for form in forms:
         results.append(verifier.grade(pid, "Final answer: " + form, "stop", mode, answer_contract=TRAINING_ANSWER_CONTRACT))
