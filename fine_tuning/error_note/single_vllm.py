@@ -9,7 +9,8 @@ level 2 frees vLLM weights and KV cache while the HF policy trains; the next pus
 
 v15 LoRA mode (`lora=True`, llm_lora): the original BF16 snapshot stays in vLLM; the LLM adapter is a fresh vLLM LoRA
 per policy, the vision adapter runs through exact hooks, only the Mergers are pushed, and sleep is level 1 (the pool
-also holds the LoRA slots). The first LoRA sync runs the PF1-PF5 preflight before any generation.
+also holds the LoRA slots). The first LoRA sync runs the PF1-PF5 preflight before any generation; PF5 probes an
+amplified copy of the adapter, after which the real adapter is restored under a fresh id and re-checked bit-exactly.
 """
 from __future__ import annotations
 
@@ -194,24 +195,27 @@ class SingleVllmSampler:
             self.loaded_policy = policy
         return policy
 
-    def _swap_adapter(self, bundle: Any, policy: str) -> None:
-        """A fresh, never reused id per policy: vLLM's LRU manager only touches an id it already knows."""
+    def _swap_adapter(self, bundle: Any, policy: str, factor: float = 1) -> Any:
+        """A fresh, never reused id per policy: vLLM's LRU manager only touches an id it already knows. `factor` != 1
+        loads the PF5 amplified probe adapter (B x factor) under its own fresh id."""
         from vllm.lora.request import LoRARequest
 
         new_id = self._lora_id + 1
         self._lora_id = new_id
         path = self.lora_dir / str(new_id)
-        llm_lora.write_llm_adapter(bundle, path)
+        llm_lora.write_llm_adapter(bundle, path, factor)
         core, old = self.engine.llm.llm_engine, self.lora_request
         self.lora_request = None
         if old is not None:
             if core.remove_lora(old.lora_int_id) is not True:
                 raise RuntimeError("SINGLE vLLM: previous LoRA not removed")
             shutil.rmtree(old.lora_path)
-        request = LoRARequest(f"policy-{policy[:16]}", new_id, str(path))
+        name = f"policy-{policy[:16]}" if factor == 1 else f"probe-x{factor:g}-{policy[:16]}"
+        request = LoRARequest(name, new_id, str(path))
         if core.add_lora(request) is not True or core.list_loras() != {new_id}:
             raise RuntimeError("SINGLE vLLM: policy LoRA not loaded as the only adapter")
         self.lora_request = request
+        return request
 
     def _report(self, report: dict) -> None:
         self.preflight_report = report
@@ -237,44 +241,37 @@ class SingleVllmSampler:
         rows = output.prompt_logprobs[len(prepared.token_ids):]
         return [float(row[t].logprob) for row, t in zip(rows, completion, strict=True)]
 
-    def _pf5(self, bundle: Any) -> dict:
-        import torch
+    def _pf5(self, bundle: Any) -> tuple[dict, Any]:
+        """llm_lora.slope_check on greedy probe completions of the engine as it generates (real and amplified adapter,
+        llm_lora.vllm_columns); returns the report and the request of the real adapter restored under a fresh id."""
         from vllm import SamplingParams
 
-        from fine_tuning.notebook_rl.policy import completion_logprobs
+        from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
 
-        hooks, lora = self.vision_hooks, self.lora_request
-        columns: dict[str, list[float]] = {k: [] for k in ("v_on", "v_llm", "v_off", "h_on", "h_llm", "h_off")}
-        device = next(bundle.model.parameters()).device
+        from .rl import policy_sha256
+
+        pairs = []
         for request in probe_requests(self.image):
             prepared = self.engine.prepare(request)
             greedy = SamplingParams(n=1, temperature=0.0, max_tokens=PROBE_TOKENS, ignore_eos=True, detokenize=False)
             with _nondeterministic():
                 output = self.engine.llm.generate([self.engine._prompt(prepared, prepared.token_ids)], greedy,
-                                                  use_tqdm=False, lora_request=lora)[0]
+                                                  use_tqdm=False, lora_request=self.lora_request)[0]
             completion = list(output.outputs[0].token_ids)
             if len(completion) != PROBE_TOKENS:
                 raise RuntimeError("SINGLE vLLM: PF5 greedy probe length differs")
-            state = hooks.on
-            try:
-                with _nondeterministic():
-                    columns["v_on"] += self._probe(request, completion, lora)  # the engine as it generates
-                    hooks.on = False
-                    columns["v_llm"] += self._probe(request, completion, lora)
-                    columns["v_off"] += self._probe(request, completion, None)
-            finally:
-                hooks.on = state
-            inputs = self.engine.model_inputs(request, completion, device)
-            with torch.no_grad():
-                for key, groups in (("h_on", ()), ("h_llm", ("V",)), ("h_off", ("L", "V"))):
-                    with llm_lora.adapters_off(bundle, *groups):
-                        columns[key] += completion_logprobs(bundle, inputs, len(completion)).float().flatten().cpu().tolist()
-        from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
-
-        return llm_lora.slope_check(**columns, cap=VLLMRolloutEngine.sync_threshold_cap)
+            pairs.append((request, completion))
+        policy = policy_sha256(bundle)
+        with _nondeterministic():
+            columns, restored = llm_lora.vllm_columns(bundle, self.vision_hooks, self._probe, pairs, self.lora_request,
+                                                      lambda factor: self._swap_adapter(bundle, policy, factor))
+        reference = llm_lora.hf_columns(bundle, self.engine, pairs)
+        return llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap), restored
 
     def verify_lora(self, bundle: Any) -> dict:
-        """PF1-PF5 (PF0 ran at start-up); prints SINGLE_LORA_PREFLIGHT {json} and raises on any failure."""
+        """PF1-PF5 (PF0 ran at start-up); prints SINGLE_LORA_PREFLIGHT {json} and raises on any failure. PF5 tests the
+        application mechanism on an amplified adapter (llm_lora.slope_check; the real adapter's slope is a diagnostic),
+        then the real adapter returns under a fresh id and PF2 is repeated bit-exactly (pf2_restored)."""
         import torch
 
         llm = self.engine.llm
@@ -294,9 +291,11 @@ class SingleVllmSampler:
                                  "pass": identity["pass"] and base["pass"]}
             else:
                 report["pf4"] = {"pass": None, "reason": "sleep mode off"}
-            report["pf5"] = self._pf5(bundle)
+            report["pf5"], restored = self._pf5(bundle)
+            report["restored_lora_int_id"] = restored.lora_int_id
+            report["pf2_restored"] = llm_lora.check_identity(llm, bundle, restored.lora_int_id, self.vision_hooks)
         report["pass"] = bool(report["pf1"]["pass"]) and all(
-            report[k]["pass"] is True for k in ("pf2", "pf3", "pf5")) and report["pf4"]["pass"] is not False
+            report[k]["pass"] is True for k in ("pf2", "pf3", "pf5", "pf2_restored")) and report["pf4"]["pass"] is not False
         self._report(report)
         if not report["pass"]:
             raise RuntimeError("SINGLE vLLM: LoRA preflight failed")

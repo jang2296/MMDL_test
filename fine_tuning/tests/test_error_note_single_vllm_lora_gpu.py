@@ -27,6 +27,8 @@ ENABLED = os.environ.get("MMDL_TEST_VLLM_LORA_CUDA") == "1"
 SLEEP = os.environ.get("MMDL_TEST_VLLM_LORA_SLEEP", "1") == "1"
 EOS = [151643, 151645]
 SCALE = {"L": 0.25, "V": 1.0, "M": 0.02}  # LoRA B / Merger noise large enough for PF5 to test both slopes
+SMALL = 2.0 ** -5  # LoRA B factor of the small-adapter case: real effect near MIN_EFFECT, like the v14 4B adapter
+LINEAR = 2.0 ** -8  # LoRA B factor of the alpha-16 control: its x AMPLIFY copy stays in the tiny model's linear range
 
 
 def build_tiny(dest: Path) -> Path:
@@ -74,6 +76,16 @@ def policy(path: Path):
                 noise = torch.randn(parameter.shape, generator=generator, device="cuda") * SCALE[group]
                 parameter.add_(noise.to(parameter.dtype))
     return bundle
+
+
+def scale_lora_b(bundle, factor: float) -> None:
+    """Every LoRA B (L and V) x factor in place; powers of two keep the round trip exact."""
+    import torch
+
+    with torch.no_grad():
+        for name, parameter in bundle.model.named_parameters():
+            if ".lora_B." in name:
+                parameter.mul_(factor)
 
 
 def unscoped_main(path: str) -> None:
@@ -125,31 +137,56 @@ class TinyQwenLoraTests(unittest.TestCase):
 
         value, bundle = sampler(self.path), policy(self.path)
         self.addCleanup(shutil.rmtree, value.lora_dir, True)
-        value.sync(bundle)  # first LoRA sync runs PF1-PF5 and raises on failure
+        value.sync(bundle)  # first LoRA sync runs PF1-PF5 and raises on failure: adapter 1, probe 2, restored 3
         report = value.preflight_report
         self.assertTrue(report["pass"])
-        self.assertTrue(report["pf5"]["llm"]["pass"] and report["pf5"]["vision"]["pass"])  # both slopes tested
+        amplified = report["pf5"]["amplified"]
+        self.assertTrue(amplified["llm"]["pass"] and amplified["vision"]["pass"])  # both amplified slopes tested
+        self.assertTrue(report["pf2_restored"]["pass"])
+        self.assertEqual((report["lora_int_id"], report["restored_lora_int_id"], value.lora_request.lora_int_id), (1, 3, 3))
         self.assertIs(report["pf4"]["pass"], True if SLEEP else None)
 
-        value.vision_hooks.on = False  # control 1: vision hooks off
+        value.vision_hooks.on = False  # control 1: vision hooks off (ids 4, 5)
         with self.assertRaises(RuntimeError):
             value.verify_lora(bundle)
         self.assertFalse(value.preflight_report["pf2"]["pass"])
-        self.assertFalse(value.preflight_report["pf5"]["vision"]["pass"])
+        self.assertIs(value.preflight_report["pf5"]["amplified"]["vision"]["pass"], False)  # tested and failed
+        self.assertFalse(value.vision_hooks.on)  # the probe restores the hooks as it found them
         value.vision_hooks.on = True
 
-        original = llm_lora.adapter_config  # control 2: alpha written as 16 (vLLM scaling 1 instead of 2)
-        with patch.object(llm_lora, "adapter_config", lambda b: original(b) | {"lora_alpha": 16}):
-            value._swap_adapter(bundle, value.loaded_policy)
-        with self.assertRaises(RuntimeError):
-            value.verify_lora(bundle)
-        self.assertFalse(value.preflight_report["pf2"]["pass"])
-        self.assertFalse(value.preflight_report["pf5"]["llm"]["pass"])
+        scale_lora_b(bundle, SMALL)  # a trained-size adapter: sync id 6, preflight ids 7, 8 (raises on failure)
+        value.sync(bundle)
+        small = value.verify_lora(bundle)
+        print("SINGLE_LORA_SMALL " + json.dumps({"small": SMALL, **{k: small["pf5"][k] for k in
+                                                ("real", "amplified", "mean_abs_on")}}, sort_keys=True),
+              file=sys.stderr, flush=True)
+        self.assertLess(small["pf5"]["real"]["total"]["rms_effect"], 3 * llm_lora.MIN_EFFECT)
+        self.assertTrue(small["pf5"]["amplified"]["llm"]["pass"] and small["pf5"]["amplified"]["vision"]["pass"])
 
-        value._swap_adapter(bundle, value.loaded_policy)  # restored adapter, fresh id
+        # control 2: every adapter file written with alpha 16 (vLLM scaling 1, not 2), on an adapter whose x AMPLIFY
+        # copy stays in the tiny model's near-linear range: x16 of the full tiny adapter saturates the log-probs and
+        # hid the halved scale there (amplified LLM slope 0.985; PF2 alone failed it)
+        scale_lora_b(bundle, LINEAR / SMALL)  # sync id 9
+        value.sync(bundle)
+        original = llm_lora.adapter_config
+        with patch.object(llm_lora, "adapter_config", lambda b: original(b) | {"lora_alpha": 16}):
+            value._swap_adapter(bundle, value.loaded_policy)  # id 10
+            with self.assertRaises(RuntimeError):
+                value.verify_lora(bundle)  # ids 11, 12
+        control = value.preflight_report
+        print("SINGLE_LORA_ALPHA16 " + json.dumps({"linear": LINEAR, **{k: control["pf5"][k] for k in
+                                                  ("real", "amplified")}}, sort_keys=True), file=sys.stderr, flush=True)
+        self.assertFalse(control["pf2"]["pass"])
+        self.assertIs(control["pf5"]["amplified"]["llm"]["pass"], False)  # tested (effect >= MIN_EFFECT) and failed
+        # A halved LLM scale: ~0.5 in the linear limit; the greedy (high-probability) probe tokens respond
+        # superlinearly, so the measured slope sits lower (0.28 at LINEAR 2^-8, 0.52 at 2^-9 below MIN_EFFECT).
+        self.assertLess(control["pf5"]["amplified"]["llm"]["slope"], .6)
+
+        scale_lora_b(bundle, 1 / LINEAR)  # the original adapter again (exact): sync id 13
+        value.sync(bundle)
         value.release()  # real level-1 sleep in LoRA mode, then wake + Merger push + new adapter
         value.sync(bundle)
-        self.assertEqual(value.lora_request.lora_int_id, 4 if SLEEP else 3)
+        self.assertEqual(value.lora_request.lora_int_id, 14 if SLEEP else 13)
         self.assertTrue(value.verify_lora(bundle)["pass"])
         self.check_stream(value, bundle)
 

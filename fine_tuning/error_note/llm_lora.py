@@ -30,6 +30,13 @@ HF_MERGERS = tuple("model." + prefix for prefix in VLLM_MERGERS)
 VISION_TARGET = re.compile(r"visual\.blocks\.\d+\.attn\.(qkv|proj)")
 HOST_MEMORY_GIB = 16.0  # sleep level 1 copies the ~9 GiB weight pool to host memory
 SLOPE_RANGE, MIN_CORRELATION, MIN_EFFECT = (0.85, 1.15), 0.9, 0.05
+# PF5 amplified probe: every LoRA B x AMPLIFY on both engines. A power of two, so bf16(K*B) == K*bf16(B) and the
+# amplified vLLM slots / hook buffers are exactly K times the real ones. Real v14 4B adapter: ~0.05 rms effect at
+# ~0.018 mean |delta| BF16 cross-engine noise (slope test powerless); x16 puts it near 0.8 rms.
+AMPLIFY = 16
+# HF/PEFT reference columns of PF5: per-group scaling factors (absent group = as trained, 0 = off).
+HF_PROBES = {"h_on": {}, "h_llm": {"V": 0.0}, "h_off": {"L": 0.0, "V": 0.0},
+             "ha_on": {"L": AMPLIFY, "V": AMPLIFY}, "ha_llm": {"L": AMPLIFY, "V": 0.0}}
 
 
 def scope_qwen3vl_lora() -> None:
@@ -77,8 +84,9 @@ def adapter_config(bundle: Any) -> dict:
             "modules_to_save": None, "fan_in_fan_out": False}
 
 
-def write_llm_adapter(bundle: Any, path: Path) -> None:
-    """FP32 masters of the L targets only (vLLM casts to BF16 and folds alpha/r into B); no vision or Merger key."""
+def write_llm_adapter(bundle: Any, path: Path, factor: float = 1) -> None:
+    """FP32 masters of the L targets only (vLLM casts to BF16 and folds alpha/r into B); no vision or Merger key.
+    `factor` multiplies B (PF5 amplified probe only; the policy and the export always write factor 1)."""
     from safetensors.torch import save_file
 
     targets = bundle.inventory["targets"]["L"]
@@ -88,7 +96,7 @@ def write_llm_adapter(bundle: Any, path: Path) -> None:
     for target in targets:
         a, b = _lora_weights(bundle, target)
         tensors[f"base_model.model.{target}.lora_A.weight"] = a.float().cpu().contiguous().clone()
-        tensors[f"base_model.model.{target}.lora_B.weight"] = b.float().cpu().contiguous().clone()
+        tensors[f"base_model.model.{target}.lora_B.weight"] = (b.float() * factor).cpu().contiguous().clone()
     if len(tensors) != 2 * len(targets) or any("visual" in key for key in tensors):
         raise ValueError("llm_lora: adapter file must hold exactly the LLM A/B pairs")
     path.mkdir(parents=True, exist_ok=False)
@@ -102,9 +110,9 @@ def _vllm_vision_name(target: str) -> str:
     return target.removeprefix("model.")
 
 
-def vision_lora(bundle: Any) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
-    """vLLM name -> (bf16(A) [r, in], bf16(B) * scaling [out, r]); x2 is exact in BF16."""
-    scaling = adapter_scaling(bundle)
+def vision_lora(bundle: Any, factor: float = 1) -> dict[str, tuple[torch.Tensor, torch.Tensor]]:
+    """vLLM name -> (bf16(A) [r, in], bf16(B) * scaling * factor [out, r]); x2 (and x AMPLIFY) is exact in BF16."""
+    scaling = adapter_scaling(bundle) * factor
     out = {}
     for target in bundle.inventory["targets"]["V"]:
         a, b = _lora_weights(bundle, target)
@@ -329,46 +337,122 @@ def check_base(llm: Any, bundle: Any, frozen: dict[str, str]) -> dict:
 
 
 @contextmanager
-def adapters_off(bundle: Any, *groups: str) -> Iterator[None]:
-    """HF reference with the named LoRA groups ('L', 'V') at scaling 0; Mergers stay on. Restored on exit."""
+def scaled_adapters(bundle: Any, **factors: float) -> Iterator[None]:
+    """HF reference with each named LoRA group's ('L', 'V') scaling multiplied by its factor (0 = off); Mergers stay
+    on. Restored exactly on exit."""
     base, saved = bundle.model.get_base_model(), []
     try:
-        for group in groups:
+        for group, factor in factors.items():
             for target in bundle.inventory["targets"][group]:
                 layer = base.get_submodule(target)
                 saved.append((layer, layer.scaling["default"]))
-                layer.scaling["default"] = 0.0
+                layer.scaling["default"] = layer.scaling["default"] * factor
         yield
     finally:
-        for layer, value in saved:
+        for layer, value in reversed(saved):
             layer.scaling["default"] = value
+
+
+def adapters_off(bundle: Any, *groups: str) -> Any:
+    """HF reference with the named LoRA groups ('L', 'V') at scaling 0; Mergers stay on. Restored on exit."""
+    return scaled_adapters(bundle, **dict.fromkeys(groups, 0.0))
+
+
+def hf_columns(bundle: Any, prep: Any, pairs: list) -> dict[str, list[float]]:
+    """PF5 HF/PEFT teacher-forced log-probs of (request, completion) pairs for every HF_PROBES column."""
+    from fine_tuning.notebook_rl.policy import completion_logprobs
+
+    device = next(bundle.model.parameters()).device
+    out: dict[str, list[float]] = {key: [] for key in HF_PROBES}
+    with torch.no_grad():
+        for request, completion in pairs:
+            inputs = prep.model_inputs(request, completion, device)
+            for key, factors in HF_PROBES.items():
+                with scaled_adapters(bundle, **factors):
+                    out[key] += completion_logprobs(bundle, inputs, len(completion)).float().flatten().cpu().tolist()
+    return out
+
+
+def vllm_columns(bundle: Any, hooks: VisionHooks, probe: Any, pairs: list, lora: Any, swap: Any) -> tuple[dict, Any]:
+    """PF5 vLLM teacher-forced log-probs, shared by training and evaluation. `probe(request, completion, lora_request)`
+    returns one log-prob per completion token; `swap(factor)` makes the bundle's LLM adapter with B x factor the
+    engine's only adapter and returns its LoRARequest (amplified: a never-used id; factor 1, the real adapter: a fresh
+    id in training, the export's own request in evaluation, lora_preflight.adapter_swap).
+    Real adapter: v_on (LoRA + hooks as found), v_llm (LoRA only), v_off (neither). Amplified: va_on / va_llm with
+    swap(AMPLIFY) and the hook B buffers x AMPLIFY. Afterwards, also on error, swap(1) restores the real adapter and
+    vision_lora(bundle) the hook buffers, hooks.on as found; the caller re-checks PF2 on the returned request."""
+    columns: dict[str, list[float]] = {key: [] for key in ("v_on", "v_llm", "v_off", "va_on", "va_llm")}
+    state = hooks.on
+
+    def run(on: str, llm: str, request_lora: Any, off: bool) -> None:
+        try:
+            for request, completion in pairs:
+                columns[on] += probe(request, completion, request_lora)  # the engine as it generates
+                hooks.on = False
+                columns[llm] += probe(request, completion, request_lora)
+                if off:
+                    columns["v_off"] += probe(request, completion, None)
+                hooks.on = state
+        finally:
+            hooks.on = state
+
+    run("v_on", "v_llm", lora, True)
+    try:
+        amplified = swap(AMPLIFY)
+        hooks.load(vision_lora(bundle, AMPLIFY))
+        hooks.on = state
+        run("va_on", "va_llm", amplified, False)
+    finally:
+        hooks.load(vision_lora(bundle))
+        hooks.on = state
+        restored = swap(1)
+    return columns, restored
 
 
 def _rms(x: torch.Tensor) -> float:
     return float(x.pow(2).mean().sqrt())
 
 
+def _fit(dv: torch.Tensor, dh: torch.Tensor) -> dict:
+    entry: dict[str, Any] = {"rms_effect": _rms(dh)}
+    if float(dh @ dh) > 0:
+        corr = float(torch.corrcoef(torch.stack([dv, dh]))[0, 1]) if _rms(dv - dv.mean()) > 0 else 0.0
+        entry.update(slope=float(dv @ dh / (dh @ dh)), correlation=corr if math.isfinite(corr) else 0.0)
+    return entry
+
+
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
-                h_off: list[float], cap: float) -> dict:
+                h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
+                cap: float) -> dict:
     """PF5 on teacher-forced log-probs. v_*: vLLM (on = LoRA + hooks, llm = LoRA only, off = neither); h_*: HF (on,
-    vision scaling 0, all scaling 0). Wrong scale gives slope ~0.5/2, a merged path ~0.45 (LLM) / ~0.12 (vision)."""
-    v1, vl, v0, h1, hl, h0 = (torch.tensor(x, dtype=torch.float64) for x in (v_on, v_llm, v_off, h_on, h_llm, h_off))
-    if not (v1.numel() and all(t.shape == v1.shape for t in (vl, v0, h1, hl, h0))):
+    vision scaling 0, all scaling 0); va_* / ha_*: the same with every LoRA B x AMPLIFY (vLLM adapter file and hook
+    buffers, HF scaling). A trained adapter's effect can sit at the BF16 cross-engine noise (A100 4B v14: 0.05 rms vs
+    0.018 mean |delta|), where the OLS slope is attenuated and the test has no power. So the REAL adapter must give
+    finite values, mean |v_on - h_on| <= cap and, if its effect >= MIN_EFFECT, v_on closer to HF than v_off; its
+    slope/correlation are diagnostics only (no pass/fail). The application MECHANISM is tested on the AMPLIFIED
+    effects: the total effect must be >= MIN_EFFECT (else FAIL: no power) and every component (total / llm / vision)
+    with effect >= MIN_EFFECT within SLOPE_RANGE and MIN_CORRELATION. Wrong scale gives slope ~0.5/2, a merged path
+    ~0.45 (LLM) / ~0.12 (vision)."""
+    columns = [torch.tensor(x, dtype=torch.float64) for x in (v_on, v_llm, v_off, h_on, h_llm, h_off, va_on, va_llm,
+                                                                ha_on, ha_llm)]
+    v1, vl, v0, h1, hl, h0, a1, al, g1, gl = columns
+    if not (v1.numel() and all(t.shape == v1.shape for t in columns)):
         raise ValueError("llm_lora: probe vectors must be nonempty and aligned")
-    finite = all(bool(torch.isfinite(t).all()) for t in (v1, vl, v0, h1, hl, h0))
+    finite = all(bool(torch.isfinite(t).all()) for t in columns)
     err_on, err_off = float((v1 - h1).abs().mean()), float((v0 - h1).abs().mean())
-    report: dict[str, Any] = {"tokens": int(v1.numel()), "mean_abs_on": err_on, "mean_abs_off_vs_on": err_off, "cap": cap}
-    ok = finite and err_on <= cap
-    if _rms(h1 - h0) >= MIN_EFFECT:
+    real = {key: _fit(dv, dh) for key, dv, dh in (("total", v1 - v0, h1 - h0), ("llm", vl - v0, hl - h0),
+                                                  ("vision", v1 - vl, h1 - hl))}
+    amplified = {key: _fit(dv, dh) for key, dv, dh in (("total", a1 - v0, g1 - h0), ("llm", al - v0, gl - h0),
+                                                       ("vision", a1 - al, g1 - gl))}
+    ok = finite and err_on <= cap and amplified["total"]["rms_effect"] >= MIN_EFFECT
+    if real["total"]["rms_effect"] >= MIN_EFFECT:
         ok = ok and err_on < err_off
-    for key, dv, dh in (("total", v1 - v0, h1 - h0), ("llm", vl - v0, hl - h0), ("vision", v1 - vl, h1 - hl)):
-        entry: dict[str, Any] = {"rms_effect": _rms(dh), "pass": None}  # None: effect too small to test
+    for entry in amplified.values():
+        entry["pass"] = None  # None: effect too small to test
         if entry["rms_effect"] >= MIN_EFFECT:
-            slope = float(dv @ dh / (dh @ dh))
-            corr = float(torch.corrcoef(torch.stack([dv, dh]))[0, 1]) if _rms(dv - dv.mean()) > 0 else 0.0
-            entry.update(slope=slope, correlation=corr if math.isfinite(corr) else 0.0)
-            entry["pass"] = SLOPE_RANGE[0] <= slope <= SLOPE_RANGE[1] and entry["correlation"] >= MIN_CORRELATION
+            entry["pass"] = (SLOPE_RANGE[0] <= entry["slope"] <= SLOPE_RANGE[1]
+                             and entry["correlation"] >= MIN_CORRELATION)
             ok = ok and entry["pass"]
-        report[key] = entry
-    report["pass"] = bool(ok)
-    return report
+    return {"tokens": int(v1.numel()), "cap": cap, "amplify": AMPLIFY, "mean_abs_on": err_on,
+            "mean_abs_off_vs_on": err_off, "amplified_mean_abs_on": float((a1 - g1).abs().mean()),
+            "real": real, "amplified": amplified, "pass": bool(ok)}

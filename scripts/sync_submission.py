@@ -23,7 +23,6 @@ _FIXED_FILES = (
     "results/scoring-v8-20260924/provenance.json",
 )
 _DEV_ONLY = {"tests/unit/test_sync_submission.py"}
-_DEV_ONLY_PREFIXES = ("src/mmdl/evaluation/CompassVerifier_checker/",)
 _REQUIRED_FILES = set(_TOP_FILES + _FIXED_FILES) | {
     "configs/eval/mmmu_val_v8.yaml",
     "src/mmdl/evaluation/final_answer_parser_v8.py",
@@ -61,7 +60,7 @@ def _selected_files(root: Path) -> dict[str, Path]:
             if "__pycache__" in path.parts or not path.is_file() or not accept(path):
                 continue
             relative = path.relative_to(root).as_posix()
-            if relative in _DEV_ONLY or relative.startswith(_DEV_ONLY_PREFIXES):
+            if relative in _DEV_ONLY:
                 continue
             selected[relative] = path
     return dict(sorted(selected.items()))

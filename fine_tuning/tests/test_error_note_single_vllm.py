@@ -159,30 +159,32 @@ class LoraFileTests(unittest.TestCase):
         from vllm.model_executor.models.qwen3_vl import Qwen3VLForConditionalGeneration as Q
 
         bundle = tiny_bundle()
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "adapter"
-            llm_lora.write_llm_adapter(bundle, path)
-            helper = PEFTHelper.from_local_dir(str(path), None)
-            helper.validate_legal(LoRAConfig(max_lora_rank=16, max_loras=1))
-            model = LoRAModel.from_local_checkpoint(str(path), list(llm_lora.LLM_LEAVES), helper, lora_model_id=1,
-                                                    device="cpu", dtype=torch.bfloat16, embedding_modules={},
-                                                    embedding_padding_modules=[], weights_mapper=Q.hf_to_vllm_mapper)
-        modules = [f"self_attn.{x}_proj" for x in "qkvo"] + [f"mlp.{x}_proj" for x in ("gate", "up", "down")]
-        expected = {f"language_model.model.layers.{i}.{m}" for i in range(3) for m in modules}
-        self.assertEqual(set(model.loras), expected)
-        self.assertFalse(any("visual" in name for name in model.loras))
         base = bundle.model.get_base_model()
-        for name, weights in model.loras.items():
-            layer = base.get_submodule("model.language_model." + name.removeprefix("language_model.model."))
-            a, b = layer.lora_A["default"].weight, layer.lora_B["default"].weight
-            self.assertTrue(torch.equal(weights.lora_a, a.bfloat16()), name)
-            self.assertTrue(torch.equal(weights.lora_b, b.bfloat16() * 2), name)
-            self.assertTrue(bool(b.abs().sum() > 0))
-        # Vision LoRA stays out of the file and goes to the hooks with the same exact BF16 scaling.
-        vision = llm_lora.vision_lora(bundle)
-        self.assertEqual(sorted(vision), sorted(f"visual.blocks.{i}.attn.{x}" for i in range(3) for x in ("qkv", "proj")))
-        layer = base.get_submodule("model.visual.blocks.0.attn.qkv")
-        self.assertTrue(torch.equal(vision["visual.blocks.0.attn.qkv"][1], layer.lora_B["default"].weight.bfloat16() * 2))
+        for factor in (1, llm_lora.AMPLIFY):  # the PF5 amplified probe adapter is exactly AMPLIFY x the real one
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "adapter"
+                llm_lora.write_llm_adapter(bundle, path, factor)
+                helper = PEFTHelper.from_local_dir(str(path), None)
+                helper.validate_legal(LoRAConfig(max_lora_rank=16, max_loras=1))
+                model = LoRAModel.from_local_checkpoint(str(path), list(llm_lora.LLM_LEAVES), helper, lora_model_id=1,
+                                                        device="cpu", dtype=torch.bfloat16, embedding_modules={},
+                                                        embedding_padding_modules=[], weights_mapper=Q.hf_to_vllm_mapper)
+            modules = [f"self_attn.{x}_proj" for x in "qkvo"] + [f"mlp.{x}_proj" for x in ("gate", "up", "down")]
+            expected = {f"language_model.model.layers.{i}.{m}" for i in range(3) for m in modules}
+            self.assertEqual(set(model.loras), expected)
+            self.assertFalse(any("visual" in name for name in model.loras))
+            for name, weights in model.loras.items():
+                layer = base.get_submodule("model.language_model." + name.removeprefix("language_model.model."))
+                a, b = layer.lora_A["default"].weight, layer.lora_B["default"].weight
+                self.assertTrue(torch.equal(weights.lora_a, a.bfloat16()), name)
+                self.assertTrue(torch.equal(weights.lora_b, b.bfloat16() * 2 * factor), name)
+                self.assertTrue(bool(b.abs().sum() > 0))
+            # Vision LoRA stays out of the file and goes to the hooks with the same exact BF16 scaling.
+            vision = llm_lora.vision_lora(bundle, factor)
+            self.assertEqual(sorted(vision), sorted(f"visual.blocks.{i}.attn.{x}" for i in range(3) for x in ("qkv", "proj")))
+            layer = base.get_submodule("model.visual.blocks.0.attn.qkv")
+            self.assertTrue(torch.equal(vision["visual.blocks.0.attn.qkv"][1],
+                                        layer.lora_B["default"].weight.bfloat16() * 2 * factor))
 
     def test_mm_scope_patch_filters_vision_and_mergers(self):
         from vllm.lora.models import LoRAModelManager
@@ -344,27 +346,113 @@ class PushMergerTests(unittest.TestCase):
             llm_lora.push_mergers(self.engine(vllm_names + ["visual.merger.norm.weight"], []), self.named(), 1)
 
 
+def pf5_columns(size: float, noise: float, llm: float = 1.0, vision: float = 1.0, seed: int = 3) -> dict:
+    """slope_check columns over 128 tokens: LLM / vision adapter effects of std `size`; vLLM applies them x `llm` /
+    x `vision` (1 = exact); every column, HF and vLLM, carries its own numeric noise of std `noise`."""
+    g, k = torch.Generator().manual_seed(seed), llm_lora.AMPLIFY
+    off = -5 + torch.randn(128, generator=g)
+    d_llm, d_vis = torch.randn(128, generator=g) * size, torch.randn(128, generator=g) * size
+    exact = {"h_off": off, "h_llm": off + d_llm, "h_on": off + d_llm + d_vis, "ha_llm": off + k * d_llm,
+             "ha_on": off + k * (d_llm + d_vis), "v_off": off, "v_llm": off + llm * d_llm,
+             "v_on": off + llm * d_llm + vision * d_vis, "va_llm": off + k * llm * d_llm,
+             "va_on": off + k * (llm * d_llm + vision * d_vis)}
+    return {key: (value + torch.randn(128, generator=g) * noise).tolist() for key, value in exact.items()}
+
+
 class SlopeTests(unittest.TestCase):
-    def test_slope_passes_exact_application_and_rejects_scale_or_missing_vision(self):
-        g = torch.Generator().manual_seed(3)
-        h_off = (-5 + torch.randn(64, generator=g)).tolist()
-        d_llm, d_vis = torch.randn(64, generator=g) * .3, torch.randn(64, generator=g) * .3
-        h_llm = (torch.tensor(h_off) + d_llm).tolist()
-        h_on = (torch.tensor(h_llm) + d_vis).tolist()
-        noise = (torch.randn(64, generator=g) * .005).tolist()
-        shift = lambda x: [a + b for a, b in zip(x, noise)]  # noqa: E731
-        good = llm_lora.slope_check(shift(h_on), shift(h_llm), shift(h_off), h_on, h_llm, h_off, cap=.04)
+    def check(self, **kwargs) -> dict:
+        return llm_lora.slope_check(**pf5_columns(**kwargs), cap=.04)
+
+    def test_exact_application_passes_with_every_amplified_component_tested(self):
+        good = self.check(size=.2, noise=.005)
         self.assertTrue(good["pass"])
-        self.assertTrue(all(good[k]["pass"] for k in ("total", "llm", "vision")))
-        half = (torch.tensor(h_off) + d_llm / 2).tolist()  # alpha written as 16
-        bad = llm_lora.slope_check(shift((torch.tensor(half) + d_vis).tolist()), shift(half), shift(h_off),
-                                   h_on, h_llm, h_off, cap=.04)
-        self.assertFalse(bad["pass"])
-        self.assertFalse(bad["llm"]["pass"])
-        no_hooks = llm_lora.slope_check(shift(h_llm), shift(h_llm), shift(h_off), h_on, h_llm, h_off, cap=.04)
-        self.assertFalse(no_hooks["vision"]["pass"])
-        flat = llm_lora.slope_check(h_off, h_off, h_off, h_off, h_off, h_off, cap=.04)
-        self.assertTrue(flat["pass"] and flat["llm"]["pass"] is None)  # no effect: only the cap applies
+        self.assertEqual(good["amplify"], 16)
+        self.assertTrue(all(good["amplified"][k]["pass"] is True for k in ("total", "llm", "vision")))
+        self.assertTrue(all("pass" not in good["real"][k] for k in ("total", "llm", "vision")))  # diagnostics only
+        self.assertAlmostEqual(good["real"]["llm"]["slope"], 1.0, delta=.05)
+
+    def test_pod_shaped_real_effect_at_the_noise_floor_passes_through_the_amplified_probe(self):
+        # A100 4B v14: real total 0.0503 rms, mean_abs_on 0.0177, slope 0.514, correlation 0.463 under the old rule.
+        pod = self.check(size=.032, noise=.022, seed=7)
+        real = pod["real"]["total"]
+        self.assertGreaterEqual(real["rms_effect"], llm_lora.MIN_EFFECT)  # the old rule tested this slope ...
+        self.assertTrue(real["slope"] < llm_lora.SLOPE_RANGE[0] or real["correlation"] < llm_lora.MIN_CORRELATION)
+        self.assertLess(pod["mean_abs_on"], pod["mean_abs_off_vs_on"])
+        self.assertTrue(pod["pass"], pod)  # ... the amplified probe has the power
+        self.assertTrue(all(pod["amplified"][k]["pass"] is True for k in ("total", "llm", "vision")))
+
+    def test_wrong_scale_or_missing_vision_fails_on_the_amplified_slope(self):
+        alpha16 = self.check(size=.032, noise=.022, seed=7, llm=.5)  # alpha written as 16: vLLM LLM effect halved
+        self.assertFalse(alpha16["pass"])
+        self.assertFalse(alpha16["amplified"]["llm"]["pass"])
+        self.assertAlmostEqual(alpha16["amplified"]["llm"]["slope"], .5, delta=.05)
+        no_hooks = self.check(size=.2, noise=.005, vision=0.0)
+        self.assertFalse(no_hooks["pass"] or no_hooks["amplified"]["vision"]["pass"])
+
+    def test_amplified_effect_below_min_effect_fails_for_lack_of_power(self):
+        weak = self.check(size=.001, noise=.001)
+        self.assertLess(weak["amplified"]["total"]["rms_effect"], llm_lora.MIN_EFFECT)
+        self.assertFalse(weak["pass"])
+        self.assertTrue(all(weak["amplified"][k]["pass"] is None for k in ("total", "llm", "vision")))
+        flat = self.check(size=0.0, noise=0.0)
+        self.assertFalse(flat["pass"])
+        self.assertTrue(math.isnan(flat["amplified"]["total"].get("slope", math.nan)))
+
+    def test_nonfinite_or_capped_real_adapter_fails(self):
+        columns = pf5_columns(size=.2, noise=.005)
+        columns["va_on"][3] = math.nan
+        self.assertFalse(llm_lora.slope_check(**columns, cap=.04)["pass"])
+        self.assertFalse(self.check(size=.2, noise=.06)["pass"])  # mean |v_on - h_on| above the cap
+
+
+class FakeHooks:
+    def __init__(self, on: bool):
+        self.on, self.loaded = on, []
+
+    def load(self, weights) -> None:
+        self.loaded.append(weights)
+        self.on = True
+
+
+class VllmColumnsTests(unittest.TestCase):
+    """llm_lora.vllm_columns order: real probes, swap(AMPLIFY) + hook buffers x AMPLIFY, amplified probes, restore."""
+
+    def run_columns(self, hooks: FakeHooks, swaps: list, fail_on: str | None = None):
+        def probe(request, completion, lora):
+            if fail_on is not None and lora == fail_on:
+                raise RuntimeError("probe failed")
+            return [f"{request}:{lora}:{int(hooks.on)}"] * len(completion)
+
+        def swap(factor):
+            swaps.append(factor)
+            return "amp" if factor == llm_lora.AMPLIFY else "restored"
+
+        with patch.object(llm_lora, "vision_lora", lambda bundle, factor=1: f"vision-x{factor}"):
+            return llm_lora.vllm_columns("bundle", hooks, probe, [("p0", [1]), ("p1", [1, 2])], "real", swap)
+
+    def test_real_then_amplified_columns_and_exact_restore(self):
+        hooks, swaps = FakeHooks(True), []
+        columns, restored = self.run_columns(hooks, swaps)
+        self.assertEqual(columns, {"v_on": ["p0:real:1", "p1:real:1", "p1:real:1"],
+                                   "v_llm": ["p0:real:0", "p1:real:0", "p1:real:0"],
+                                   "v_off": ["p0:None:0", "p1:None:0", "p1:None:0"],
+                                   "va_on": ["p0:amp:1", "p1:amp:1", "p1:amp:1"],
+                                   "va_llm": ["p0:amp:0", "p1:amp:0", "p1:amp:0"]})
+        self.assertEqual((restored, swaps, hooks.loaded, hooks.on), ("restored", [16, 1], ["vision-x16", "vision-x1"], True))
+
+    def test_hooks_found_off_stay_off_and_a_failed_probe_still_restores(self):
+        hooks, swaps = FakeHooks(False), []
+        columns, _ = self.run_columns(hooks, swaps)
+        self.assertEqual(columns["va_on"][0], "p0:amp:0")  # the engine as found: hooks off
+        self.assertFalse(hooks.on)
+        hooks, swaps = FakeHooks(True), []
+        with self.assertRaisesRegex(RuntimeError, "probe failed"):
+            self.run_columns(hooks, swaps, fail_on="amp")
+        self.assertEqual((swaps, hooks.loaded, hooks.on), ([16, 1], ["vision-x16", "vision-x1"], True))
+        hooks, swaps = FakeHooks(True), []
+        with self.assertRaisesRegex(RuntimeError, "probe failed"):  # a failed real probe changes no adapter
+            self.run_columns(hooks, swaps, fail_on="real")
+        self.assertEqual((swaps, hooks.loaded, hooks.on), ([], [], True))
 
 
 if __name__ == "__main__":
