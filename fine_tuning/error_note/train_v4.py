@@ -53,6 +53,7 @@ from .protocol import (ARM, PER_UPDATE_ITEMS_V2, SINGLE_FORMAT_ANCHOR_BETA, SING
                        SINGLE_REWARD_GATE_V8, SINGLE_SPIRAL_V13,
                        SINGLE_ADVANTAGE_V14, SINGLE_ADVANTAGE_VERSION_V14, SINGLE_A2_MIN_TOKENS_V14, SINGLE_B_ROWS_V14,
                        SINGLE_REWARD_GATE_V9, SINGLE_TAIL_PRAISE_V14, VERSION_SINGLE_V14,
+                       SINGLE_RESOLVE_V15, SINGLE_ROUTES_V15, VERSION_SINGLE_V15,
                        VERSION_V4, plain_protocol_v4, single_baseline_contract)
 from .train import (END_TOKEN, ENCODE_BUFFER, ENCODE_WORKERS, PROBE_ATOL, PROBE_ROWS, DropRow, NonFiniteStop,
                     _all_parameter_hashes, _append_jsonl, _backward_rows, _changed_counts, _check_output, _clip_groups,
@@ -422,13 +423,14 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     version = contract.get("version")
     gate = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7,
             VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8,
-            VERSION_SINGLE_V14: SINGLE_REWARD_GATE_V9}.get(version, SINGLE_REWARD_GATE_V5)
+            VERSION_SINGLE_V14: SINGLE_REWARD_GATE_V9,
+            VERSION_SINGLE_V15: SINGLE_REWARD_GATE_V9}.get(version, SINGLE_REWARD_GATE_V5)
     if (version not in (VERSION_SINGLE_V8, VERSION_SINGLE_V9, VERSION_SINGLE_V10, VERSION_SINGLE, VERSION_SINGLE_V12,
-                        VERSION_SINGLE_V13, VERSION_SINGLE_V14)
+                        VERSION_SINGLE_V13, VERSION_SINGLE_V14, VERSION_SINGLE_V15)
             or contract["rl"].get("reward") != gate):
         raise ValueError("single train: SINGLE v4 program-gate reward contract required; v1-v3 cannot resume")
     v10, v11, v12 = version == VERSION_SINGLE_V10, version == VERSION_SINGLE, version == VERSION_SINGLE_V12
-    v13, v14 = version == VERSION_SINGLE_V13, version == VERSION_SINGLE_V14
+    v13, v14, v15 = version == VERSION_SINGLE_V13, version in (VERSION_SINGLE_V14, VERSION_SINGLE_V15), version == VERSION_SINGLE_V15
     if v10 and (contract["rl"].get("baseline") != single_baseline_contract()
                 or contract["rl"].get("token_scale") != SINGLE_TOKEN_SCALE_V10
                 or contract.get("sft_weights") != SINGLE_SFT_WEIGHTS_V10
@@ -495,6 +497,9 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
         raise ValueError("single train: v14 penalty table, spiral window, praise and tail-praise rules, A2 minimum, "
                          "B rule, schedule steps, v11 PG settings and v10 SFT weights without human-solution rows "
                          "required")
+    if v15 and (contract.get("routes") != SINGLE_ROUTES_V15 or contract.get("resolve_attempts") != SINGLE_RESOLVE_V15
+                or contract.get("generation_counts") != {"t1": 1, "note": 1, "resolve": 3}):
+        raise ValueError("single train: v15 routes and lesson re-solve attempts contract required")
     if version in (VERSION_SINGLE_V8, VERSION_SINGLE_V9) and (
             contract["rl"].get("baseline", 0.0) != 0.0 or "sft_weighting" in contract):
         raise ValueError("single train: v8/v9 contracts keep b=0 and per-kind SFT weighting")
@@ -526,7 +531,9 @@ def _validate_single_block(bundle: PolicyBundle, encoded: list[dict], contract: 
     for row in encoded:
         if (row["problem_id"] not in expected or row["kind"] not in KINDS + ((KIND_HUMAN,) if v12 else ())
                 or row["route"] not in (ROUTE_FULL, ROUTE_LM)
-                or row["kind"] in (KIND_RL, "A1", KIND_HUMAN) and row["route"] != ROUTE_LM
+                # v15: every row of an image item is FULL, every row of a text-only item LM; v11-v14: RL/A1/H are LM.
+                or v15 and row["route"] != (ROUTE_FULL if row.get("image_sha256") else ROUTE_LM)
+                or not v15 and row["kind"] in (KIND_RL, "A1", KIND_HUMAN) and row["route"] != ROUTE_LM
                 or row["kind"] == KIND_HUMAN and (row.get("target_source") != HUMAN_TARGET_SOURCE or "generation" in row)):
             raise ValueError("single train: invalid kind, problem or route")
     if v14 and any(row["kind"] == "A2" and row["target_len"] < SINGLE_A2_MIN_TOKENS_V14 for row in encoded):
@@ -609,9 +616,10 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     v9 = contract["version"] != VERSION_SINGLE_V8  # v8 keeps the first-row replay HOLD and has no anchor
     # v12 keeps v11's PG, KL, anchor and per-row/per-kind SFT weighting.
     v10 = contract["version"] == VERSION_SINGLE_V10
-    v14 = contract["version"] == VERSION_SINGLE_V14
-    v13 = contract["version"] in (VERSION_SINGLE_V13, VERSION_SINGLE_V14)  # v14 keeps the spiral window
-    v11 = contract["version"] in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14)
+    v14 = contract["version"] in (VERSION_SINGLE_V14, VERSION_SINGLE_V15)  # v15 keeps every v14 rule
+    v13 = contract["version"] in (VERSION_SINGLE_V13, VERSION_SINGLE_V14, VERSION_SINGLE_V15)  # v14 keeps the spiral window
+    v11 = contract["version"] in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14,
+                                  VERSION_SINGLE_V15)
     per_row = contract.get("sft_weighting", {}) if v10 or v11 else {}
     anchor = v9 and "KL" in selected
     reference = "KL" in selected and (beta > 0 or anchor)  # the anchor reads the same exact raw F0 KL
@@ -620,6 +628,8 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     plan = plan_microbatches([row["input_ids"].numel() for row in t1], [row["route"] for row in t1], token_budget)
     from .capacity import CapacityHold, encoded_shapes
 
+    if capacity is not None and any(row["route"] == ROUTE_FULL for row in t1):
+        raise CapacityHold("capacity HOLD: the measured profile has no FULL RL phase")  # capacity.PHASES["rl_kl"] is LM
     if capacity is not None or capture is not None:
         if type(token_budget) is not int or token_budget < 0:
             raise CapacityHold("capacity HOLD: nonnegative integer training token budget required")
@@ -692,7 +702,8 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
         if "PG" in selected or reference:
             for indices in plan:
                 batch = [t1[i] for i in indices]
-                bundle.route.apply(False)
+                # Micro-batches are single-route; v11-v14 RL rows are always LM (checked in _validate_single_block).
+                bundle.route.apply(batch[0]["route"] == ROUTE_FULL)
                 if capacity is not None:
                     capacity.check(encoded_shapes(batch), "rl_kl")
                 with capture.batch(batch, "rl_kl", "RL", full_kl=force_full_kl and reference) if capture is not None else nullcontext():

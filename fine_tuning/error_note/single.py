@@ -33,6 +33,8 @@ from .protocol import (ARM, SINGLE_ADVANTAGE_V11, SINGLE_ADVANTAGE_V12, SINGLE_A
                        SINGLE_REWARD_GATE_V8, SINGLE_SPIRAL_V13, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE, VERSION_SINGLE_V12,
                        VERSION_SINGLE_V13, SINGLE_A2_MIN_TOKENS_V14, SINGLE_ADVANTAGE_V14, SINGLE_ADVANTAGE_VERSION_V14,
                        SINGLE_REWARD_GATE_V9, SINGLE_TAIL_PRAISE_V14, VERSION_SINGLE_V14, plain_protocol_single,
+                       ROLLOUT_ADAPTER_V15, SINGLE_RESOLVE_STAGES_V15, SINGLE_RESOLVE_V15, SINGLE_ROUTES_V15,
+                       VERSION_SINGLE_V15,
                        single_blocks, single_prompts_sha256, single_source_baseline, spiral_window, tail_window)
 from .v4 import target_problem
 
@@ -46,7 +48,8 @@ UNVERIFIABLE = "UNVERIFIABLE"
 NO_COMMITTED = frozenset(("INVALID_NO_FINAL", "INVALID_MULTIPLE"))
 # Protocol version -> its T1 reward gate (v11 and v12 are the runnable SINGLE protocols).
 PROTOCOL_GATES = {VERSION_SINGLE: SINGLE_REWARD_GATE, VERSION_SINGLE_V12: SINGLE_REWARD_GATE_V7,
-                  VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8, VERSION_SINGLE_V14: SINGLE_REWARD_GATE_V9}
+                  VERSION_SINGLE_V13: SINGLE_REWARD_GATE_V8, VERSION_SINGLE_V14: SINGLE_REWARD_GATE_V9,
+                  VERSION_SINGLE_V15: SINGLE_REWARD_GATE_V9}
 # Gates whose decision carries the item's option count and the v7 order (gate v8 = v7 + praise and spiral window;
 # gate v9 = gate v8 + the tail window).
 GATES_V7 = (SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)
@@ -55,7 +58,7 @@ GATES_V8 = (SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)  # decision carries pr
 TABLE_GATES = (SINGLE_REWARD_GATE, SINGLE_REWARD_GATE_V7, SINGLE_REWARD_GATE_V8, SINGLE_REWARD_GATE_V9)
 CONTAINED_OPEN = "T1_CONTAINED_OPEN"
 SINGLE_CLI_VERSIONS = {"v11": VERSION_SINGLE, "v12": VERSION_SINGLE_V12, "v13": VERSION_SINGLE_V13,
-                       "v14": VERSION_SINGLE_V14}
+                       "v14": VERSION_SINGLE_V14, "v15": VERSION_SINGLE_V15}
 NO_LESSON_CONTROL_VERSION = "no-lesson-control-diagnostic-v1"
 NO_LESSON_CONTROL_FILE = "diagnostic-no-lesson-control.json"
 _MCQ_P0_END = "\nPlease select the correct answer from the options above."  # prompts.p0_body, MCQ only
@@ -146,13 +149,21 @@ def _protocol_check(protocol: dict) -> None:
             or protocol.get("prompts_sha256") != single_prompts_sha256()
             or protocol["training_contract"].get("version") != protocol["version"]
             or protocol["training_contract"]["rl"].get("reward") != PROTOCOL_GATES[protocol["version"]]
-            or protocol["training_contract"]["generation_counts"] != {"t1": 1, "note": 1, "resolve": 1}):
+            or protocol["training_contract"]["generation_counts"] != {
+                "t1": 1, "note": 1, "resolve": 3 if protocol["version"] == VERSION_SINGLE_V15 else 1}
+            or (protocol["version"] == VERSION_SINGLE_V15) != ("rollout_adapter" in protocol)):
+        raise ValueError("single runtime: invalid single-response protocol")
+    if protocol["version"] == VERSION_SINGLE_V15 and (
+            protocol["rollout_adapter"] != ROLLOUT_ADAPTER_V15
+            or protocol["training_contract"].get("routes") != SINGLE_ROUTES_V15
+            or protocol["training_contract"].get("resolve_attempts") != SINGLE_RESOLVE_V15):
         raise ValueError("single runtime: invalid single-response protocol")
 
 
-def _candidate(record: dict, kind: str) -> dict | None:
-    stage = {"RL": "t1", "A1": "t1", "A2": "resolve", "B": "note"}[kind]
-    output = record.get(stage)
+def _candidate(record: dict, kind: str, *, stage: str = "resolve", image_route: bool = False) -> dict | None:
+    """``stage`` is the A2 re-solve stage. ``image_route`` (v15): every row of an item with an image is FULL and every
+    row of a text-only item LM; otherwise (v11-v14) only an A2/B row whose note says MISREAD is FULL."""
+    output = record.get({"RL": "t1", "A1": "t1", "A2": stage, "B": "note"}[kind])
     if output is None:
         return None
     actions = output["generation"]["completion_token_ids"]
@@ -163,13 +174,27 @@ def _candidate(record: dict, kind: str) -> dict | None:
     if kind in ("A1", "A2") and output["status"] != "CORRECT":
         return None
     parsed = parse_note_v2(record["note"]["text"]) if record.get("note") else None
-    route = ROUTE_FULL if kind in ("A2", "B") and parsed and parsed.image_reading == "MISREAD" else ROUTE_LM
+    full = bool(record["image_paths"]) if image_route else kind in ("A2", "B") and parsed and parsed.image_reading == "MISREAD"
+    route = ROUTE_FULL if full else ROUTE_LM
     return {"row_id": record["problem_id"] + ":" + kind, "kind": kind, "route": route,
             **{k: record[k] for k in ("problem_id", "image_paths", "image_sha256", "subject", "source")},
             "prompt": output["prompt"] if kind == "B" else record["p0_text"], "target": output["text"],
             "target_source": {"RL": "T1", "A1": "T1", "A2": "RESOLVE", "B": "NOTE"}[kind],
             "generation": output["generation"], "complete": True,
             "status": output.get("status", "NOTE"), "reward": 0 if kind == "RL" else int(record["t1"]["status"] == "CORRECT")}
+
+
+def _a2_check(record: dict, stage: str, lesson: str, *, image_route: bool) -> tuple[dict | None, str | None]:
+    """v15: the v14 A2 checks on one re-solve attempt (admissible, no lesson echo/hedge, >= 256 sampled tokens).
+    (row, None) when the attempt passes, else (None, reason)."""
+    row = _candidate(record, "A2", stage=stage, image_route=image_route)
+    if row is None:
+        return None, "A2_NOT_ADMISSIBLE"
+    if problem := a2_target_problem(row["target"], lesson):
+        return None, "A2_" + problem
+    if len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
+        return None, "A2_UNDER_MIN_TOKENS"
+    return row, None
 
 
 def _single_reward_decision(row: dict, evidence: dict) -> dict:
@@ -184,7 +209,8 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
     reasons (a correct answer that is no A1 target), else None."""
     try:
         v7 = isinstance(evidence, dict) and evidence.get("version") in GATES_V7
-        if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] != ROUTE_LM
+        # The per-version route rule (v11-v14 LM; v15 FULL iff the item has an image) is enforced by train_v4.
+        if (row["kind"] != "RL" or row["target_source"] != "T1" or row["route"] not in (ROUTE_LM, ROUTE_FULL)
                 or row["status"] not in GRADED | {"LOOP_STOPPED", UNVERIFIABLE}
                 or not isinstance(evidence, dict)
                 or set(evidence) - {"baseline", "advantage"} != {"version", "t1_metadata", "provenance", "decision",
@@ -444,6 +470,8 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     ``reference`` (v11) gives the dataset reference text for a problem's note prompt only (None: no reference).
     v14: an A2 row needs at least 256 sampled tokens (reason A2_UNDER_MIN_TOKENS), and a note is a B candidate only
     when its own re-solve passed the v11 A2 checks (decided before the 256-token rule).
+    v15: up to three re-solves with the same prompt (records ``resolve``, ``resolve2``, ``resolve3``); attempt k+1 runs
+    only when attempt k failed _a2_check; the first passing attempt is the only A2 row, and only it brings the B row.
     v12 H rows read the human-solution fields from ``provenance`` (references.human_solution) and count tokens with
     ``bundle.processor.tokenizer``.
     """
@@ -451,10 +479,13 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     from .rl import policy_sha256
 
     _protocol_check(protocol)
-    v14 = protocol["version"] == VERSION_SINGLE_V14
+    v15 = protocol["version"] == VERSION_SINGLE_V15  # every row of an image item takes the FULL route
+    v14 = v15 or protocol["version"] == VERSION_SINGLE_V14  # v15 keeps every v14 rule
     v13 = v14 or protocol["version"] == VERSION_SINGLE_V13  # v14 keeps every v13 rule
     v12 = v13 or protocol["version"] == VERSION_SINGLE_V12  # v13 keeps v12's note filter, B rule and item evidence
-    ids = [item["problem_id"] for item in items]
+    # v15: attempt k+1 (same prompt, own seed) exists only when attempts 1..k failed _a2_check; v11-v14: one re-solve.
+    stages = SINGLE_RESOLVE_STAGES_V15 if v15 else ("resolve",)
+    ids =[item["problem_id"] for item in items]
     if not 1 <= len(ids) <= 16 or len(set(ids)) != len(ids) or any(pid not in actors or pid not in provenance for pid in ids):
         raise ValueError("single runtime: unique, source-bound block of 1..16 actors required")
     limit = len(ids) if limit is None else limit
@@ -508,7 +539,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             if status not in GRADED | {UNVERIFIABLE}:
                 raise ValueError(f"single runtime: ungraded/system outcome blocks the block: {status}")
             result.update(status=status, extracted=extracted)
-        if stage == "resolve":
+        if stage in SINGLE_RESOLVE_STAGES_V15:
             result["lesson_sha256"] = text_sha256(lesson(pid))
         previous = state["records"][pid].get(stage)
         if previous is not None and previous != result:
@@ -558,6 +589,9 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
                 return [submit(request(pid, "note", note_prompt(pid)))]
             if stage == "note" and note_decision(pid)[1]["accepted"]:
                 return [submit(request(pid, "resolve", resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))))]
+            if stage in stages[:-1] and _a2_check(state["records"][pid], stage, lesson(pid), image_route=v15)[0] is None:
+                return [submit(request(pid, stages[stages.index(stage) + 1],
+                                       resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))))]
             return []
 
         run_single_requests([submit(request(pid, "t1", state["records"][pid]["p0_text"])) for pid in active], stream,
@@ -584,15 +618,19 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
     for pid in wrong:
         audits[pid], note_decisions[pid] = note_decision(pid)
     approved = [pid for pid in wrong if note_decisions[pid]["accepted"]]
-    if not generate("resolve", {pid: resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))
-                                for pid in approved}):
-        return checkpoint("INCOMPLETE_RESOLVE", note_audits=audits, note_decisions=note_decisions)
+    pending = approved
+    for stage in stages:
+        if not generate(stage, {pid: resolve_prompt_single(state["records"][pid]["p0_text"], lesson(pid))
+                                for pid in pending}):
+            return checkpoint("INCOMPLETE_RESOLVE", note_audits=audits, note_decisions=note_decisions)
+        pending = [pid for pid in pending
+                   if _a2_check(state["records"][pid], stage, lesson(pid), image_route=v15)[0] is None]
     if policy_sha256(bundle) != policy:
         raise ValueError("single runtime: policy changed during collection")
     rows, decisions = [], {}
     for pid in active:
         record = state["records"][pid]
-        rl_row = _candidate(record, "RL")
+        rl_row = _candidate(record, "RL", image_route=v15)
         if rl_row is None:
             raise ValueError("single runtime: original T1 is missing")
         gate = {"gate": PROTOCOL_GATES[protocol["version"]], "option_count": len(actors[pid].choices)} if v12 else {}
@@ -601,23 +639,37 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
         kind = "A1" if record["t1"]["status"] == "CORRECT" else "A2"
         if kind == "A2" and pid not in approved:
             continue
-        row = _candidate(record, kind)
-        reason = None if row is not None else f"{kind}_NOT_ADMISSIBLE"
-        if row is not None and kind == "A2" and (problem := a2_target_problem(row["target"], lesson(pid))):
-            row, reason = None, "A2_" + problem
-        elif row is not None and kind == "A1" and (phrase := answer_denial(row["target"])) is not None:
-            row, reason = None, "A1_ANSWER_DENIAL:" + phrase
-        elif row is not None and kind == "A1" and not praised:
-            row, reason = None, "A1_NOT_PRAISED"  # v13: a correct answer under 256 tokens is not copied either
-        follows = row is not None and kind == "A2"  # v14: the re-solve passed every v11 A2 check
-        if v14 and follows and len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
-            row, reason = None, "A2_UNDER_MIN_TOKENS"
-        decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
-        if row is not None:
+        if v15 and kind == "A2":  # the first attempt that passes every v14 A2 check is the only A2 row
+            tried = [stage for stage in stages if stage in record]
+            row = reason = attempt = None
+            for number, stage in enumerate(tried, 1):
+                row, reason = _a2_check(record, stage, lesson(pid), image_route=v15)
+                if row is not None:
+                    attempt = number
+                    break
+            decisions[f"{pid}:A2"] = {"accepted": row is not None, "method": "program", "reason": reason,
+                                      "attempt": attempt, "attempts": len(tried)}
+            if row is None:
+                continue  # v15: B follows a passing A2 attempt only; failed attempts are never rows
             rows.append(row)
-        elif kind == "A1" or not v12 or (v14 and not follows):
-            continue  # v11: B follows its A2; v12/v13: every accepted note is a B candidate; v14: B follows a passing A2
-        if kind == "A2" and (note_row := _candidate(record, "B")) is not None:
+        else:
+            row = _candidate(record, kind, image_route=v15)
+            reason = None if row is not None else f"{kind}_NOT_ADMISSIBLE"
+            if row is not None and kind == "A2" and (problem := a2_target_problem(row["target"], lesson(pid))):
+                row, reason = None, "A2_" + problem
+            elif row is not None and kind == "A1" and (phrase := answer_denial(row["target"])) is not None:
+                row, reason = None, "A1_ANSWER_DENIAL:" + phrase
+            elif row is not None and kind == "A1" and not praised:
+                row, reason = None, "A1_NOT_PRAISED"  # v13: a correct answer under 256 tokens is not copied either
+            follows = row is not None and kind == "A2"  # v14: the re-solve passed every v11 A2 check
+            if v14 and follows and len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
+                row, reason = None, "A2_UNDER_MIN_TOKENS"
+            decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
+            if row is not None:
+                rows.append(row)
+            elif kind == "A1" or not v12 or (v14 and not follows):
+                continue  # v11: B follows its A2; v12/v13: every accepted note is a B candidate; v14: B follows a passing A2
+        if kind == "A2" and (note_row := _candidate(record, "B", image_route=v15)) is not None:
             problem = (b_target_problem(note_row["target"], v12=v12)
                        or note_cause_problem(note_row["target"], record["t1"]["status"]))
             decisions[f"{pid}:B"] = {"accepted": problem is None, "method": "program",
@@ -716,7 +768,7 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
             norms = _gradient_norms(bundle)
             rows = [r for r in encoded if r["kind"] == ("RL" if name in ("PG", "KL") else name)]
             signal = bool(stats["has_gradient"])
-            full = name in ("A2", "B") and any(row["route"] == ROUTE_FULL for row in rows)
+            full = any(row["route"] == ROUTE_FULL for row in rows)  # v11-v14: only A2/B rows can be FULL
             expected = {"L": signal, "M": signal, "V": signal and full}
             positive = {group: value is not None and value > 0 for group, value in norms.items()}
             valid = all(positive.get(group, False) == need for group, need in expected.items())
@@ -915,7 +967,7 @@ def _prepare(args: argparse.Namespace) -> dict:
         note_reference = references.note_reference_pin(sources, supplement, supplement_sha, ids)
     protocol = plain_protocol_single(precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
                                      note_reference=note_reference, version=version,
-                                     **({"schedule_steps": len(blocks)} if version == VERSION_SINGLE_V14 else {}))
+                                     **({"schedule_steps": len(blocks)} if version in (VERSION_SINGLE_V14, VERSION_SINGLE_V15) else {}))
     body = {"version": VERSION, "mode": args.mode, "source": source, "generation": generation,
             "protocol": protocol, "data_admission": admission, "fixed10": order["items"][:10],
             **({"fixed16": fixed} if getattr(args, "limit", None) == 16 else {}),

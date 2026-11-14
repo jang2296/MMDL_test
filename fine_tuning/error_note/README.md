@@ -411,6 +411,31 @@ v14는 v13의 검토된 결함을 고친 판이다. 앞 1,020문항과 순서는
 - 상태: 로컬에서 구현되었고 CPU에서 테스트되었다. v14 GPU 실행은 아직 없다.
   노트와 풀이의 내용은 검증되지 않았다(프로그램 검사만 있음).
 
+## SINGLE v15 (2026-11-14, `claudedocs/plan_v15_20261114.md`)
+
+v15는 v14와 이전 판에서 확인된 결함을 고친 판이다. 저장된 v14 체크포인트 41에서 이어받아 같은 1,020문항 순서의 41~63묶음을 학습한다.
+새 캠페인 계획은 v15로 봉인한다. 봉인된 v11~v14 계획·행·프로토콜 해시는 그대로 재현된다.
+
+- 프로토콜: v14와 다른 경로는 `version`, `training_contract.version`, `training_contract.hashes.source`,
+  `generation_counts.resolve`(1→3), `routes`(`SINGLE_ROUTES_V15`), 새 `resolve_attempts`(`SINGLE_RESOLVE_V15`),
+  새 최상위 `rollout_adapter`(`ROLLOUT_ADAPTER_V15`)뿐이다. 학습률 일정(`schedule_steps` = `optimizer.total_steps` = 64)은 v14와 같다.
+- 경로: 그림이 있는 문항의 모든 행(RL·A1·A2·B)은 FULL 경로(시각 조정층 + Merger + 언어 조정층)이고, 글만 있는 문항은 LM이다.
+  v11~v14는 그대로 A2/B의 MISREAD 자기 신고 행만 FULL이다. 측정 프로파일이 있는데 FULL RL 행이 있으면 `CapacityHold`로 멈춘다.
+- 다시 풀기: 오답 문항은 같은 교훈으로 `resolve`, `resolve2`, `resolve3`까지 다시 푼다. 1번 시도는 v14와 같은 seed다.
+  v14의 A2 검사(정답, v11 A2 필터, 256토큰 이상)를 처음 통과한 시도 하나만 A2 행이 되고, 그때만 노트가 B 후보다. 실패한 시도는 행이 아니다.
+  `record["resolve"]`는 1번 시도로 남고, 고른 시도는 `row_decisions[pid:A2]["attempt"]`에 기록된다. 평가는 문항당 답 하나 그대로다.
+- 생성: `rollout_adapter`가 있으면 `SingleVllmSampler(lora=True)`가 언어 조정층을 vLLM 조정층 기능으로 합치지 않고 적용한다.
+  vLLM 0.11의 Qwen3-VL `get_mm_mapping` 접두어 버그는 `llm_lora.scope_qwen3vl_lora()`가 프로세스 안에서 고치고,
+  시각 조정층은 전방 훅(`install_vision_hooks`)으로 정확히 적용한다. Merger만 BF16 가중치로 보낸다. 절전은 수준 1이다.
+  첫 동기화 때 사전 점검 PF0~PF5(호스트 메모리, 조정층 범위, 슬롯·훅 값 일치, 원본 가중치 불변, 절전 왕복, HF 대비 로그 확률 기울기)를 하고 실패하면 생성 전에 멈춘다.
+- 이어받기 v2(`single-warm-start-v2`): v14→v15 전환만 허용하고 위 프로토콜 경로만 달라도 된다. 문항·순서·자료·입력·경로·용량·64묶음 일정은 같아야 한다.
+  옵티마이저·스케줄러 상태는 체크포인트 41에서 그대로 이어진다(학습률 = 기본값 × (64−묶음)/54, 64에서 0).
+  포드 계획(`plan.py` single-direct + `warm_start`)은 고정 입력 8개 → `advance-main` → `reload-64`이다.
+- 평가: v15 체크포인트는 원본 가중치 + BF16 Merger + 언어 조정층 파일 + 시각 조정층 파일로 내보내고, 평가도 같은 방식(조정층 비병합, 시각 훅)으로 한다.
+  사전등록 형식 v10은 v9의 두 단계 규칙(같은 450/450, 기준 275, 문턱 281)에 조정층 적용 방식 선언을 더한 것이다.
+  평가 전 `lora_preflight`가 실제 모델로 일치와 속도를 확인하고, 실패하면 평가하지 않는다(병합 평가로 대체하지 않음).
+- 상태: CPU 시험과 로컬 RTX 5060의 작은 Qwen3-VL 시험(생성·평가 조정층 경로)을 통과했다. 실제 4B 경로는 포드에서 41묶음 시험 학습과 사전 점검으로 처음 확인한다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

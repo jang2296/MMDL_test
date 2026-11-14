@@ -61,6 +61,8 @@ def sample_seed(problem_id: str, stage: str, master_seed: int = MASTER_SEED) -> 
         key = f"{master_seed}:{problem_id}:note"
     elif stage == "resolve":
         key = f"{master_seed}:{problem_id}:resolve"
+    elif stage in ("resolve2", "resolve3"):  # v15 lesson re-solve attempts 2 and 3
+        key = f"{master_seed}:{problem_id}:resolve:{stage[-1]}"
     elif stage == "control":  # diagnostic no-lesson re-solve (single.run_no_lesson_control); never a training row
         key = f"{master_seed}:{problem_id}:no-lesson-control"
     else:

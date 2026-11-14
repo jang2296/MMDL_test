@@ -21,8 +21,8 @@ from . import references, single
 from .audit import digest, text_sha256
 from .collect_v3 import file_sha, generation_identity
 from .contract import CONTEXT_LIMIT, MASTER_SEED
-from .protocol import (ARM, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, VERSION_SINGLE_V14, plain_protocol_single,
-                       single_blocks)
+from .protocol import (ARM, ROLLOUT_ADAPTER_V15, SINGLE_TOKEN_SCALE_V11, VERSION_SINGLE_V12, VERSION_SINGLE_V14,
+                       VERSION_SINGLE_V15, plain_protocol_single, single_blocks)
 
 VERSION = "single-campaign-v2"
 GATE_VERSION = "single-pilot-main-gate-v1"
@@ -43,6 +43,17 @@ WARM_START_SAME = ("items", "blocks", "data_admission", "inputs", "build_root", 
                    "pilot_ids_sha256", "dev_ids_sha256", "retention_ids_sha256", "execution_max_blocks", "mode")
 WARM_START_ARGS = ("warm_start_plan", "warm_start_plan_sha256", "warm_start_checkpoint", "warm_start_checkpoint_sha256",
                    "warm_start_reload", "warm_start_reload_sha256")
+WARM_START_KEYS = {"version", "decision", "source_plan", "source_plan_sha256", "source_binding", "checkpoint", "slot",
+                   "updates", "cursor_sha256", "reload_receipt"}
+# Warm start v2 (v15, 2026-11-14): the one sealed protocol transition. Only these protocol paths may differ from the
+# stopped v14 plan; WARM_START_SAME (incl. execution_max_blocks, so the 64-step LR schedule) stays identical.
+WARM_START_VERSION_V2 = "single-warm-start-v2"
+WARM_START_DECISION_V2 = ("user 2026-11-14: v15 continues the stopped SINGLE v14 campaign from its slot-41 checkpoint "
+    "(fresh-process reload receipt slot 41) on blocks 41-63 of the same 1,020-item order with the v15 changes (vision "
+    "route on every image row, up to 3 lesson re-solves, unmerged vLLM LoRA rollouts); the LR keeps v14's 64-step schedule")
+WARM_START_TRANSITION_V2 = {"from": VERSION_SINGLE_V14, "to": VERSION_SINGLE_V15, "protocol_changes": [
+    "rollout_adapter", "training_contract.generation_counts", "training_contract.hashes.source",
+    "training_contract.resolve_attempts", "training_contract.routes", "training_contract.version", "version"]}
 
 
 def _descriptor(path: Path) -> dict:
@@ -64,18 +75,22 @@ def _plan_check(plan: dict) -> None:
             or plan["protocol"]["training_contract"]["total_slots"] != len(plan["blocks"])
             or plan["gate_rule"] != GATE_RULE):
         raise ValueError("single campaign: invalid immutable campaign plan")
-    if plan["protocol"]["version"] == VERSION_SINGLE_V14 and not (
+    if plan["protocol"]["version"] in (VERSION_SINGLE_V14, VERSION_SINGLE_V15) and not (
             plan["protocol"]["optimizer"]["total_steps"] == plan["protocol"]["training_contract"]["schedule_steps"]
             == plan.get("execution_max_blocks")):
-        # v14: the LR decays over exactly the blocks the plan may run (a bool or None never equals the int steps).
+        # v14/v15: the LR decays over exactly the blocks the plan may run (a bool or None never equals the int steps).
         raise ValueError("single campaign: invalid immutable campaign plan")
     if plan["mode"] == "train" and plan["protocol"]["precision"] != "bf16":
         raise ValueError("single campaign: HOLD NF4 training/checkpoint continuation is not validated")
     warm = plan.get("warm_start")
+    v2 = warm is not None and warm.get("version") == WARM_START_VERSION_V2
     if warm is not None and (
-            set(warm) != {"version", "decision", "source_plan", "source_plan_sha256", "source_binding", "checkpoint",
-                          "slot", "updates", "cursor_sha256", "reload_receipt"}
-            or warm["version"] != WARM_START_VERSION or warm["decision"] != WARM_START_DECISION or plan["mode"] != "train"
+            set(warm) != WARM_START_KEYS | ({"transition"} if v2 else set())
+            or warm["version"] not in (WARM_START_VERSION, WARM_START_VERSION_V2)
+            or warm["decision"] != (WARM_START_DECISION_V2 if v2 else WARM_START_DECISION)
+            or (v2 and (warm["transition"] != WARM_START_TRANSITION_V2
+                        or plan["protocol"]["version"] != WARM_START_TRANSITION_V2["to"]))
+            or plan["mode"] != "train"
             or type(warm["slot"]) is not int or not 1 <= warm["slot"] < len(plan["blocks"])
             or type(warm["updates"]) is not int or warm["updates"] != warm["slot"]
             or set(warm["source_binding"]) != {"protocol_sha256", "prompts_sha256", "data_sha256", "code_sha256"}
@@ -89,23 +104,41 @@ def _hex64(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
 
 
-def _without_source_hash(protocol: dict) -> dict:
+def _strip(protocol: dict, paths: list[str]) -> dict:
+    """The protocol without its sha256 and without each dotted path (when present)."""
     stripped = copy.deepcopy(protocol)
-    del stripped["sha256"], stripped["training_contract"]["hashes"]["source"]
+    del stripped["sha256"]
+    for path in paths:
+        *parents, leaf = path.split(".")
+        node = stripped
+        for key in parents:
+            node = node.get(key, {})
+        node.pop(leaf, None)
     return stripped
 
 
 def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoint_path: Path, checkpoint_sha256: str,
                       reload_path: Path, reload_sha256: str) -> dict:
-    """Seal a stopped campaign's committed checkpoint (``checkpoint_path`` is its metadata.json) as the plan's start."""
+    """Seal a stopped campaign's committed checkpoint (``checkpoint_path`` is its metadata.json) as the plan's start.
+
+    Same protocol version: v1 (only the code-source hash may differ). v14 -> v15 only: v2, where exactly the
+    WARM_START_TRANSITION_V2 protocol paths may differ; any other version pair is refused.
+    """
     from fine_tuning.notebook_rl import checkpoint
 
     old = single._read(_checked({"path": str(plan_path), "file_sha256": plan_sha256}))
     _plan_check(old)
+    versions = (old["protocol"]["version"], body["protocol"]["version"])
+    transition = None
+    if versions[0] != versions[1]:
+        if versions != (WARM_START_TRANSITION_V2["from"], WARM_START_TRANSITION_V2["to"]):
+            raise ValueError(f"single campaign: no sealed protocol transition {versions[0]} -> {versions[1]}")
+        transition = copy.deepcopy(WARM_START_TRANSITION_V2)
+    paths = transition["protocol_changes"] if transition else ["training_contract.hashes.source"]
     missing = object()
     if (old["mode"] != "train" or any(old.get(key, missing) != body.get(key, missing) for key in WARM_START_SAME)
             or old["generation"]["model_files_sha256"] != body["generation"]["model_files_sha256"]
-            or _without_source_hash(old["protocol"]) != _without_source_hash(body["protocol"])):
+            or _strip(old["protocol"], paths) != _strip(body["protocol"], paths)):
         raise ValueError("single campaign: warm start needs a stopped train plan with the same items, blocks and protocol")
     metadata = checkpoint.read_metadata(_checked({"path": str(checkpoint_path), "file_sha256": checkpoint_sha256}).parent,
                                         binding=_binding(old))
@@ -119,9 +152,12 @@ def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoi
     if single._read(_checked({"path": str(reload_path), "file_sha256": reload_sha256})) != {
             "status": "RELOADED", "slot": slot, "updates": slot}:
         raise ValueError("single campaign: warm-start checkpoint lacks its fresh-process reload receipt")
-    return {"version": WARM_START_VERSION, "decision": WARM_START_DECISION, "source_plan": _descriptor(plan_path),
-            "source_plan_sha256": old["sha256"], "source_binding": _binding(old), "checkpoint": _descriptor(checkpoint_path),
-            "slot": slot, "updates": slot, "cursor_sha256": digest(cursor), "reload_receipt": _descriptor(reload_path)}
+    record = {"version": WARM_START_VERSION, "decision": WARM_START_DECISION, "source_plan": _descriptor(plan_path),
+              "source_plan_sha256": old["sha256"], "source_binding": _binding(old), "checkpoint": _descriptor(checkpoint_path),
+              "slot": slot, "updates": slot, "cursor_sha256": digest(cursor), "reload_receipt": _descriptor(reload_path)}
+    if transition is not None:
+        record |= {"version": WARM_START_VERSION_V2, "decision": WARM_START_DECISION_V2, "transition": transition}
+    return record
 
 
 def prepare(args: argparse.Namespace) -> dict:
@@ -202,10 +238,10 @@ def _prepare(args: argparse.Namespace) -> dict:
                  "order": args.order_sha256, "data_admission": digest(admission)}
     note_reference = references.note_reference_pin(sources, supplement, args.note_reference_supplement_sha256,
                                                    [item["problem_id"] for item in order["items"]])
-    # New plans are SINGLE v14 (2026-11-13), as v13 replaced v12; sealed v11/v12/v13 plans still pass _plan_check.
-    # The sealed order still holds all 219 blocks; v14's LR decays over the execution_max_blocks it may run.
+    # New plans are SINGLE v15 (2026-11-14), as v14 replaced v13; sealed v11-v14 plans still pass _plan_check.
+    # The sealed order still holds all 219 blocks; the LR decays over the execution_max_blocks the plan may run.
     protocol = plain_protocol_single(args.precision, len(blocks), contracts=contracts, token_scale=args.token_scale,
-                                     note_reference=note_reference, version=VERSION_SINGLE_V14,
+                                     note_reference=note_reference, version=VERSION_SINGLE_V15,
                                      schedule_steps=args.execution_max_blocks)
     measured = args.capacity_profile is not None
     if measured != (args.capacity_profile_sha256 is not None):
@@ -501,7 +537,7 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 max_num_seqs=plan["capacity"]["max_num_seqs"],
                 gpu_memory_utilization=plan["capacity"]["gpu_memory_utilization"],
                 sleep=plan["capacity"]["vllm_sleep"], eos_token_ids=eos if isinstance(eos, list) else [eos],
-                image=plan["protocol"]["image"])
+                image=plan["protocol"]["image"], lora=plan["protocol"].get("rollout_adapter") == ROLLOUT_ADAPTER_V15)
         if selected is not None:
             def checked_factory(*values):
                 fresh = factory(*values)
@@ -574,8 +610,9 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             return state
         advanced = int(reconciled)
         by_id = {item["problem_id"]: item for item in plan["items"]}
-        # v14's scheduler has exactly execution_max_blocks steps: no block at or past that slot is generated or updated.
-        last = plan["execution_max_blocks"] if plan["protocol"]["version"] == VERSION_SINGLE_V14 else len(plan["blocks"])
+        # v14/v15's scheduler has exactly execution_max_blocks steps: no block at or past that slot is generated or updated.
+        last = (plan["execution_max_blocks"] if plan["protocol"]["version"] in (VERSION_SINGLE_V14, VERSION_SINGLE_V15)
+                else len(plan["blocks"]))
         while cursor["slot"] < last and advanced < max_blocks:
             slot = cursor["slot"]
             if slot >= 19 and len(cursor["consumed_problem_ids"]) >= 300:

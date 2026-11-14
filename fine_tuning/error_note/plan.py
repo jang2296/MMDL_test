@@ -39,6 +39,9 @@ single-direct (v5, user 2026-11-06; runs under job stage single-main): pins -> a
 reload checkpoint-19 -> advance --continue-main --direct-main 200 (no external-dev gate) -> reload -> export the final checkpoint.
 Optional `execution_max_blocks` (integer 20..219, this stage only) replaces the 219-block total: every campaign call carries it,
 advance-main runs total-19 blocks instead of 200, and the final checkpoint is checkpoint-<total>; a shorter campaign's checkpoint is exported by the evaluation stage, not by this plan.
+Optional single-direct `warm_start` = {plan,checkpoint,reload}_{path,sha256} + slot (v15 warm start v2; needs
+execution_max_blocks, 19 < slot < total): pins -> pin the three warm files -> advance-main --continue-main --direct-main
+total-slot -> reload checkpoint-<total>; every campaign call carries the six --warm-start-* arguments, and there is no export.
 """
 from __future__ import annotations
 
@@ -97,6 +100,7 @@ SINGLE_EXTRA = {"single-pilot": (("dev_manifest_path", "dev_vault_root", "dev_ru
                 "single-main": (("pilot_gate_path",), ("pilot_gate_sha256",), ("cpu", "advance_main", "reload", "export")),
                 "single-direct": ((), (), ("cpu", "advance_first", "advance_pilot", "advance_main", "reload", "export"))}
 PILOT_BLOCKS, MAIN_BLOCKS = 19, 200  # single_campaign: 219 slots of 16, PILOT_COMPLETE after slot 19 (300 items)
+WARM_FILES = ("plan", "checkpoint", "reload")  # single-direct warm_start: <name>_path/_sha256 -> --warm-start-<name>[-sha256]
 
 
 def _positive_int(params: dict[str, Any], key: str, low: int) -> None:
@@ -295,7 +299,7 @@ def _plan_v3(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
 def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     paths, hashes, kinds = SINGLE_EXTRA[stage]
     keys = SINGLE_KEYS | set(paths) | set(hashes)
-    optional = {"execution_max_blocks"} if stage == "single-direct" else set()
+    optional = {"execution_max_blocks", "warm_start"} if stage == "single-direct" else set()
     missing, unknown = sorted(keys - set(params)), sorted(set(params) - keys - optional)
     if missing or unknown:
         raise ValueError(f"params keys: missing {missing}, unknown {unknown}")
@@ -327,6 +331,22 @@ def _check_single(stage: str, params: dict[str, Any]) -> dict[str, Any]:
         blocks = params["execution_max_blocks"]
         if type(blocks) is not int or not PILOT_BLOCKS < blocks <= PILOT_BLOCKS + MAIN_BLOCKS:
             raise ValueError("execution_max_blocks must be an integer in 20..219")
+    if "warm_start" in params:  # single-direct only; the campaign re-verifies all three files on every call
+        warm = params["warm_start"]
+        if not isinstance(warm, dict) or set(warm) != {*(f"{name}_{kind}" for name in WARM_FILES
+                                                        for kind in ("path", "sha256")), "slot"}:
+            raise ValueError("warm_start must map exactly plan/checkpoint/reload _path and _sha256 plus slot")
+        if "execution_max_blocks" not in params:
+            raise ValueError("warm_start requires execution_max_blocks")
+        if type(warm["slot"]) is not int or not PILOT_BLOCKS < warm["slot"] < params["execution_max_blocks"]:
+            raise ValueError("warm_start slot must be an integer with 19 < slot < execution_max_blocks")
+        for name in WARM_FILES:
+            path, sha = warm[f"{name}_path"], warm[f"{name}_sha256"]
+            if (not isinstance(path, str) or not path.startswith("/") or path == "/" or posixpath.normpath(path) != path
+                    or posixpath.commonpath((params["repo_root"], path)) == params["repo_root"]):
+                raise ValueError(f"warm_start {name}_path must be a canonical absolute path outside repo_root: {path!r}")
+            if not isinstance(sha, str) or not HEX64.fullmatch(sha):
+                raise ValueError(f"warm_start {name}_sha256 must be 64 lowercase hex characters")
     engine = params["engine"]
     if (not isinstance(engine, dict) or set(engine) != SINGLE_ENGINE_KEYS or engine["name"] not in ("hf", "vllm")
             or isinstance(engine["kv_cache_gib"], bool) or not isinstance(engine["kv_cache_gib"], (int, float))
@@ -346,6 +366,9 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     total = p.get("execution_max_blocks", PILOT_BLOCKS + MAIN_BLOCKS)  # campaign length; only single-direct may set it
     campaign_dir, chain_cmd = f"{out}/campaign", [py, "-m", CHAIN]
     plan_file = f"{campaign_dir}/campaign-plan.json"
+    warm = p.get("warm_start")  # single-direct only: every campaign call re-prepares and must reseal the same plan
+    warm_args = [item for name in WARM_FILES for item in (f"--warm-start-{name}", warm[f"{name}_path"],
+                                                          f"--warm-start-{name}-sha256", warm[f"{name}_sha256"])] if warm else []
 
     def step(name: str, argv: list[str], expect: list[str], kind: str) -> dict[str, Any]:
         return {"name": name, "argv": argv, "expect_files": expect, "timeout_seconds": t[kind]}
@@ -361,7 +384,7 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
                 "--engine", p["engine"]["name"], "--kv-cache-gib", str(p["engine"]["kv_cache_gib"]),
                 "--gpu-memory-utilization", str(p["engine"]["gpu_memory_utilization"]),
                 "--vllm-sleep" if p["engine"]["sleep"] else "--no-vllm-sleep",
-                "--execution-max-blocks", str(total), "--allow-model-run", *extra]
+                "--execution-max-blocks", str(total), "--allow-model-run", *warm_args, *extra]
 
     def advance(blocks: int, *extra: str) -> list[str]:
         return campaign("advance", "--allow-update", "--allow-save", "--max-blocks", str(blocks), *extra)
@@ -380,7 +403,15 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
     pins = [(name.replace("_", "-"), p[f"{name}_path"], p[f"{name}_sha256"]) for name in SINGLE_INPUTS]
     pins += [(key.removesuffix("_path").replace("_", "-"), p[key], p[key.removesuffix("_path") + "_sha256"])
              for key in paths if key.endswith("_path")]
+    pins += [(f"warm-start-{name}", warm[f"{name}_path"], warm[f"{name}_sha256"]) for name in WARM_FILES] if warm else []
     steps = [step(f"pin-{name}", [*chain_cmd, "pin", "--file", path, "--sha256", sha], [], "cpu") for name, path, sha in pins]
+    if stage == "single-direct" and warm:
+        # v15 warm start v2: the sealed source checkpoint replaces checkpoint-0, the pilot and its reloads.
+        return steps + [
+            step("advance-main", advance(total - warm["slot"], "--continue-main", "--direct-main"),
+                 [f"{campaign_dir}/checkpoint-{total}/metadata.json"], "advance_main"),
+            reload(total),
+        ]
     if stage == "single-direct":
         last = total
         # proof_eval exports only slot 19 or 219 at the training commit; a shorter campaign is exported elsewhere

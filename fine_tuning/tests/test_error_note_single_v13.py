@@ -543,8 +543,8 @@ class ProtocolV13(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "nonnegative weights"):  # H belongs to v12 only
             plain_protocol_single("bf16", 2, contracts=PINS, version=VERSION_SINGLE_V13,
                                   sft_weights={"A1": .05, "A2": .35, "B": .05, "H": .02})
-        with self.assertRaisesRegex(ValueError, "version must be v11, v12, v13 or v14"):
-            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v15")
+        with self.assertRaisesRegex(ValueError, "version must be v11, v12, v13, v14 or v15"):
+            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v16")
 
     def test_cli_accepts_v13_and_keeps_v12_as_the_default(self):
         parser = single.build_parser()

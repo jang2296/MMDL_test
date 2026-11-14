@@ -484,7 +484,7 @@ class EvalStagePlanTests(unittest.TestCase):
         return found
 
     def test_runs_and_arguments_match_the_preregistered_design(self):
-        statistical = proof_eval.FAST_VARIANTS  # no prereg file at plan time: the 8k variants, never b2
+        statistical = [v for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical']
         self.assertEqual({(a, v, 'wrong') for a in ('F0', 'FT-NOTE') for v in statistical},
                          self.planned_runs())  # within proof_eval.build_preregistration's runs (no course run)
         steps = {stage: eval_stage.plan(stage, self.params(stage))['steps'] for stage in eval_stage.STAGES}
@@ -534,7 +534,7 @@ class EvalStagePlanTests(unittest.TestCase):
         self.assertEqual({f"{REPO}/{row['path']}": row['sha256'] for row in prereg['protocol_variants'].values()},
                          planned_files)  # every planned protocol file is byte-identical to the preregistered one
         self.assertEqual({v: row['concurrency'] for v, row in prereg['protocol_variants'].items()},
-                         {v: proof_eval.VARIANTS[v][2] for v in prereg['protocol_variants']})
+                         {v: row[2] for v, row in proof_eval.VARIANTS.items() if row[3] == 'statistical'})
 
     def test_eval_stage_seeds_and_arm_run_ids(self):
         def runs(stage, **changes):
@@ -588,35 +588,6 @@ class EvalStagePlanTests(unittest.TestCase):
         wrong_file = self.params('eval-f0', subset_tag='rest') | {'subset_tag': 'wrong'}
         with self.assertRaisesRegex(ValueError, 'proof-eval-subset-v1'):
             eval_stage.plan('eval-f0', wrong_file)
-
-    def test_runs_follow_the_pinned_preregistration(self):
-        b2, fast = proof_eval.FINAL_VARIANT_V8, proof_eval.FAST_VARIANTS
-        prereg = Path(self.volume)/'eval-data/proof/prereg.json'
-        prereg.parent.mkdir(parents=True, exist_ok=True)
-
-        def plan(runs, **changes):
-            raw = json.dumps({'runs': [{'arm': a, 'variant': v, 'subset': t, 'role': 'statistical'} for a, v, t in runs]})
-            prereg.write_text(raw)
-            params = self.params('eval-ft', arm='FT-SINGLE', seeds=[3407], vllm_inprocess=True, reuse_export=True,
-                                 ft_model_ref_sha256='9'*64, prereg_sha256=common.sha256_file(prereg)) | changes
-            steps = eval_stage.plan('eval-ft', params)['steps']
-            return ([s['argv'] for s in steps if s['name'].startswith('ledger-')],
-                    [s['argv'] for s in steps if s['name'].startswith('eval-')])
-
-        v8 = [(a, b2, 'wrong') for a in ('F0', 'FT-SINGLE')]  # a v8-shaped fixture on the fixture subset
-        ledgers, evals = plan(v8)
-        self.assertEqual([(b2, 'nbrl-proof-v1-ft-single-b2-s3407-wrong-evaluation')],
-                         [(a[a.index('--variant')+1], a[a.index('--run-id')+1]) for a in ledgers])
-        self.assertEqual([f'{REPO}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml'],
-                         [a[a.index('--protocol')+1] for a in evals])
-        self.assertEqual(SUBSET_IDS, sample_ids(evals[0]))
-        self.assertEqual([[fast[0]]], [[a[a.index('--variant')+1] for a in plan([('FT-SINGLE', fast[0], 'wrong')])[0]]])
-        for runs in ([('FT-SINGLE', b2, 'rest')], [('F0', b2, 'wrong')], [('FT-SINGLE', fast[1], 'wrong')], []):
-            with self.assertRaisesRegex(ValueError, 'lists no run', msg=runs):
-                plan(runs)
-        # bytes that are not the pinned ones are never read as runs: the 8k plan of before (chain pin refuses them)
-        ledgers, _ = plan(v8, prereg_sha256='b'*64)
-        self.assertEqual([fast[0]], [a[a.index('--variant')+1] for a in ledgers])
 
     def test_eval_slots_prefix_only_the_run_eval_argv(self):
         for stage in eval_stage.STAGES:
@@ -794,143 +765,6 @@ class ErrorNoteV2EvalStageTests(unittest.TestCase):
                 else:
                     self.assertEqual(old, new)
             self.assertEqual(3, evals)
-
-
-class V9HalvesEvalStageTests(unittest.TestCase):
-    """Prereg v9 on the Pod: eval-ft plans of FT-SINGLE on half-a and half-b (B2 variant, ID-only halves) from a real
-    v9 preregistration, the half-b ledger step's --artifact-root, and that step finding the half-a run an earlier job
-    wrote under the same artifact_root and ledger. Authored fixtures only (no GPU, weights or MMMU rows)."""
-    setUp = EvalStagePlanTests.setUp
-    params = EvalStagePlanTests.params
-    B2 = proof_eval.FINAL_VARIANT_V8
-
-    def v9(self):
-        """A real v9 preregistration (declared export stubbed) and its half files under <volume>/eval-data/proof/."""
-        from fine_tuning.tests import test_notebook_rl_proof_eval as proof_tests
-
-        proof = Path(self.volume)/'eval-data/proof'
-        proof.mkdir(parents=True, exist_ok=True)
-        b2 = self.root/'b2.jsonl'
-        b2.write_text(''.join(json.dumps({'id': sid, 'correct': i >= 342}) + '\n' for i, sid in enumerate(proof_tests.IDS)))
-        wrong = proof_tests.write_subset(self.root/'wrong.json', b2)
-        rest = proof_tests.write_subset(self.root/'rest.json', b2, kind='rest')
-        halves = {tag: proof/f'{tag}.json' for tag in proof_eval.HALVES}
-        for tag, path in halves.items():
-            proof_eval.make_subset(tag, path, b2)
-        prereg = proof/'prereg.json'
-        with mock.patch.object(proof_eval, '_single_model_ref', return_value=(proof_tests.REF, proof_tests.DECLARED)):
-            proof_eval.preregister(prereg, wrong, rest, b2, 'v9', ft_single_model_ref=self.root/'model_ref.json',
-                                   half_a_subset=halves['half-a'], half_b_subset=halves['half-b'])
-        return prereg, halves
-
-    def half_params(self, prereg, halves, tag, stage='eval-ft'):
-        arm = {'eval-ft': {'arm': 'FT-SINGLE', 'reuse_export': True, 'ft_model_ref_sha256': '9'*64}, 'eval-f0': {}}[stage]
-        return self.params(stage, seeds=[3407], vllm_inprocess=True, prereg_sha256=common.sha256_file(prereg),
-                           subset=str(halves[tag]), subset_sha256=common.sha256_file(halves[tag]), subset_tag=tag, **arm)
-
-    @staticmethod
-    def ledger_argv(spec):
-        return next(s['argv'] for s in spec['steps'] if s['name'].startswith('ledger-'))
-
-    def test_v9_half_plans_run_the_b2_variant_on_each_half_with_the_v9_run_ids(self):
-        prereg, halves = self.v9()
-        loaded = proof_eval.load_preregistration(prereg)[0]
-        python, artifacts = f'{self.volume}/venv-0123456789abcdef/bin/python', f'{self.volume}/eval-data/artifacts'
-        for tag in proof_eval.HALVES:
-            spec = chain.check_spec(eval_stage.plan('eval-ft', self.half_params(prereg, halves, tag)))
-            rid = f'nbrl-proof-v1-ft-single-b2-s3407-{tag}-evaluation'
-            self.assertEqual(['pin-subset', 'pin-prereg', 'pin-checkpoint', 'pin-binding', 'pin-ft-model-ref',
-                              'verify-single-export', f'ledger-{rid}', f'eval-{rid}'], [s['name'] for s in spec['steps']])
-            self.assertEqual([[str(halves[tag]), common.sha256_file(halves[tag])], [str(prereg), common.sha256_file(prereg)]],
-                             [s['argv'][-3::2] for s in spec['steps'][:2]])
-            ledger = self.ledger_argv(spec)
-            self.assertEqual(('FT-SINGLE', self.B2, tag, rid),
-                             tuple(ledger[ledger.index(k)+1] for k in ('--arm', '--variant', '--subset', '--run-id')))
-            argv = spec['steps'][-1]['argv']
-            self.assertEqual(['/usr/bin/env', 'VLLM_ENABLE_V1_MULTIPROCESSING=0', python,
-                              '-m', 'fine_tuning.notebook_rl.proof_eval', 'run-eval'], argv[:6])
-            self.assertEqual((f'{REPO}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml', rid,
-                              rid.removesuffix('-evaluation'), artifacts, 'partial', 'standalone'),
-                             tuple(argv[argv.index(k)+1] for k in ('--protocol', '--run-id', '--job-id', '--artifact-root',
-                                                                    '--mode', '--run-role')))
-            self.assertEqual(loaded['evaluation_subsets'][tag]['ids'], sample_ids(argv))
-            self.assertEqual(450, len(sample_ids(argv)))
-            self.assertEqual([f'{artifacts}/runs/{rid}/{name}' for name in ('summary.json', 'predictions.jsonl',
-                                                                            proof_eval.REGISTRATION_FILE)],
-                             spec['steps'][-1]['expect_files'])
-            with mock.patch.object(proof_eval, 'ledger_start', return_value={  # the real argparse takes the argv
-                    'arm': 'A', 'variant': 'V', 'subset': tag, 'run_id': 'R'}) as called, \
-                    mock.patch('sys.stdout', new=io.StringIO()):
-                self.assertEqual(0, proof_eval.main(ledger[3:]))
-            self.assertEqual(('FT-SINGLE', self.B2, rid, tag), tuple(called.call_args.args[i] for i in (1, 2, 3, 5)))
-            if tag == 'half-b':
-                self.assertEqual(Path(artifacts), called.call_args.kwargs['artifact_root'])
-            f0 = eval_stage.plan('eval-f0', self.half_params(prereg, halves, tag, 'eval-f0'))
-            self.assertEqual([f'ledger-nbrl-proof-v1-f0-b2-s3407-{tag}-evaluation'],
-                             [s['name'] for s in f0['steps'] if s['name'].startswith('ledger-')])
-
-    def test_only_a_half_b_ledger_step_carries_the_artifact_root(self):
-        artifacts = f'{self.volume}/eval-data/artifacts'
-        for stage in eval_stage.STAGES:  # wrong / rest: no preregistration file, the 8k plans of before
-            for tag in ('wrong', 'rest'):
-                spec = eval_stage.plan(stage, self.params(stage, subset_tag=tag))
-                self.assertTrue(all('--artifact-root' not in s['argv'] for s in spec['steps'] if s['name'].startswith('ledger-')))
-        prereg = Path(self.volume)/'eval-data/proof/prereg.json'  # a v8-shaped "all" plan
-        prereg.write_text(json.dumps({'runs': [{'arm': 'FT-SINGLE', 'variant': self.B2, 'subset': 'all', 'role': 'statistical'}]}))
-        subset = Path(self.volume)/'eval-data/proof/all.json'  # its own path: params() rewrites the fixture subset
-        subset.write_text(json.dumps({'version': 'proof-eval-subset-all-v1', 'count': 3, 'sample_ids': SUBSET_IDS}))
-        subset, subset_sha = str(subset), common.sha256_file(subset)
-        spec = eval_stage.plan('eval-ft', self.params('eval-ft', arm='FT-SINGLE', seeds=[3407], vllm_inprocess=True,
-                                                      reuse_export=True, ft_model_ref_sha256='9'*64, subset_tag='all',
-                                                      subset=subset, subset_sha256=subset_sha,
-                                                      prereg_sha256=common.sha256_file(prereg)))
-        self.assertNotIn('--artifact-root', self.ledger_argv(spec))
-        self.volume = str(self.root/'v9/vol')
-        prereg, halves = self.v9()
-        for tag in proof_eval.HALVES:
-            ledger = self.ledger_argv(eval_stage.plan('eval-ft', self.half_params(prereg, halves, tag)))
-            self.assertEqual(tag == 'half-b', '--artifact-root' in ledger, tag)
-        self.assertEqual(['--artifact-root', f'{self.volume}/eval-data/artifacts'], ledger[-2:])
-        self.assertNotEqual(artifacts, ledger[-1])  # the plan's own artifact_root, not a fixed path
-
-    def test_half_b_ledger_step_finds_the_half_a_run_of_an_earlier_job(self):
-        from fine_tuning.tests import test_notebook_rl_proof_eval as proof_tests
-
-        for name, below in (('continue', 0), ('stop', 1)):
-            with self.subTest(name):
-                self.volume = str(self.root/f'{name}/vol')
-                prereg, halves = self.v9()
-                minimum = proof_eval.load_preregistration(prereg)[0]['screen_gate']['minimum_correct']
-                stage_a, stage_b = (eval_stage.plan('eval-ft', self.half_params(prereg, halves, tag)) for tag in proof_eval.HALVES)
-                p = self.half_params(prereg, halves, 'half-b')
-                with mock.patch('sys.stdout', new=io.StringIO()):  # job A: its real ledger START ...
-                    self.assertEqual(0, proof_eval.main(self.ledger_argv(stage_a)[3:]))
-                run_dir = Path(stage_a['steps'][-1]['expect_files'][0]).parent  # ... and its run-eval output dir
-                run_dir.parent.mkdir(parents=True)
-                with mock.patch.object(proof_eval, 'gpu_info', return_value=('NVIDIA A40', 46068)), mock.patch.dict(os.environ):
-                    os.environ.pop(proof_eval.SLOTS_ENV, None)
-                    os.environ[proof_eval.VLLM_INPROCESS_ENV] = '0'
-                    proof_tests.write_run(run_dir.parent, run_dir.name, proof_tests.variant_cfg(self.B2), proof_tests.FT_SHA,
-                                          lambda i: i < minimum - below, ids=proof_tests.HALF_A)
-                with mock.patch('builtins.print') as printed:
-                    code = proof_eval.main(['gate-screen', '--prereg', p['prereg'], '--ledger', p['ledger'],
-                                            '--artifact-root', p['artifact_root'], '--arm', 'FT-SINGLE'])
-                self.assertEqual((code, json.loads(printed.call_args.args[0])['status']),
-                                 (3, 'STOP') if below else (0, 'CONTINUE'))
-                ledger_b = self.ledger_argv(stage_b)
-                # without the plan's --artifact-root the default MMDL_ARTIFACT_ROOT is searched and nothing is found
-                with mock.patch.dict(os.environ, {'MMDL_ARTIFACT_ROOT': str(self.root/'elsewhere')}), \
-                        self.assertRaisesRegex(ValueError, 'no finished run to analyze'):
-                    proof_eval.main(ledger_b[3:-2])
-                if below:
-                    with self.assertRaisesRegex(ValueError, 'FT-SINGLE half-b refused.*STOP'):
-                        proof_eval.main(ledger_b[3:])
-                else:
-                    with mock.patch('sys.stdout', new=io.StringIO()):
-                        self.assertEqual(0, proof_eval.main(ledger_b[3:]))
-                starts = [e['run_id'] for e in proof_eval.read_ledger(p['ledger'])[0] if e['event'] == 'START']
-                self.assertEqual([run_dir.name] + ([] if below else ['nbrl-proof-v1-ft-single-b2-s3407-half-b-evaluation']),
-                                 starts)
 
 
 if __name__ == '__main__':

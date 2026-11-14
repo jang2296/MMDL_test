@@ -150,6 +150,49 @@ class SingleStagePlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # a gate file is not a direct-stage input
             planner.plan("single-direct", params("single-direct", **MAIN_EXTRA))
 
+    def test_plan_single_direct_warm_steps(self) -> None:
+        warm = {"plan_path": "/workspace/warm-v14/campaign-plan.json", "plan_sha256": "6" * 64,
+                "checkpoint_path": "/workspace/warm-v14/checkpoint-41/metadata.json", "checkpoint_sha256": "7" * 64,
+                "reload_path": "/workspace/warm-v14/reload-41.json", "reload_sha256": "8" * 64, "slot": 41}
+        p = params("single-direct", execution_max_blocks=64, warm_start=warm)
+        spec = planner.plan("single-direct", p)
+        self.assertIs(chain.check_spec(spec), spec)
+        self.assertEqual([step["name"] for step in spec["steps"]], [*DIRECT_NAMES[:5], "pin-warm-start-plan",
+                         "pin-warm-start-checkpoint", "pin-warm-start-reload", "advance-main", "reload-64"])
+        steps = {step["name"]: step for step in spec["steps"]}
+        for name in ("plan", "checkpoint", "reload"):
+            self.assertEqual(steps[f"pin-warm-start-{name}"]["argv"][3:],
+                             ["pin", "--file", warm[f"{name}_path"], "--sha256", warm[f"{name}_sha256"]])
+        warm_args = ["--warm-start-plan", warm["plan_path"], "--warm-start-plan-sha256", warm["plan_sha256"],
+                     "--warm-start-checkpoint", warm["checkpoint_path"], "--warm-start-checkpoint-sha256",
+                     warm["checkpoint_sha256"], "--warm-start-reload", warm["reload_path"], "--warm-start-reload-sha256",
+                     warm["reload_sha256"]]
+        main, reload = steps["advance-main"]["argv"], steps["reload-64"]["argv"]
+        self.assertEqual(main[main.index("--allow-model-run") + 1:], [*warm_args, "--allow-update", "--allow-save",
+                         "--max-blocks", "23", "--continue-main", "--direct-main"])
+        self.assertEqual(value_after(main, "--execution-max-blocks"), "64")
+        self.assertEqual(steps["advance-main"]["expect_files"], [f"{CAMPAIGN_DIR}/checkpoint-64/metadata.json"])
+        self.assertEqual(steps["advance-main"]["timeout_seconds"], DIRECT_EXTRA["timeouts"]["advance_main"])
+        self.assertEqual(reload[reload.index("--allow-model-run") + 1:], [*warm_args, "--max-blocks", "1"])
+        self.assertEqual(steps["reload-64"]["expect_files"], [f"{OUT}/reload-64.json"])
+        for argv in (main, reload[7:]):
+            parsed = single_campaign.build_parser().parse_args(argv[3:])
+            self.assertEqual((str(parsed.warm_start_checkpoint), parsed.warm_start_reload_sha256),
+                             (warm["checkpoint_path"], warm["reload_sha256"]))
+        refused = [{"execution_max_blocks": None}, {"slot": 19}, {"slot": 64}, {"slot": True}, {"plan_sha256": "bad"},
+                   {"reload_path": "/workspace/volume/clone/reload.json"}, {"checkpoint_path": "/workspace/../x"},
+                   {"extra": 1}]
+        for change in refused:
+            changed = copy.deepcopy(p)
+            if "execution_max_blocks" in change:
+                del changed["execution_max_blocks"]
+            else:
+                changed["warm_start"] |= change
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                planner.plan("single-direct", changed)
+        with self.assertRaises(ValueError):  # warm start is a single-direct input only
+            planner.plan("single-main", params("single-main", warm_start=warm))
+
     def test_reload_steps_capture_receipt(self) -> None:
         pilot = {step["name"]: step for step in planner.plan("single-pilot", params("single-pilot"))["steps"]}
         main = {step["name"]: step for step in planner.plan("single-main", params("single-main"))["steps"]}

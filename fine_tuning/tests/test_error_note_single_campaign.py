@@ -16,8 +16,8 @@ import torch
 
 from fine_tuning.error_note import audit, references, rl, single, single_campaign as campaign, train_v4
 from fine_tuning.error_note.contract import IMAGE, REFERENCE_HEADER
-from fine_tuning.error_note.protocol import (SINGLE_IMAGE_V14, VERSION_SINGLE_V14, _digest, plain_protocol_single,
-                                            single_blocks)
+from fine_tuning.error_note.protocol import (SINGLE_IMAGE_V14, VERSION_SINGLE_V14, VERSION_SINGLE_V15, _digest,
+                                            plain_protocol_single, single_blocks)
 from fine_tuning.error_note.single_grading import SCORER_V2
 from fine_tuning.notebook_rl import checkpoint
 from fine_tuning.tests import test_error_note_single_runtime as runtime_fixture
@@ -43,11 +43,12 @@ def setUpModule():
 def tearDownModule():
     _SHORT.stop()
 
-def plan_for(count=32, mode="proof", execution_max_blocks=None):
-    """A v11 fixture plan; with ``execution_max_blocks`` a v14 plan whose LR schedule spans exactly that many blocks."""
+def plan_for(count=32, mode="proof", execution_max_blocks=None, version=VERSION_SINGLE_V15):
+    """A v11 fixture plan; with ``execution_max_blocks`` a v15 plan (or a sealed v14 one with ``version``) whose LR
+    schedule spans exactly that many blocks."""
     items = [{"problem_id": f"p{i}", "subject": "Biology", "source": "authored-test"} for i in range(count)]
     blocks = single_blocks([x["problem_id"] for x in items])
-    v14 = {} if execution_max_blocks is None else {"version": VERSION_SINGLE_V14, "schedule_steps": execution_max_blocks}
+    v14 = {} if execution_max_blocks is None else {"version": version, "schedule_steps": execution_max_blocks}
     protocol = plain_protocol_single("bf16", len(blocks),
         contracts={key: "a" * 64 for key in ("source", "dataset", "order", "data_admission")}, token_scale=1024., **v14)
     body = {"version": campaign.VERSION, "mode": mode, "items": items, "blocks": blocks, "protocol": protocol,
@@ -363,8 +364,8 @@ class PrepareTests(CampaignCase):
             stack.enter_context(patch.object(references, "note_reference", side_effect=lambda item, extra=None: "ref" if extra else None))
             prepared = campaign.prepare(args)
             self.assertEqual(len(prepared["blocks"]), 219)
-            # A new plan is SINGLE v14: the LR schedule spans the plan's execution_max_blocks, not all 219 slots.
-            self.assertEqual(prepared["protocol"]["version"], VERSION_SINGLE_V14)
+            # A new plan is SINGLE v15: the LR schedule spans the plan's execution_max_blocks, not all 219 slots.
+            self.assertEqual(prepared["protocol"]["version"], VERSION_SINGLE_V15)
             self.assertEqual(prepared["protocol"]["optimizer"]["total_steps"], args.execution_max_blocks)
             self.assertEqual(prepared["protocol"]["training_contract"]["schedule_steps"], args.execution_max_blocks)
             self.assertEqual(prepared["protocol"]["training_contract"]["total_slots"], 219)
@@ -745,21 +746,32 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
                 torch.testing.assert_close(restored[key], original[key], rtol=0, atol=0)
         self.assertTrue(torch.equal(checkpoint.capture_rng()["torch"], reference_rng["torch"]))
 
-    # v14: the LR schedule spans execution_max_blocks, the campaign never passes that slot, images follow the plan.
+    # v14/v15: the LR schedule spans execution_max_blocks, the campaign never passes that slot, images follow the plan.
     def test_plan_check_requires_schedule_steps_to_equal_the_execution_block_limit(self):
-        plan = plan_for(34, "train", execution_max_blocks=2)
-        campaign._plan_check(plan)
-        self.assertEqual((plan["protocol"]["optimizer"]["total_steps"],
-                          plan["protocol"]["training_contract"]["schedule_steps"], len(plan["blocks"])), (2, 2, 3))
-        for limit in (1, 3, None, True):
-            changed = copy.deepcopy(plan)
-            changed["execution_max_blocks"] = limit
-            with self.subTest(limit=limit), self.assertRaisesRegex(ValueError, "invalid immutable campaign plan"):
-                campaign._plan_check(reseal(changed))
-        del plan["execution_max_blocks"]
-        with self.assertRaisesRegex(ValueError, "invalid immutable campaign plan"):
-            campaign._plan_check(reseal(plan))
+        for version in (VERSION_SINGLE_V14, VERSION_SINGLE_V15):  # a sealed v14 plan is checked exactly like a v15 one
+            plan = plan_for(34, "train", execution_max_blocks=2, version=version)
+            campaign._plan_check(plan)
+            self.assertEqual((plan["protocol"]["version"], plan["protocol"]["optimizer"]["total_steps"],
+                              plan["protocol"]["training_contract"]["schedule_steps"], len(plan["blocks"])),
+                             (version, 2, 2, 3))
+            for limit in (1, 3, None, True):
+                changed = copy.deepcopy(plan)
+                changed["execution_max_blocks"] = limit
+                with self.subTest(version=version, limit=limit), self.assertRaisesRegex(
+                        ValueError, "invalid immutable campaign plan"):
+                    campaign._plan_check(reseal(changed))
+            del plan["execution_max_blocks"]
+            with self.subTest(version=version), self.assertRaisesRegex(ValueError, "invalid immutable campaign plan"):
+                campaign._plan_check(reseal(plan))
         campaign._plan_check(plan_for(34, "train"))  # a v11 plan carries no schedule_steps and is checked as before
+
+    def test_a_sealed_v14_plan_still_stops_at_its_execution_limit(self):
+        self.plan = plan_for(34, "train", execution_max_blocks=2, version=VERSION_SINGLE_V14)
+        with patch.object(single, "run_single_block", side_effect=self.real_closed) as collect:
+            first = self.execute_train()
+            last = self.execute_train()
+        self.assertEqual((first["status"], first["cursor"]["slot"]), ("BOUNDED_STOP", 1))
+        self.assertEqual((last["status"], last["cursor"]["slot"], collect.call_count), ("COMPLETE", 2, 2))
 
     def test_campaign_stops_at_the_execution_limit_and_a_further_advance_runs_no_block(self):
         self.plan = plan_for(34, "train", execution_max_blocks=2)
@@ -803,14 +815,17 @@ print(json.dumps({'status':result['status'],'cursor':result['cursor']}))
     def test_vllm_sampler_is_built_with_the_plan_image_config(self):
         from fine_tuning.error_note import single_vllm
 
-        self.plan = plan_for(2, "train", execution_max_blocks=1)
-        self.plan["capacity"] |= {"engine": "vllm", "kv_cache_gib": 1., "gpu_memory_utilization": .5, "vllm_sleep": False}
-        reseal(self.plan)
-        with patch.object(single, "run_single_block", side_effect=self.real_closed), \
-                patch("transformers.GenerationConfig.from_pretrained", return_value=SimpleNamespace(eos_token_id=[7])), \
-                patch.object(single_vllm, "SingleVllmSampler") as sampler:
-            self.execute_train()
-        self.assertEqual(sampler.call_args.kwargs["image"], SINGLE_IMAGE_V14)
+        for version, lora in ((VERSION_SINGLE_V15, True), (VERSION_SINGLE_V14, False)):
+            self.plan = plan_for(2, "train", execution_max_blocks=1, version=version)
+            self.plan["capacity"] |= {"engine": "vllm", "kv_cache_gib": 1., "gpu_memory_utilization": .5,
+                                      "vllm_sleep": False}
+            reseal(self.plan)
+            with self.subTest(version=version), patch.object(single, "run_single_block", side_effect=self.real_closed), \
+                    patch("transformers.GenerationConfig.from_pretrained", return_value=SimpleNamespace(eos_token_id=[7])), \
+                    patch.object(single_vllm, "SingleVllmSampler") as sampler:
+                self.execute_train(output=self.out / version)
+                self.assertEqual(sampler.call_args.kwargs["image"], SINGLE_IMAGE_V14)
+                self.assertIs(sampler.call_args.kwargs["lora"], lora)
 
 
 class UnionGradingTests(unittest.TestCase):

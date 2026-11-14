@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import inspect
 import json
 import math
@@ -28,7 +27,6 @@ IDS = sorted(f"validation_{s}_{k}" for s in SUBJECTS for k in range(1, 31))
 SUBSET = IDS[:342]  # the synthetic B2 below answers exactly these wrong
 REST = IDS[342:]  # ... and exactly these right
 FAST = [f"mmmu-val-v8-8k-seed{s}-v2" for s in (3407, 3408, 3409)]
-B2 = "mmmu-val-v8-b2-seed3407-v1"  # prereg v8: the B2 conditions, 32 config slots
 C16_FILES = [pe.HERE / f"eval_configs/mmmu_val_v8_c16_seed{s}.yaml" for s in (3407, 3408, 3409)]
 ARM_BY_PREFIX = {"f0": "F0", "note": "FT-NOTE", "solution": "FT-SOLUTION"}
 
@@ -89,7 +87,7 @@ def write_run(root, name, cfg, model_sha, outcome, *, code="c" * 64, protocol=No
 
 def write_subset(path, b2, ids=None, kind="wrong", **changes):
     ids = list({"wrong": SUBSET, "rest": REST}[kind] if ids is None else ids)
-    value = {"version": pe.SUBSET_FILES[kind][0], "purpose": "fixture", "source": str(b2), "source_sha256": sha256_file(b2),
+    value = {"version": pe.SUBSETS[kind][0], "purpose": "fixture", "source": str(b2), "source_sha256": sha256_file(b2),
              "count": len(ids), "sample_ids": ids}
     path.write_text(json.dumps(value | changes))
     return path
@@ -178,11 +176,8 @@ class ProofAnalysisTests(unittest.TestCase):
 
         base = flatten(variant_cfg(pe.COURSE))
         self.assertEqual(pe.VARIANTS[pe.COURSE][0], pe.ROOT / "configs/eval/mmmu_val_v8.yaml")
-        self.assertEqual([v for v, row in pe.VARIANTS.items() if row[3] == "statistical"], [*FAST, B2])
-        self.assertEqual((set(pe.REGISTERED), list(pe.FAST_VARIANTS), pe.FINAL_VARIANT_V8), ({*FAST, B2}, FAST, B2))
-        b2 = flatten(variant_cfg(B2))  # the B2 config itself, with 32 config slots
-        self.assertEqual({k for k in base if b2[k] != base[k]}, {"protocol_id", "execution.batch_size"})
-        self.assertEqual((b2["protocol_id"], b2["execution.batch_size"], b2["status"]), (B2, 32, "FROZEN"))
+        self.assertEqual([v for v, row in pe.VARIANTS.items() if row[3] == "statistical"], FAST)
+        self.assertEqual(set(pe.REGISTERED), set(FAST))
         self.assertEqual(pe.FAST_PIXELS, {"min_pixels": 262144, "max_pixels": 1310720})
         fast = {"execution.batch_size": 32, "generation.max_new_tokens": 8192, "image.min_pixels": 262144,
                 "image.max_pixels": 1310720, "execution.max_model_len": 24576}
@@ -845,7 +840,7 @@ class ProofRunEvalTests(unittest.TestCase):
                           "40960_context": changed(fast, execution__max_model_len=40960),
                           "v4_parser": changed(fast, parser="team-final-answer-v4"),
                           "official_resize": changed(fast, image__resize_owner="official_processor")}
-        registered = {vid: variant_cfg(vid) for vid in [*FAST, B2]}
+        registered = {vid: variant_cfg(vid) for vid in FAST}
         tables = copy.deepcopy((contracts.CONTROL_IMAGES, contracts.EXECUTION_PROFILES))
         functions = (contracts.validate_configs, VLLMBackend.__init__)
         outside = {(c, h): validation_outcome(cfgs[c], hws[h]) for c in cfgs for h in hws}
@@ -894,40 +889,6 @@ class ProofRunEvalTests(unittest.TestCase):
         self.assertEqual(wide.max_model_len, 24576)
         self.assertIs(wide.cfg, fast)
         self.assertEqual(recorded, [True])
-
-    def test_b2_variant_has_the_b2_limits_in_validation_backend_slots_and_registration(self):
-        from mmdl.evaluation.backends.vllm_backend import VLLMBackend
-
-        hw, b2 = yaml.safe_load(A40.read_text()), variant_cfg(B2)
-        bad = {"8k_output": changed(b2, generation__max_new_tokens=8192),
-               "small_pixels": changed(b2, image__min_pixels=262144, image__max_pixels=1310720),
-               "small_max_pixels": changed(b2, image__max_pixels=1310720),
-               "8k_context": changed(b2, execution__max_model_len=24576),
-               "two_slots": changed(b2, execution__batch_size=2), "wrong_seed": changed(b2, generation__seed=3408)}
-        self.assertIn("named fixed protocol", validation_outcome(b2, hw)[1])  # unknown outside run-eval
-        FakeLLM.calls.clear()
-        with backend_mocks(), pe.registered_variants(slots=16):
-            self.assertEqual(validation_outcome(b2, hw), validation_outcome(variant_cfg(pe.COURSE), hw))
-            for name, cfg in bad.items():
-                outcome = validation_outcome(cfg, hw)
-                self.assertIn("32768 output tokens, 1003520..4014080 pixels, 40960 context", outcome[1], name)
-            wide = VLLMBackend("model", b2, hw)
-        self.assertEqual([(c["max_num_seqs"], c["max_model_len"], c["mm_processor_kwargs"]["size"]) for c in FakeLLM.calls],
-                         [(16, 40960, {"shortest_edge": 1003520, "longest_edge": 4014080})])
-        self.assertEqual((wide.batch_size, wide.cfg["execution"]["batch_size"]), (16, 32))
-        # auto slots: mean context 12000, floor 8 (an A40 feeds 16); the 8k formula is unchanged
-        self.assertEqual((pe.auto_slots(A40_MIB / 1024, B2), pe.auto_slots(A40_MIB / 1024)), (16, 40))
-        self.assertEqual((pe.auto_slots(24.0, B2), pe.auto_slots(79.1, B2)), (8, 32))
-        with mock.patch.dict(os.environ, {pe.SLOTS_ENV: "auto"}):
-            registration = pe.variant_registration(B2)
-        self.assertEqual((registration["slots"], registration["slots_source"], registration["protocol_id"]),
-                         (16, "auto", B2))
-        self.assertEqual(registration["protocol_file_sha256"], sha256_file(pe.VARIANTS[B2][0]))
-        self.assertIn("32768 output tokens, 1003520..4014080 pixels, 40960 context",
-                      registration["patched"]["mmdl.runtime.contracts.validate_configs"])
-        self.assertEqual({pid: r["max_new_tokens"] for pid, r in registration["registered"].items()},
-                         dict.fromkeys(FAST, 8192) | {B2: 32768})
-        self.assertEqual(registration["registered"][B2]["execution_profile"]["max_model_len"], 40960)
 
     def test_auto_slots_follows_the_formula(self):
         def expected(gib):  # the formula written out once more: (0.90 * GiB - 8.68 - 5.0) * 7280 / 4800 / 8, floored to 8
@@ -1049,10 +1010,7 @@ class ProofRunEvalTests(unittest.TestCase):
                              (pe.ROOT, "a40_48gb", Path("manifests/models/baseline.json")))
             self.assertEqual([(call["max_num_seqs"], call["max_model_len"]) for call in FakeLLM.calls], [(32, 24576)])
             self.assertEqual(registration, pe.variant_registration(FAST[1]))
-            self.assertEqual(set(registration["registered"]), {*FAST, B2})
-            self.assertEqual(registration["registered"][B2]["max_new_tokens"], 32768)
-            self.assertIn("8192 output tokens, 262144..1310720 pixels, 24576 context",
-                          registration["patched"]["mmdl.runtime.contracts.validate_configs"])
+            self.assertEqual(set(registration["registered"]), set(FAST))
             self.assertEqual(registration["proof_eval_sha256"], sha256_file(Path(pe.__file__)))
             self.assertEqual(set(registration["src_files"]), set(pe.PATCHED_SRC))
             self.assertEqual((Path.cwd(), sys.argv), (cwd, saved_argv))
@@ -1261,307 +1219,6 @@ class ErrorNoteV2ProofTests(unittest.TestCase):
         self.assertNotIn("vllm_env", plain)
         self.assertEqual(inprocess["vllm_env"], {"VLLM_ENABLE_V1_MULTIPROCESSING": "0"})
         self.assertEqual({k: v for k, v in inprocess.items() if k != "vllm_env"}, plain)
-
-
-def screen_halves(ids):
-    """The v9 half rule written out once more: per subject the 15 IDs with the smallest sha256("mmmu-screen-v1:" + id)."""
-    half_a = []
-    for subject in SUBJECTS:
-        members = [sid for sid in ids if pe._subject(sid) == subject]
-        half_a += sorted(members, key=lambda sid: hashlib.sha256(f"mmmu-screen-v1:{sid}".encode()).hexdigest())[:15]
-    return sorted(half_a), sorted(set(ids) - set(half_a))
-
-
-HALF_A, HALF_B = screen_halves(IDS)
-FT_SHA = "d" * 64  # the declared FT-SINGLE export (its real export path: test_error_note_single_eval)
-DECLARED = {"model_ref": "/fixture/model_ref.json", "model_ref_sha256": "1" * 64, "model_sha256": FT_SHA,
-            "checkpoint_metadata_sha256": "2" * 64, "train_config_sha256": "3" * 64, "campaign_plan_sha256": "4" * 64}
-# what the v9 arm definition reads from the declared export: a v14 campaign stopped at slot 64 of its 219 blocks
-REF = {"export": {"training_protocol": {"version": "error-note-single-response-v14",
-                                        "training_contract": {"total_slots": 219, "schedule_steps": 64}},
-                  "campaign": {"stage": "stopped", "slot": 64, "updates": 64}}}
-
-
-class ProofV9Tests(unittest.TestCase):
-    """prereg v9: the ID-only halves, the screen gate (gate-screen, ledger-start --subset half-b) and the two-stage
-    analysis. Runs (B2 variant, artifact_root/runs/<id>): FT half-a at exactly minimum_correct, FT half-b with 559 -
-    minimum (900 = 559), F0 half-a one below minimum (STOP) and an F0 half-b for the violation case."""
-
-    @classmethod
-    def setUpClass(cls):
-        tmp = tempfile.TemporaryDirectory(prefix="proof-eval-v9-class-")
-        cls.addClassCleanup(tmp.cleanup)
-        root = cls.template = Path(tmp.name)
-        b2 = root / "b2.jsonl"
-        b2.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS)))
-        write_subset(root / "wrong.json", b2)
-        write_subset(root / "rest.json", b2, kind="rest")
-        for kind in pe.HALVES:
-            pe.make_subset(kind, root / f"{kind}.json", b2)
-        with mock.patch.object(pe, "_single_model_ref", return_value=(REF, DECLARED)):
-            pe.preregister(root / "prereg.json", root / "wrong.json", root / "rest.json", b2, "v9",
-                           ft_single_model_ref=root / "model_ref.json", half_a_subset=root / "half-a.json",
-                           half_b_subset=root / "half-b.json")
-        prereg = json.loads((root / "prereg.json").read_text())
-        cls.reference = len(set(HALF_A) & set(REST))
-        cls.minimum = cls.reference + 6
-        runs, cfg, f0 = root / "art/runs", variant_cfg(B2), prereg["arms"]["F0"]["model_sha256"]
-        runs.mkdir(parents=True)
-        write_run(runs, "ft-a", cfg, FT_SHA, lambda i: i < cls.minimum, ids=HALF_A)
-        write_run(runs, "ft-b", cfg, FT_SHA, lambda i: i < 559 - cls.minimum, ids=HALF_B)
-        write_run(runs, "f0-a", cfg, f0, lambda i: i < cls.minimum - 1, ids=HALF_A)
-        write_run(runs, "f0-b", cfg, f0, lambda i: i % 2 == 0, ids=HALF_B)
-
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory(prefix="proof-eval-v9-")
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name) / "case"
-        shutil.copytree(self.template, self.root)
-        self.b2, self.prereg, self.ledger = self.root / "b2.jsonl", self.root / "prereg.json", self.root / "ledger.jsonl"
-        self.art = self.root / "art"
-
-    def run_dir(self, name):
-        return self.art / "runs" / name
-
-    def start(self, name, ledger=None):
-        """ledger-start the fixture run by its name: f0-* = F0, ft-* = FT-SINGLE; *-a = half-a, *-b = half-b."""
-        arm, half = ("F0" if name.startswith("f0") else pe.ARM_SINGLE), f"half-{name[-1]}"
-        return pe.ledger_start(self.prereg, arm, B2, name, ledger or self.ledger, half, artifact_root=self.art)
-
-    def gate_cli(self, arm):
-        with mock.patch("builtins.print") as printed:
-            code = pe.main(["gate-screen", "--prereg", str(self.prereg), "--ledger", str(self.ledger),
-                            "--artifact-root", str(self.art), "--arm", arm])
-        return code, json.loads(printed.call_args.args[0])
-
-    def resign(self, value):
-        """A preregistration file whose sidecar matches its edited content (only the content checks can refuse it)."""
-        path = self.root / f"edited-{len(list(self.root.glob('edited-*.json')))}.json"
-        path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-        Path(f"{path}.sha256").write_text(sha256_file(path) + "\n")
-        return path
-
-    def test_halves_are_fifteen_plus_fifteen_per_subject_from_the_ids_alone(self):
-        b2 = pe._b2_split(self.b2)
-        self.assertEqual((b2["half_a_ids"], b2["half_b_ids"]), (HALF_A, HALF_B))
-        self.assertEqual((len(HALF_A), len(HALF_B), sorted(HALF_A + HALF_B)), (450, 450, IDS))
-        self.assertFalse(set(HALF_A) & set(HALF_B))
-        for subject in SUBJECTS:
-            self.assertEqual([sum(pe._subject(i) == subject for i in half) for half in (HALF_A, HALF_B)], [15, 15])
-        # another correctness column (still 558 / 342) and another row order give the same halves
-        flipped = self.root / "flipped.jsonl"
-        flipped.write_text("".join(json.dumps({"id": sid, "correct": i >= 342}) + "\n" for i, sid in enumerate(IDS[::-1])))
-        other = pe._b2_split(flipped)
-        self.assertNotEqual(other["right_ids"], b2["right_ids"])
-        self.assertEqual((other["half_a_ids"], other["half_b_ids"]), (HALF_A, HALF_B))
-
-    def test_make_subset_half_kinds_round_trip_and_a_tampered_half_is_refused(self):
-        b2 = pe._b2_split(self.b2)
-        for kind, ids in zip(pe.HALVES, (HALF_A, HALF_B)):
-            made = self.root / f"made-{kind}.json"
-            with mock.patch("builtins.print") as printed:
-                self.assertEqual(pe.main(["make-subset", "--kind", kind, "--output", str(made),
-                                          "--b2-predictions", str(self.b2)]), 0)
-            self.assertIn("count=450", printed.call_args.args[0])
-            value = json.loads(made.read_text())
-            self.assertEqual((value["version"], value["count"], value["sample_ids"], value["source_sha256"]),
-                             (f"proof-eval-subset-{kind}-v1", 450, ids, sha256_file(self.b2)))
-            loaded = pe._subset(made, b2, kind)
-            self.assertEqual((loaded["ids"], loaded["count"]), (ids, 450))
-            self.assertIn("IDs only", loaded["rule"])
-        swapped = sorted(HALF_A[1:] + HALF_B[:1])
-        for name, path in {"one id from half-b": write_subset(self.root / "t1.json", self.b2, swapped, "half-a"),
-                           "unsorted": write_subset(self.root / "t2.json", self.b2, HALF_A[::-1], "half-a"),
-                           "wrong count": write_subset(self.root / "t3.json", self.b2, HALF_A, "half-a", count=449),
-                           "other version": write_subset(self.root / "t4.json", self.b2, HALF_A, "half-b"),
-                           "half-b file as half-a": self.root / "half-b.json"}.items():
-            with self.subTest(name), self.assertRaisesRegex(ValueError, "B2 V8 half_a IDs"):
-                pe._subset(path, b2, "half-a")
-
-    def test_v9_preregistration_binds_halves_runs_and_the_screen_gate(self):
-        prereg, _ = pe.load_preregistration(self.prereg)
-        self.assertEqual((prereg["format"], set(prereg["arms"])), (pe.FORMAT_V9, {"F0", pe.ARM_SINGLE}))
-        self.assertEqual([(r["arm"], r["variant"], r["subset"]) for r in prereg["runs"]],
-                         [(arm, B2, half) for arm in ("F0", pe.ARM_SINGLE) for half in ("half-a", "half-b")])
-        self.assertEqual({tag: row["ids"] for tag, row in prereg["evaluation_subsets"].items()},
-                         {"half-a": HALF_A, "half-b": HALF_B})
-        self.assertEqual((prereg["mmmu_val_budget"]["runs"], prereg["mmmu_val_budget"]["items_per_run"]),
-                         (4, {"half-a": 450, "half-b": 450}))
-        self.assertEqual(prereg["screen_gate"], {
-            "arm": pe.ARM_SINGLE, "variant": B2, "subset": "half-a", "items": 450, "reference_correct": self.reference,
-            "margin": 6, "minimum_correct": self.reference + 6, "not_proof_of_improvement": True, "rule": pe.SCREEN_RULE})
-        self.assertEqual({k: (prereg[k]["variant"], prereg[k]["minimum_correct"]) for k in ("gate_62", "gate_67.4")},
-                         {"gate_62": (B2, 559), "gate_67.4": (B2, 607)})
-        self.assertEqual(set(prereg["b2_reference"]), {"source", "sha256", "scoring", "wrong_ids", "right_ids", "all_ids"})
-        self.assertEqual(prereg["arms"][pe.ARM_SINGLE]["definition"],
-                         "single BF16 checkpoint of the single-response RL + note SFT campaign under "
-                         "error-note-single-response-v14: the campaign's stopped checkpoint at slot 64 of 219 planned "
-                         "blocks (64 updates, LR schedule over 64 steps), fixed before MMMU evaluation")
-        self.assertEqual({k: v for k, v in prereg["arms"][pe.ARM_SINGLE].items() if k != "definition"}, DECLARED)
-        self.assertTrue(any("2026-11-13" in note for note in prereg["notes"]))
-        self.assertTrue(any("not a paired same-hardware run" in text for text in prereg["limitations"]))
-        self.assertTrue(all("900 sorted original IDs" not in rule for rule in prereg["paired_run_rules"]))
-        raw = json.loads(self.prereg.read_text())
-        edits = {"screen minimum": ("screen_gate differs", lambda v: v["screen_gate"].update(minimum_correct=self.minimum - 1)),
-                 "screen margin": ("screen_gate differs", lambda v: v["screen_gate"].update(margin=5, minimum_correct=self.minimum - 1)),
-                 "screen reference": ("screen_gate differs", lambda v: v["screen_gate"].update(reference_correct=self.reference - 1)),
-                 "no screen gate": ("screen_gate differs", lambda v: v.pop("screen_gate")),
-                 "half swapped id": ("v7 requires one declared", lambda v: (
-                     v["evaluation_subsets"]["half-a"].update(ids=sorted(HALF_A[1:] + HALF_B[:1])),
-                     v["evaluation_subsets"]["half-b"].update(ids=sorted(HALF_B[1:] + HALF_A[:1])))),
-                 "no F0 half-b run": ("v7 requires one declared", lambda v: v["runs"].pop(1)),
-                 "half-b first": ("v7 requires one declared", lambda v: v["runs"].reverse()),
-                 "one 900-item run": ("v7 requires one declared", lambda v: [r.update(subset="all") for r in v["runs"]])}
-        for name, (message, edit) in edits.items():
-            value = copy.deepcopy(raw)
-            edit(value)
-            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
-                pe.load_preregistration(self.resign(value))
-        wrong, rest, half_a, half_b = (self.root / f"{name}.json" for name in ("wrong", "rest", "half-a", "half-b"))
-        with mock.patch.object(pe, "_single_model_ref", return_value=(REF, DECLARED)):
-            with self.assertRaisesRegex(ValueError, "requires --half-a-subset and --half-b-subset"):
-                pe.preregister(self.root / "x.json", wrong, rest, self.b2, "v9", ft_single_model_ref=self.prereg,
-                               half_a_subset=half_a)
-            with self.assertRaisesRegex(ValueError, "v9-only"):
-                pe.preregister(self.root / "y.json", wrong, rest, self.b2, "v8", ft_single_model_ref=self.prereg,
-                               all_subset=wrong, half_a_subset=half_a, half_b_subset=half_b)
-            with self.assertRaisesRegex(ValueError, "B2 V8 half_a IDs"):
-                pe.preregister(self.root / "z.json", wrong, rest, self.b2, "v9", ft_single_model_ref=self.prereg,
-                               half_a_subset=half_b, half_b_subset=half_a)
-            with mock.patch("builtins.print"):  # the CLI passes both half files through
-                self.assertEqual(pe.main(["preregister", "--output", str(self.root / "cli.json"), "--subset", str(wrong),
-                                          "--rest-subset", str(rest), "--b2-predictions", str(self.b2), "--format", "v9",
-                                          "--ft-single-model-ref", str(self.prereg), "--half-a-subset", str(half_a),
-                                          "--half-b-subset", str(half_b)]), 0)
-        cli = pe.load_preregistration(self.root / "cli.json")[0]
-        self.assertEqual({k: cli[k] for k in ("format", "runs", "screen_gate")},
-                         {k: prereg[k] for k in ("format", "runs", "screen_gate")})
-        self.assertFalse(any((self.root / name).exists() for name in ("x.json", "y.json", "z.json")))
-
-    def test_gate_screen_continue_at_minimum_stop_one_below_and_failure_without_half_a(self):
-        self.start("f0-a")
-        with self.assertRaisesRegex(ValueError, "needs a finished FT-SINGLE half-a run"):
-            pe.gate_screen(self.prereg, self.ledger, self.art, pe.ARM_SINGLE)
-        self.start("ft-a")
-        summary = self.run_dir("ft-a") / "summary.json"
-        finished = summary.read_text()
-        summary.write_text(json.dumps(json.loads(finished) | {"status": "INCOMPLETE"}))
-        with self.assertRaisesRegex(ValueError, "needs a finished FT-SINGLE half-a run"):
-            pe.gate_screen(self.prereg, self.ledger, self.art, pe.ARM_SINGLE)
-        summary.write_text(finished)
-        expected = {"correct": self.minimum, "minimum_correct": self.minimum, "reference_correct": self.reference,
-                    "items": 450}
-        self.assertEqual(self.gate_cli(pe.ARM_SINGLE), (0, {"status": "CONTINUE"} | expected))
-        self.assertEqual(self.gate_cli("F0"), (3, {"status": "STOP"} | expected | {"correct": self.minimum - 1}))
-        # the half-a run is validated as analysis validates it: a stored score that differs from the re-score fails
-        predictions = self.run_dir("ft-a") / "predictions.jsonl"
-        rows = [json.loads(line) for line in predictions.read_text().splitlines()]
-        rows[0] = {k: v for k, v in rows[0].items() if k != "_record_sha256"} | {"correct": not rows[0]["correct"]}
-        rows[0]["_record_sha256"] = digest(rows[0])
-        predictions.write_text("".join(json.dumps(row) + "\n" for row in rows))
-        with self.assertRaisesRegex(ValueError, "re-score"):
-            self.gate_cli(pe.ARM_SINGLE)
-        pe.preregister(self.root / "v3.json", self.root / "wrong.json", self.root / "rest.json", self.b2)
-        self.assertEqual(set(json.loads((self.root / "v3.json").read_text())["b2_reference"]),
-                         {"source", "sha256", "scoring", "wrong_ids", "right_ids", "all_ids"})  # v3-v8 keys unchanged
-        with self.assertRaisesRegex(ValueError, "needs a v9 preregistration"):
-            pe.gate_screen(self.root / "v3.json", self.ledger, self.art, pe.ARM_SINGLE)
-
-    def test_ledger_start_half_b_is_refused_on_stop_and_accepted_on_continue(self):
-        self.start("f0-a")
-        with self.assertRaisesRegex(ValueError, "needs a finished FT-SINGLE half-a run"):
-            self.start("ft-b")  # FT-SINGLE has no half-a run yet
-        self.start("ft-a")
-        base = ["ledger-start", "--prereg", str(self.prereg), "--ledger", str(self.ledger), "--variant", B2,
-                "--subset", "half-b", "--artifact-root", str(self.art)]
-        with self.assertRaisesRegex(ValueError, f"F0 half-b refused: its half-a run has {self.minimum - 1} correct.*STOP"):
-            pe.main([*base, "--arm", "F0", "--run-id", "f0-b"])
-        with self.assertRaisesRegex(ValueError, "needs the artifact root"):
-            pe.ledger_start(self.prereg, pe.ARM_SINGLE, B2, "ft-b", self.ledger, "half-b")
-        with mock.patch("builtins.print") as printed:
-            self.assertEqual(pe.main([*base, "--arm", pe.ARM_SINGLE, "--run-id", "ft-b"]), 0)
-        self.assertEqual(printed.call_args.args[0], f"LEDGER_STARTED {pe.ARM_SINGLE} {B2} half-b ft-b")
-        self.assertEqual([(e["arm"], e["subset"]) for e in pe.read_ledger(self.ledger)[0]],
-                         [("F0", "half-a"), (pe.ARM_SINGLE, "half-a"), (pe.ARM_SINGLE, "half-b")])
-
-    def test_analysis_half_a_only_both_halves_and_the_half_b_violation(self):
-        self.start("f0-a")
-        self.start("ft-a")
-        report = pe.analyze(self.prereg, [self.run_dir("f0-a"), self.run_dir("ft-a")], None, self.ledger)
-        self.assertEqual((report["full_900"], report["subsets"]["half-b"]["arms"]), ({}, {}))
-        self.assertEqual({arm: (row["status"], row["correct"]) for arm, row in report["screen"].items()},
-                         {"F0": ("STOP", self.minimum - 1), pe.ARM_SINGLE: ("CONTINUE", self.minimum)})
-        self.assertIn("no 900-item count exists", report["screen"]["F0"]["note"])
-        self.assertIn("no 900-item count exists", report["screen"][pe.ARM_SINGLE]["note"])
-        shown = report["subsets"]["half-a"]["stored_b2_display"]
-        self.assertEqual(shown["b2_correct"], self.reference)
-        self.assertEqual(shown["arms"][pe.ARM_SINGLE]["3407"]["net"], 6)
-        ft_right = set(HALF_A[:self.minimum])
-        self.assertEqual((shown["arms"][pe.ARM_SINGLE]["3407"]["gains"], shown["arms"][pe.ARM_SINGLE]["3407"]["losses"]),
-                         (len(ft_right - set(REST)), len(set(HALF_A) & set(REST) - ft_right)))
-        self.assertIn("not a paired same-hardware run", shown["label"])
-        self.assertEqual(report["subsets"]["half-a"]["arms"][pe.ARM_SINGLE]["paired_vs_F0"]["3407"]["net"], 1)
-        with self.assertRaisesRegex(ValueError, "requires both FT-SINGLE subsets"):
-            pe.gate_62(report)
-        markdown = pe.render_markdown(report)
-        self.assertIn(f"- {pe.ARM_SINGLE}: CONTINUE, {self.minimum} of 450 correct, minimum {self.minimum}", markdown)
-        self.assertNotIn("## Full 900", markdown)
-        # a half is a count: no percentage in its per-arm lines, its per-subject table or the screen section
-        half_lines = markdown.split("## Subset half-a")[1].split("Course-facing run:")[0]
-        self.assertIn(f"Mean correct per arm: F0 {self.minimum - 1} of 450, {pe.ARM_SINGLE} {self.minimum} of 450", half_lines)
-        self.assertIn(f"| {pe.ARM_SINGLE} | 3407 | {self.minimum} |", half_lines)
-        self.assertNotIn("%", half_lines)
-        self.assertEqual([("accuracy" in block) for block in report["subsets"]["half-a"]["arms"].values()], [False, False])
-        self.assertEqual({arm: row["half_b"] for arm, row in report["screen"].items()},
-                         {"F0": "NOT_STARTED", pe.ARM_SINGLE: "NOT_STARTED"})
-        self.start("ft-b")
-        runs = [self.run_dir(name) for name in ("f0-a", "ft-a", "ft-b")]
-        report = pe.analyze(self.prereg, runs, None, self.ledger)
-        self.assertEqual(set(report["full_900"]), {pe.ARM_SINGLE})
-        self.assertEqual(report["full_900"][pe.ARM_SINGLE]["seeds"]["3407"], {
-            "correct": 559, "accuracy": 559 / 900, "half_a_subset_correct": self.minimum,
-            "half_b_subset_correct": 559 - self.minimum})
-        self.assertIn("both halves finished", report["screen"][pe.ARM_SINGLE]["note"])
-        gate = pe.gate_62(report)
-        self.assertEqual((gate["status"], gate["ft_single"]["correct"], gate["items"], gate["paired_f0"]),
-                         ("PASS", 559, 900, None))
-        self.assertIn("## Full 900 (half-a + half-b; same arm and seed)", pe.render_markdown(report))
-        # an F0 half-b that bypassed ledger-start (its half-a is STOP) is a protocol violation, finished or not
-        sha = pe.load_preregistration(self.prereg)[1]
-        pe._append(self.ledger, "START", single_attempt=True, arm="F0", variant=B2, subset="half-b", run_id="f0-b",
-                   preregistration_sha256=sha)
-        with self.assertRaisesRegex(ValueError, "protocol violation: F0 half-b was started"):
-            pe.analyze(self.prereg, runs + [self.run_dir("f0-b")], None, self.ledger)
-        shutil.rmtree(self.run_dir("f0-b"))
-        with self.assertRaisesRegex(ValueError, "protocol violation: F0 half-b was started"):
-            pe.analyze(self.prereg, runs + [self.run_dir("f0-b")], None, self.ledger)
-
-    def test_a_failed_half_b_reads_as_an_incomplete_evaluation_not_a_stop_or_pending(self):
-        for name in ("f0-a", "ft-a", "ft-b"):
-            self.start(name)
-        half_a = [self.run_dir("f0-a"), self.run_dir("ft-a")]
-        summary = self.run_dir("ft-b") / "summary.json"
-        finished = summary.read_text()
-        summary.write_text(json.dumps(json.loads(finished) | {"status": "INCOMPLETE"}))
-        pending = pe.analyze(self.prereg, half_a + [self.run_dir("ft-b")], None, self.ledger)["screen"][pe.ARM_SINGLE]
-        self.assertEqual((pending["status"], pending["half_b"]), ("CONTINUE", "STARTED_NOT_FINISHED"))
-        summary.write_text(finished)
-        both = pe.analyze(self.prereg, half_a + [self.run_dir("ft-b")], None, self.ledger)["screen"][pe.ARM_SINGLE]
-        self.assertEqual(both["half_b"], "FINISHED")
-        # ledger-fail under another artifact root does not see the finished half-b and records it FAILED
-        pe.ledger_fail(self.ledger, "ft-b", "operator error", self.root / "elsewhere")
-        with self.assertRaisesRegex(ValueError, "recorded in the ledger as FAILED"):
-            pe.analyze(self.prereg, half_a + [self.run_dir("ft-b")], None, self.ledger)
-        report = pe.analyze(self.prereg, half_a, None, self.ledger)
-        screen = report["screen"][pe.ARM_SINGLE]
-        self.assertEqual((screen["status"], screen["half_b"], report["full_900"]), ("CONTINUE", "FAILED", {}))
-        self.assertIn("INCOMPLETE EVALUATION", screen["note"])
-        self.assertIn("single attempt is spent", screen["note"])
-        self.assertNotIn("not finished", screen["note"])
-        self.assertNotIn("stops after half-a", screen["note"])
-        self.assertIn("half-b FAILED: INCOMPLETE EVALUATION", pe.render_markdown(report))
-        with self.assertRaisesRegex(ValueError, "already started|forbids replacing"):  # no second half-b attempt
-            self.start("ft-b")
 
 
 if __name__ == "__main__":

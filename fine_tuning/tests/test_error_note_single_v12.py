@@ -665,8 +665,8 @@ class ProtocolV12(unittest.TestCase):
         self.assertEqual(default["training_contract"]["sft_weights"], {"A1": .05, "A2": .35, "B": .05})
 
     def test_bad_version_or_weights_are_refused(self):
-        with self.assertRaisesRegex(ValueError, "version must be v11, v12, v13 or v14"):
-            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v15")
+        with self.assertRaisesRegex(ValueError, "version must be v11, v12, v13, v14 or v15"):
+            plain_protocol_single("bf16", 2, contracts=PINS, version="error-note-single-response-v16")
         with self.assertRaisesRegex(ValueError, "nonnegative weights"):
             plain_protocol_single("bf16", 2, contracts=PINS, version=VERSION_SINGLE_V12,
                                   sft_weights={"A1": .05, "A2": .35, "B": .05})

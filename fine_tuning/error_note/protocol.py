@@ -193,6 +193,22 @@ VERSION_SINGLE = "error-note-single-response-v11"
 VERSION_SINGLE_V12 = "error-note-single-response-v12"
 VERSION_SINGLE_V13 = "error-note-single-response-v13"
 VERSION_SINGLE_V14 = "error-note-single-response-v14"
+# SINGLE v15 (user 2026-11-14, claudedocs/plan_v15_20261114.md): v14 plus up to three lesson re-solves, the vision route
+# on every training row of an image item, and training rollouts that apply the LLM LoRA unmerged in vLLM with exact
+# vision-LoRA hooks. The protocol is v14's with exactly the keys named below added or changed.
+VERSION_SINGLE_V15 = "error-note-single-response-v15"
+SINGLE_RESOLVE_STAGES_V15 = ("resolve", "resolve2", "resolve3")
+SINGLE_RESOLVE_V15 = {
+    "version": "lesson-resolve-attempts-v1", "max_attempts": 3, "stages": list(SINGLE_RESOLVE_STAGES_V15),
+    "prompt": "resolve_prompt_single(P0, lesson), identical for every attempt",
+    "seeds": {"resolve": "<master>:<pid>:resolve", "resolve2": "<master>:<pid>:resolve:2",
+              "resolve3": "<master>:<pid>:resolve:3"},
+    "next_attempt": "only while every earlier attempt fails the v14 A2 checks (CORRECT, v11 A2 filters, >=256 tokens)",
+    "chosen": "first passing attempt; only it may be an A2 row and only then is the note a B candidate",
+    "failed_attempts": "never training rows"}
+SINGLE_ROUTES_V15 = {"RL": "FULL_iff_item_has_image", "A1": "FULL_iff_item_has_image",
+                     "A2_B": "FULL_iff_item_has_image"}
+ROLLOUT_ADAPTER_V15 = "vllm-lora-unmerged+vision-hooks"
 SINGLE_TOKEN_SCALE_V10 = 256.0
 SINGLE_TOKEN_SCALE_V11 = 1024.0
 SINGLE_ROW_TOKEN_CAP_V11 = 2048
@@ -349,20 +365,21 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
                           sft_weights: dict[str, float] | None = None, note_reference: dict | None = None,
                           version: str = VERSION_SINGLE, schedule_steps: int | None = None) -> dict:
     """Explicit local-data/source pins and an on-policy, one-response objective; no execution permission (v11, or
-    v12 / v13 / v14 with ``version=VERSION_SINGLE_V12`` / ``VERSION_SINGLE_V13`` / ``VERSION_SINGLE_V14``).
+    v12 / v13 / v14 / v15 with ``version=VERSION_SINGLE_V12`` / ``..._V13`` / ``..._V14`` / ``..._V15``).
 
-    ``schedule_steps`` (v14 only, required there): the optimizer steps the LR decays over, 1..total_slots; it replaces
+    ``schedule_steps`` (v14 and v15 only, required there): the optimizer steps the LR decays over, 1..total_slots; it replaces
     ``optimizer.total_steps`` (v11-v13 keep total_slots there) and is recorded as ``training_contract.schedule_steps``."""
     import math
 
-    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14):
-        raise ValueError("single protocol: version must be v11, v12, v13 or v14")
-    v14 = version == VERSION_SINGLE_V14
-    v13 = version in (VERSION_SINGLE_V13, VERSION_SINGLE_V14)  # v14 keeps every v13 branch below
+    if version not in (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14, VERSION_SINGLE_V15):
+        raise ValueError("single protocol: version must be v11, v12, v13, v14 or v15")
+    v15 = version == VERSION_SINGLE_V15
+    v14 = version in (VERSION_SINGLE_V14, VERSION_SINGLE_V15)  # v15 keeps every v14 branch below
+    v13 = version in (VERSION_SINGLE_V13, VERSION_SINGLE_V14, VERSION_SINGLE_V15)  # v14/v15 keep every v13 branch
     if (schedule_steps is None) == v14 or (v14 and (
             type(schedule_steps) is not int or not 1 <= schedule_steps <= total_slots)):
-        raise ValueError("single protocol: schedule_steps belongs to v14 and must be an integer in 1..total_slots")
-    v12 = version == VERSION_SINGLE_V12  # H rows are v12 only; v13 and v14 share v12's note filters and B rule below
+        raise ValueError("single protocol: schedule_steps belongs to v14/v15 and must be an integer in 1..total_slots")
+    v12 = version == VERSION_SINGLE_V12  # H rows are v12 only; v13-v15 share v12's note filters and B rule below
     weights = dict(SINGLE_SFT_WEIGHTS_V12 if v12 else SINGLE_SFT_WEIGHTS_V10) if sft_weights is None else dict(sft_weights)
     reference = {"version": "none"} if note_reference is None else note_reference
     if token_scale != SINGLE_TOKEN_SCALE_V11:
@@ -452,6 +469,11 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
         contract["answer_contracts"] = dict(SINGLE_ANSWER_CONTRACTS_V14)
         contract["answer_scorer"] = contract["answer_scorer"] | {"id": SCORER_V2, "rules": list(NORMALIZATION_RULES_V2),
                                                                  "unit_abbreviations": list(UNIT_ABBREVIATIONS)}
+    if v15:
+        contract["generation_counts"] = {"t1": 1, "note": 1, "resolve": len(SINGLE_RESOLVE_STAGES_V15)}
+        contract["resolve_attempts"] = copy.deepcopy(SINGLE_RESOLVE_V15)
+        contract["routes"] = dict(SINGLE_ROUTES_V15)
+        body["rollout_adapter"] = ROLLOUT_ADAPTER_V15
     # training_contract.total_slots stays total_slots; spiral_window and praise stay v13's.
     if v12:
         contract["sft_weighting"] = dict(SINGLE_SFT_WEIGHTING_V12)
