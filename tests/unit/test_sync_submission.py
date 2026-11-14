@@ -42,6 +42,12 @@ class SubmissionSyncTests(unittest.TestCase):
         self.assertFalse((destination / "tests/unit/test_sync_submission.py").exists())
         self.assertEqual(sync(self.root, write=False), [])
 
+    def test_sync_excludes_compassverifier_checker(self):
+        self.source("src/mmdl/evaluation/CompassVerifier_checker/backend.py", b"private tool\n")
+        self.source("src/mmdl/evaluation/CompassVerifier_checker/tests/test_backend.py", b"test\n")
+        self.assertEqual(sync(self.root, write=True), [])
+        self.assertFalse((self.root / "MMDL/src/mmdl/evaluation/CompassVerifier_checker").exists())
+
     def test_check_reports_missing_different_and_extra(self):
         self.source("README.md", b"current\n")
         destination = self.root / "MMDL"
