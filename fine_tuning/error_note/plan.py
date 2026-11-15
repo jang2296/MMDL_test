@@ -63,7 +63,7 @@ PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
 V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
 SINGLE_STAGES = ("single-pilot", "single-main", "single-direct")
-STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES)
+STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES, "content-v16", "v16b")
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
 PATH_KEYS = ("python", "repo_root", "build_root", "model_path", "out_root")
@@ -114,6 +114,10 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"stage must be one of {STAGES}")
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
+    if stage == "v16b":
+        return _check_v16b(params)
+    if stage == "content-v16":
+        return _check_content_v16(params)
     if stage in SINGLE_STAGES:
         return _check_single(stage, params)
     v2, v3 = stage == "note-v2", stage in V3_STAGES
@@ -462,8 +466,208 @@ def _plan_single(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
                                          "--hyb", f"{runs}/HYB", "--output", analysis], [analysis], "cpu")]
 
 
+PARAMS_VERSION_CONTENT_V16 = "error-note-plan-params-content-v16"
+
+
+def _check_content_v16(params: dict[str, Any]) -> dict[str, Any]:
+    paths = ("python", "repo_root", "model_path", "out_root", "content_manifest_path", "functional_gate_path")
+    keys = {"version", "commit", "content_manifest_sha256", "functional_gate_sha256", "total_blocks", "block_size",
+            "timeouts", *paths}
+    if set(params) - {"stage_a_blocks", "weights"} != keys or params["version"] != PARAMS_VERSION_CONTENT_V16:
+        raise ValueError("v16 plan: exact versioned content campaign parameters required")
+    if not isinstance(params["commit"], str) or not HEX40.fullmatch(params["commit"]):
+        raise ValueError("v16 plan: full training commit required")
+    for name in paths:
+        value = params[name]
+        if not isinstance(value, str) or not value.startswith("/") or value == "/" or posixpath.normpath(value) != value:
+            raise ValueError(f"v16 plan: canonical absolute {name} required")
+    for name in ("content_manifest_sha256", "functional_gate_sha256"):
+        if not isinstance(params[name], str) or not HEX64.fullmatch(params[name]):
+            raise ValueError(f"v16 plan: SHA256 required for {name}")
+    for name in ("out_root", "content_manifest_path", "functional_gate_path"):
+        if posixpath.commonpath((params["repo_root"], params[name])) == params["repo_root"]:
+            raise ValueError("v16 plan: private content and output must be outside the repository")
+    if posixpath.basename(params["model_path"]) != BASE_REVISION:
+        raise ValueError("v16 plan: pinned F0 snapshot required")
+    if (type(params["total_blocks"]) is not int or params["total_blocks"] < 1
+            or type(params["block_size"]) is not int or not 1 <= params["block_size"] <= 16
+            or not isinstance(params["timeouts"], dict) or set(params["timeouts"]) != {"cpu", "advance", "reload", "export"}
+            or any(type(value) is not int or value < 1 for value in params["timeouts"].values())):
+        raise ValueError("v16 plan: positive actual block count, bounded block size and timeouts required")
+    stage_a = params.get("stage_a_blocks", 0)
+    if type(stage_a) is not int or not 0 <= stage_a <= params["total_blocks"]:
+        raise ValueError("v16 plan: stage A must be a prefix of the actual block schedule")
+    if "weights" in params:
+        from .protocol import CONTENT_WEIGHTS_V16
+
+        weights = params["weights"]
+        if (not isinstance(weights, dict) or set(weights) != set(CONTENT_WEIGHTS_V16)
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) or value < 0 for value in weights.values()) or sum(weights.values()) <= 0):
+            raise ValueError("v16 plan: explicit finite nonnegative content weights required")
+    return params
+
+
+def _plan_content_v16(p: dict[str, Any]) -> list[dict[str, Any]]:
+    py, out, total = p["python"], p["out_root"], p["total_blocks"]
+    campaign = f"{out}/campaign"
+    common = [py, "-m", CAMPAIGN]
+    args = ["--content-manifest", p["content_manifest_path"], "--content-manifest-sha256", p["content_manifest_sha256"],
+            "--functional-gate", p["functional_gate_path"], "--functional-gate-sha256", p["functional_gate_sha256"],
+            "--model-path", p["model_path"], "--output", campaign, "--campaign-mode", "train", "--precision", "bf16",
+            "--block-size", str(p["block_size"]), "--content-total-blocks", str(total),
+            "--stage-a-blocks", str(p.get("stage_a_blocks", 0)), "--allow-model-run"]
+    if "weights" in p:
+        args += ["--content-weights", json.dumps(p["weights"], sort_keys=True, separators=(",", ":"))]
+    reload_file = f"{out}/reload-{total}.json"
+    exported = f"{out}/export-final"
+
+    def step(name: str, argv: list[str], files: list[str], kind: str) -> dict[str, Any]:
+        return {"name": name, "argv": argv, "expect_files": files, "timeout_seconds": p["timeouts"][kind]}
+
+    steps = [step("pin-" + name, [py, "-m", CHAIN, "pin", "--file", p[name + "_path"],
+                                 "--sha256", p[name + "_sha256"]], [], "cpu")
+             for name in ("content_manifest", "functional_gate")]
+    return steps + [
+        step("advance-content", [*common, "advance", *args, "--max-blocks", str(total), "--allow-update", "--allow-save"],
+             [f"{campaign}/checkpoint-{total}/metadata.json"], "advance"),
+        step("reload-content", [py, "-m", CHAIN, "capture", "--output", reload_file, "--",
+                                *common, "reload", *args], [reload_file], "reload"),
+        step("export-content", [py, "-m", PROOF, "export", "--checkpoint", f"{campaign}/checkpoint-{total}",
+            "--binding", f"{campaign}/campaign-plan.json", "--base", p["model_path"], "--output", exported,
+            "--code-commit", p["commit"]], [f"{exported}/model_ref.json", f"{exported}/model/export_manifest.json"], "export"),
+    ]
+
+
+PARAMS_VERSION_V16B = "error-note-plan-params-v16b"
+V16B_PATHS = ("python", "repo_root", "model_path", "out_root", "data_root", "bundle_manifest_path",
+               "bundle_archive_path", "guard_falsealarm_path", "b2_predictions_path", "hardware_path",
+               "eval_data_root", "cv_script_path", "handoff_root", "run_dir")
+V16B_HASHED = ("bundle_manifest", "guard_falsealarm", "b2_predictions", "cv_script")
+
+
+def _check_v16b(params: dict[str, Any]) -> dict[str, Any]:
+    keys = {"version", "commit", "timeouts", "hourly_usd", "gpu_type", *V16B_PATHS,
+            *(name + "_sha256" for name in V16B_HASHED)}
+    if set(params) != keys or params.get("version") != PARAMS_VERSION_V16B:
+        raise ValueError("v16b plan: exact versioned parameters required")
+    if not isinstance(params["commit"], str) or not HEX40.fullmatch(params["commit"]):
+        raise ValueError("v16b plan: full training commit required")
+    for name in V16B_PATHS:
+        value = params[name]
+        if not isinstance(value, str) or not value.startswith("/") or value == "/" or posixpath.normpath(value) != value:
+            raise ValueError(f"v16b plan: canonical absolute {name} required")
+    for name in V16B_HASHED:
+        value = params[name + "_sha256"]
+        if not isinstance(value, str) or not HEX64.fullmatch(value):
+            raise ValueError(f"v16b plan: SHA256 required for {name}")
+    for name in ("out_root", "data_root", "bundle_manifest_path", "bundle_archive_path", "guard_falsealarm_path",
+                 "b2_predictions_path", "eval_data_root", "cv_script_path", "handoff_root", "run_dir"):
+        if posixpath.commonpath((params["repo_root"], params[name])) == params["repo_root"]:
+            raise ValueError(f"v16b plan: private {name} must be outside repository")
+    if posixpath.commonpath((params["run_dir"], params["out_root"])) != params["run_dir"]:
+        raise ValueError("v16b plan: out_root must be inside run_dir so recovery packs every result and checkpoint")
+    if posixpath.basename(params["model_path"]) != BASE_REVISION:
+        raise ValueError("v16b plan: pinned fresh-F0 snapshot required")
+    if params["gpu_type"] not in ("NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe"):  # user 2026-11-15: cheapest A100
+        raise ValueError("v16b plan: community A100 80GB (SXM or PCIe) only")
+    rate = params["hourly_usd"]
+    if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or rate <= 0:
+        raise ValueError("v16b plan: explicit finite hourly price required")
+    timeouts = params["timeouts"]
+    if (not isinstance(timeouts, dict) or set(timeouts) != {"cpu", "reload", "export", "evaluate", "compass"}
+            or any(type(t) is not int or t <= 0 for t in timeouts.values()) or timeouts["evaluate"] != 23400):
+        raise ValueError("v16b plan: 6.5h evaluation watchdog, separate finite non-training timeouts required")
+    return params
+
+
+def _plan_v16b(p: dict[str, Any]) -> dict[str, Any]:
+    from mmdl.runtime.contracts import SUBJECTS
+
+    eval_ids = sorted(f"validation_{subject}_{i}" for subject in SUBJECTS for i in range(1, 31))
+    py, out = p["python"], p["out_root"]
+    prep, campaign, proof = f"{out}/prep", f"{out}/campaign", f"{out}/proof"
+    export, prereg, ledger = f"{out}/export-final", f"{proof}/prereg.json", f"{proof}/ledger.jsonl"
+    artifact, run_id = f"{out}/eval-artifacts", "v16b-ft-single"
+    run = f"{artifact}/runs/{run_id}"
+    campaign_cmd = [py, "-m", "fine_tuning.error_note.campaign_v16b"]
+    common = ["--data-root", p["data_root"], "--prep-root", prep, "--model-path", p["model_path"],
+              "--output", campaign, "--precision", "bf16", "--engine", "vllm"]
+    steps = []
+
+    def step(name: str, argv: list[str], files: list[str], kind: str | None = "cpu") -> None:
+        item = {"name": name, "argv": argv, "expect_files": files}
+        if kind is not None:
+            item["timeout_seconds"] = p["timeouts"][kind]
+        steps.append(item)
+
+    for name in V16B_HASHED:
+        step(f"pin-{name.replace('_', '-')}", [py, "-m", CHAIN, "pin", "--file", p[name + "_path"],
+                                              "--sha256", p[name + "_sha256"]], [])
+    bundle = [py, "-m", "fine_tuning.notebook_rl.pod.data_bundle"]
+    step("stage-data", [*bundle, "stage", "--manifest", p["bundle_manifest_path"], "--manifest-sha256",
+                       p["bundle_manifest_sha256"], "--archive", p["bundle_archive_path"]], [])
+    step("verify-data", [*bundle, "verify", "--manifest", p["bundle_manifest_path"],
+                        "--manifest-sha256", p["bundle_manifest_sha256"]], [])
+    step("guard-falsealarm-gate", [py, f"{p['handoff_root']}/guard_pod_v16b.py", "--check-falsealarm",
+                                  p["guard_falsealarm_path"]], [])
+    for command in ("select", "generate", "rows"):
+        argv = [py, "-m", "fine_tuning.error_note.prep_v16b", command, "--data-root", p["data_root"], "--output", prep]
+        if command in ("generate", "rows"):  # rows loads the processor from the same snapshot
+            argv += ["--model-path", p["model_path"]]
+        if command == "generate":
+            argv += ["--precision", "bf16", "--engine", "vllm", "--allow-model-run"]
+        step(f"prep-{command}", argv, [], None if command == "generate" else "cpu")
+    step("campaign-prepare", [*campaign_cmd, "prepare", *common], [f"{campaign}/campaign-plan.json"])
+    step("campaign-advance", [*campaign_cmd, "advance", *common, "--allow-model-run", "--allow-update", "--allow-save"],
+         [], None)
+    step("require-complete", [*campaign_cmd, "require-complete", *common], [f"{campaign}/export-ready.json"])
+    step("reload", [py, "-m", CHAIN, "capture", "--output", f"{out}/reload-final.json", "--",
+                    *campaign_cmd, "reload", *common, "--allow-model-run"], [f"{out}/reload-final.json"], "reload")
+    step("export", [*campaign_cmd, "export", *common, "--base", p["model_path"], "--export-output", export,
+                    "--code-commit", p["commit"]], [f"{export}/model_ref.json"], "export")
+    for kind in ("wrong", "rest", "all"):
+        step(f"subset-{kind}", [py, "-m", PROOF, "make-subset", "--kind", kind, "--output", f"{proof}/{kind}.json",
+                                "--b2-predictions", p["b2_predictions_path"]], [f"{proof}/{kind}.json"])
+    step("preregister-v11", [py, "-m", PROOF, "preregister", "--format", "v11", "--output", prereg,
+                             "--subset", f"{proof}/wrong.json", "--rest-subset", f"{proof}/rest.json",
+                             "--all-subset", f"{proof}/all.json", "--b2-predictions", p["b2_predictions_path"],
+                             "--ft-single-model-ref", f"{export}/model_ref.json"], [prereg])
+    step("ledger-start", [py, "-m", PROOF, "ledger-start", "--prereg", prereg, "--arm", "FT-SINGLE",
+                          "--variant", "mmmu-val-v8-b2-seed3407-v1", "--subset", "all", "--run-id", run_id,
+                          "--ledger", ledger], [ledger])
+    step("evaluate-900", ["/usr/bin/env", "MMDL_EVAL_SLOTS=auto", "VLLM_ENABLE_V1_MULTIPROCESSING=0", py, "-m", PROOF, "run-eval",
+                          "--protocol", f"{p['repo_root']}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml",
+                          "--hardware", p["hardware_path"], "--model-ref", f"{export}/model_ref.json",
+                          "--model-path", f"{export}/model", "--data-root", p["eval_data_root"], "--artifact-root", artifact,
+                          "--run-id", run_id, "--mode", "partial", "--run-role", "standalone",
+                          "--no-download", "--require-commit", p["commit"],
+                          *(arg for sid in eval_ids for arg in ("--sample-id", sid))],
+         [f"{run}/summary.json"], "evaluate")
+    step("v8-analyze", [py, "-m", PROOF, "analyze", "--prereg", prereg, "--ledger", ledger, "--runs", run,
+                        "--ft-single-model-ref", f"{export}/model_ref.json", "--output", f"{proof}/v8"],
+         [f"{proof}/v8.json"])
+    step("compass-separate", [py, p["cv_script_path"], "--python", py, "--predictions", f"{run}/predictions.jsonl",
+                              "--b2-predictions", p["b2_predictions_path"], "--output", f"{proof}/compass"],
+         [f"{proof}/compass/dual-summary.json"], "compass")
+    canonical = json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return {"version": SPEC_VERSION, "meta": {"stage": "v16b", "job_stage": "single-main",
+            "params_sha256": sha256_bytes(canonical.encode()), "generator": "fine_tuning.error_note.plan",
+            "total_timeout_seconds": None, "training_elapsed_cutoff": None, "evaluation_watchdog_seconds": 23400,
+            "funding": {"reserve_usd": 1.5, "post_train_hours": 5.65, "next_train_hours": 1,
+                        "recharge_wait_seconds": 1800, "poll_seconds": 600, "hourly_usd": p["hourly_usd"]},
+            "guard_stop_auto_evaluate": False, "gpu_type": p["gpu_type"], "cloud_execution": False,
+            "after_run_closed": [py, "-m", "fine_tuning.notebook_rl.pod.collect", "pack", "--out-dir",
+                                 f"{out}/recovery", "--name", "v16b-final", p["run_dir"]]},
+            "steps": steps}
+
+
 def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     p = _check(stage, params)
+    if stage == "v16b":
+        return _plan_v16b(p)
+    if stage == "content-v16":
+        return _spec(stage, p, _plan_content_v16(p))
     if stage in SINGLE_STAGES:
         return _spec(stage, p, _plan_single(stage, p))
     if stage in V3_STAGES:

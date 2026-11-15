@@ -15,6 +15,7 @@ amplified copy of the adapter, after which the real adapter is restored under a 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from contextlib import contextmanager
 import json
 import math
@@ -31,6 +32,8 @@ from .contract import CONTEXT_LIMIT, IMAGE
 
 ENGINE = "vllm-0.11.0-processed-logprobs"
 TOP_LOGPROBS = 20  # == SINGLE_SAMPLING top_k: every token the sampler could draw is returned
+TAIL_LOGPROBS = 20  # logging only: top-20 plus the sampled token decide B2 membership; open ties give None
+_B2_CUT = 1.0 - 0.800000011920928955078125  # fp32 1 - fp32(0.8): vLLM keeps an action when its ascending cumsum exceeds it
 
 
 @contextmanager
@@ -52,6 +55,46 @@ def support_from_logprobs(token: int, row: dict) -> tuple[float, list[int]]:
     if token not in support or len(support) > SINGLE_SAMPLING["top_k"]:
         raise RuntimeError("SINGLE vLLM: sampled action outside its returned processed support")
     return float(row[token].logprob), support
+
+
+def sampled_logprob(token: int, row: dict) -> float:
+    """Selected processed probability; returned alternatives never renormalize a full-vocabulary draw."""
+    if token not in row:
+        raise RuntimeError("v16b vLLM: selected action missing from processed log-probabilities")
+    value = float(row[token].logprob)
+    if not math.isfinite(value) or value > 1e-6:
+        raise RuntimeError("v16b vLLM: invalid selected processed log-probability")
+    return value
+
+
+def b2_tail_flag(token: int, row: dict, *, vocab_size: int) -> bool | None:
+    """True when the sampled action lies outside B2's support: native top-k 20 (threshold ties kept), then ascending
+    top-p 0.8. `row` is a processed full-vocabulary row: top-TAIL_LOGPROBS plus the sampled action. Unreturned tokens
+    may tie the 20th value; their mass is bounded by the row's missing probability. None (diagnostic only) when tie
+    order or that unseen mass decides membership; raises only for an incomplete row."""
+    if type(vocab_size) is not int or vocab_size < 1:
+        raise RuntimeError("v16b vLLM: vocabulary size required for the tail diagnostic")
+    values = {int(t): float(v.logprob) for t, v in row.items() if math.isfinite(v.logprob)}
+    ranked = sorted(values.values(), reverse=True)
+    if token not in values or len(ranked) < min(TAIL_LOGPROBS, vocab_size):
+        raise RuntimeError("v16b vLLM: incomplete top-20 tail diagnostic")
+    threshold, value = ranked[min(20, vocab_size) - 1], values[token]
+    if value < threshold:
+        return True
+    weight = math.exp(value)
+    total = sum(math.exp(v) for v in ranked if v >= threshold)
+    below = sum(math.exp(v) for v in ranked if threshold <= v < value)
+    tied = sum(math.exp(v) for v in ranked if v == value)
+    unseen = 0.0
+    if ranked[-1] >= threshold:  # every returned value reaches the threshold: unreturned tokens may tie it
+        missing = max(0.0, 1.0 - sum(math.exp(v) for v in ranked)) + 1e-6
+        unseen = min(max(0, vocab_size - len(ranked)) * math.exp(threshold), missing)
+    retained = set()
+    for extra in (0.0, unseen):  # cumsum fractions are monotone in the unseen tied mass and in tie position
+        low = below + (extra if value > threshold else 0.0)
+        for cumulative in (low + weight, low + tied + (extra if value == threshold else 0.0)):
+            retained.add(cumulative / (total + extra) > _B2_CUT)
+    return None if len(retained) > 1 else not retained.pop()
 
 
 class _LoraEngine:
@@ -103,7 +146,20 @@ class SingleVllmSampler:
     vision_hooks: Any = None
 
     def __init__(self, model_path: Path, *, kv_cache_gib: float, max_num_seqs: int, gpu_memory_utilization: float,
-                 sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None, lora: bool = False):
+                 sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None, lora: bool = False,
+                 sampling: dict | None = None, version_registry: bool = False):
+        self.version_registry = bool(version_registry)
+        if self.version_registry and (not lora or sleep):
+            raise ValueError("v16b vLLM: version registry requires LoRA and sleep off")
+        self.sampling = dict(SINGLE_SAMPLING if sampling is None else sampling)
+        self.versions: dict[int, dict] = {}
+        self.pending: dict[str, dict] = {}
+        self._ready_outputs: list[tuple[dict, dict]] = []
+        self.coexistence_reports: list[dict] = []
+        self.engine_steps = 0
+        self.visual_version: int | None = None
+        self._input_memo: dict[str, tuple[str, dict, Any]] = {}
+        self._image_memo: dict[str, dict] = {}
         self.image = dict(IMAGE if image is None else image)
         low, high = self.image.get("min_pixels"), self.image.get("max_pixels")
         if not (isinstance(low, int) and isinstance(high, int) and 0 < low <= high):
@@ -135,12 +191,15 @@ class SingleVllmSampler:
                 self._report({"pf0": self.pf0, "pass": False})
                 raise RuntimeError("SINGLE vLLM: PF0 host memory below the level-1 sleep requirement")
             llm_lora.scope_qwen3vl_lora()
-            extra = dict(llm_lora.ENGINE_ARGS)
+            extra = dict(llm_lora.ENGINE_ARGS_V16B if version_registry else llm_lora.ENGINE_ARGS)
             if extra.keys() & kwargs.keys():
                 raise ValueError("SINGLE vLLM: LoRA engine arguments overlap the pinned vLLM arguments")
+        if version_registry:
+            kwargs.update(enable_prefix_caching=False, mm_processor_cache_gb=0, disable_log_stats=False)
         with _nondeterministic():
             engine.llm = import_module("vllm").LLM(**kwargs, logprobs_mode="processed_logprobs",
-                                                   max_logprobs=TOP_LOGPROBS, enable_sleep_mode=bool(sleep), **extra)
+                                                   max_logprobs=TAIL_LOGPROBS if version_registry else TOP_LOGPROBS,
+                                                   enable_sleep_mode=bool(sleep), **extra)
         engine._call, engine._synchronized, engine._push_complete, engine._last_loaded_version = 0, True, True, None
         self.engine, self.max_num_seqs, self.sleep = engine, max_num_seqs, bool(sleep)
         self.eos_token_ids = sorted(set(eos_token_ids))
@@ -157,6 +216,337 @@ class SingleVllmSampler:
             self.lora_dir = Path(tempfile.mkdtemp(prefix="single-vllm-lora-"))
             self._lora_id, self._preflight_done = 0, False
             self.preflight_report: dict | None = None
+
+    def _scheduler(self) -> Any:
+        return self.engine.llm.llm_engine.engine_core.engine_core.scheduler
+
+    def has_unfinished_requests(self) -> bool:
+        return bool(self.pending) or bool(self._ready_outputs) or self.engine.llm.llm_engine.has_unfinished_requests()
+
+    def prefill_barrier(self) -> bool:
+        scheduler = self._scheduler()
+        return not scheduler.waiting and all(r.num_computed_tokens >= len(r.prompt_token_ids)
+                                             for r in scheduler.running)
+
+    def live_registry(self) -> dict:
+        return {str(v): {"lora_int_id": e["lora_int_id"], "policy_sha256": e["policy_sha256"],
+                         "refcount": e["refcount"]} for v, e in self.versions.items()}
+
+    def release_version(self, version: int) -> None:
+        entry = self.versions[version]
+        if entry["refcount"]:
+            raise RuntimeError("v16b vLLM: cannot remove a referenced policy")
+        if self.engine.llm.llm_engine.remove_lora(entry["lora_int_id"]) is not True:
+            raise RuntimeError("v16b vLLM: policy removal not acknowledged")
+        shutil.rmtree(entry["request"].lora_path)
+        del self.versions[version]
+
+    def release_idle_versions(self, *, keep: int | None = None) -> None:
+        for version, entry in list(self.versions.items()):
+            if entry["refcount"] == 0 and version != keep:
+                self.release_version(version)
+
+    def add_version(self, bundle: Any, version: int) -> str:
+        """Push only between engine steps; retain immutable slots until the last request completes."""
+        from fine_tuning.notebook_rl.policy import merged_named_tensors
+        from .rl import policy_sha256
+        from vllm.lora.request import LoRARequest
+
+        if not self.version_registry or version in self.versions or not self.prefill_barrier():
+            raise RuntimeError("v16b vLLM: registry, fresh version and visual-prefill barrier required")
+        policy = policy_sha256(bundle)
+        previous = self.visual_version if version in (1, 2) else None
+        if previous in self.versions:
+            self.versions[previous]["refcount"] += 1
+            buffered = list(self._ready_outputs)
+            self._ready_outputs.clear()
+            while self.pending:
+                buffered.extend(self.step())
+            self._ready_outputs = buffered
+        self.release_idle_versions()
+        if len(self.versions) >= 2 or llm_lora.free_lora_slots(self.engine) < 1:
+            raise RuntimeError("v16b vLLM: no safe LoRA slot; add_lora was not called")
+        if not self._preflight_done:
+            if self.pending:
+                raise RuntimeError("v16b vLLM: preflight must precede requests")
+            self.sync(bundle)
+            request = self.lora_request
+        else:
+            self._lora_id += 1
+            path = self.lora_dir / str(self._lora_id)
+            llm_lora.write_llm_adapter(bundle, path)
+            request = LoRARequest(f"v16b-{version}-{policy[:16]}", self._lora_id, str(path))
+            if self.engine.llm.llm_engine.add_lora(request) is not True:
+                raise RuntimeError("v16b vLLM: policy registration not acknowledged")
+        entry = {"request": request, "lora_int_id": request.lora_int_id, "refcount": 0, "policy_sha256": policy,
+                 "slots": {name: [(a.detach().cpu().clone(), b.detach().cpu().clone()) for a, b in pairs]
+                           for name, pairs in llm_lora.llm_slots(bundle).items()}}
+        self.versions[version] = entry
+        for state in self.pending.values():
+            live = state["live"]
+            if not live.output_token_ids:
+                state["mixed_version"] = True
+                state["visual_version"] = version
+        with _nondeterministic():
+            self.vision_hooks.load(llm_lora.vision_lora(bundle))
+            llm_lora.push_mergers(self.engine, merged_named_tensors(bundle), version, inflight=True)
+        report = llm_lora.check_all_live_identity(self.engine, self.versions, bundle=bundle, hooks=self.vision_hooks)
+        if report["pass"] is not True:
+            raise RuntimeError(f"v16b vLLM: live identity mismatch: {report}")
+        self.visual_version, self.loaded_policy, self.lora_request = version, policy, request
+        if previous in self.versions:
+            try:
+                self.coexistence_reports.append(self.verify_coexistence(previous, version))
+            finally:
+                self.versions[previous]["refcount"] -= 1
+            self.release_idle_versions(keep=version)
+        return policy
+
+    def verify_coexistence(self, old_version: int, new_version: int) -> dict:
+        """GPU gate: old/new LLM LoRA alone and mixed, with the same current global visual weights. The old adapter's
+        greedy probe completion is teacher-forced (prompt_logprobs, as _probe) in [old], [new] and [old, new] batches;
+        a version passes when its mean |alone - mixed| log-prob is <= 0.05. Greedy token identity is logged only:
+        LoRA split-K atomics and batch-1/batch-2 kernels are not bit-reproducible, so BF16 argmax ties may flip."""
+        import time
+        from vllm import SamplingParams
+
+        if self.pending or self.engine.llm.llm_engine.has_unfinished_requests():
+            raise RuntimeError("v16b vLLM: coexistence probes require the bounded startup drain")
+        started = time.monotonic()
+        probe = probe_requests(self.image)[0]
+        prepared = self.engine.prepare(probe)
+        greedy = SamplingParams(n=1, temperature=0.0, max_tokens=PROBE_TOKENS, ignore_eos=True,
+                                detokenize=False, seed=3407)
+        forced = SamplingParams(n=1, temperature=1.0, top_p=1.0, top_k=0, presence_penalty=0.0, repetition_penalty=1.0,
+                                max_tokens=1, seed=3407, prompt_logprobs=0, detokenize=False)
+        old = self.versions[old_version]["request"]
+        new = self.versions[new_version]["request"]
+
+        def run(adapters: list, ids: list[int], params: Any) -> list:
+            prompts = [self.engine._prompt(prepared, ids) for _ in adapters]
+            with _nondeterministic():
+                outputs = self.engine.llm.generate(prompts, params, lora_request=adapters, use_tqdm=False)
+            if len(outputs) != len(adapters):
+                raise RuntimeError("v16b vLLM: missing coexistence probe output")
+            return outputs
+
+        def tokens(adapters: list) -> list[list[int]]:
+            return [list(output.outputs[0].token_ids) for output in run(adapters, prepared.token_ids, greedy)]
+
+        greedy_alone, greedy_mixed = tokens([old]) + tokens([new]), tokens([old, new])
+        completion = greedy_alone[0]
+        if len(completion) != PROBE_TOKENS:
+            raise RuntimeError("v16b vLLM: coexistence greedy probe length differs")
+        forced_ids = list(prepared.token_ids) + completion
+
+        def scores(adapters: list) -> list[list[float]]:
+            result = []
+            for output in run(adapters, forced_ids, forced):
+                if list(output.prompt_token_ids) != forced_ids or output.prompt_logprobs is None:
+                    raise RuntimeError("v16b vLLM: coexistence probe input mismatch or missing teacher-forced log-probs")
+                rows = output.prompt_logprobs[len(prepared.token_ids):]
+                result.append([float(row[t].logprob) for row, t in zip(rows, completion, strict=True)])
+            return result
+
+        singles, mixed = scores([old]) + scores([new]), scores([old, new])
+        results = []
+        for index, version in enumerate((old_version, new_version)):
+            deltas = [abs(a - b) for a, b in zip(singles[index], mixed[index], strict=True)]
+            mean = sum(deltas) / len(deltas)
+            results.append({"version": version, "same_token_ids": greedy_alone[index] == greedy_mixed[index],
+                            "mean_logprob_delta": mean, "max_logprob_delta": max(deltas),
+                            "pass": math.isfinite(mean) and mean <= .05})
+        report = {"old_version": old_version, "new_version": new_version, "visual_version": self.visual_version,
+                  "synthetic": True, "training_use": False, "buffered_completions": len(self._ready_outputs),
+                  "method": "teacher-forced-old-greedy-v1", "tolerance_mean_abs_logprob": .05,
+                  "limitation": ("one synthetic noise-image probe; teacher-forced raw log-probs of one fixed old-adapter "
+                                 "greedy completion, mean tolerance 0.05; same_token_ids is a diagnostic, not a gate; "
+                                 "does not certify sampled task outputs"),
+                  "probe_seconds": time.monotonic() - started, "versions": results,
+                  "pass": all(result["pass"] for result in results)}
+        if report["pass"] is not True:
+            self._report({"coexistence": report, "pass": False})
+            raise RuntimeError("v16b vLLM: old/new policy mixed-batch coexistence check failed")
+        return report
+
+    def forget_item(self, problem_id: str) -> None:
+        self._image_memo.pop(problem_id, None)
+        for key in list(self._input_memo):
+            if key.startswith(problem_id + ":"):
+                del self._input_memo[key]
+
+    def _prepared_input(self, request: dict, image_identity: list[dict]) -> tuple[dict, list]:
+        from fine_tuning.notebook_rl.input_preparation import prepare_inputs, prepare_protocol_inputs
+        from .rl import digest
+
+        pid = request["problem_id"]
+        image_sha = digest(image_identity)
+        memo = self._image_memo.setdefault(pid, {"image_sha256": image_sha})
+        if memo["image_sha256"] != image_sha:
+            raise RuntimeError("v16b vLLM: a problem's image bytes changed")
+        processor = self.engine.processor
+        original = processor.image_processor
+
+        class CachedImageProcessor:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(original, name)
+
+            def __call__(self, *args: Any, **kwargs: Any) -> Any:
+                if "image_inputs" not in memo:
+                    memo["image_inputs"] = original(*args, **kwargs)
+                return memo["image_inputs"]
+
+        processor.image_processor = CachedImageProcessor()
+        try:
+            if "processed" not in memo:
+                item, processed = prepare_protocol_inputs(processor, self.engine.model_config,
+                    request["messages"], request["images"], self.image)
+                memo["processed"] = processed
+            else:
+                item = prepare_inputs(processor, self.engine.model_config, request["messages"],
+                                      memo["processed"], do_resize=False)
+            pixel_sha = digest({key: value for key, value in item["input_tensors"].items()
+                                if key in ("pixel_values", "image_grid_thw")})
+            if "pixel_sha256" in memo and memo["pixel_sha256"] != pixel_sha:
+                raise RuntimeError("v16b vLLM: memoized image tensors changed")
+            memo["pixel_sha256"] = pixel_sha
+            return item, memo["processed"]
+        finally:
+            processor.image_processor = original
+
+    def submit(self, request: dict) -> None:
+        """Admit exactly one request against its immutable policy and full-vocabulary sampling."""
+        from vllm import SamplingParams
+        from fine_tuning.notebook_rl.engines import RolloutRequest
+        from .rl import digest
+
+        single_request_binding(request)
+        version, rid = request["policy_version"], request["request_id"]
+        if rid in self.pending or version not in self.versions:
+            raise ValueError("v16b vLLM: duplicate request or unknown policy version")
+        entry = self.versions[version]
+        if request["policy_sha256"] != entry["policy_sha256"]:
+            raise ValueError("v16b vLLM: admission policy hash changed")
+        image_identity = [{"size": list(img.size), "sha256": hashlib.sha256(img.tobytes()).hexdigest()}
+                          for img in request["images"]]
+        key = request["problem_id"] + ":" + digest({"messages": request["messages"], "images": image_identity})
+        memo = self._input_memo.get(key)
+        if memo is None:
+            item, processed = self._prepared_input(request, image_identity)
+            image_key = hashlib.sha256(json.dumps([(tuple(img["size"]), img["sha256"]) for img in image_identity],
+                                                  separators=(",", ":")).encode()).hexdigest()
+            self.engine._image_key, self.engine._processed_images = image_key, processed
+            self.engine._pixels = {k: item["inputs"][k] for k in ("pixel_values", "image_grid_thw")}
+            prepared = self.engine.prepare(RolloutRequest(rid, list(item["prompt_token_ids"]), None, request["images"],
+                                                         1, request["max_tokens"], [request["seed"]]))
+            if prepared.token_ids != list(item["prompt_token_ids"]):
+                raise RuntimeError("v16b vLLM: HF and engine prompt IDs differ")
+            prompt = self.engine._prompt(prepared, prepared.token_ids)
+            self._input_memo[key] = (item["input_sha256"], item, prompt)
+        else:
+            old_input_sha, item, prompt = memo
+            if old_input_sha != item["input_sha256"]:
+                raise RuntimeError("v16b vLLM: memo input hash changed")
+        prompt = dict(prompt)
+        if request["images"]:
+            prompt["multi_modal_uuids"] = {"image": [f"v{version}:{rid}:{i}" for i in range(len(request["images"]))]}
+        if item["input_tokens"] > 16384:
+            raise RuntimeError("v16b vLLM: HOLD prompt exceeds the measured 16384-token capacity bound")
+        if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
+            raise ValueError("v16b vLLM: prompt plus completion exceeds context limit")
+        sampling = dict(request.get("sampling", self.sampling))
+        params = SamplingParams(n=1, **sampling, repetition_penalty=1.0, max_tokens=request["max_tokens"],
+                                seed=request["seed"], stop_token_ids=self.eos_token_ids,
+                                logprobs=TAIL_LOGPROBS, detokenize=False)
+        core = self.engine.llm.llm_engine
+        with _nondeterministic():
+            core.add_request(rid, prompt, params, lora_request=entry["request"])
+        live = self._scheduler().requests[rid]
+        if live.lora_request is None or live.lora_request.lora_int_id != entry["lora_int_id"]:
+            raise RuntimeError("v16b vLLM: request LoRA differs from the admission version")
+        self.pending[rid] = {"request": request, "item": item, "live": live, "admit_step": self.engine_steps,
+                             "visual_version": self.visual_version, "mixed_version": version != self.visual_version,
+                             "preempted": False, "last_computed": 0}
+        state = self.pending[rid]
+        original_event = live.record_event
+        state["original_event"] = original_event
+        def record_event(event_type: Any, timestamp: Any = None) -> None:
+            if event_type.name == "PREEMPTED":
+                state["preempted"] = True
+                if state["visual_version"] != self.visual_version:
+                    state["mixed_version"] = True
+                    state["visual_version"] = self.visual_version
+            original_event(event_type, timestamp)
+        live.record_event = record_event
+        entry["refcount"] += 1
+
+    def step(self) -> list[tuple[dict, dict]]:
+        from .rl import sampling_sha256
+
+        if self._ready_outputs:
+            ready, self._ready_outputs = self._ready_outputs, []
+            return ready
+        with _nondeterministic():
+            outputs = self.engine.llm.llm_engine.step()
+        self.engine_steps += 1
+        finished = []
+        for state in self.pending.values():
+            live = state["live"]
+            status = getattr(getattr(live, "status", None), "name", "")
+            preempted = status == "PREEMPTED" or live.num_computed_tokens < state["last_computed"]
+            if preempted:
+                state["preempted"] = True
+                if state["visual_version"] != self.visual_version:
+                    state["mixed_version"] = True
+                    state["visual_version"] = self.visual_version
+            state["last_computed"] = live.num_computed_tokens
+        for output in outputs:
+            if not output.finished:
+                continue
+            state = self.pending.pop(output.request_id)
+            if "original_event" in state:
+                state["live"].record_event = state["original_event"]
+            request, item = state["request"], state["item"]
+            if len(output.outputs) != 1 or list(output.prompt_token_ids) != list(item["prompt_token_ids"]):
+                raise RuntimeError("v16b vLLM: exact prompt and one completion required")
+            result = output.outputs[0]
+            ids = list(result.token_ids)
+            if result.logprobs is None or len(result.logprobs) != len(ids):
+                raise RuntimeError("v16b vLLM: one selected processed probability required per token")
+            if result.finish_reason not in ("stop", "length") or (result.finish_reason == "stop"
+                    and (not ids or ids[-1] not in self.eos_token_ids)):
+                raise RuntimeError("v16b vLLM: completion must end at EOS or the token cap")
+            sampling = dict(request.get("sampling", self.sampling))
+            full = sampling["top_p"] == 1.0 and sampling["top_k"] == 0
+            text = self.engine.tokenizer.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            entry = self.versions[request["policy_version"]]
+            generation = single_request_binding(request) | {
+                "kind": request["kind"], "prompt_token_ids": list(item["prompt_token_ids"]),
+                "completion_token_ids": ids, "sampling_logprobs":
+                    [sampled_logprob(t, row) for t, row in zip(ids, result.logprobs, strict=True)],
+                "sampling": sampling, "sampling_sha256": sampling_sha256(sampling),
+                "probability_space": "processed-full-vocab-v1" if full else "processed-truncated-b2",
+                "policy_sha256": entry["policy_sha256"], "policy_version": request["policy_version"],
+                "lora_int_id": entry["lora_int_id"], "visual_version": state["visual_version"],
+                "mixed_version": state["mixed_version"], "preempted": state["preempted"],
+                "admit_step": state["admit_step"], "finish_step": self.engine_steps,
+                "protocol_sha256": request["protocol_sha256"], "input_sha256": item["input_sha256"],
+                "request_sha256": request["request_sha256"], "text": text, "finish_reason": result.finish_reason,
+                "eos_token_ids": self.eos_token_ids, "completion_count": 1,
+                "tail_diagnostic_logprobs": TAIL_LOGPROBS if full else 20,
+                "b2_tail_flags": [b2_tail_flag(t, row, vocab_size=self.engine.model_config.text_config.vocab_size)
+                                  if full else False for t, row in zip(ids, result.logprobs, strict=True)]}
+            for key in ("baseline_receipt", "obs_baseline_receipt"):
+                if key in request:
+                    generation[key] = request[key]
+            entry["refcount"] -= 1
+            if request["kind"] == "RESOLVE":
+                self.forget_item(request["problem_id"])
+            finished.append((request, {"text": text, "finish_reason": result.finish_reason, "completion_tokens": len(ids),
+                                      "prompt_tokens": len(item["prompt_token_ids"]), "completion_count": 1,
+                                      "generation": generation}))
+        self.release_idle_versions(keep=self.visual_version)
+        return finished
 
     def release(self) -> None:
         """Free vLLM weights and KV cache before an HF update (sleep level 2: weights are re-pushed anyway; level 1 in

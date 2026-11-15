@@ -911,6 +911,11 @@ class _SingleActionSampler:
         import torch
 
         self.requests, self.prompt_width, self.eos, self.pad = requests, prompt_width, eos, pad
+        self.sampling = dict(requests[0].get("sampling", SINGLE_SAMPLING))
+        if any(dict(r.get("sampling", SINGLE_SAMPLING)) != self.sampling for r in requests):
+            raise ValueError("SINGLE: one sampling distribution required per HF batch")
+        self.full_vocabulary = self.sampling["top_p"] == 1.0 and self.sampling["top_k"] == 0
+        self.tail_flags: list[list[bool]] = [[] for _ in requests]
         self.generators = [torch.Generator(device=device).manual_seed(r["seed"]) for r in requests]
         self.tokens: list[list[int]] = [[] for _ in requests]
         self.history = torch.full((len(requests), max(r["max_tokens"] for r in requests)), pad,
@@ -946,7 +951,7 @@ class _SingleActionSampler:
         if active:
             # One batched transform and one host sync per step; each question keeps its own RNG stream.
             rows = torch.tensor(active, dtype=torch.long, device=scores.device)
-            transformed = processed_scores(scores[rows], self.history[rows, :self.steps], **SINGLE_SAMPLING)
+            transformed = processed_scores(scores[rows], self.history[rows, :self.steps], **self.sampling)
             probabilities = transformed.softmax(-1)
             picks = torch.cat([torch.multinomial(probabilities[j:j + 1], 1, generator=self.generators[i])
                                for j, i in enumerate(active)])
@@ -954,13 +959,20 @@ class _SingleActionSampler:
             self.history[rows, self.steps] = picks.flatten()
             forced[rows, picks.flatten()] = 0.0
             supports: list[list[int]] = [[] for _ in active]
-            for row, column in torch.isfinite(transformed).nonzero().tolist():
-                supports[row].append(column)
+            if not self.full_vocabulary:
+                for row, column in torch.isfinite(transformed).nonzero().tolist():
+                    supports[row].append(column)
+            else:
+                diagnostic = processed_scores(scores[rows], self.history[rows, :self.steps], **SINGLE_SAMPLING)
+                flags = ~torch.isfinite(diagnostic.gather(-1, picks).flatten())
             for j, (token, logprob) in enumerate(zip(picks.flatten().tolist(), chosen.tolist(), strict=True)):
                 i = active[j]
                 self.logprobs[i].append(float(logprob))
-                self.support_ids[i].append(supports[j])
-                self.supports[i].append(digest(supports[j]))
+                if self.full_vocabulary:
+                    self.tail_flags[i].append(bool(flags[j]))
+                else:
+                    self.support_ids[i].append(supports[j])
+                    self.supports[i].append(digest(supports[j]))
                 self.tokens[i].append(token)
                 detector = self.detectors[i]
                 repeated = detector.feed([token]) if detector is not None else False
@@ -1061,7 +1073,8 @@ def _single_generate_batch(bundle: Any, rows: list[dict], prepared: list[dict], 
                 generated["past_key_values"] = None
         return {"tokens": sampler.tokens, "logprobs": sampler.logprobs, "supports": sampler.supports,
                 "support_ids": sampler.support_ids,
-                "reasons": sampler.reasons, "steps": sampler.steps, "seconds": time.monotonic() - began}
+                "reasons": sampler.reasons, "steps": sampler.steps, "seconds": time.monotonic() - began,
+                "b2_tail_flags": sampler.tail_flags}
 
 
 def hf_single_stream_builder(bundle: Any, args: argparse.Namespace, stats: StreamStats) -> Stream:
@@ -1086,7 +1099,9 @@ def hf_single_stream_builder(bundle: Any, args: argparse.Namespace, stats: Strea
         raise ValueError("SINGLE: policy and protocol SHA256 required")
     if policy_sha256(bundle) != policy:
         raise ValueError("SINGLE: stale live policy")
-    sampling_hash = sampling_sha256(SINGLE_SAMPLING)
+    sampling = dict(getattr(args, "sampling", SINGLE_SAMPLING))
+    full_vocabulary = sampling["top_p"] == 1.0 and sampling["top_k"] == 0
+    sampling_hash = sampling_sha256(sampling)
     capacity, capture = getattr(args, "capacity_session", None), getattr(args, "capacity_capture", None)
     if capacity is not None and capture is not None:
         raise CapacityHold("capacity HOLD: measurement and measured admission are separate runs")
@@ -1180,6 +1195,8 @@ def hf_single_stream_builder(bundle: Any, args: argparse.Namespace, stats: Strea
                         request = waiting
                     waiting = None
                     binding = single_request_binding(request)
+                    if full_vocabulary:
+                        request = request | {"sampling": sampling}
                     if batch and any(binding[k] != single_request_binding(batch[0][0])[k] for k in ("block_id", "stage")):
                         waiting = request
                         break
@@ -1245,11 +1262,16 @@ def hf_single_stream_builder(bundle: Any, args: argparse.Namespace, stats: Strea
                     generation = single_request_binding(request) | {"prompt_token_ids": list(item["prompt_token_ids"]),
                         "completion_token_ids": list(ids), "sampling_logprobs": sampled["logprobs"][i],
                         "support_sha256": sampled["supports"][i], "support_token_ids": sampled["support_ids"][i],
-                        "sampling": dict(SINGLE_SAMPLING),
+                        "sampling": dict(sampling),
                         "policy_sha256": policy, "protocol_sha256": protocol, "sampling_sha256": sampling_hash,
                         "input_sha256": item["input_sha256"], "finish_reason": sampled["reasons"][i],
                         "request_sha256": single_request_sha256(request), "text": text,
                         "eos_token_ids": sorted(eos_ids), "completion_count": 1}
+                    if full_vocabulary:
+                        generation.pop("support_sha256")
+                        generation.pop("support_token_ids")
+                        generation.update(probability_space="processed-full-vocab-v1",
+                                          b2_tail_flags=sampled["b2_tail_flags"][i])
                     output = {"text": text, "finish_reason": sampled["reasons"][i], "prompt_tokens": item["input_tokens"],
                         "completion_tokens": len(ids), "seconds": sampled["seconds"], "completion_count": 1, "generation": generation}
                     if deadline is not None:

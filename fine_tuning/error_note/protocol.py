@@ -485,3 +485,228 @@ def plain_protocol_single(precision: str, total_slots: int, *, contracts: dict[s
             "excluded_from": ["PG", "KL", "format_anchor", "replay"]}
         contract["routes"] = contract["routes"] | {"H": "LM"}
     return body | {"sha256": _digest(body)}
+
+
+VERSION_CONTENT_V16 = "error-note-content-v16"
+CONTENT_WEIGHTS_V16 = {"O": 1.0, "J": 0.0, "C": 0.0, "N": 0.0, "A1": 0.0}
+CONTENT_GENERATIONS_V16 = {"t1": 1, "note": 1, "resolve": 1}
+CONTENT_VERIFIER_V16 = "verified-content-v16"
+
+
+def content_prompts_sha256() -> str:
+    from .content_v16 import GRAPH_NEIGHBOR_INSTRUCTION, O_INSTRUCTION
+    from .self_note_v16 import NOTE_INSTRUCTION_V16, RESOLVE_INSTRUCTION_V16
+
+    return _digest({"observation": O_INSTRUCTION, "neighbors": GRAPH_NEIGHBOR_INSTRUCTION,
+                    "note": NOTE_INSTRUCTION_V16,
+                    "resolve": RESOLVE_INSTRUCTION_V16})
+
+
+def plain_protocol_content_v16(precision: str, total_blocks: int, *, contracts: dict[str, str],
+                               source_weights: dict[str, float], weights: dict[str, float] | None = None,
+                               stage_a_blocks: int = 0) -> dict:
+    """A fresh-F0, content-only protocol; a sealed protocol grants no permission to run a model."""
+    import math
+
+    chosen = dict(CONTENT_WEIGHTS_V16 if weights is None else weights)
+    if (set(contracts) != SINGLE_CONTRACT_HASHES or any(
+            not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+            for value in contracts.values())):
+        raise ValueError("v16 protocol: source/dataset/order/admission SHA256 pins required")
+    if (type(stage_a_blocks) is not int or type(total_blocks) is not int
+            or not 0 <= stage_a_blocks <= total_blocks or total_blocks < 1
+            or set(chosen) != set(CONTENT_WEIGHTS_V16) or not source_weights
+            or any(not isinstance(key, str) or not key for key in source_weights)
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   or not math.isfinite(value) or value < 0
+                   for value in (*chosen.values(), *source_weights.values()))
+            or sum(source_weights.values()) <= 0 or sum(chosen.values()) <= 0):
+        raise ValueError("v16 protocol: positive block count and finite nonnegative fixed weights required")
+    body = {key: value for key, value in plain_protocol_v2(precision, total_blocks).items() if key != "sha256"}
+    prompts = content_prompts_sha256()
+    body |= {"version": VERSION_CONTENT_V16, "image": dict(SINGLE_IMAGE_V14),
+             "sampling": dict(SINGLE_SAMPLING), "rollout_adapter": ROLLOUT_ADAPTER_V15,
+             "prompts_sha256": prompts,
+             "optimizer": body["optimizer"] | {"warmup_steps": 4, "total_steps": total_blocks,
+                                                  "lr": {"L": 5e-5, "M": 1e-5, "V": 1e-5}},
+             "training_contract": {
+                 "version": VERSION_CONTENT_V16, "hashes": dict(contracts), "master_seed": MASTER_SEED,
+                 "initial_policy": "fresh_F0", "method": "verified_content_sft", "pg_weight": 0.0,
+                 "generation_counts": dict(CONTENT_GENERATIONS_V16), "sampling": dict(SINGLE_SAMPLING),
+                 "max_tokens": {"t1": MAX_NEW_TOKENS, "note": SINGLE_NOTE_MAX_TOKENS, "resolve": MAX_NEW_TOKENS},
+                 "weights": chosen, "source_weights": dict(source_weights), "stage_a_blocks": stage_a_blocks,
+                 "stage_a_weights": dict(CONTENT_WEIGHTS_V16),
+                 "verifier_version": CONTENT_VERIFIER_V16, "prompts_sha256": prompts,
+                 "total_slots": total_blocks, "schedule_steps": total_blocks,
+                 "r_enabled": False, "renormalize_missing_kind": False,
+                 "self_target_logprob": "stored_support_logq", "authored_target_logprob": "raw_full_vocabulary_ce",
+                 "zero_signal": "consume_slot_and_schedule_without_optimizer",
+                 "routes": {"image": "FULL", "text": "LM"},
+                 "runtime_gates": {"cloud": "sealed_local_functional_ready_and_explicit_launch",
+                                   "phase2": "sealed_BF16_O_effect_PASS",
+                                   "N": "sealed_32_wrong_T1_yield_ge_0.10"}}}
+    return body | {"sha256": _digest(body)}
+
+
+def validate_content_protocol_v16(protocol: dict) -> None:
+    """Rebuild the complete contract so resealing a relaxed/tampered field never admits it."""
+    try:
+        contract = protocol["training_contract"]
+        expected = plain_protocol_content_v16(protocol["precision"], contract["total_slots"],
+            contracts=contract["hashes"], source_weights=contract["source_weights"], weights=contract["weights"],
+            stage_a_blocks=contract["stage_a_blocks"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v16 protocol: invalid content protocol") from exc
+    if protocol != expected:
+        raise ValueError("v16 protocol: invalid content protocol")
+
+
+def content_contract_for_block(protocol: dict, slot: int) -> dict:
+    """Derive the admitted block's fixed coefficients without changing the sealed run protocol."""
+    validate_content_protocol_v16(protocol)
+    contract = protocol["training_contract"]
+    if type(slot) is not int or not 0 <= slot < contract["total_slots"]:
+        raise ValueError("v16 protocol: block outside the sealed schedule")
+    stage = "A" if slot < contract["stage_a_blocks"] else "B"
+    return contract | {"weights": dict(contract["stage_a_weights"] if stage == "A" else contract["weights"]),
+                       "stage_b_weights": dict(contract["weights"]), "active_stage": stage, "block_id": slot,
+                       "protocol_sha256": protocol["sha256"]}
+
+
+# v16b is a separate contract; previous builders above remain byte-for-byte unchanged.
+VERSION_V16B = "error-note-v16b"
+TRAIN_SAMPLING_V16B = {"temperature": 0.7, "top_p": 1.0, "top_k": 0, "presence_penalty": 1.5}
+EVAL_SAMPLING_V16B = dict(SINGLE_SAMPLING)
+PROBABILITY_SPACE_V16B = "processed-full-vocab-v1"
+MAX_TOKENS_V16B = {"t1": 8192, "obs": 1024, "note": 1024, "resolve": 8192, "prep": 8192, "monitor": 8192}
+REWARD_V16B = {"CORRECT": 1.0, "INCORRECT": 0.0, "NO_FINAL": 0.0, "MULTIPLE": 0.0,
+              "CAP_OR_LOOP": {"reward": 0.0, "pg": False}, "UNVERIFIABLE": None}
+BASELINE_V16B = {"rule": "shrunk-source-mean-v1", "a": 2, "pseudo_count": 8, "window_rows": 64,
+                "obs_window": 32, "obs_init": "measured_prep_or_first_committed_layer_block",
+                "snapshot": "request_admission_latest_committed_history", "eta1_history_lag": 2,
+                "missing_obs_init": "frozen_zero_advantage"}
+PG_V16B = {"token_scale": 1024, "items_per_block": 16, "row_cap": 2048, "obs_weight": 0.25,
+          "ntf_tau_neg": 0.5, "is_cap": 2.0, "neg_row_logratio_mask": 0.3,
+          "hold_block_logratio": 0.5, "hold_clip_frac": 0.10, "hold_mixed_fraction": 0.05,
+          "lag_zero_replay_mean_atol": SINGLE_REPLAY_BLOCK_MEAN_ATOL}
+SCHEDULE_V16B = {"eta": 1, "note_carry": 1, "resolve_carry": 3, "rl_blocks": 188,
+                "last_block_items": 8, "finish_updates_max": 3, "time_cut": None}
+PREP_V16B = {"items": 512, "select": "disjoint_sealed_prep_manifest", "self_max": 160,
+            "human_max": 128, "self_tokens": [256, 4096], "human_min_tokens": 32,
+            "overlap_with_rl": False, "overlap_with_monitor": False}
+GUARD_V16B = {"start_block": 36, "ref_blocks": 24, "recent_blocks": 12, "acc_drop": 0.15,
+             "count_rule": "recent >= 2*ref and recent >= ref + 4*sqrt(ref)",
+             "collapse_len": {"window": 6, "ratio": 0.5, "consecutive_windows": 2, "start_block": 12},
+             "collapse_short": {"tokens": 32, "count": 12, "blocks": 2},
+             "tail_rate": {"reference_blocks": 4, "multiplier": 2.0, "consecutive": 2},
+             "is_hold_consecutive": 2, "false_alarm_max": 0.02}
+FUNDING_V16B = {"reserve_usd": 1.5, "post_train_hours": 5.65, "recharge_wait_min": 30}
+SFT_V16B = {"PREP_SELF": 1.0, "PREP_HUMAN": 1.0, "C": 0.35, "N": 0.05}
+ANCHOR_V16B = {"positions": 4, "beta": 0.5, "rl_denominator": 16,
+              "prep_denominator": "actual_rows", "reference": "fresh_F0"}
+CHECKPOINT_V16B = {"every_updates": 8, "always_on": ["prep_end", "guard_stop", "funding_stop", "final"],
+                  "drain_before_save": True, "keep": ["latest", "prep_end"]}
+V16B_CONTRACT_HASHES = frozenset(("source", "dataset", "order", "prep_rows", "monitor"))
+SMOKE_IMAGE_V16B = IMAGE | {"max_pixels": 262144}
+
+
+def v16b_prompts_sha256() -> str:
+    from .v16b_rows import NOTE_INSTRUCTION_V16B, OBS_FORMAT_V16B, RESOLVE_INSTRUCTION_V16B
+    from .content_v16 import GRAPH_NEIGHBOR_INSTRUCTION, O_INSTRUCTION
+
+    return _digest({"note": NOTE_INSTRUCTION_V16B, "resolve": RESOLVE_INSTRUCTION_V16B,
+                    "obs_format": OBS_FORMAT_V16B, "obs": dict(O_INSTRUCTION),
+                    "graph_neighbors": GRAPH_NEIGHBOR_INSTRUCTION})
+
+
+def plain_protocol_v16b(precision: str, *, rl_blocks: int, prep_updates: int,
+                        contracts: dict[str, str], image: dict | None = None,
+                        local_smoke: bool = False) -> dict:
+    """Seal the whole schedule after prep admission; smoke is never a cloud protocol."""
+    if (type(local_smoke) is not bool or type(rl_blocks) is not int or type(prep_updates) is not int
+            or not 0 <= prep_updates <= 18 or rl_blocks != (4 if local_smoke else 188)
+            or precision != ("nf4" if local_smoke else "bf16")):
+        raise ValueError("v16b protocol: full BF16 188 blocks or explicit bounded NF4 smoke required")
+    if (set(contracts) != V16B_CONTRACT_HASHES or any(
+            not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
+            for value in contracts.values())):
+        raise ValueError("v16b protocol: source/dataset/order/prep_rows/monitor SHA256 pins required")
+    chosen_image = dict(SMOKE_IMAGE_V16B if local_smoke else SINGLE_IMAGE_V14)
+    if image is not None and image != chosen_image:
+        raise ValueError("v16b protocol: image policy differs from the sealed execution mode")
+    if local_smoke and prep_updates != 1:
+        raise ValueError("v16b protocol: local smoke requires exactly one preparation update")
+    total = prep_updates + rl_blocks + 3
+    body = copy.deepcopy({key: value for key, value in plain_protocol_v2(precision, total).items() if key != "sha256"})
+    prompts = v16b_prompts_sha256()
+    schedule = SCHEDULE_V16B | {"rl_blocks": rl_blocks, "last_block_items": 2 if local_smoke else 8}
+    limits = {kind: 256 for kind in MAX_TOKENS_V16B} if local_smoke else dict(MAX_TOKENS_V16B)
+    contract = {
+        "version": VERSION_V16B, "hashes": dict(contracts), "master_seed": MASTER_SEED,
+        "initial_policy": "fresh_F0", "method": "single_response_rl_verified_self_sft",
+        "generation_counts": {"t1": 1, "obs": 1, "note": 1, "resolve": 1},
+        "sampling": dict(TRAIN_SAMPLING_V16B), "eval_sampling": dict(EVAL_SAMPLING_V16B),
+        "probability_space": PROBABILITY_SPACE_V16B, "max_tokens": limits,
+        "reward": REWARD_V16B, "baseline": BASELINE_V16B, "pg": PG_V16B,
+        "schedule": schedule, "prep": PREP_V16B, "guard": GUARD_V16B,
+        "funding": FUNDING_V16B, "sft_weights": SFT_V16B, "anchor": ANCHOR_V16B,
+        "checkpoint": CHECKPOINT_V16B, "prep_updates": prep_updates, "rl_blocks": rl_blocks,
+        "total_slots": total, "schedule_steps": total, "finish_updates": 3,
+        "items_per_block": 2 if local_smoke else 16, "rl_items": 8 if local_smoke else 3000,
+        "answer_contracts": dict(SINGLE_ANSWER_CONTRACTS_V14),
+        "routes": {"image": "FULL", "text": "LM"}, "full_kl_beta": 0.0,
+        "local_smoke": local_smoke, "cloud_allowed": not local_smoke,
+        "prompts_sha256": prompts, "zero_signal": "consume_schedule_without_optimizer",
+        "hold": "discard_all_gradients_consume_schedule_without_optimizer",
+        "tail_observation": "top20_processed_logprobs_to_b2_flags_unresolved_ties_null",
+        "stop_evaluation": "explicit_user_decision_required",
+    }
+    body |= {"version": VERSION_V16B, "image": chosen_image, "max_new_tokens": limits["t1"],
+             "sampling": dict(TRAIN_SAMPLING_V16B), "eval_sampling": dict(EVAL_SAMPLING_V16B),
+             "rollout_adapter": ROLLOUT_ADAPTER_V15, "prompts_sha256": prompts,
+             "optimizer": body["optimizer"] | {"warmup_steps": 4, "total_steps": total,
+                                                "lr": {"L": 5e-5, "M": 1e-5, "V": 1e-5}},
+             "training_contract": copy.deepcopy(contract)}
+    return body | {"sha256": _digest(body)}
+
+
+def validate_protocol_v16b(protocol: dict) -> None:
+    """Rebuild all fixed values, rejecting even a tampered protocol with a new digest."""
+    try:
+        contract = protocol["training_contract"]
+        expected = plain_protocol_v16b(protocol["precision"], rl_blocks=contract["rl_blocks"],
+            prep_updates=contract["prep_updates"], contracts=contract["hashes"], image=protocol["image"],
+            local_smoke=contract["local_smoke"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v16b protocol: invalid sealed protocol") from exc
+    if protocol != expected:
+        raise ValueError("v16b protocol: invalid sealed protocol")
+
+
+def v16b_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
+                            policy_sha256: str, expected_problem_ids: list[str],
+                            expected_obs_problem_ids: list[str] | None = None,
+                            note_problem_ids: list[str] | None = None,
+                            resolve_problem_ids: list[str] | None = None,
+                            baseline_receipts: dict | None = None,
+                            reward_values: dict | None = None) -> dict:
+    """Bind phase-local RL versions separately from the global LR/checkpoint slot."""
+    validate_protocol_v16b(protocol)
+    base = protocol["training_contract"]
+    prep = base["prep_updates"]
+    if (type(global_slot) is not int or not 0 <= global_slot < base["total_slots"]
+            or phase not in ("prep", "rl") or (global_slot < prep) != (phase == "prep")
+            or not isinstance(policy_sha256, str) or len(policy_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in policy_sha256)):
+        raise ValueError("v16b protocol: invalid phase, slot or current policy hash")
+    block = global_slot if phase == "prep" else global_slot - prep
+    return copy.deepcopy(base) | {
+        "phase": phase, "global_slot": global_slot, "block_id": block,
+        "policy_version": block if phase == "rl" else 0, "policy_sha256": policy_sha256,
+        "expected_problem_ids": list(expected_problem_ids),
+        "expected_obs_problem_ids": list(expected_obs_problem_ids or []),
+        "note_problem_ids": list(note_problem_ids or []),
+        "resolve_problem_ids": list(resolve_problem_ids or []),
+        "baseline_receipts": copy.deepcopy(baseline_receipts or {}),
+        "reward_values": copy.deepcopy(reward_values or {}), "protocol_sha256": protocol["sha256"],
+    }

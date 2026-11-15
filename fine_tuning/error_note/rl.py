@@ -124,3 +124,29 @@ def group_term(current: list[torch.Tensor], reference: list[torch.Tensor] | None
     keep = torch.ones(len(current), dtype=torch.bool, device=cur.device)
     return losses.group_loss(cur, cur.detach(), ref, adv, mask, keep, eps_low=eps_low, eps_high=eps_high, beta=beta,
                              norm_const=float(group_tokens))
+
+
+def processed_full_logprobs(logits: torch.Tensor, actions: torch.Tensor, offset: int = 0, *,
+                            temperature: float = .7, presence_penalty: float = 1.5) -> torch.Tensor:
+    """Full-vocabulary sampled log q; presence sees generated actions before each absolute position."""
+    if (logits.ndim != 2 or not logits.is_floating_point() or not bool(torch.isfinite(logits).all())
+            or actions.ndim != 1 or actions.dtype != torch.long or actions.device != logits.device
+            or type(offset) is not int or offset < 0 or offset + len(logits) > len(actions)
+            or not math.isfinite(temperature) or temperature <= 0 or not math.isfinite(presence_penalty)
+            or actions.numel() and (int(actions.min()) < 0 or int(actions.max()) >= logits.shape[1])):
+        raise ValueError("v16b: finite [T,V] logits, complete int64 actions and a valid chunk offset required")
+    # First occurrence is enough: presence is binary, including occurrences in earlier projection chunks.
+    first = torch.full((logits.shape[1],), len(actions), dtype=torch.long, device=actions.device)
+    positions = torch.arange(len(actions), device=actions.device)
+    first.scatter_reduce_(0, actions, positions, reduce="amin", include_self=True)
+    seen = first[None, :] < positions[offset:offset + len(logits), None]
+    scores = (logits.float() - presence_penalty * seen) / temperature
+    return scores.log_softmax(-1).gather(1, actions[offset:offset + len(logits), None])[:, 0]
+
+
+def negative_token_mask(logprobs: torch.Tensor, tau: float = .5) -> torch.Tensor:
+    """Keep negative-advantage tokens whose current probability is at most tau."""
+    if (not logprobs.is_floating_point() or not bool(torch.isfinite(logprobs).all())
+            or bool((logprobs > 0).any()) or not math.isfinite(tau) or not 0 < tau <= 1):
+        raise ValueError("v16b: finite log probabilities and tau in (0,1] required")
+    return logprobs.detach() <= math.log(tau)

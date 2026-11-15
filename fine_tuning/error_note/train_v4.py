@@ -265,6 +265,16 @@ def encode_single_row(processor: Any, model_config: Any, row: dict, images: list
     """Preserve sampled actions, including actual EOS; targets never include the prompt or review material.
     v12 H rows (no sampled actions) take _encode_human_row. `image` is the plan's image config (v14); the default
     is the module constant IMAGE."""
+    from .content_v16 import ROW_SCHEMA
+
+    if row.get("schema") == "error-note-v16b-row-v1":
+        from .train_v16b import encode_v16b_row
+
+        return encode_v16b_row(processor, model_config, row, images, image=image or IMAGE)
+    if row.get("schema") == ROW_SCHEMA:
+        from .train_v16 import encode_content_row
+
+        return encode_content_row(processor, model_config, row, images, image=image or IMAGE, max_target_tokens=8192)
     if row.get("kind") == KIND_HUMAN:
         return _encode_human_row(processor, model_config, row, images)
     generation = row["generation"]
@@ -599,6 +609,18 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     -A * sum(raw log p over its sealed spiral window) / (B * 1024) with no row cap; no H rows.
     v14: v13, plus a tail-praised row (A = +1) pushes up only its sealed tail window, sum(stored-support log q) at full
     mass (no row cap); the LR schedule and the A2 minimum are fixed by the contract."""
+    from .protocol import VERSION_CONTENT_V16, VERSION_V16B
+
+    if contract.get("version") == VERSION_V16B:
+        from .train_v16b import backward_v16b_block
+
+        return backward_v16b_block(bundle, encoded, contract, token_budget, components=components, capacity=capacity)
+    if contract.get("version") == VERSION_CONTENT_V16:
+        from .train_v16 import backward_content_block
+
+        selected_content = tuple(components) if set(components) <= {"O", "J", "C", "N", "A1"} else None
+        return backward_content_block(bundle, encoded, contract, token_budget,
+                                      components=selected_content, capacity=capacity)
     selected = set(components)
     if capacity is not None and capture is not None:
         raise ValueError("single train: measured admission and calibration are separate transactions")

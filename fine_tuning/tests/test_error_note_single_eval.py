@@ -24,7 +24,7 @@ from PIL import Image
 from fine_tuning.error_note import audit, rl, single, single_campaign as campaign
 from fine_tuning.error_note import evaluate as evaluation
 from fine_tuning.error_note.protocol import (ARM, VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13,
-                                             VERSION_SINGLE_V14, VERSION_SINGLE_V15, plain_protocol_single)
+                                             VERSION_SINGLE_V14, VERSION_SINGLE_V15, VERSION_CONTENT_V16, VERSION_V16B, plain_protocol_single)
 from fine_tuning.notebook_rl import checkpoint as ckpt, proof_eval as pe
 from fine_tuning.notebook_rl.pool_freeze import _RECORDS, _lines
 from fine_tuning.notebook_rl.vault import write_split
@@ -396,7 +396,7 @@ class SingleCampaignEvaluation(unittest.TestCase):
             ref, prereg, ledger = self.exports[20] / "model_ref.json", root / "prereg.json", root / "ledger.jsonl"
             with self.assertRaisesRegex(ValueError, "requires --all-subset"):
                 pe.preregister(root / "x.json", wrong, rest, b2, "v8", ft_single_model_ref=ref)
-            with self.assertRaisesRegex(ValueError, "v8-only"):
+            with self.assertRaisesRegex(ValueError, "v8/v11-only"):
                 pe.preregister(root / "y.json", wrong, rest, b2, "v7", ft_single_model_ref=ref, all_subset=everything)
             with self.assertRaises(ValueError):  # the 342 wrong IDs are not the one-run subset
                 pe.preregister(root / "z.json", wrong, rest, b2, "v8", ft_single_model_ref=ref, all_subset=wrong)
@@ -566,7 +566,7 @@ class SingleCampaignEvaluationV12(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "or the final"):
                 pe._single_stage(*case)
         self.assertEqual(pe._single_versions(), (VERSION_SINGLE, VERSION_SINGLE_V12, VERSION_SINGLE_V13, VERSION_SINGLE_V14,
-                                                 VERSION_SINGLE_V15))
+                                                 VERSION_SINGLE_V15, VERSION_CONTENT_V16, VERSION_V16B))
 
     def test_v12_unknown_protocol_versions_are_still_refused(self) -> None:
         unknown = "error-note-single-response-v16"  # v15 is known since the v15 campaign

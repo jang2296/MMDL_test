@@ -142,7 +142,15 @@ def source_manifest() -> dict:
 
 
 def _protocol_check(protocol: dict) -> None:
-    from .protocol import _digest
+    from .protocol import (VERSION_CONTENT_V16, VERSION_V16B, _digest,
+                           validate_content_protocol_v16, validate_protocol_v16b)
+
+    if protocol.get("version") == VERSION_V16B:
+        validate_protocol_v16b(protocol)
+        return
+    if protocol.get("version") == VERSION_CONTENT_V16:
+        validate_content_protocol_v16(protocol)
+        return
 
     if (protocol.get("version") not in PROTOCOL_GATES
             or protocol.get("sha256") != _digest({k: v for k, v in protocol.items() if k != "sha256"})
@@ -454,7 +462,178 @@ def human_row(record: dict, fields: dict[str, str], gold: str, choices: tuple[st
 def run_single_block(bundle: Any, **kwargs) -> dict:
     """Serialize the complete generation/review/row transaction for one output block."""
     with _runtime_lock(Path(kwargs["output"]), ".runtime.lock"):
+        from .protocol import VERSION_CONTENT_V16
+
+        if kwargs["protocol"].get("version") == VERSION_CONTENT_V16:
+            return _run_content_block_v16(bundle, **kwargs)
         return _run_single_block(bundle, **kwargs)
+
+
+def _run_content_block_v16(bundle: Any, *, actors: dict, items: list[dict], provenance: dict, gold: Callable,
+                           grade: Callable, load_images: Callable, protocol: dict, output: Path,
+                           content_rows: list[dict], note_yield_records: list[dict] | None = None,
+                           effect_gate: dict | None = None,
+                           block_id: int = 0, limit: int | None = None,
+                           stream: Callable | None = None, stream_args: argparse.Namespace | None = None,
+                           stop_after: float | None = None, reference: Callable | None = None) -> dict:
+    """Reuse the durable single-request ledger; authored O/J targets never enter a P0 generation."""
+    from fine_tuning.notebook_rl.prompts import p0_eval_text, user_message
+    from .rl import policy_sha256
+    from .self_note_v16 import (build_note_prompt, build_problem_contract, build_resolve_prompt,
+                               build_self_note_rows, create_note_yield_gate, first_solution_row, human_j_row, verify_note,
+                               _WRONG as wrong_statuses)
+
+    _protocol_check(protocol)
+    ids = [item["problem_id"] for item in items]
+    if not ids or len(ids) > 16 or len(set(ids)) != len(ids) or any(pid not in actors for pid in ids):
+        raise ValueError("v16 runtime: a distinct source-bound parent block is required")
+    limit = len(ids) if limit is None else limit
+    if type(limit) is not int or not 1 <= limit <= len(ids):
+        raise ValueError("v16 runtime: prefix outside fixed parent block")
+    active = ids[:limit]
+    policy = policy_sha256(bundle)
+    binding = {"version": "v16-content-block-v1", "block_id": block_id, "items": items,
+               "protocol_sha256": protocol["sha256"], "policy_sha256": policy,
+               "content_rows_sha256": digest(content_rows), "provenance_sha256": digest(provenance)}
+    _sealed(output / "binding.json", binding)
+    phase_path = output / "phase.json"
+    state = _state(phase_path) if phase_path.exists() else {
+        "version": "v16-content-block-v1", "binding_sha256": digest(binding), "records": {}, "limit": 0}
+    if state["binding_sha256"] != digest(binding) or limit < state["limit"]:
+        raise ValueError("v16 runtime: stale content policy, source or prefix")
+    state["limit"] = limit
+    from .protocol import content_contract_for_block
+
+    active_contract = content_contract_for_block(protocol, block_id)
+    weights = active_contract["weights"]
+    generated = any(weights[kind] > 0 for kind in ("C", "N", "A1"))
+    rows = [row for row in content_rows if row["problem_id"] in active and row["kind"] in ("O", "J")]
+    diagnostics = {}
+    yield_records = list(note_yield_records or [])
+
+    def commit(status: str, **extra) -> dict:
+        state.update(status=status, **extra)
+        return _state(phase_path, state)
+
+    if generated or weights["J"] > 0:
+        from .run_v16 import validate_bf16_effect_receipt
+
+        effect_result = None if effect_gate is None else validate_bf16_effect_receipt(effect_gate, expected_binding={
+                "source_sha256": protocol["training_contract"]["hashes"]["source"],
+                "dataset_sha256": protocol["training_contract"]["hashes"]["dataset"]})
+        if effect_result is None or effect_result.get("passed") is not True:
+            raise ValueError("v16 runtime: EFFECT_NOTRUN_OR_STOP; later content targets remain gated")
+    if weights["J"] > 0:
+        assert effect_gate is not None and effect_result is not None
+        baseline = effect_result.get("baseline_correct_length_median")
+        for item in items[:limit]:
+            pid, actor = item["problem_id"], actors[item["problem_id"]]
+            layer = next(row["layer"] for row in content_rows if row["problem_id"] == pid and row["kind"] == "O")
+            record = item | {"problem_id": pid, "p0_text": p0_eval_text(actor.question, actor.choices),
+                "layer": layer, "source": actor.source, "subject": item.get("subject", layer),
+                "image_paths": list(actor.image_paths), "image_sha256": list(actor.image_sha256)}
+            authored, reason = human_j_row(record, provenance[pid].get("human_solution", {}),
+                tokenizer=bundle.processor.tokenizer, baseline_correct_length_median=baseline)
+            diagnostics[pid + ":J"] = {"accepted": authored is not None, "reason": reason}
+            if authored is not None:
+                rows.append(authored)
+    if generated:
+        stats = StreamStats()
+        if stream is None:
+            args = argparse.Namespace(**vars(stream_args)) if stream_args is not None else argparse.Namespace()
+            args.policy_sha256, args.protocol_sha256 = policy, protocol["sha256"]
+            stream = (getattr(args, "stream_builder", None) or hf_single_stream_builder)(bundle, args, stats)
+        for item in items[:limit]:
+            pid, actor = item["problem_id"], actors[item["problem_id"]]
+            metadata = {key: value for key, value in item.items() if key not in ("annotation", "gold")}
+            layer = next(row["layer"] for row in content_rows if row["problem_id"] == pid and row["kind"] == "O")
+            metadata |= {"problem_id": pid, "layer": layer,
+                         "experiment_sha256": digest({"protocol": protocol["sha256"],
+                             "dataset": protocol["training_contract"]["hashes"]["dataset"]}),
+                         "content_manifest_sha256": protocol["training_contract"]["hashes"]["dataset"],
+                         "protocol_sha256": protocol["sha256"], "actor_sha256": digest(vars(actor)),
+                         "annotation_sha256": digest(provenance[pid]["annotation"]),
+                         "p0_text": p0_eval_text(actor.question, actor.choices),
+                         "image_paths": list(actor.image_paths), "image_sha256": list(actor.image_sha256),
+                         "source": actor.source, "subject": item.get("subject", item.get("layer", "content"))}
+            if pid not in state["records"]:
+                state["records"][pid] = metadata
+            elif any(state["records"][pid].get(key) != value for key, value in metadata.items()):
+                raise ValueError("v16 runtime: original actor metadata changed")
+
+        def generate(stage: str, prompts: dict[str, str]) -> bool:
+            if not prompts:
+                return True
+            requests = [{"request_id": f"{pid}:{stage}", "problem_id": pid, "block_id": block_id, "stage": stage,
+                "seed": sample_seed(pid, stage), "max_tokens": protocol["training_contract"]["max_tokens"][stage],
+                "messages": [user_message(prompt, len(actors[pid].image_paths))],
+                "images": load_images(actors[pid])} for pid, prompt in prompts.items()]
+            results = run_single_requests(requests, stream, stats, output, policy_sha256=policy,
+                                          protocol_sha256=protocol["sha256"], stop_after=stop_after)
+            for pid, prompt in prompts.items():
+                result = results.get(f"{pid}:{stage}")
+                if result is None:
+                    continue
+                result = dict(result) | {"prompt": prompt}
+                if stage != "note":
+                    status, extracted = grade(pid, result["text"], result["finish_reason"], actors[pid].mode)
+                    if status not in GRADED | {UNVERIFIABLE}:
+                        raise ValueError("v16 runtime: a system grading failure blocks collection")
+                    result |= {"status": status, "extracted": extracted}
+                previous = state["records"][pid].get(stage)
+                if previous is not None and previous != result:
+                    raise ValueError("v16 runtime: completed action changed")
+                state["records"][pid][stage] = result
+                commit("COLLECTING_" + stage.upper())
+            return all(stage in state["records"][pid] for pid in prompts)
+
+        if not generate("t1", {pid: state["records"][pid]["p0_text"] for pid in active}):
+            return commit("INCOMPLETE_T1")
+        for pid in active if weights["A1"] > 0 else ():
+            accepted, reason = first_solution_row(state["records"][pid], tokenizer=bundle.processor.tokenizer,
+                                                   choices=actors[pid].choices)
+            diagnostics[pid + ":A1"] = {"accepted": accepted is not None, "reason": reason}
+            if accepted is not None:
+                rows.append(accepted)
+        wrong = [pid for pid in active if state["records"][pid]["t1"]["status"] in wrong_statuses
+                 and (weights["C"] > 0 or weights["N"] > 0)]
+        contracts = {pid: build_problem_contract(provenance[pid] | {"layer": state["records"][pid]["layer"]})
+                     for pid in wrong}
+        supported = [pid for pid in wrong if contracts[pid].get("supported") is True]
+        for pid in set(wrong) - set(supported):
+            diagnostics[pid] = {"reason": "UNSUPPORTED_SOURCE_CONTRACT", "accepted": False}
+        prompts = {pid: build_note_prompt(state["records"][pid], fact_catalog=contracts[pid]["fact_catalog"],
+                    rules=contracts[pid]["rules"], gold=gold(pid)) for pid in supported}
+        if not generate("note", prompts):
+            return commit("INCOMPLETE_NOTE")
+        audits = {pid: verify_note(state["records"][pid], fact_catalog=contracts[pid].get("fact_catalog", []),
+                    rules=contracts[pid].get("rules", {}), choices=actors[pid].choices, gold=gold(pid)) for pid in wrong}
+        approved = [pid for pid in supported if audits[pid]["accepted"]]
+        if not generate("resolve", {pid: build_resolve_prompt(state["records"][pid]["p0_text"], audits[pid]["lesson"])
+                                     for pid in approved}):
+            return commit("INCOMPLETE_RESOLVE")
+        for pid in wrong[:max(0, 32 - len(yield_records))]:
+            yield_records.append(state["records"][pid] | {"note_receipt": audits[pid],
+                "note_validation": {"fact_catalog": contracts[pid].get("fact_catalog", []),
+                    "rules": contracts[pid].get("rules", {}), "choices": list(actors[pid].choices), "gold": gold(pid)}})
+        note_gate = create_note_yield_gate(yield_records)
+        for pid in supported:
+            accepted, decisions = build_self_note_rows(state["records"][pid], tokenizer=bundle.processor.tokenizer,
+                fact_catalog=contracts[pid]["fact_catalog"], rules=contracts[pid]["rules"],
+                choices=actors[pid].choices, gold=gold(pid), note_yield_gate=note_gate)
+            rows.extend(accepted)
+            diagnostics[pid] = decisions
+        state["note_yield_gate"] = note_gate
+    if policy_sha256(bundle) != policy:
+        raise ValueError("v16 runtime: policy changed during collection")
+    contract = active_contract | {"expected_problem_ids": active, "policy_sha256": policy}
+    result = {"version": "v16-content-block-v1", "status": "ROWS_READY", "rows": rows,
+              "rows_sha256": digest(rows), "contract": contract, "row_decisions": diagnostics,
+              "note_yield_records": yield_records}
+    path = output / f"rows-{limit}.json"
+    _sealed(path, result)
+    return commit("ROWS_READY", rows_path=path.name, row_decisions=diagnostics,
+                  note_yield_records=yield_records)
 
 
 def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenance: dict, gold: Callable[[str], str],
@@ -760,8 +939,12 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
               "rows_by_kind": dict(Counter(row["kind"] for row in encoded)), "components": {}, "missing": []}
     try:
         check_base(bundle)
-        # v12 H rows exist only for sources with human solutions; a block without them is not missing a component.
-        for name in COMPONENTS + ((KIND_HUMAN,) if any(r["kind"] == KIND_HUMAN for r in encoded) else ()):
+        from .protocol import VERSION_CONTENT_V16
+
+        content = contract.get("version") == VERSION_CONTENT_V16
+        components = tuple(kind for kind in ("O", "J", "C", "N", "A1") if any(r["kind"] == kind for r in encoded)) if content else (
+            COMPONENTS + ((KIND_HUMAN,) if any(r["kind"] == KIND_HUMAN for r in encoded) else ()))
+        for name in components:
             started = time.monotonic()
             bundle.model.zero_grad(set_to_none=True)
             stats = backward_single_block(bundle, encoded, contract, token_budget, components=(name,), capacity=capacity)
@@ -769,7 +952,10 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
             rows = [r for r in encoded if r["kind"] == ("RL" if name in ("PG", "KL") else name)]
             signal = bool(stats["has_gradient"])
             full = any(row["route"] == ROUTE_FULL for row in rows)  # v11-v14: only A2/B rows can be FULL
-            expected = {"L": signal, "M": signal, "V": signal and full}
+            image = any(row.get("image_paths") or row.get("has_image") or row.get("pixel_values") is not None
+                        or "pixel_values" in row.get("inputs", {})
+                        for row in rows) if content else True
+            expected = {"L": signal, "M": signal and image, "V": signal and full and image}
             positive = {group: value is not None and value > 0 for group, value in norms.items()}
             valid = all(positive.get(group, False) == need for group, need in expected.items())
             report["components"][name] = {"stats": stats, "gradient_norms": norms, "route_valid": valid,
@@ -783,8 +969,10 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
         notes = {r["problem_id"] for r in encoded if r["kind"] == "B"}
         incorrect = {r["problem_id"] for r in encoded if r["kind"] == "RL" and r["status"] == "INCORRECT"}
         report["paired_incorrect_a2_b"] = sorted(a2 & notes & incorrect)
-        if not report["paired_incorrect_a2_b"]:
+        if not content and not report["paired_incorrect_a2_b"]:
             report["missing"].append("SAME_PROBLEM_INCORRECT_A2_B")
+        if content and not components:
+            report["missing"].append("NO_CONTENT_ROWS")
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         report["missing"].append("BACKWARD_FAILED")
@@ -802,38 +990,82 @@ def prove_single_backward(bundle: Any, encoded: list[dict], contract: dict, *, p
 def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded: list[dict], contract: dict, *,
                             cursor: dict, block_ids: list[str], allow_update: bool = False, token_budget: int = 0,
                             capacity: Any = None) -> dict:
-    """Explicit caller opt-in, one joint step; retain the caller's optimizer across the pilot boundary."""
+    """Consume one sealed schedule slot, retaining the optimizer across preparation and RL."""
     import torch
     from .rl import policy_sha256
     from .train_v4 import backward_single_block
+    from .protocol import VERSION_CONTENT_V16, VERSION_V16B
 
     if allow_update is not True:
         raise ValueError("single runtime: parameter updates require explicit caller opt-in")
     slot = cursor["slot"]
+    is_v16b = contract.get("version") == VERSION_V16B
+    prep_rows: list[str] = []
+    if contract.get("version") == VERSION_CONTENT_V16:
+        stage_a = slot < contract["stage_a_blocks"]
+        expected_weights = contract["stage_a_weights"] if stage_a else contract["stage_b_weights"]
+        if (contract.get("block_id") != slot or contract.get("active_stage") != ("A" if stage_a else "B")
+                or contract["weights"] != expected_weights):
+            raise ValueError("v16 runtime: block weights differ from its sealed stage schedule")
     if (type(slot) is not int or not 0 <= slot < contract["total_slots"]
             or cursor["policy_sha256"] != contract["policy_sha256"]
             or cursor["policy_sha256"] != policy_sha256(bundle)
-            or contract["expected_problem_ids"] != block_ids or cursor["consumed_problem_ids"][-len(block_ids):] == block_ids
+            or contract["expected_problem_ids"] != block_ids):
+        raise ValueError("single runtime: stale or invalid continuation cursor")
+    if is_v16b:
+        prep = slot < contract["prep_updates"]
+        block = slot if prep else slot - contract["prep_updates"]
+        if (contract.get("global_slot") != slot or contract.get("block_id") != block
+                or contract.get("phase") != ("prep" if prep else "rl")
+                or len(block_ids) != len(set(block_ids))):
+            raise ValueError("v16b runtime: phase or global schedule differs")
+        if prep:
+            prep_rows = [f'{row["kind"]}:{row["problem_id"]}' for row in encoded]
+            if (not prep_rows or len(prep_rows) != len(set(prep_rows))
+                    or set(prep_rows) & set(cursor.get("consumed_prep_rows", []))):
+                raise ValueError("v16b runtime: repeated preparation row")
+        elif (set(block_ids) & set(cursor["consumed_problem_ids"])
+                or (block >= contract["rl_blocks"]) != (not block_ids)):
+            raise ValueError("v16b runtime: duplicate RL parent or invalid flush")
+    elif (cursor["consumed_problem_ids"][-len(block_ids):] == block_ids
             or set(block_ids) & set(cursor["consumed_problem_ids"])):
-        raise ValueError("single runtime: duplicate, stale or invalid continuation cursor")
+        raise ValueError("single runtime: duplicate continuation cursor")
     optimizer.zero_grad(set_to_none=True)
     try:
         if capacity is not None:
             capacity.optimizer = optimizer
-        stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity)
-        if stats["has_gradient"]:
-            for parameters in bundle.params.values():
+        if is_v16b and contract.get("external_hold"):
+            stats = {"has_gradient": False, "task_signal": False, "hold": True,
+                     "hold_reason": contract["external_hold"]}
+        else:
+            stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity)
+        step = bool(stats["has_gradient"])
+        if contract.get("version") in (VERSION_CONTENT_V16, VERSION_V16B):
+            step = step and stats.get("task_signal") is True
+        if is_v16b:
+            step = step and not bool(stats.get("hold") or stats.get("HOLD"))
+            stats["update_gradient_norms"] = {group: None for group in bundle.params}
+        if step:
+            for group, parameters in bundle.params.items():
                 norm = torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
                 if not bool(torch.isfinite(norm)):
                     raise ValueError("single runtime: nonfinite gradient")
+                if is_v16b:
+                    stats["update_gradient_norms"][group] = float(norm.detach())
             optimizer.step()
         scheduler.step()
     finally:
         optimizer.zero_grad(set_to_none=True)
-    cursor.update(slot=slot + 1, updates=cursor["updates"] + int(stats["has_gradient"]),
-                  consumed_problem_ids=cursor["consumed_problem_ids"] + block_ids,
-                  policy_sha256=policy_sha256(bundle))
-    return {"stats": stats, "cursor": cursor, "optimizer_steps": int(stats["has_gradient"]), "scheduled_slots": 1}
+    consumed = cursor["consumed_problem_ids"] + ([] if prep_rows else block_ids)
+    cursor.update(slot=slot + 1, updates=cursor["updates"] + int(step),
+                  consumed_problem_ids=consumed, policy_sha256=policy_sha256(bundle))
+    if is_v16b:
+        cursor["consumed_prep_rows"] = cursor.get("consumed_prep_rows", []) + prep_rows
+        next_rl = max(0, slot + 1 - contract["prep_updates"])
+        cursor.update(phase="prep" if slot + 1 < contract["prep_updates"] else "rl",
+                      rl_block=next_rl, policy_version=next_rl,
+                      flush=next_rl >= contract["rl_blocks"])
+    return {"stats": stats, "cursor": cursor, "optimizer_steps": int(step), "scheduled_slots": 1}
 
 
 def save_single_continuation(bundle: Any, optimizer: Any, scheduler: Any, *, cursor: dict,
@@ -860,8 +1092,13 @@ def load_single_continuation(model_path: Path, path: Path, protocol: dict, *, bi
     from .rl import policy_sha256
 
     _protocol_check(protocol)
-    if protocol["precision"] != "bf16":
-        raise ValueError("single runtime: NF4 update/reload is not validated; use no-update local proof")
+    from .protocol import VERSION_V16B
+
+    if protocol["precision"] != "bf16" and not (
+            protocol["version"] == VERSION_V16B
+            and protocol["training_contract"]["local_smoke"] is True
+            and policy_factory is not None):
+        raise ValueError("single runtime: NF4 reload requires the bounded v16b smoke and an explicit cache factory")
     bundle, optimizer, scheduler, slot, saved = checkpoint.load_resume(
         model_path, path, protocol, binding=binding, device=device, policy_factory=policy_factory)
     cursor = saved.get("single", {})

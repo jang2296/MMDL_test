@@ -436,6 +436,94 @@ v15는 v14와 이전 판에서 확인된 결함을 고친 판이다. 저장된 v
   평가 전 `lora_preflight`가 실제 모델로 일치와 속도를 확인하고, 실패하면 평가하지 않는다(병합 평가로 대체하지 않음).
 - 상태: CPU 시험과 로컬 RTX 5060의 작은 Qwen3-VL 시험(생성·평가 조정층 경로)을 통과했다. 실제 4B 경로는 포드에서 41묶음 시험 학습과 사전 점검으로 처음 확인한다.
 
+## v16 검증된 내용 SFT (2026-11-15)
+
+정본은 `claudedocs/plan_v16_grounded_self_note_20261115.md` §24다. 지정 F0에서 새로 시작하며 정책 기울기(PG)는
+0이다. Vision·언어 LoRA와 Merger 4개를 학습한다. 생성·평가는 `rollout_adapter`가 지정하는 비병합 조정층 경로를
+유지한다. 이전 v11~v15 프로토콜과 체크포인트를 v16으로 바꾸어 해석하거나 이어 학습하지 않는다.
+
+- `content_v16.py`·`data_v16.py`: 원 주석 연결, 관측 목표 O, 출처·이미지·오염 제외 영수증과 분할을 봉인한다.
+- `train_v16.py`·`run_v16.py`: 마스크 학습, 네 조건 시각 절제, BF16 변화 가시성, 기능 시험·재로딩·효과 판정.
+- `self_note_v16.py`·`single_campaign.py`: 후속 A1/C/N 행 검증·실행 관문과 J 보조함수 검사.
+
+O는 문제·보기·정답을 넣지 않은 별도 관측 지시문으로 학습하며 그림이 있는 행은 FULL 경로다. O와 데이터셋의 사람
+풀이 J는 일반 CE를 쓴다(O의 끝 토큰은 학습, J의 끝 토큰은 제외). 자기 첫 풀이 A1·재풀이 C·노트 N은 원래 생성
+토큰과 저장 후보 안 확률(log q)을 그대로 쓰고, 검증된 byte 구간 안에 완전히 들어가는 토큰만 학습한다. 출처·종류별
+부모 분모는 갱신 묶음 전체에서 고정하며 빈 종류의 가중치를 재분배하지 않는다. 첫 단계는 O만, 나머지 가중치는 0이다.
+
+J는 손실 경로와 보조함수의 CPU 검사만 구현되어 있다. 기존 허용된 사람 풀이 참고 필드는 ScienceQA의
+`lecture`·`solution`뿐이며, 현재 네 O 층에는 사람 풀이가 없다. 이 자료의 J 출처 연결·실데이터 수용 경로는
+미구현이므로 J 가중치는 0으로 유지한다. 양수 J 설정은 생성 전에 `J_CAPABILITY_HOLD`로 중단한다.
+
+현재 비공개 `data-20261115/frozen-v3/content-manifest.json`의 O 학습 행은 **97개**(도형 32·그래프 32·장면 32·차트 1),
+감시 12·dev 162·sealed 356 부모다. 전체 네 층의 128 학습 부모와 독립 감시 16개 조건에 못 미친다.
+현재 자료로 전체 L0나 BF16 효과 시험을 시작하지 않는다. 다른 출처로 채우거나 dev를 감시로 바꾸어 통과시키지 않는다.
+새 차트 자료에는 원 주석 연결과 완전한 제외 검사가 다시 필요하다. 프로그램 검증은 사람 전수 검증을 뜻하지 않는다.
+
+### 로컬 기능 시험: 준비 → 최대 2부모·1갱신 → 별도 프로세스 재로딩
+
+기존 NF4 캐시와 고정 F0 snapshot만 사용한다. `prepare`는 CPU 작업이고 `smoke`·`reload`는 GPU 작업이다.
+출력은 새 경로를 쓴다. 코드·자료·F0·이미지 설정이 바뀌면 사전등록부터 다시 만든다.
+
+```bash
+V16_PYTHON=/home/jang2/mmdl-envs/notebook-nf4/bin/python
+V16_MANIFEST=/home/jang2/mmdl-artifacts/self-note-single-20261105/v16/data-20261115/frozen-v3/content-manifest.json
+V16_MANIFEST_SHA256=f3468137c536ffd0f0ea100651333d2b4b4412d7fbb6141b618db23ff7efa1cb
+V16_RUN=/home/jang2/mmdl-artifacts/self-note-single-20261105/v16/smoke-example
+V16_PRE="${V16_RUN}-prereg.json"
+
+"$V16_PYTHON" -m fine_tuning.error_note.train_v16 prepare --mode smoke \
+  --manifest "$V16_MANIFEST" --manifest-sha256 "$V16_MANIFEST_SHA256" --out "$V16_PRE"
+V16_PRE_SHA256="$(sha256sum "$V16_PRE" | cut -d ' ' -f 1)"
+"$V16_PYTHON" -m fine_tuning.error_note.train_v16 smoke \
+  --manifest "$V16_MANIFEST" --manifest-sha256 "$V16_MANIFEST_SHA256" \
+  --prereg "$V16_PRE" --prereg-sha256 "$V16_PRE_SHA256" --out "$V16_RUN"
+"$V16_PYTHON" -m fine_tuning.error_note.train_v16 reload --run "$V16_RUN"
+```
+
+`run_v16`도 같은 명령을 받는다. `--cache`·`--model-path`는 `prepare`에서 기존 경로를 명시할 때 쓴다.
+기능 시험 이미지는 min/max 262144 픽셀이다. `prepare`의 생성 상한 32와 재로딩용 `compute_probe`의 최대 16토큰
+greedy 탐침은 서로 다르다. `result.json`만으로 완료하지 않고 새 프로세스의 `reload.json`과
+`functional-receipt.json`을 확인한다. 이 영수증은 실제 갱신·저장·상태 재로딩의 근거이며 L0 통과나 성능 개선의 근거가 아니다.
+
+### 후속 BF16 O 전용 효과 시험 (현재 미실행)
+
+충분한 새 봉인 자료, 같은 소스·자료·F0에 묶인 기능 영수증, 승인된 16비트 실행 장비를 준비한 뒤의 명령이다.
+아래 `V16_EFFECT_*`·`V16_BF16_MODEL`·`V16_CAMPAIGN`은 그 실행의 경로와 외부 SHA256으로 지정한다.
+현재 97/12 자료는 `prepare-effect`에서 거부된다. 클라우드 실행은 별도 사용자 명령 뒤에만 한다.
+
+```bash
+V16_CAMPAIGN_ARGS=(
+  --content-manifest "$V16_EFFECT_MANIFEST" --content-manifest-sha256 "$V16_EFFECT_MANIFEST_SHA256"
+  --functional-gate "$V16_EFFECT_FUNCTIONAL" --functional-gate-sha256 "$V16_EFFECT_FUNCTIONAL_SHA256"
+  --model-path "$V16_BF16_MODEL" --output "$V16_CAMPAIGN"
+  --campaign-mode train --precision bf16 --block-size 8 --stage-a-blocks 16
+)
+"$V16_PYTHON" -m fine_tuning.error_note.single_campaign prepare "${V16_CAMPAIGN_ARGS[@]}"
+"$V16_PYTHON" -m fine_tuning.error_note.run_v16 prepare-effect \
+  --campaign-plan "$V16_CAMPAIGN/campaign-plan.json" --out "$V16_EFFECT_PRE"
+V16_EFFECT_PRE_SHA256="$(sha256sum "$V16_EFFECT_PRE" | cut -d ' ' -f 1)"
+"$V16_PYTHON" -m fine_tuning.error_note.single_campaign advance "${V16_CAMPAIGN_ARGS[@]}" \
+  --effect-prereg "$V16_EFFECT_PRE" --effect-prereg-sha256 "$V16_EFFECT_PRE_SHA256" \
+  --max-blocks 16 --allow-model-run --allow-update --allow-save
+"$V16_PYTHON" -m fine_tuning.error_note.run_v16 seal-effect \
+  --prereg "$V16_EFFECT_PRE" --prereg-sha256 "$V16_EFFECT_PRE_SHA256" \
+  --effect-root "$V16_CAMPAIGN/effect" --campaign-output "$V16_CAMPAIGN" --out "$V16_EFFECT_RECEIPT"
+```
+
+캠페인 훅이 0·8·16갱신 시점의 P0/dev·감시·관측 진단을 `effect/`에 저장한다. `seal-effect`는 별도 프로세스에서
+최종 상태를 다시 읽어 효과 영수증과 `.decision.json`을 낸다. 단독 `evaluate-effect`는 측정만 하며 갱신하지 않는다.
+관문은 고정 dev의 같은 P0·seed 비교, 정확 양측 검정 p<0.05와 순이득 `ceil(13*n/256)` 이상, 시각·Merger 절제,
+BF16 가시성, 출력 감시와 재로딩 증거를 함께 확인한다. NF4 기능 영수증만으로 후속 생성 단계를 열지 않는다.
+
+후속 단계는 같은 실행에 묶인 BF16 효과 `GO`가 필요하다. A1은 256~4096토큰의 정상 종료 정답 첫 풀이만(v15 가중치
+0.05), C는 오답 첫 풀이에 대한 교훈 재풀이 **1회**만 수용한다. N은 틀린 첫 풀이 32개에서 검증 통과율 10% 이상을
+실측한 별도 수율 관문이 필요하다. 이 관문 통과가 위의 J 구현 보류를 해제하지는 않는다.
+수용 행이 없으면 갱신 없이 묶음 위치와 일정만 전진한다. 노트의 제한된 주장 검증을 전체 자유 서술의 정확성으로 보고하지 않는다.
+
+평가 답은 문항당 하나이며 여러 생성 중 선택하지 않는다. 상위 모델·튜터, MMMU/MMMU-Pro 학습은 계속 금지다.
+CompassVerifier-7B는 로컬 다운로드·실행하지 않는다. 보완 판정은 별도 승인된 비양자화 7B 실행에서 V8과 나누어 보고한다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

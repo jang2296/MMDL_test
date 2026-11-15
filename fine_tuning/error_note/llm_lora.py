@@ -19,6 +19,7 @@ import torch
 
 ENGINE_LORA = "vllm-0.11.0-processed-logprobs-unmerged-lora-v1"
 ENGINE_ARGS = {"enable_lora": True, "max_lora_rank": 16, "max_loras": 1, "max_cpu_loras": 1}  # lora_dtype auto = BF16
+ENGINE_ARGS_V16B = ENGINE_ARGS | {"max_loras": 3, "max_cpu_loras": 3}
 RANK, ALPHA = 16, 32
 LLM_LEAVES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 PACKED = {"q_proj": ("self_attn.qkv_proj", 0), "k_proj": ("self_attn.qkv_proj", 1), "v_proj": ("self_attn.qkv_proj", 2),
@@ -35,7 +36,7 @@ SLOPE_RANGE, MIN_CORRELATION, MIN_EFFECT = (0.85, 1.15), 0.9, 0.05
 # ~0.018 mean |delta| BF16 cross-engine noise (slope test powerless); x16 puts it near 0.8 rms.
 AMPLIFY = 16
 # HF/PEFT reference columns of PF5: per-group scaling factors (absent group = as trained, 0 = off).
-HF_PROBES = {"h_on": {}, "h_llm": {"V": 0.0}, "h_off": {"L": 0.0, "V": 0.0},
+HF_PROBES: dict[str, dict[str, float]] = {"h_on": {}, "h_llm": {"V": 0.0}, "h_off": {"L": 0.0, "V": 0.0},
              "ha_on": {"L": AMPLIFY, "V": AMPLIFY}, "ha_llm": {"L": AMPLIFY, "V": 0.0}}
 
 
@@ -164,7 +165,7 @@ def install_vision_hooks(model: Any) -> VisionHooks:
     return VisionHooks(model)
 
 
-def push_mergers(engine: Any, named: Iterable[tuple[str, torch.Tensor]], version: int) -> None:
+def push_mergers(engine: Any, named: Iterable[tuple[str, torch.Tensor]], version: int, *, inflight: bool = False) -> None:
     """engines.VLLMRolloutEngine._load_weights restricted to the four Mergers. Non-Merger names are consumed and
     checked against the inventory (merged_named_tensors' completeness check still runs) but never loaded."""
     from vllm.v1.engine.core_client import InprocClient
@@ -178,7 +179,13 @@ def push_mergers(engine: Any, named: Iterable[tuple[str, torch.Tensor]], version
         raise RuntimeError("llm_lora: verified in-process vLLM V1 required")
     scheduler = client.engine_core.scheduler
     manager = scheduler.encoder_cache_manager
-    if scheduler.has_unfinished_requests() or any(manager.cached.values()):
+    if inflight:
+        config = engine.llm.llm_engine.vllm_config
+        if config.cache_config.enable_prefix_caching or config.model_config.multimodal_config.mm_processor_cache_gb != 0:
+            raise RuntimeError("llm_lora: in-flight push requires both prefix and multimodal processor caches off")
+        if scheduler.waiting or any(r.num_computed_tokens < len(r.prompt_token_ids) for r in scheduler.running):
+            raise RuntimeError("llm_lora: in-flight push requires empty waiting queue and complete visual prefill")
+    elif scheduler.has_unfinished_requests() or any(manager.cached.values()):
         raise RuntimeError("llm_lora: Merger push requires an idle scheduler/encoder")
     expected = {n for n in engine._weight_shapes if n.startswith(HF_MERGERS)}
     seen: set[str] = set()
@@ -203,19 +210,67 @@ def push_mergers(engine: Any, named: Iterable[tuple[str, torch.Tensor]], version
 
     if engine.llm.apply_model(load) != [True]:
         raise RuntimeError("llm_lora: complete Merger loading not confirmed")
-    if scheduler.reset_prefix_cache() is not True:
-        raise RuntimeError("llm_lora: prefix cache invalidation not acknowledged")
-    if engine.llm.collective_rpc(_clear_encoder_cache) != [True]:
-        raise RuntimeError("llm_lora: encoder cache invalidation not acknowledged")
-    replacement = type(manager)(cache_size=manager.cache_size)
-    scheduler.encoder_cache_manager = replacement
-    if replacement.cached or replacement.freeable or replacement.freed:
-        raise RuntimeError("llm_lora: encoder bookkeeping invalidation failed")
+    if not inflight:
+        if scheduler.reset_prefix_cache() is not True:
+            raise RuntimeError("llm_lora: prefix cache invalidation not acknowledged")
+        if engine.llm.collective_rpc(_clear_encoder_cache) != [True]:
+            raise RuntimeError("llm_lora: encoder cache invalidation not acknowledged")
+        replacement = type(manager)(cache_size=manager.cache_size)
+        scheduler.encoder_cache_manager = replacement
+        if replacement.cached or replacement.freeable or replacement.freed:
+            raise RuntimeError("llm_lora: encoder bookkeeping invalidation failed")
     engine.policy_version = engine._last_loaded_version = version
     engine._push_complete = True
 
 
 # ---- preflight (PF0-PF5) -------------------------------------------------------------------------------------
+
+def free_lora_slots(engine: Any) -> int:
+    """Inspect physical GPU slots before add_lora, which can silently evict a live adapter."""
+    llm = getattr(engine, "llm", engine)
+    def probe(model: Any) -> int:
+        return sum(slot is None for slot in model.lora_manager.lora_index_to_id)
+    slots = llm.apply_model(probe)
+    if len(slots) != 1 or type(slots[0]) is not int:
+        raise RuntimeError("llm_lora: one in-process LoRA slot inventory required")
+    return slots[0]
+
+
+def check_all_live_identity(engine: Any, bundle_versions: dict, *, bundle: Any, hooks: VisionHooks) -> dict:
+    """Old LLM slots are immutable; global Merger and vision buffers belong to the current policy."""
+    llm = getattr(engine, "llm", engine)
+    def probe(model: Any) -> list[str]:
+        manager, bad = model.lora_manager, []
+        for version, entry in bundle_versions.items():
+            identity, slots = entry["lora_int_id"], entry["slots"]
+            if identity not in manager.lora_index_to_id or set(manager.modules) != set(slots):
+                bad.append(f"{version}:inactive-or-module-set")
+                continue
+            index = manager.lora_index_to_id.index(identity)
+            for name, expected in slots.items():
+                module = manager.modules[name]
+                if len(module.lora_a_stacked) != len(expected):
+                    bad.append(f"{version}:{name}:slices")
+                    continue
+                for i, (a, b) in enumerate(expected):
+                    live_a, live_b = module.lora_a_stacked[i][index, 0], module.lora_b_stacked[i][index, 0]
+                    if not torch.equal(live_a, a.to(live_a.device)) or not torch.equal(live_b, b.to(live_b.device)):
+                        bad.append(f"{version}:{name}[{i}]")
+        mergers = merger_bf16(bundle)
+        params = {n: p for n, p in model.named_parameters() if n.startswith(VLLM_MERGERS)}
+        bad += ["global:" + n for n in set(params) ^ set(mergers)]
+        bad += ["global:" + n for n in set(params) & set(mergers)
+                if not torch.equal(params[n], mergers[n].to(params[n].device))]
+        return bad
+    bad = llm.apply_model(probe)[0]
+    vision = vision_lora(bundle)
+    hook_bad = sorted(set(vision) ^ set(hooks.buffers))
+    hook_bad += [n for n in set(vision) & set(hooks.buffers)
+                 if not all(torch.equal(live, want.to(live.device))
+                            for live, want in zip(hooks.buffers[n], vision[n], strict=True))]
+    return {"versions": sorted(bundle_versions), "llm_merger_mismatch": bad[:8],
+            "vision_mismatch": hook_bad[:8], "pass": not bad and not hook_bad and hooks.on is True}
+
 
 def host_memory(sleep: bool) -> dict:
     """PF0: level-1 sleep needs host RAM for the weight pool; without sleep nothing is copied."""

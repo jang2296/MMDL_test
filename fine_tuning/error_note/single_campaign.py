@@ -9,13 +9,14 @@ from __future__ import annotations
 import argparse
 import copy
 import io
+import json
 import math
 from pathlib import Path
 import shutil
 import sys
 import time
 from types import SimpleNamespace
-from typing import Callable
+from typing import Any, Callable
 
 from . import references, single
 from .audit import digest, text_sha256
@@ -68,6 +69,13 @@ def _checked(descriptor: dict) -> Path:
 
 
 def _plan_check(plan: dict) -> None:
+    if plan.get("version") == CONTENT_CAMPAIGN_VERSION:
+        _content_plan_check(plan)
+        return
+    if plan.get("version") == "single-campaign-v16b":
+        from .campaign_v16b import _plan_check as _plan_check_v16b
+        _plan_check_v16b(plan)
+        return
     single._protocol_check(plan["protocol"])
     ids = [item["problem_id"] for item in plan["items"]]
     if (plan.get("version") != VERSION or plan.get("sha256") != digest({k: v for k, v in plan.items() if k != "sha256"})
@@ -102,6 +110,144 @@ def _plan_check(plan: dict) -> None:
 
 def _hex64(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+CONTENT_CAMPAIGN_VERSION = "single-campaign-content-v16"
+CONTENT_GATE_RULE = "verified_local_functional_before_cloud;measured_BF16_O_effect_before_phase2"
+
+
+def _content_blocks(ids: list[str], block_size: int) -> list[list[str]]:
+    if (type(block_size) is not int or not 1 <= block_size <= 16 or not ids
+            or len(set(ids)) != len(ids) or any(not isinstance(pid, str) or not pid for pid in ids)):
+        raise ValueError("v16 campaign: unique parent IDs and a block size in 1..16 required")
+    return [ids[start:start + block_size] for start in range(0, len(ids), block_size)]
+
+
+def _content_runtime_gate(plan: dict, descriptor: dict | None, *, checkpoint_sha256: str) -> dict:
+    from .run_v16 import validate_bf16_effect_receipt
+
+    if descriptor is None:
+        raise ValueError("v16 campaign: EFFECT_NOTRUN; a sealed BF16 O-effect receipt is required")
+    receipt = single._read(_checked(descriptor))
+    contract = plan["protocol"]["training_contract"]
+    result = validate_bf16_effect_receipt(receipt, expected_binding={
+        "source_sha256": contract["hashes"]["source"], "dataset_sha256": contract["hashes"]["dataset"],
+        "f0_sha256": plan["generation"]["model_files_sha256"], "checkpoint_sha256": checkpoint_sha256})
+    if result.get("passed") is not True:
+        raise ValueError("v16 campaign: EFFECT_STOP; the measured O-effect gate did not pass")
+    return result
+
+
+def _content_functional_gate(plan: dict) -> dict:
+    from .run_v16 import validate_local_functional_receipt
+
+    descriptor = plan.get("functional_gate")
+    if descriptor is None:
+        raise ValueError("v16 campaign: FUNCTIONAL_NOTRUN; a verified local training/reload receipt is required")
+    contract = plan["protocol"]["training_contract"]
+    result = validate_local_functional_receipt(single._read(_checked(descriptor)), expected_binding={
+        "source_sha256": contract["hashes"]["source"], "dataset_sha256": contract["hashes"]["dataset"]})
+    if result.get("ready") is not True:
+        raise ValueError("v16 campaign: local functional training/reload proof did not pass")
+    return result
+
+
+def _content_grade(item: dict, actor: Any, text: str, finish: str) -> tuple[str, str | None]:
+    from fine_tuning.notebook_rl.answers import compare, extract_eval_aligned
+    from fine_tuning.notebook_rl.schema import VerifierItem
+
+    kind = item.get("answer_type", "mcq" if actor.choices else "short_text")
+    extracted = extract_eval_aligned(text, finish, actor.question, actor.choices, kind)
+    if extracted.status != "OK":
+        return extracted.status, extracted.answer
+    target = VerifierItem(problem_id=item["problem_id"], answer_type=kind, gold=item["gold"],
+        accept=item.get("accept", {}), choices=actor.choices, slots={}, slot_types={}, required_slots=(),
+        oracle_fact_lines=(), printed_text=())
+    correct = compare(extracted.answer, target)
+    return ("CORRECT" if correct else "INCORRECT") if correct is not None else "UNVERIFIABLE", extracted.answer
+
+
+def _content_plan_check(plan: dict) -> None:
+    single._protocol_check(plan["protocol"])
+    ids = [item["problem_id"] for item in plan["items"]]
+    contract = plan["protocol"]["training_contract"]
+    if (plan.get("version") != CONTENT_CAMPAIGN_VERSION
+            or plan.get("sha256") != digest({key: value for key, value in plan.items() if key != "sha256"})
+            or plan.get("mode") not in ("proof", "train") or plan.get("gate_rule") != CONTENT_GATE_RULE
+            or plan.get("blocks") != _content_blocks(ids, plan["block_size"])
+            or contract["total_slots"] != len(plan["blocks"])
+            or plan.get("execution_max_blocks") != len(plan["blocks"]) or plan.get("warm_start") is not None
+            or contract["hashes"]["source"] != digest(plan["source"]["actual_files"])
+            or contract["hashes"]["dataset"] != plan["inputs"]["content_manifest"]["file_sha256"]
+            or contract["hashes"]["order"] != digest(ids)
+            or contract["hashes"]["data_admission"] != digest(plan["data_admission"])):
+        raise ValueError("v16 campaign: invalid immutable content campaign")
+    if (contract["stage_a_blocks"] < contract["total_slots"]
+            and any(contract["weights"][kind] > 0 for kind in ("J", "A1", "C", "N"))
+            and contract["stage_a_blocks"] != 16):
+        raise ValueError("v16 campaign: phase2 requires exactly sixteen O-only blocks for its checkpoint-bound effect gate")
+    if plan["mode"] == "train" and plan["protocol"]["precision"] != "bf16":
+        raise ValueError("single campaign: HOLD NF4 training/checkpoint continuation is not validated")
+
+
+def _prepare_content_v16(args: argparse.Namespace) -> dict:
+    from .content_v16 import load_content_manifest, validate_human_j_capability
+    from .protocol import plain_protocol_content_v16
+
+    manifest = load_content_manifest(args.content_manifest, args.content_manifest_sha256)
+    items = [item for item in manifest["items"] if item["split"] == "train"]
+    ids = [item["problem_id"] for item in items]
+    blocks = _content_blocks(ids, args.block_size)
+    if getattr(args, "content_total_blocks", None) is not None and args.content_total_blocks != len(blocks):
+        raise ValueError("v16 campaign: actual parent manifest differs from declared block count")
+    if (args.functional_gate is None) != (args.functional_gate_sha256 is None):
+        raise ValueError("v16 campaign: a functional receipt requires its external SHA256")
+    source = single.source_manifest()
+    admission = {"schema": manifest["schema"], "manifest_sha256": args.content_manifest_sha256,
+                 "train_count": len(items), "parent_ids_sha256": digest(ids)}
+    contracts = {"source": digest(source["actual_files"]), "dataset": args.content_manifest_sha256,
+                 "order": digest(ids), "data_admission": digest(admission)}
+    layers = sorted({row["layer"] for row in manifest["rows"]})
+    source_weights = {layer: 1 / len(layers) for layer in layers}
+    weights = json.loads(args.content_weights) if getattr(args, "content_weights", None) else None
+    protocol = plain_protocol_content_v16(args.precision, len(blocks), contracts=contracts,
+                                         source_weights=source_weights, weights=weights,
+                                         stage_a_blocks=getattr(args, "stage_a_blocks", 0))
+    validate_human_j_capability(manifest, requested_weight=protocol["training_contract"]["weights"]["J"])
+    config = single._read(args.model_path / "config.json")
+    if (args.model_path / "nf4_base.json").exists() or config.get("quantization_config") is not None:
+        raise ValueError("v16 campaign: the original BF16 F0 snapshot is required")
+    generation = generation_identity(SimpleNamespace(engine="hf", model_path=args.model_path,
+                                    code_commit=source["base_commit"])) | {"precision": args.precision}
+    capacity = {"max_num_seqs": args.max_num_seqs or 1,
+                "max_num_batched_tokens": args.max_num_batched_tokens or CONTEXT_LIMIT,
+                "token_budget": args.token_budget if args.token_budget is not None else 0,
+                "context_limit": CONTEXT_LIMIT, "engine": args.engine}
+    if (type(capacity["max_num_seqs"]) is not int or not 1 <= capacity["max_num_seqs"] <= 16
+            or type(capacity["max_num_batched_tokens"]) is not int or capacity["max_num_batched_tokens"] < 1
+            or type(capacity["token_budget"]) is not int or capacity["token_budget"] < 0):
+        raise ValueError("v16 campaign: invalid generation/training capacity")
+    if args.engine == "vllm":
+        if (args.precision != "bf16" or isinstance(args.kv_cache_gib, bool)
+                or not isinstance(args.kv_cache_gib, (int, float)) or not math.isfinite(args.kv_cache_gib)
+                or args.kv_cache_gib <= 0 or not 0 < args.gpu_memory_utilization < 1):
+            raise ValueError("v16 campaign: invalid BF16 vLLM capacity")
+        capacity |= {"kv_cache_gib": args.kv_cache_gib, "gpu_memory_utilization": args.gpu_memory_utilization,
+                     "vllm_sleep": args.vllm_sleep}
+    body = {"version": CONTENT_CAMPAIGN_VERSION, "mode": args.campaign_mode, "items": items, "blocks": blocks,
+            "block_size": args.block_size, "protocol": protocol, "source": source, "generation": generation,
+            "data_admission": admission, "inputs": {"content_manifest": _descriptor(args.content_manifest)},
+            "content_rows": manifest["rows"], "capacity": capacity, "gate_rule": CONTENT_GATE_RULE,
+            "build_root": str(args.content_manifest.parent.absolute()), "model_path": str(args.model_path.absolute()),
+            "execution_max_blocks": len(blocks),
+            "functional_gate": _descriptor(args.functional_gate) if args.functional_gate else None,
+            "runtime_status": {"effect": "NOTRUN", "note_yield": "NOTRUN"}}
+    if args.functional_gate is not None:
+        _checked({"path": str(args.functional_gate), "file_sha256": args.functional_gate_sha256})
+    plan = body | {"sha256": digest(body)}
+    _content_plan_check(plan)
+    single._sealed(args.output / "campaign-plan.json", plan)
+    return plan
 
 
 def _strip(protocol: dict, paths: list[str]) -> dict:
@@ -161,15 +307,23 @@ def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoi
 
 
 def prepare(args: argparse.Namespace) -> dict:
+    if getattr(args, "version", None) == "error-note-v16b":
+        from .campaign_v16b import prepare as _prepare_v16b
+        return _prepare_v16b(args)
     with single._runtime_lock(args.output, ".campaign.lock"):
         return _prepare(args)
 
 
 def _prepare(args: argparse.Namespace) -> dict:
     """Validate all actual selected 3,500 items and seal the immutable campaign."""
+    if getattr(args, "content_manifest", None) is not None:
+        return _prepare_content_v16(args)
     warm = [getattr(args, name, None) for name in WARM_START_ARGS]
     if None in warm and any(value is not None for value in warm):
         raise ValueError("single campaign: warm start needs its plan, checkpoint and reload receipt with external SHA256s")
+    required = (*CAMPAIGN_INPUTS, "build_root", "pilot_ids_sha256", "dev_ids_sha256", "retention_ids_sha256")
+    if any(getattr(args, key, None) is None for key in required):
+        raise ValueError("single campaign: all legacy source/order/admission inputs are required")
     from fine_tuning.notebook_rl.schema import to_json
     from fine_tuning.notebook_rl.vault import read_actors, read_lineage, read_verifier
     from .answer_contract import VERSION as RULES_VERSION, load_training_rules
@@ -291,7 +445,8 @@ def _prepare(args: argparse.Namespace) -> dict:
 
 def _binding(plan: dict) -> dict:
     return {"protocol_sha256": plan["protocol"]["sha256"], "prompts_sha256": plan["protocol"]["prompts_sha256"],
-            "data_sha256": plan["sha256"], "code_sha256": digest(plan["source"])}
+            "data_sha256": plan["sha256"], "code_sha256": (digest(plan["source"]["actual_files"]) if plan.get("version") == CONTENT_CAMPAIGN_VERSION
+                               else digest(plan["source"]))}
 
 
 def _cursor(plan: dict, cursor: dict, policy: str) -> None:
@@ -435,13 +590,23 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                  max_blocks: int = 1, allow_update: bool = False, allow_save: bool = False,
                  continue_main: bool = False, pilot_gate: dict | None = None, stop_after: float | None = None,
                  reload_only: bool = False, direct_main: bool = False,
-                 reference: Callable[[str], str | None] | None = None) -> dict:
+                 reference: Callable[[str], str | None] | None = None,
+                 effect_gate: dict | None = None, effect_prereg: dict | None = None,
+                 effect_evaluator: Callable | None = None) -> dict:
     """Execute an explicit bounded number of blocks, restoring durable state before any work.
 
     Factory/stream/encoder seams support authored CPU fixtures; defaults are the real production functions.
     A valid checkpoint is the commit authority. Uncertain generated requests are never retried.
     ``reference`` (v11) maps a problem id to its dataset reference text; it reaches the note prompt only.
     """
+    if plan.get("version") == "single-campaign-v16b":
+        from .campaign_v16b import run_campaign as run_v16b_campaign
+        args = SimpleNamespace(data_root=Path(plan["data_root"]), prep_root=Path(plan["prep_root"]),
+            model_path=model_path, output=output, precision=plan["protocol"]["precision"],
+            local_sequential=plan["local_sequential"], nf4_cache=Path(plan["nf4_cache"]) if plan["nf4_cache"] else None,
+            allow_model_run=allow_update or reload_only, allow_update=allow_update, allow_save=allow_save,
+            **plan["capacity"])
+        return run_v16b_campaign(plan, output=output, args=args, reload_only=reload_only)
     from fine_tuning.notebook_rl import checkpoint
     from fine_tuning.notebook_rl.policy import build_policy, enable_deterministic_execution
     from fine_tuning.notebook_rl.quantized_policy import build_quantized_policy
@@ -452,7 +617,16 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
     import torch
 
     _plan_check(plan)
-    if policy_factory is None and (len(plan["items"]) != 3500 or len(plan["blocks"]) != 219
+    content = plan.get("version") == CONTENT_CAMPAIGN_VERSION
+    if content:
+        from .content_v16 import load_content_manifest
+
+        descriptor = plan["inputs"]["content_manifest"]
+        admitted = load_content_manifest(_checked(descriptor), descriptor["file_sha256"])
+        if (admitted["rows"] != plan["content_rows"]
+                or [item for item in admitted["items"] if item["split"] == "train"] != plan["items"]):
+            raise ValueError("v16 campaign: admitted content manifest differs from sealed rows or order")
+    if not content and policy_factory is None and (len(plan["items"]) != 3500 or len(plan["blocks"]) != 219
             or plan.get("data_admission", {}).get("train_count") != 3500
             or plan.get("data_admission", {}).get("pilot_count") != 300
             or "execution_max_blocks" not in plan):
@@ -463,6 +637,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                                    or not math.isfinite(stop_after) or stop_after <= 0):
         raise ValueError("single campaign: finite positive execution deadline required")
     train = plan["mode"] == "train"
+    if content and train and not reload_only:
+        _content_functional_gate(plan)
     if train and not reload_only and (allow_update is not True or allow_save is not True):
         raise ValueError("single campaign: explicit update and checkpoint-save opt-in required")
     if not train and (allow_update or allow_save):
@@ -473,6 +649,15 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
         single._sealed(output / "campaign-plan.json", plan)
         state_path = output / "campaign-state.json"
         state = single._state(state_path) if state_path.exists() else None
+        if content:
+            if effect_prereg is not None:
+                effect_prereg = _descriptor(_checked(effect_prereg))
+            saved_prereg = state.get("effect_prereg") if state is not None else None
+            if saved_prereg is not None and effect_prereg != saved_prereg and not reload_only:
+                raise ValueError("v16 campaign: an effect trial must resume with the same preregistration")
+            if (state is not None and saved_prereg is None and effect_prereg is not None
+                    and state["cursor"]["slot"] != 0):
+                raise ValueError("v16 campaign: effect registration must precede every O-trial update")
         if state is not None and state.get("plan_sha256") != plan["sha256"]:
             raise ValueError("single campaign: mode/source/order/model/profile changed")
         selected, reconciled = None, False
@@ -503,7 +688,9 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                         _commit_check(plan, output, committed, descriptor)
                         selected, reconciled = descriptor, True
                         state.update(cursor=committed, checkpoint=descriptor, pending=None, rng=None, status="READY")
-                        if committed["slot"] == 19 and len(committed["consumed_problem_ids"]) == 300:
+                        if content:
+                            state["note_yield_records"] = single._read(_checked(transaction["rows"])).get("note_yield_records", [])
+                        if not content and committed["slot"] == 19 and len(committed["consumed_problem_ids"]) == 300:
                             state.update(status="PILOT_COMPLETE", pilot_checkpoint=descriptor)
                     elif next_path.with_name(next_path.name + ".tmp").exists():
                         state["status"] = "RECOVERY_REQUIRED"
@@ -567,6 +754,8 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             cursor = ({"slot": 0, "updates": 0, "consumed_problem_ids": [], "policy_sha256": policy_sha256(bundle),
                        "last_transaction_sha256": None, "parent_checkpoint": None} if state is None else state["cursor"])
         _cursor(plan, cursor, policy_sha256(bundle))
+        if content and effect_prereg is not None:
+            cursor["content_effect_prereg"] = effect_prereg
         if state is None:
             if reload_only and selected is None:
                 raise ValueError("single campaign: no committed campaign to reload")
@@ -583,8 +772,13 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 if warm is not None:
                     # A fixed main-gate anchor: the state["checkpoint"] fallback moves with every committed block.
                     state |= {"warm_start": warm["checkpoint"], "pilot_checkpoint": state["checkpoint"]}
+            if content and effect_prereg is not None:
+                state["effect_prereg"] = effect_prereg
             single._state(state_path, state)
         elif reconciled:
+            single._state(state_path, state)
+        if content and effect_prereg is not None and state.get("effect_prereg") is None:
+            state["effect_prereg"] = effect_prereg
             single._state(state_path, state)
         capacity = None
         args = argparse.Namespace(**plan["capacity"])
@@ -608,6 +802,41 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
             return state | {"status": "RELOADED"}
         if reconciled and state["status"] == "PILOT_COMPLETE":
             return state
+        def observe_effect() -> None:
+            if not content or effect_prereg is None or cursor["slot"] not in (0, 8, 16):
+                return
+            stage = str(cursor["slot"])
+            saved = state.get("effect_phases", {}).get(stage)
+            if saved is not None:
+                previous = single._read(_checked(saved))
+                if previous.get("stop_reasons"):
+                    state.update(status="CONTENT_EFFECT_STOP", stop_reasons=previous["stop_reasons"])
+                    single._state(state_path, state)
+                return
+            from .run_v16 import evaluate_effect_bundle
+
+            registration = single._read(_checked(effect_prereg))
+            descriptor = plan["inputs"]["content_manifest"]
+            checkpoint_record = ({"path": state["checkpoint"]["path"],
+                                  "file_sha256": state["checkpoint"]["file_sha256"]} if state["checkpoint"] else None)
+            effect_output = output / "effect"
+            effect_output.mkdir(exist_ok=True)
+            rng = checkpoint.capture_rng()
+            try:
+                receipt = (effect_evaluator or evaluate_effect_bundle)(bundle, registration, admitted,
+                    _checked(descriptor), stage=stage, output=effect_output, checkpoint=checkpoint_record)
+            finally:
+                checkpoint.restore_rng(rng)
+            path = effect_output / f"phase{stage}.json"
+            single._sealed(path, receipt)
+            state.setdefault("effect_phases", {})[stage] = _descriptor(path)
+            if receipt.get("stop_reasons"):
+                state.update(status="CONTENT_EFFECT_STOP", stop_reasons=receipt["stop_reasons"])
+            single._state(state_path, state)
+
+        observe_effect()
+        if state["status"] == "CONTENT_EFFECT_STOP":
+            return state
         advanced = int(reconciled)
         by_id = {item["problem_id"]: item for item in plan["items"]}
         # v14/v15's scheduler has exactly execution_max_blocks steps: no block at or past that slot is generated or updated.
@@ -615,7 +844,28 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 else len(plan["blocks"]))
         while cursor["slot"] < last and advanced < max_blocks:
             slot = cursor["slot"]
-            if slot >= 19 and len(cursor["consumed_problem_ids"]) >= 300:
+            if content:
+                from .protocol import content_contract_for_block
+
+                active = content_contract_for_block(plan["protocol"], slot)
+                if any(active["weights"][kind] > 0 for kind in ("J", "A1", "C", "N")):
+                    anchor = cursor.get("content_effect_checkpoint_sha256") or (
+                        state["checkpoint"]["file_sha256"] if state["checkpoint"] else None)
+                    if effect_gate is None:
+                        state.update(status="CONTENT_GATE_HOLD", gate_reason="EFFECT_NOTRUN",
+                                     runtime_status={"effect": "NOTRUN", "note_yield": "NOTRUN"})
+                        return single._state(state_path, state)
+                    if anchor is None:
+                        raise ValueError("v16 campaign: phase2 requires its actual O-trial checkpoint")
+                    try:
+                        _content_runtime_gate(plan, effect_gate, checkpoint_sha256=anchor)
+                    except ValueError as exc:
+                        if not str(exc).startswith("v16 campaign: EFFECT_STOP"):
+                            raise
+                        state.update(status="CONTENT_GATE_HOLD", gate_reason=str(exc))
+                        return single._state(state_path, state)
+                    cursor["content_effect_checkpoint_sha256"] = anchor
+            if not content and slot >= 19 and len(cursor["consumed_problem_ids"]) >= 300:
                 if train:
                     if direct_main:
                         _direct_gate(plan, state, continue_main, pilot_gate)
@@ -652,7 +902,10 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 state_block = single.run_single_block(bundle, actors=actors, items=[by_id[pid] for pid in ids],
                     provenance=provenance, gold=gold, grade=grade, load_images=load_images, protocol=plan["protocol"],
                     output=block_output, block_id=slot, stream=stream, stream_args=args, stop_after=stop_after,
-                    reference=reference)
+                    reference=reference, **({"content_rows": plan["content_rows"],
+                        "note_yield_records": state.get("note_yield_records", []),
+                        "effect_gate": single._read(_checked(effect_gate)) if effect_gate else None}
+                        if content else {}))
                 if state_block["status"] != "ROWS_READY":
                     state.update(status=state_block["status"], waiting=state_block.get("waiting", []))
                     _rng_save(output, state, state_block)
@@ -671,18 +924,34 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                     or closed["contract"]["expected_problem_ids"] != ids
                     or closed["contract"]["policy_sha256"] != policy_sha256(bundle)):
                 raise ValueError("single campaign: closed rows differ from frozen block policy/order")
-            encoded = [encoder(bundle, row) if encoder is not None else encode_single_row(
-                bundle.processor, bundle.model.config, row, load_images(actors[row["problem_id"]]),
-                image=plan["protocol"]["image"]) for row in closed["rows"]]
+            encoded, exclusions = [], []
+            for row in closed["rows"]:
+                try:
+                    encoded.append(encoder(bundle, row) if encoder is not None else encode_single_row(
+                        bundle.processor, bundle.model.config, row, load_images(actors[row["problem_id"]]),
+                        image=plan["protocol"]["image"]))
+                except ValueError as exc:
+                    if not content or str(exc) not in ("TARGET_TOO_LONG", "CONTEXT_BLOCKED", "NO_VERIFIED_TOKENS"):
+                        raise
+                    exclusions.append({"problem_id": row["problem_id"], "row_id": row["row_id"], "reason": str(exc)})
+            update_contract = closed["contract"]
+            if content:
+                accepted_ids = {row["problem_id"] for row in encoded}
+                excluded = {pid: next((entry["reason"] for entry in exclusions if entry["problem_id"] == pid),
+                                     "NO_TASK_SIGNAL") for pid in ids if pid not in accepted_ids}
+                update_contract = update_contract | {"excluded_problem_ids": excluded}
+                single._sealed(block_output / "encoded-exclusions.json",
+                               {"rows": exclusions, "excluded_problem_ids": excluded})
             if train:
                 cursor.update(last_transaction_sha256=digest(transaction), parent_checkpoint=state["checkpoint"])
                 if sampler is not None:
                     sampler.release()  # vLLM weights/KV leave the GPU before the HF backward
                 started = time.monotonic()
-                update = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, closed["contract"], cursor=cursor,
+                update = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, update_contract, cursor=cursor,
                     block_ids=ids, allow_update=True, token_budget=args.token_budget, capacity=capacity)
                 seconds["update"] = round(time.monotonic() - started, 1)
-                kinds = ("RL", "A1", "A2", "B") + (("H",) if plan["protocol"]["version"] == VERSION_SINGLE_V12 else ())
+                kinds = ("O", "J", "C", "N", "A1") if content else (
+                    ("RL", "A1", "A2", "B") + (("H",) if plan["protocol"]["version"] == VERSION_SINGLE_V12 else ()))
                 single._sealed(block_output / "update-stats.json", {"transaction_sha256": digest(transaction),
                     "optimizer_steps": update["optimizer_steps"], "stats": update["stats"],
                     "rows_by_kind": {kind: sum(row["kind"] == kind for row in closed["rows"]) for kind in kinds}})
@@ -700,7 +969,7 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                         raise ValueError("single campaign: proof belongs to another row transaction")
                     proof = saved["report"]
                 else:
-                    proof = single.prove_single_backward(bundle, encoded, closed["contract"], precision=plan["protocol"]["precision"],
+                    proof = single.prove_single_backward(bundle, encoded, update_contract, precision=plan["protocol"]["precision"],
                                                         token_budget=args.token_budget, capacity=capacity)
                     single._sealed(proof_path, {"transaction_sha256": digest(transaction), "report": proof})
                 if proof["status"] == "FAIL" or proof.get("error") or not proof["all_parameters_unchanged"]:
@@ -709,14 +978,20 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
                 state["proofs"].append({"slot": slot, "proof": _descriptor(proof_path)})
                 cursor.update(slot=slot + 1, consumed_problem_ids=cursor["consumed_problem_ids"] + ids)
             state.update(cursor=cursor, pending=None, rng=None, status="READY", waiting=[])
+            if content:
+                state["note_yield_records"] = closed.get("note_yield_records", [])
             _cursor(plan, cursor, policy_sha256(bundle))
             _rng_save(output, state, None)
             single._state(state_path, state)
-            if train and slot >= 2 and slot - 1 != 19:
+            observe_effect()
+            if state["status"] == "CONTENT_EFFECT_STOP":
+                return state
+            retained = {0, 8, 16} if content else {19}
+            if train and slot >= 2 and slot - 1 not in retained:
                 # The committed successor only needs its immediate parent; older full checkpoints are dropped.
                 shutil.rmtree(output / f"checkpoint-{slot - 1}", ignore_errors=True)
             advanced += 1
-            if cursor["slot"] == 19 and len(cursor["consumed_problem_ids"]) == 300:
+            if not content and cursor["slot"] == 19 and len(cursor["consumed_problem_ids"]) == 300:
                 state.update(status="PILOT_COMPLETE", pilot_checkpoint=state["checkpoint"])
                 if not train:
                     state["proof_summary"] = _proof_summary(state)
@@ -732,10 +1007,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("command", choices=("prepare", "advance", "reload"), nargs="?", default="prepare")
     for name in ("build-root", "order", "frozen-approval", "source-provenance", "training-rules",
                  "note-reference-supplement", "model-path", "output"):
-        parser.add_argument("--" + name, type=Path, required=True)
+        parser.add_argument("--" + name, type=Path, required=name in ("model-path", "output"))
     for name in ("order", "frozen-approval", "source-provenance", "training-rules", "note-reference-supplement",
                  "pilot-ids", "dev-ids", "retention-ids"):
-        parser.add_argument("--" + name + "-sha256", required=True)
+        parser.add_argument("--" + name + "-sha256")
+    parser.add_argument("--content-manifest", type=Path)
+    parser.add_argument("--content-manifest-sha256")
+    parser.add_argument("--content-weights", help="fixed O/J/C/N weights as a JSON object")
+    parser.add_argument("--block-size", type=int, default=8)
+    parser.add_argument("--content-total-blocks", type=int)
+    parser.add_argument("--stage-a-blocks", type=int, default=0)
+    parser.add_argument("--functional-gate", type=Path)
+    parser.add_argument("--functional-gate-sha256")
+    parser.add_argument("--effect-gate", type=Path)
+    parser.add_argument("--effect-gate-sha256")
+    parser.add_argument("--effect-prereg", type=Path)
+    parser.add_argument("--effect-prereg-sha256")
     parser.add_argument("--campaign-mode", choices=("proof", "train"), default="proof")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="nf4")
     parser.add_argument("--token-scale", type=float, default=SINGLE_TOKEN_SCALE_V11)
@@ -764,6 +1051,11 @@ def main(argv: list[str] | None = None) -> int:
     import json
     import os
     import sys
+    values = list(sys.argv[1:] if argv is None else argv)
+    if ("--data-root" in values or "--version=error-note-v16b" in values
+            or "error-note-v16b" in values):
+        from .campaign_v16b import main as main_v16b
+        return main_v16b(values)
     from fine_tuning.notebook_rl.dataset import load_images
     from fine_tuning.notebook_rl.vault import read_actors, read_verifier
     from fine_tuning.notebook_rl.verifier_service import VerifierService
@@ -786,6 +1078,45 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("single campaign: gate path and external SHA256 required together")
             if args.pilot_gate is not None:
                 _checked({"path": str(args.pilot_gate), "file_sha256": args.pilot_gate_sha256})
+            if plan.get("version") == CONTENT_CAMPAIGN_VERSION:
+                from PIL import Image
+
+                actors = {}
+                for item in plan["items"]:
+                    image_path = Path(item["image_path"])
+                    if not image_path.is_absolute():
+                        image_path = _checked(plan["inputs"]["content_manifest"]).parent / image_path
+                    actors[item["problem_id"]] = SimpleNamespace(
+                        problem_id=item["problem_id"], question=item.get("question", item.get("p0_text", "")),
+                        choices=tuple(item.get("choices", ())), image_paths=(str(image_path),),
+                        image_sha256=(item["image_sha256"],), mode=item.get("mode", "plain"),
+                        source=item["source_repo"])
+                def images(actor):
+                    with Image.open(actor.image_paths[0]) as image:
+                        return [image.convert("RGB")]
+
+                if (args.effect_gate is None) != (args.effect_gate_sha256 is None) or (
+                        args.effect_prereg is None) != (args.effect_prereg_sha256 is None):
+                    raise ValueError("v16 campaign: effect artifacts require external SHA256 pins")
+                result = run_campaign(plan, output=args.output, model_path=args.model_path, actors=actors,
+                    effect_gate={"path": str(args.effect_gate), "file_sha256": args.effect_gate_sha256}
+                        if args.effect_gate else None,
+                    effect_prereg={"path": str(args.effect_prereg), "file_sha256": args.effect_prereg_sha256}
+                        if args.effect_prereg else None,
+                    provenance={item["problem_id"]: item for item in plan["items"]},
+                    gold=lambda pid: next(item["gold"] for item in plan["items"] if item["problem_id"] == pid),
+                    grade=lambda pid, text, finish, mode: _content_grade(
+                        next(item for item in plan["items"] if item["problem_id"] == pid), actors[pid], text, finish),
+                    load_images=images, device="cuda:0", max_blocks=args.max_blocks, allow_update=args.allow_update,
+                    allow_save=args.allow_save, stop_after=args.stop_after_seconds, reload_only=args.command == "reload")
+                print(json.dumps({"status": result["status"], "slot": result["cursor"]["slot"],
+                                  "updates": result["cursor"]["updates"]}))
+                code = 0 if result["status"] in ("BOUNDED_STOP", "COMPLETE", "RELOADED") else 2
+                if args.engine == "vllm":
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                    os._exit(code)
+                return code
             # The trusted controller preloads private bytes before actor file/import guards.
             gate_descriptor = (_descriptor(args.pilot_gate) | {"raw": args.pilot_gate.read_bytes()}) if args.pilot_gate else None
             actors = {actor.problem_id: actor for actor in read_actors(args.build_root / "train")}
