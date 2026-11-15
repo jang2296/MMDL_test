@@ -478,7 +478,7 @@ def _fit(dv: torch.Tensor, dh: torch.Tensor) -> dict:
 
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
                 h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
-                cap: float) -> dict:
+                cap: float, require_power: bool = True) -> dict:
     """PF5 on teacher-forced log-probs. v_*: vLLM (on = LoRA + hooks, llm = LoRA only, off = neither); h_*: HF (on,
     vision scaling 0, all scaling 0); va_* / ha_*: the same with every LoRA B x AMPLIFY (vLLM adapter file and hook
     buffers, HF scaling). A trained adapter's effect can sit at the BF16 cross-engine noise (A100 4B v14: 0.05 rms vs
@@ -499,7 +499,10 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
                                                   ("vision", v1 - vl, h1 - hl))}
     amplified = {key: _fit(dv, dh) for key, dv, dh in (("total", a1 - v0, g1 - h0), ("llm", al - v0, gl - h0),
                                                        ("vision", a1 - al, g1 - gl))}
-    ok = finite and err_on <= cap and amplified["total"]["rms_effect"] >= MIN_EFFECT
+    # v16b (require_power False): a fresh-F0 (all-zero B) or barely trained adapter has no testable effect; record
+    # power False instead of failing. Agreement (err_on <= cap) and every powered slope/correlation test still apply.
+    power = amplified["total"]["rms_effect"] >= MIN_EFFECT
+    ok = finite and err_on <= cap and (power or not require_power)
     if real["total"]["rms_effect"] >= MIN_EFFECT:
         ok = ok and err_on < err_off
     for entry in amplified.values():
@@ -510,4 +513,4 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
             ok = ok and entry["pass"]
     return {"tokens": int(v1.numel()), "cap": cap, "amplify": AMPLIFY, "mean_abs_on": err_on,
             "mean_abs_off_vs_on": err_off, "amplified_mean_abs_on": float((a1 - g1).abs().mean()),
-            "real": real, "amplified": amplified, "pass": bool(ok)}
+            "real": real, "amplified": amplified, "power": bool(power), "pass": bool(ok)}

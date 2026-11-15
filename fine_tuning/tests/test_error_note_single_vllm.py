@@ -398,6 +398,15 @@ class SlopeTests(unittest.TestCase):
         self.assertFalse(flat["pass"])
         self.assertTrue(math.isnan(flat["amplified"]["total"].get("slope", math.nan)))
 
+    def test_v16b_zero_adapter_passes_without_power_but_keeps_agreement_cap(self):
+        columns = pf5_columns(size=0.0, noise=0.0)
+        self.assertFalse(llm_lora.slope_check(**columns, cap=.04)["pass"])  # v15 default still needs power
+        report = llm_lora.slope_check(**columns, cap=.04, require_power=False)
+        self.assertTrue(report["pass"])
+        self.assertFalse(report["power"])
+        noisy = pf5_columns(size=0.0, noise=.06)
+        self.assertFalse(llm_lora.slope_check(**noisy, cap=.04, require_power=False)["pass"])
+
     def test_nonfinite_or_capped_real_adapter_fails(self):
         columns = pf5_columns(size=.2, noise=.005)
         columns["va_on"][3] = math.nan

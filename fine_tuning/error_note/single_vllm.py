@@ -656,7 +656,8 @@ class SingleVllmSampler:
             columns, restored = llm_lora.vllm_columns(bundle, self.vision_hooks, self._probe, pairs, self.lora_request,
                                                       lambda factor: self._swap_adapter(bundle, policy, factor))
         reference = llm_lora.hf_columns(bundle, self.engine, pairs)
-        return llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap), restored
+        return llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
+                                    require_power=not self.version_registry), restored
 
     def verify_lora(self, bundle: Any) -> dict:
         """PF1-PF5 (PF0 ran at start-up); prints SINGLE_LORA_PREFLIGHT {json} and raises on any failure. PF5 tests the
