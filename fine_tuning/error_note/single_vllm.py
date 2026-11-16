@@ -24,6 +24,7 @@ from pathlib import Path
 import shutil
 import sys
 import tempfile
+import warnings
 from typing import Any, Iterable, Iterator
 
 from . import llm_lora
@@ -147,7 +148,18 @@ class SingleVllmSampler:
 
     def __init__(self, model_path: Path, *, kv_cache_gib: float, max_num_seqs: int, gpu_memory_utilization: float,
                  sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None, lora: bool = False,
-                 sampling: dict | None = None, version_registry: bool = False):
+                 sampling: dict | None = None, version_registry: bool = False,
+                 protocol_version: str = "error-note-v16b", preflight_stage: str = "trained"):
+        self.protocol_version = protocol_version
+        self.preflight_stage = preflight_stage
+        if protocol_version == "error-note-v17":
+            if type(max_num_seqs) is not int or not 1 <= max_num_seqs <= 16:
+                raise ValueError("v17 training concurrency ceiling is sixteen")
+            if preflight_stage not in ("f0", "trained"):
+                raise ValueError("v17 PF5 stage must be f0 or trained")
+        self.admission_wait_seconds = 0.0
+        self.preemption_count = 0
+        self._last_preemption_report = 0
         self.version_registry = bool(version_registry)
         if self.version_registry and (not lora or sleep):
             raise ValueError("v16b vLLM: version registry requires LoRA and sleep off")
@@ -202,6 +214,14 @@ class SingleVllmSampler:
                                                    enable_sleep_mode=bool(sleep), **extra)
         engine._call, engine._synchronized, engine._push_complete, engine._last_loaded_version = 0, True, True, None
         self.engine, self.max_num_seqs, self.sleep = engine, max_num_seqs, bool(sleep)
+        if self.protocol_version == "error-note-v17":
+            cache = self._scheduler().kv_cache_config
+            if len(cache.kv_cache_groups) != 1:
+                raise RuntimeError("v17 capacity: one measured full-attention KV group required")
+            self.kv_block_size = cache.kv_cache_groups[0].kv_cache_spec.block_size
+            self.actual_kv_tokens = cache.num_blocks * self.kv_block_size
+            if type(self.actual_kv_tokens) is not int or self.actual_kv_tokens < 1:
+                raise RuntimeError("v17 capacity: actual engine KV token capacity unavailable")
         self.eos_token_ids = sorted(set(eos_token_ids))
         self.loaded_policy: str | None = None  # the disk snapshot is F0, but a push always precedes generation
         self.asleep = False
@@ -414,22 +434,18 @@ class SingleVllmSampler:
         finally:
             processor.image_processor = original
 
-    def submit(self, request: dict) -> None:
-        """Admit exactly one request against its immutable policy and full-vocabulary sampling."""
-        from vllm import SamplingParams
+    def _prepare_request(self, request: dict) -> dict:
         from fine_tuning.notebook_rl.engines import RolloutRequest
         from .rl import digest
 
-        single_request_binding(request)
         version, rid = request["policy_version"], request["request_id"]
-        if rid in self.pending or version not in self.versions:
-            raise ValueError("v16b vLLM: duplicate request or unknown policy version")
-        entry = self.versions[version]
-        if request["policy_sha256"] != entry["policy_sha256"]:
-            raise ValueError("v16b vLLM: admission policy hash changed")
         image_identity = [{"size": list(img.size), "sha256": hashlib.sha256(img.tobytes()).hexdigest()}
                           for img in request["images"]]
-        key = request["problem_id"] + ":" + digest({"messages": request["messages"], "images": image_identity})
+        cache_binding = {"messages": request["messages"], "images": image_identity}
+        if getattr(self, "protocol_version", None) == "error-note-v17":
+            cache_binding.update(image_policy=self.image, processor_revision=str(self.engine.model_dir),
+                                 context_limit=CONTEXT_LIMIT)
+        key = request["problem_id"] + ":" + digest(cache_binding)
         memo = self._input_memo.get(key)
         if memo is None:
             item, processed = self._prepared_input(request, image_identity)
@@ -454,24 +470,109 @@ class SingleVllmSampler:
             raise RuntimeError("v16b vLLM: HOLD prompt exceeds the measured 16384-token capacity bound")
         if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
             raise ValueError("v16b vLLM: prompt plus completion exceeds context limit")
+        return {"request_sha256": single_request_sha256(request), "item": item, "prompt": prompt,
+                "prompt_tokens": item["input_tokens"], "max_tokens": request["max_tokens"]}
+
+    def prepare_request_v17(self, request: dict) -> dict:
+        if getattr(self, "protocol_version", None) != "error-note-v17":
+            raise RuntimeError("v17 preparation requires its explicit protocol")
+        single_request_binding(request)
+        prepared = self._prepare_request(request)
+        self._reservation_v17(prepared)
+        return prepared
+
+    def _reservation_v17(self, prepared: dict) -> dict:
+        from .v16b_runtime import reserve_request_v17
+
+        if prepared["prompt_tokens"] != len(prepared["item"]["prompt_token_ids"]):
+            raise RuntimeError("v17 capacity: reservation differs from actual prepared prompt tokens")
+        return reserve_request_v17(prepared, self.actual_kv_tokens, self.kv_block_size,
+                                  [s["kv_reserved_tokens"] for s in self.pending.values()],
+                                  active=len(self.pending), ceiling=self.max_num_seqs)
+
+    def can_submit_v17(self, prepared: dict) -> bool:
+        return self._reservation_v17(prepared)["status"] == "ADMIT"
+
+    def heartbeat_v17(self) -> dict:
+        scheduler = self._scheduler()
+        preemptions = self.preemption_count - self._last_preemption_report
+        self._last_preemption_report = self.preemption_count
+        return {"train_KV_capacity": self.actual_kv_tokens,
+                "reserved_tokens": sum(s["kv_reserved_tokens"] for s in self.pending.values()),
+                "active": len(scheduler.running), "waiting": len(scheduler.waiting),
+                "admission_wait_seconds": self.admission_wait_seconds, "preemption_delta": preemptions,
+                "warning": "TRAIN_PREEMPTION" if preemptions else None}
+
+    def abort_request_v17(self, rid: str) -> None:
+        if rid not in self.pending:
+            raise RuntimeError("v17 capacity: cannot release an unknown or completed request")
+        self.engine.llm.llm_engine.abort_request([rid])
+        state = self.pending.pop(rid)
+        if "original_event" in state:
+            state["live"].record_event = state["original_event"]
+        self.versions[state["request"]["policy_version"]]["refcount"] -= 1
+
+    def set_preflight_stage_v17(self, stage: str) -> None:
+        if getattr(self, "protocol_version", None) != "error-note-v17" or stage not in ("f0", "trained"):
+            raise ValueError("v17 PF5 requires an explicit f0 or trained stage")
+        if self.pending:
+            raise RuntimeError("v17 PF5 stage changes require a drained engine")
+        if stage != self.preflight_stage:
+            self.preflight_stage = stage
+            self._preflight_done, self.loaded_policy = False, None
+
+    def submit(self, request: dict, *, prepared: dict | None = None) -> None:
+        """Admit exactly one request against its immutable policy and full-vocabulary sampling."""
+        from vllm import SamplingParams
+        single_request_binding(request)
+        version, rid = request["policy_version"], request["request_id"]
+        if rid in self.pending or version not in self.versions:
+            raise ValueError("v16b vLLM: duplicate request or unknown policy version")
+        entry = self.versions[version]
+        if request["policy_sha256"] != entry["policy_sha256"]:
+            raise ValueError("v16b vLLM: admission policy hash changed")
+        if prepared is None:
+            prepared = self._prepare_request(request)
+        if prepared["request_sha256"] != single_request_sha256(request):
+            raise RuntimeError("v17 capacity: prepared input belongs to a different request")
+        item, prompt = prepared["item"], prepared["prompt"]
+        if prepared["max_tokens"] != request["max_tokens"]:
+            raise RuntimeError("v17 capacity: prepared completion cap changed")
+        if list(prompt.get("prompt_token_ids", item["prompt_token_ids"])) != list(item["prompt_token_ids"]):
+            raise RuntimeError("v17 capacity: native prompt differs from reserved prepared prompt")
+        reservation = None
+        if getattr(self, "protocol_version", None) == "error-note-v17":
+            reservation = self._reservation_v17(prepared)
+            if reservation["status"] != "ADMIT":
+                raise RuntimeError("v17 capacity: scheduler must pump existing requests before admission")
         sampling = dict(request.get("sampling", self.sampling))
         params = SamplingParams(n=1, **sampling, repetition_penalty=1.0, max_tokens=request["max_tokens"],
                                 seed=request["seed"], stop_token_ids=self.eos_token_ids,
                                 logprobs=TAIL_LOGPROBS, detokenize=False)
         core = self.engine.llm.llm_engine
-        with _nondeterministic():
-            core.add_request(rid, prompt, params, lora_request=entry["request"])
-        live = self._scheduler().requests[rid]
-        if live.lora_request is None or live.lora_request.lora_int_id != entry["lora_int_id"]:
-            raise RuntimeError("v16b vLLM: request LoRA differs from the admission version")
+        try:
+            with _nondeterministic():
+                core.add_request(rid, prompt, params, lora_request=entry["request"])
+            live = self._scheduler().requests[rid]
+            if live.lora_request is None or live.lora_request.lora_int_id != entry["lora_int_id"]:
+                raise RuntimeError("v16b vLLM: request LoRA differs from the admission version")
+        except BaseException:
+            if getattr(self, "protocol_version", None) == "error-note-v17":
+                core.abort_request([rid])
+            raise
         self.pending[rid] = {"request": request, "item": item, "live": live, "admit_step": self.engine_steps,
                              "visual_version": self.visual_version, "mixed_version": version != self.visual_version,
                              "preempted": False, "last_computed": 0}
+        if reservation is not None:
+            self.pending[rid]["kv_reserved_tokens"] = reservation["request_reserved_tokens"]
         state = self.pending[rid]
         original_event = live.record_event
         state["original_event"] = original_event
         def record_event(event_type: Any, timestamp: Any = None) -> None:
             if event_type.name == "PREEMPTED":
+                if getattr(self, "protocol_version", None) == "error-note-v17":
+                    self.preemption_count += 1
+                    warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
                 state["preempted"] = True
                 if state["visual_version"] != self.visual_version:
                     state["mixed_version"] = True
@@ -495,6 +596,10 @@ class SingleVllmSampler:
             status = getattr(getattr(live, "status", None), "name", "")
             preempted = status == "PREEMPTED" or live.num_computed_tokens < state["last_computed"]
             if preempted:
+                if (getattr(self, "protocol_version", None) == "error-note-v17"
+                        and not state["preempted"] and "original_event" not in state):
+                    self.preemption_count += 1
+                    warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
                 state["preempted"] = True
                 if state["visual_version"] != self.visual_version:
                     state["mixed_version"] = True
@@ -507,6 +612,8 @@ class SingleVllmSampler:
             if "original_event" in state:
                 state["live"].record_event = state["original_event"]
             request, item = state["request"], state["item"]
+            if getattr(self, "protocol_version", None) == "error-note-v17":
+                self.versions[request["policy_version"]]["refcount"] -= 1
             if len(output.outputs) != 1 or list(output.prompt_token_ids) != list(item["prompt_token_ids"]):
                 raise RuntimeError("v16b vLLM: exact prompt and one completion required")
             result = output.outputs[0]
@@ -539,7 +646,8 @@ class SingleVllmSampler:
             for key in ("baseline_receipt", "obs_baseline_receipt"):
                 if key in request:
                     generation[key] = request[key]
-            entry["refcount"] -= 1
+            if getattr(self, "protocol_version", None) != "error-note-v17":
+                entry["refcount"] -= 1
             if request["kind"] == "RESOLVE":
                 self.forget_item(request["problem_id"])
             finished.append((request, {"text": text, "finish_reason": result.finish_reason, "completion_tokens": len(ids),
@@ -656,6 +764,15 @@ class SingleVllmSampler:
             columns, restored = llm_lora.vllm_columns(bundle, self.vision_hooks, self._probe, pairs, self.lora_request,
                                                       lambda factor: self._swap_adapter(bundle, policy, factor))
         reference = llm_lora.hf_columns(bundle, self.engine, pairs)
+        if getattr(self, "protocol_version", None) == "error-note-v17":
+            contract = llm_lora.pf5_contract_v17(bundle, self.preflight_stage)
+            report = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
+                                         require_power=contract["require_power"])
+            report["stage_contract"] = contract
+            report["transport_pass"] = report["pass"]
+            report["effect_status"] = ("PASS" if report["power"] and report["pass"] else
+                                       "UNMEASURED" if contract["require_power"] else "NOT_APPLICABLE_F0")
+            return report, restored
         return llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
                                     require_power=not self.version_registry), restored
 

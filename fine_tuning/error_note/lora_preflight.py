@@ -148,7 +148,8 @@ def adapter_swap(engine: Any, bundle: Any, real: Any, root: Path) -> Any:
     return swap
 
 
-def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict[str, list[float]]) -> dict:
+def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict[str, list[float]], *,
+                  protocol_version: str | None = None, stage: str = "trained") -> dict:
     """pf1-pf3, pf5 and pf2_restored on a VLLMBackend built with kind unmerged-lora (proof_eval.attach_lora ran in its
     __init__); pf5 runs the training sampler's real + amplified probe (llm_lora.vllm_columns / slope_check)."""
     from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
@@ -168,7 +169,13 @@ def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: 
         columns, restored = llm_lora.vllm_columns(bundle, hooks, probe, pairs, lora,
                                                   adapter_swap(llm.llm_engine, bundle, lora, Path(tmp)))
     report["pf3"] = llm_lora.check_base(llm, bundle, frozen)
-    report["pf5"] = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap)
+    power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version == "error-note-v17" else None
+    report["pf5"] = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
+                                       require_power=power["require_power"] if power is not None else True)
+    if power is not None:
+        report["pf5"]["stage_contract"] = power
+        report["pf5"]["effect_status"] = ("PASS" if report["pf5"]["pass"] and report["pf5"]["power"]
+                                         else "UNMEASURED" if power["require_power"] else "NOT_APPLICABLE_F0")
     report["pf2_restored"] = llm_lora.check_identity(llm, bundle, restored.lora_int_id, hooks)
     report["pass"] = all(report[key]["pass"] is True for key in ("pf1", "pf2", "pf3", "pf5", "pf2_restored"))
     return report

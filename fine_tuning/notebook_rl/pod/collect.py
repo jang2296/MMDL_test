@@ -224,16 +224,17 @@ def pack(run_dirs: list[Path], out_dir: Path, name: str,
 
 
 def _seal(out_dir: Path, name: str, fill: Callable[[tarfile.TarFile, list[dict[str, Any]]], None],
-          **fields: Any) -> dict[str, Any]:
+          compression: bool = False, **fields: Any) -> dict[str, Any]:
     """Write <name>.tar (atomic rename, never overwrites) and <name>.manifest.json; fill adds members."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    archive, manifest_path = out_dir / f"{name}.tar", out_dir / f"{name}.manifest.json"
+    suffix = ".tar.gz" if compression else ".tar"
+    archive, manifest_path = out_dir / f"{name}{suffix}", out_dir / f"{name}.manifest.json"
     if archive.exists() or manifest_path.exists():
         raise CollectError("archive or manifest already exists; refusing to overwrite")
     records: list[dict[str, Any]] = []
-    partial = out_dir / f".{name}.tar.partial"
+    partial = out_dir / f".{name}{suffix}.partial"
     try:
-        with tarfile.open(partial, "x") as tar:
+        with tarfile.open(partial, "x:gz" if compression else "x") as tar:
             fill(tar, records)
         os.rename(partial, archive)
     finally:
@@ -384,6 +385,86 @@ def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
 
 # ---------------------------------------------------------------- verify
 
+def pack_eval_resume(run_dir: Path, prereg: Path, ledger: Path, model_ref: Path,
+                     calibration: Path, preflight: Path, out_dir: Path, name: str) -> dict:
+    """Compressed, closed v17 evaluation state; never certify a training resume without optimizer state."""
+    from mmdl.evaluation.writer import RunWriter
+    from fine_tuning.error_note import v17_eval
+    from fine_tuning.notebook_rl import proof_eval as pe
+
+    _check_name(name)
+    registration, prereg_sha = pe.load_preregistration(prereg)
+    if registration["format"] != pe.FORMAT_V12:
+        raise CollectError("v17 resume archive requires its original v12 registration")
+    events, _ = pe.read_ledger(ledger)
+    starts = [e for e in events if e["event"] == "START" and e["run_id"] == run_dir.name]
+    if (len(starts) != 1 or starts[0]["preregistration_sha256"] != prereg_sha
+            or sha256_file(calibration) != registration["calibration_sha256"]
+            or sha256_file(model_ref) != registration["arms"][pe.ARM_SINGLE]["model_ref_sha256"]):
+        raise CollectError("v17 resume archive inputs differ from the original START/model/calibration")
+    manifest = read_json(run_dir / "run_manifest.json")
+    required = ("variant_registration.json", "environment.json", "code_files.json", "locations.json",
+                "resolved_eval_config.yaml", "resolved_hardware_config.yaml")
+    if any(not (run_dir / file).is_file() for file in required):
+        raise CollectError("v17 resume archive lacks run/backend/config/environment identity")
+    if manifest["expected_ids"] != registration["evaluation_subsets"]["all"]["ids"]:
+        raise CollectError("v17 resume archive expected IDs mismatch")
+    # A live writer owns this same nonblocking lock; packing it is refused.
+    with RunWriter(run_dir, manifest["identity"], manifest["expected_ids"], resume=True) as writer:
+        finals = list((run_dir / "final_raw").glob("*.json"))
+        variant = read_json(run_dir / pe.REGISTRATION_FILE)
+        if variant.get("serving_kind") != pe.LORA_KIND:
+            raise CollectError("v17 resume archive requires unmerged serving")
+        for path in finals:
+            final = v17_eval.checked(read_json(path))
+            if final["registration_sha256"] != pe.digest(variant) or final["identity"] != writer.identity:
+                raise CollectError("v17 resume archive has conflicting final raw")
+            row = v17_eval.record_from_final(final)
+            if row["id"] in writer.completed and v17_eval.stable_record(row) != v17_eval.stable_record(writer.completed[row["id"]]):
+                raise CollectError("v17 resume archive sample differs from final raw")
+        if any(not (run_dir / "final_raw" / (sid + ".json")).is_file() for sid in writer.completed):
+            raise CollectError("analysis-only archive has samples without durable raw output receipts")
+        if (writer.completed or finals) and not (run_dir / "backend.json").is_file():
+            raise CollectError("v17 resume archive lacks backend identity")
+        if (writer.completed or finals) and not list((run_dir / "inference_invocations").glob("*.json")):
+            raise CollectError("v17 resume archive lacks invocation provenance")
+        snapshot = v17_eval.incremental_manifest(run_dir, force=True)
+        assert snapshot is not None
+        sources = []
+        for entry in snapshot["files"]:
+            path = run_dir.parents[1] / entry["path"]
+            _plain_file(path, run_dir.parents[1])
+            if sha256_file(path) != entry["sha256"]:
+                raise CollectError("v17 resume source changed after snapshot")
+            sources.append((path, "eval/" + entry["path"]))
+        # Include all remaining provenance and partial request records, but never model weights.
+        for path in sorted(run_dir.rglob("*")):
+            if path.is_file() and not path.name.startswith("."):
+                _plain_file(path, run_dir)
+                sources.append((path, "eval/runs/" + run_dir.name + "/" + str(path.relative_to(run_dir))))
+        for source, target in ((prereg, "prereg.json"), (prereg.with_name(prereg.name + ".sha256"), "prereg.json.sha256"),
+                               (ledger, "ledger.jsonl"), (model_ref, "model_ref.json"), (calibration, "calibration.json"),
+                               (preflight, "preflight.json")):
+            sources.append((source, "eval/inputs/" + target))
+        unique: dict[str, Path] = {}
+        for source, target in sources:
+            if target in unique and unique[target] != source:
+                raise CollectError("duplicate recovery archive target")
+            unique[target] = source
+
+        def fill(tar, records):
+            for target, source in sorted(unique.items()):
+                _add_member(tar, source, target, records)
+
+        status = "FULL900_VERIFIED" if len(writer.completed) == 900 else "INTERRUPTED_RESUMABLE"
+        return _seal(out_dir, name, fill, compression=True, kind=EVAL_KIND, stage="v17-eval-resume",
+                     runs=[run_dir.name], closure="CLOSED", unclosed_runs=[],
+                     eval_runs=[{"run_id": run_dir.name, "status": status}],
+                     eval_run_ids=[run_dir.name], prereg_sha256=prereg_sha,
+                     resume_capability="EVALUATION_ONLY", training_resume_certified=False,
+                     snapshot_sha256=snapshot["sha256"])
+
+
 def check_members(tar: tarfile.TarFile) -> list[tarfile.TarInfo]:
     members = tar.getmembers()
     for member in members:
@@ -407,6 +488,67 @@ def _require_private(path: Path, label: str) -> None:
         raise CollectError(f"{label} {path} must lie under {private_root()} (private, never the repo)")
 
 
+def verify_eval_resume_tree(root: Path, manifest: dict) -> dict:
+    """An analysis pack cannot acquire evaluation-resume certification by changing a label."""
+    from mmdl.evaluation.writer import _load_records
+    from fine_tuning.error_note import v17_eval
+    from fine_tuning.notebook_rl import proof_eval as pe
+
+    if manifest.get("resume_capability") != "EVALUATION_ONLY" or manifest.get("training_resume_certified") is not False:
+        raise CollectError("v17 evaluation archive cannot certify training resume")
+    runs = manifest.get("eval_runs", [])
+    if len(runs) != 1:
+        raise CollectError("v17 resume archive must contain one logical run")
+    rid, inputs = runs[0]["run_id"], root / "eval/inputs"
+    base = root / "eval/runs" / rid
+    required = ("run_manifest.json", "variant_registration.json", "environment.json", "code_files.json",
+                "locations.json", "resolved_eval_config.yaml", "resolved_hardware_config.yaml")
+    if any(not (base / name).is_file() for name in required):
+        raise CollectError("v17 archive lacks identity/config inputs")
+    prereg, prereg_sha = pe.load_preregistration(inputs / "prereg.json")
+    events, _ = pe.read_ledger(inputs / "ledger.jsonl")
+    starts = [e for e in events if e["event"] == "START" and e["run_id"] == rid]
+    registered = read_json(base / pe.REGISTRATION_FILE)
+    run = read_json(base / "run_manifest.json")
+    if (prereg["format"] != pe.FORMAT_V12 or len(starts) != 1
+            or starts[0]["preregistration_sha256"] != prereg_sha
+            or registered.get("preregistration_sha256") != prereg_sha
+            or registered.get("serving_kind") != pe.LORA_KIND or registered.get("slots") != 8
+            or run["expected_ids"] != prereg["evaluation_subsets"]["all"]["ids"]
+            or sha256_file(inputs / "model_ref.json") != registered["model_ref_sha256"]
+            or sha256_file(inputs / "calibration.json") != registered["calibration_sha256"]
+            or sha256_file(inputs / "preflight.json") != registered["preflight_sha256"]):
+        raise CollectError("v17 archive registration/START/model/calibration mismatch")
+    samples = _load_records(base / "samples")
+    invocations = {r["id"]: r for r in (read_json(p) for p in (base / "inference_invocations").glob("*.json"))}
+    finals = {}
+    for path in (base / "final_raw").glob("*.json"):
+        final = v17_eval.checked(read_json(path))
+        row = v17_eval.record_from_final(final)
+        if (path.stem != row["id"] or row["id"] not in run["expected_ids"]
+                or final["registration_sha256"] != pe.digest(registered) or final["identity"] != run["identity"]
+                or final["run_id"] != rid or final["invocation_id"] not in invocations
+                or row["id"] not in invocations[final["invocation_id"]].get("attempted_ids", [])):
+            raise CollectError("v17 archive FINAL_RAW identity mismatch")
+        finals[row["id"]] = row
+    if set(samples) - set(finals):
+        raise CollectError("analysis-only samples lack required FINAL_RAW")
+    if (samples or finals) and (not (base / "backend.json").is_file()
+                               or not list((base / "inference_invocations").glob("*.json"))):
+        raise CollectError("v17 archive lacks backend/invocation provenance")
+    for sid, sample in samples.items():
+        if v17_eval.stable_record(sample) != v17_eval.stable_record(finals[sid]):
+            raise CollectError("v17 archive raw/sample conflict")
+    for row in finals.values():
+        for image in row.get("messages", [{}])[0].get("content", []):
+            if image.get("type") == "image":
+                asset = (base / image["image"]).resolve()
+                if asset.parent != (root / "eval/assets/images").resolve() or sha256_file(asset) != image["sha256"]:
+                    raise CollectError("v17 archive lacks immutable input image")
+    return {"resume_capability": "EVALUATION_ONLY", "training_resume_certified": False,
+            "completed_samples": len(samples), "durable_final_raw": len(finals)}
+
+
 def verify_archive(archive: Path, manifest_path: Path, extract_to: Path,
                    receipt: Path) -> dict[str, Any]:
     manifest = read_json(manifest_path)
@@ -420,7 +562,7 @@ def verify_archive(archive: Path, manifest_path: Path, extract_to: Path,
         raise CollectError("archive sha256 differs from the pack manifest")
     if extract_to.exists() or receipt.exists():
         raise CollectError("extraction directory or receipt already exists")
-    with tarfile.open(archive, "r") as tar:
+    with tarfile.open(archive, "r:*") as tar:
         members = check_members(tar)
         listed = {m.name for m in members if m.isreg()}
         if listed != {f["path"] for f in manifest["files"]}:
@@ -434,7 +576,8 @@ def verify_archive(archive: Path, manifest_path: Path, extract_to: Path,
             raise CollectError(f"extracted path escapes the target: {record['path']}")
         if path.stat().st_size != record["bytes"] or sha256_file(path) != record["sha256"]:
             raise CollectError(f"extracted file differs from manifest: {record['path']}")
-    result = {"version": "pod-local-receipt-v1", "status": "LOCAL_VERIFIED",
+    resume_scope = verify_eval_resume_tree(root, manifest) if manifest.get("stage") == "v17-eval-resume" else {}
+    result = {**resume_scope, "version": "pod-local-receipt-v1", "status": "LOCAL_VERIFIED",
               "archive_sha256": manifest["archive_sha256"],
               "manifest_sha256": sha256_file(manifest_path),
               "closure": manifest.get("closure", "CLOSED"), "pod_id": manifest.get("pod_id"),

@@ -178,7 +178,7 @@ def check_bundle(data: dict[str, Any]) -> str:
 
 def check_dataset(python: str | Path, repo: str | Path, data: dict[str, Any],
                   timeout: float = POOL_FREEZE_TIMEOUT_SECONDS) -> str:
-    """pool_freeze.verify(dataset_manifest, vault_root) must return [] for the pinned manifest.
+    """Validate v17 assembled data, or require legacy pool_freeze.verify() == [] for its pinned manifest.
 
     pool_freeze needs numpy/PIL/yaml, so it runs in the volume venv (already checked by `venv`)
     through its own CLI, which calls verify() and prints the error count; this process stays stdlib.
@@ -187,6 +187,29 @@ def check_dataset(python: str | Path, repo: str | Path, data: dict[str, Any],
         raise ValueError("dataset manifest sha256 differs from the job's pinned value")
     root = Path(repo).resolve()
     environment = {**os.environ, "PYTHONPATH": f"{root}/src{os.pathsep}{root}"}
+    manifest = read_json(data["dataset_manifest"])
+    if isinstance(manifest, dict) and manifest.get("version") == "v17-source-bound-data-v1":
+        assembled = Path(data["dataset_manifest"]).absolute().parent
+        if (Path(data["dataset_manifest"]).name != "dataset-manifest.json"
+                or Path(data["vault_root"]).resolve() != (assembled / "vault").resolve()):
+            raise ValueError("v17 assembled manifest/vault path mismatch")
+        program = ("import hashlib,json,sys; from pathlib import Path; "
+                   "from fine_tuning.error_note.v17_data import validate; "
+                   "root=Path(sys.argv[1]); report=validate(root); "
+                   "report[\'manifest_sha256\']=hashlib.sha256((root/\'dataset-manifest.json\').read_bytes()).hexdigest(); "
+                   "print(json.dumps(report,sort_keys=True))")
+        done = subprocess.run([str(python), "-B", "-c", program, str(assembled)],
+                              capture_output=True, text=True, timeout=timeout, env=environment, cwd=root)
+        try:
+            report = json.loads(done.stdout.strip().splitlines()[-1])
+        except (IndexError, ValueError):
+            raise ValueError(f"v17 data validation printed no report (exit {done.returncode}): "
+                             f"{done.stderr[-300:]}") from None
+        if (done.returncode != 0 or not isinstance(report, dict)
+                or report.get("status") != "PASS_CPU_V17_DATA_WITH_LIMITS"
+                or report.get("manifest_sha256") != data["dataset_manifest_sha256"]):
+            raise ValueError(f"v17 data validation failed (exit {done.returncode}): {done.stderr[-300:]}")
+        return "v17_data.validate(assembled_root) passed in the volume venv"
     done = subprocess.run(
         [str(python), "-B", "-m", "fine_tuning.notebook_rl.pool_freeze", "verify",
          "--manifest", data["dataset_manifest"], "--vault", data["vault_root"]],

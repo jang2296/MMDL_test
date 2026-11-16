@@ -95,11 +95,12 @@ FORMAT_V8 = "notebook-rl-proof-prereg-v8"  # v7 arms; one 900-item run per arm (
 FORMAT_V9 = "notebook-rl-proof-prereg-v9"  # v8 arms and variant; half-a, then half-b only past the screen gate
 FORMAT_V10 = "notebook-rl-proof-prereg-v10"  # v9 rules for a v15 export whose adapters are applied unmerged
 FORMAT_V11 = "notebook-rl-proof-prereg-v11"  # v16b: one full 900-item pass, unmerged; no screen gate
+FORMAT_V12 = "notebook-rl-proof-prereg-v12"  # v17: measured watchdog, eight KV-checked slots, same-START resume
 TWO_STAGE = (FORMAT_V9, FORMAT_V10)
 ARM_SINGLE = "FT-SINGLE"
 ALL_ARMS = ARMS + (ARM_V2, ARM_V3, ARM_V4, ARM_SINGLE)
 FINAL_ARMS = {FORMAT_V5: ARM_V3, FORMAT_V6: ARM_V4, FORMAT_V7: ARM_SINGLE, FORMAT_V8: ARM_SINGLE,
-              FORMAT_V9: ARM_SINGLE, FORMAT_V10: ARM_SINGLE, FORMAT_V11: ARM_SINGLE}  # one checkpoint declared before a single 900-item pass (v9: in two halves)
+              FORMAT_V9: ARM_SINGLE, FORMAT_V10: ARM_SINGLE, FORMAT_V11: ARM_SINGLE, FORMAT_V12: ARM_SINGLE}  # one checkpoint declared before a single 900-item pass (v9: in two halves)
 # final arm -> (preregistration tag, export tag, checkpoint kind, gate format, gate result key)
 FINAL_TAGS = {ARM_V3: ("v5", "v3", "NOTE", "error-note-final-gate-v3", "ft_note_v3"),
               ARM_V4: ("v6", "v4", "hybrid", "error-note-final-gate-v4", "ft_hyb_v4"),
@@ -140,7 +141,7 @@ GATE_62_NOTE = _GATE_SE + ("The run also differs from B2 in the 8192-token cap, 
 FINAL_VARIANT_V8 = "mmmu-val-v8-b2-seed3407-v1"
 GATE_B2_NOTE = _GATE_SE + ("The run has the B2 conditions (32768-token cap, 1003520..4014080 pixels, 40960 context) "
                            "and differs from B2 in the checkpoint, the slots and the GPU")
-FINAL_VARIANT = {FORMAT_V8: FINAL_VARIANT_V8, FORMAT_V9: FINAL_VARIANT_V8, FORMAT_V10: FINAL_VARIANT_V8, FORMAT_V11: FINAL_VARIANT_V8}  # final format -> its one variant; other final formats: GATE_62_VARIANT
+FINAL_VARIANT = {FORMAT_V8: FINAL_VARIANT_V8, FORMAT_V9: FINAL_VARIANT_V8, FORMAT_V10: FINAL_VARIANT_V8, FORMAT_V11: FINAL_VARIANT_V8, FORMAT_V12: FINAL_VARIANT_V8}  # final format -> its one variant; other final formats: GATE_62_VARIANT
 # The evaluator's summary status of a run that finished every planned item: full runs end COMPLETE, partial
 # (--sample-id) runs end PARTIAL; anything else (INCOMPLETE, RUNNING, absent) is not finished.
 FINISHED = {"course": "COMPLETE", "statistical": "PARTIAL"}
@@ -281,14 +282,18 @@ def _single_versions() -> tuple[str, ...]:
                              getattr(protocol, "VERSION_SINGLE_V14", None),
                              getattr(protocol, "VERSION_SINGLE_V15", None),
                              getattr(protocol, "VERSION_CONTENT_V16", None),
-                             getattr(protocol, "VERSION_V16B", None)) if v)
+                             getattr(protocol, "VERSION_V16B", None), getattr(protocol, "VERSION_V17", None)) if v)
 
 
 def _lora_protocol(protocol: dict) -> bool:
     """A v15 protocol: its policy is applied unmerged (training rollouts and evaluation)."""
     from fine_tuning.error_note.protocol import ROLLOUT_ADAPTER_V15
 
-    if protocol.get("version") == "error-note-v16b":
+    if protocol.get("version") == "error-note-v17":
+        from fine_tuning.error_note.protocol import validate_protocol_v17
+
+        validate_protocol_v17(protocol)
+    elif protocol.get("version") == "error-note-v16b":
         from fine_tuning.error_note.protocol import validate_protocol_v16b
 
         validate_protocol_v16b(protocol)
@@ -317,7 +322,7 @@ def _binding_file(path: Path) -> tuple[dict, dict | None]:
     """(binding, plan): a binding JSON, a launch.json holding 'binding', or a single campaign's sealed
     campaign-plan.json, whose checkpoint binding is single_campaign._binding(plan) (plan returned, else None)."""
     loaded = json.loads(Path(path).read_text(encoding="utf-8"))
-    if isinstance(loaded, dict) and loaded.get("protocol", {}).get("version") == "error-note-v16b":
+    if isinstance(loaded, dict) and loaded.get("protocol", {}).get("version") in ("error-note-v16b", "error-note-v17"):
         from fine_tuning.error_note import campaign_v16b
 
         campaign_v16b._plan_check(loaded)
@@ -350,7 +355,7 @@ def _single_stage(slot: int, consumed: int, last: int, *, content_v16: bool = Fa
 def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path) -> dict:
     """The pilot, final or stopped checkpoint of the one campaign whose sealed plan binds it. A stopped one must
     be the campaign's newest committed checkpoint (campaign-state.json beside it), so no earlier one is picked."""
-    if metadata["protocol"].get("version") == "error-note-v16b":
+    if metadata["protocol"].get("version") in ("error-note-v16b", "error-note-v17"):
         from fine_tuning.error_note.campaign_v16b import export_metadata
 
         if plan is None:
@@ -427,7 +432,8 @@ def _v4_model_ref(path: Path) -> tuple[dict, dict]:
 def _final_model_ref(path: Path, fmt: str) -> tuple[dict, dict]:
     readers: dict[str, Callable[[Path], tuple[dict, dict]]] = {
         FORMAT_V6: _v4_model_ref, FORMAT_V7: _single_model_ref, FORMAT_V8: _single_model_ref,
-        FORMAT_V9: _single_model_ref, FORMAT_V10: _lora_model_ref, FORMAT_V11: _lora_model_ref}
+        FORMAT_V9: _single_model_ref, FORMAT_V10: _lora_model_ref, FORMAT_V11: _lora_model_ref,
+        FORMAT_V12: _lora_model_ref}
     return readers.get(fmt, _v3_model_ref)(path)
 
 
@@ -446,7 +452,11 @@ def _single_model_ref(path: Path, *, lora: bool = False) -> tuple[dict, dict]:
     protocol, campaign, binding = (export.get(key, {}) for key in ("training_protocol", "campaign", "binding"))
     if protocol.get("version") not in _single_versions():
         raise ValueError("proof_eval: v7 evaluation requires an error-note-single-response export")
-    if protocol.get("version") == "error-note-v16b":
+    if protocol.get("version") == "error-note-v17":
+        from fine_tuning.error_note.protocol import validate_protocol_v17
+
+        validate_protocol_v17(protocol)
+    elif protocol.get("version") == "error-note-v16b":
         from fine_tuning.error_note.protocol import validate_protocol_v16b
 
         validate_protocol_v16b(protocol)
@@ -465,7 +475,7 @@ def _single_model_ref(path: Path, *, lora: bool = False) -> tuple[dict, dict]:
             or type(campaign.get("slot")) is not int
             or campaign["stage"] != _single_stage(campaign["slot"], 0, protocol["training_contract"]["total_slots"],
                 content_v16=protocol.get("version") == "error-note-content-v16",
-                v16b=protocol.get("version") == "error-note-v16b")
+                v16b=protocol.get("version") in ("error-note-v16b", "error-note-v17"))
             or ref.get("train_config_sha256") != digest(protocol)
             or binding.get("protocol_sha256") != protocol["sha256"]
             or binding.get("prompts_sha256") != protocol["prompts_sha256"]
@@ -669,7 +679,8 @@ def _fast_execution(contracts, slots: int = FAST_SLOTS, pid: str = GATE_62_VARIA
 
 
 @contextmanager
-def registered_variants(on_backend: Callable[[], None] | None = None, slots: int = FAST_SLOTS) -> Iterator[None]:
+def registered_variants(on_backend: Callable[[], None] | None = None, slots: int = FAST_SLOTS, *,
+                        after_backend: Callable[[Any], None] | None = None, log_stats: bool = False) -> Iterator[None]:
     """Register exactly the statistical IDs (8k and b2, each with its VARIANT_LIMITS) in this process; tables and
     functions are restored on exit.
 
@@ -734,8 +745,10 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
                 if kwargs.get("max_num_seqs") != 2:
                     raise RuntimeError("proof_eval: unexpected VLLMBackend structure; refusing to widen slots")
                 if lora:
-                    return lora_llm(llm_cls, kwargs | {"max_num_seqs": slots})
-                return llm_cls(**kwargs | {"max_num_seqs": slots})
+                    return lora_llm(llm_cls, kwargs | {"max_num_seqs": slots} |
+                                    ({"disable_log_stats": False} if log_stats else {}))
+                return llm_cls(**kwargs | {"max_num_seqs": slots} |
+                               ({"disable_log_stats": False} if log_stats else {}))
             return llm, sampling_cls, version
 
         vllm_backend._vllm = widened
@@ -748,6 +761,8 @@ def registered_variants(on_backend: Callable[[], None] | None = None, slots: int
         self.cfg, self.batch_size = cfg, slots
         if lora:
             attach_lora(self, Path(model_path))
+        if after_backend is not None:
+            after_backend(self)
 
     try:
         for pid in REGISTERED:
@@ -828,8 +843,13 @@ def run_eval(argv: list[str]) -> int:
     pre = argparse.ArgumentParser(prog="proof_eval run-eval", add_help=False)
     pre.add_argument("--protocol", type=Path, required=True)
     pre.add_argument("--run-id", required=True)
+    pre.add_argument("--model-ref", type=Path)
     pre.add_argument("--artifact-root", type=Path, default=default_path("MMDL_ARTIFACT_ROOT", "mmdl-artifacts"))
     known, _ = pre.parse_known_args(argv)
+    if known.model_ref is not None and known.model_ref.is_file():
+        model_ref = json.loads(known.model_ref.read_text(encoding="utf-8"))
+        if model_ref.get("export", {}).get("training_protocol", {}).get("version") == "error-note-v17":
+            raise ValueError("proof_eval: v17 requires fine_tuning.error_note.v17_eval run/resume")
     protocol = known.protocol if known.protocol.is_absolute() else ROOT / known.protocol
     pid = yaml.safe_load(protocol.read_text(encoding="utf-8")).get("protocol_id")
     if pid not in REGISTERED or sha256_file(protocol) != sha256_file(VARIANTS[pid][0]):
@@ -1179,8 +1199,9 @@ def _single_definition(ref: dict) -> str:
     protocol, campaign = ref["export"]["training_protocol"], ref["export"]["campaign"]
     contract = protocol["training_contract"]
     schedule = f", LR schedule over {contract['schedule_steps']} steps" if "schedule_steps" in contract else ""
-    if protocol["version"] == "error-note-v16b":
-        return (f"single BF16 checkpoint of v16b self-note RL + verified self-generated SFT: "
+    if protocol["version"] in ("error-note-v16b", "error-note-v17"):
+        label = "v17" if protocol["version"] == "error-note-v17" else "v16b"
+        return (f"single BF16 checkpoint of {label} self-note RL + verified self-generated SFT: "
                 f"{contract['prep_updates']} preparation updates, {contract['rl_blocks']} planned RL blocks, "
                 f"one first solve and at most one lesson-only retry per parent; continuous fixed schedule; "
                 f"{campaign['stage']} at update {campaign['slot']} ({campaign['updates']} optimizer updates); "
@@ -1280,6 +1301,42 @@ def build_preregistration_v11(subset: Path, rest_subset: Path, all_subset: Path,
     return value
 
 
+def build_preregistration_v12(subset: Path, rest_subset: Path, all_subset: Path, b2_predictions: Path,
+                              ft_model_ref: Path, calibration: Path) -> dict:
+    """v17 has one final unmerged checkpoint and an immutable measured timeout."""
+    from fine_tuning.error_note.v17_eval import CAPACITY_RULE, SLOTS, calibration_timeout, load_calibration
+
+    measured = load_calibration(calibration)
+    ref, _ = _lora_model_ref(ft_model_ref)
+    if (ref["export"]["training_protocol"]["version"] != "error-note-v17"
+            or ref["export"]["campaign"]["stage"] != "final"):
+        raise ValueError("proof_eval: v12 requires the planned final v17 unmerged export")
+    value = build_preregistration_v8(subset, rest_subset, all_subset, b2_predictions, ft_model_ref,
+                                     model_ref=_lora_model_ref)
+    value["format"] = FORMAT_V12
+    value["display_thresholds"] = {"minimum_correct": 559, "target_correct": 585}
+    value["notes"][1] = "v17: one final unmerged 900-item run, eight KV-checked slots, same START on resume"
+    value["notes"][2] = "F0 metadata binds model identity only; no new F0 MMMU run is authorized"
+    value["arms"][ARM_SINGLE]["definition"] = _single_definition(ref)
+    value["runs"] = [r for r in value["runs"] if r["arm"] == ARM_SINGLE]
+    value["mmmu_val_budget"]["runs"] = 1
+    value["model_application"] = {"serving_kind": LORA_KIND, "application": APPLICATION}
+    value["supplementary_scoring"] = {"separate_from_v8": True, "used_for_training": False,
+                                      "after": "FULL900_VERIFIED"}
+    value["calibration"], value["calibration_sha256"] = measured, sha256_file(calibration)
+    value["evaluation_watchdog_seconds"] = calibration_timeout(measured)
+    value["execution_contract"] = {"slots": SLOTS, "capacity_rule_sha256": digest(CAPACITY_RULE),
+                                    "serving_kind": LORA_KIND, "same_start_resume": True,
+                                    "downtime_counts": True, "deadline_extension": "append-only-user-receipt"}
+    from fine_tuning.error_note.contract import is_loop
+
+    value["reference_finish_strata"] = {row["id"]: {
+        "correct": row["correct"], "finish_reason": row.get("finish_reason"),
+        "is_loop": is_loop(row.get("raw_response", ""))}
+        for row in (json.loads(line) for line in b2_predictions.read_text(encoding="utf-8").splitlines() if line.strip())}
+    return value
+
+
 def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictions: Path, arm: str, declared: dict,
                                    definition: str) -> dict:
     value = build_preregistration_v4(subset, rest_subset, b2_predictions)
@@ -1299,27 +1356,34 @@ def build_preregistration_v5_shape(subset: Path, rest_subset: Path, b2_predictio
 def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: Path = B2_PREDICTIONS,
                 fmt: str = "v3", ft_v3_model_ref: Path | None = None, ft_v4_model_ref: Path | None = None,
                 ft_single_model_ref: Path | None = None, all_subset: Path | None = None,
-                half_a_subset: Path | None = None, half_b_subset: Path | None = None) -> str:
+                half_a_subset: Path | None = None, half_b_subset: Path | None = None,
+                calibration: Path | None = None) -> str:
     """Write-once preregistration plus ``<output>.sha256``; v5-v9 pin a previously exported final model reference."""
     output = Path(output)
     if (fmt == "v5") != (ft_v3_model_ref is not None):
         raise ValueError("proof_eval: --format v5 requires --ft-v3-model-ref; the flag is v5-only")
     if (fmt == "v6") != (ft_v4_model_ref is not None):
         raise ValueError("proof_eval: --format v6 requires --ft-v4-model-ref; the flag is v6-only")
-    if (fmt in ("v7", "v8", "v9", "v10", "v11")) != (ft_single_model_ref is not None):
+    if (fmt in ("v7", "v8", "v9", "v10", "v11", "v12")) != (ft_single_model_ref is not None):
         raise ValueError("proof_eval: --format v7/v8/v9/v10/v11 requires --ft-single-model-ref; the flag is v7-v11-only")
-    if (fmt in ("v8", "v11")) != (all_subset is not None):
+    if (fmt in ("v8", "v11", "v12")) != (all_subset is not None):
         raise ValueError("proof_eval: --format v8/v11 requires --all-subset; the flag is v8/v11-only")
     if any((fmt in ("v9", "v10")) != (path is not None) for path in (half_a_subset, half_b_subset)):
         raise ValueError("proof_eval: --format v9/v10 requires --half-a-subset and --half-b-subset; the flags are v9-only and v10-only")
+    if (fmt == "v12") != (calibration is not None):
+        raise ValueError("proof_eval: --format v12 requires --calibration; the flag is v12-only")
     if half_a_subset is not None:
         assert half_b_subset is not None and ft_single_model_ref is not None
         build = build_preregistration_v10 if fmt == "v10" else build_preregistration_v9
         value = build(subset, rest_subset, half_a_subset, half_b_subset, b2_predictions, ft_single_model_ref)
     elif all_subset is not None:
         assert ft_single_model_ref is not None
-        build_all = build_preregistration_v11 if fmt == "v11" else build_preregistration_v8
-        value = build_all(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref)
+        if fmt == "v12":
+            assert calibration is not None
+            value = build_preregistration_v12(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref, calibration)
+        else:
+            build_all = build_preregistration_v11 if fmt == "v11" else build_preregistration_v8
+            value = build_all(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref)
     elif ft_single_model_ref is not None:
         value = build_preregistration_v7(subset, rest_subset, b2_predictions, ft_single_model_ref)
     elif ft_v4_model_ref is not None:
@@ -1350,14 +1414,14 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
         variant = FINAL_VARIANT.get(prereg["format"], GATE_62_VARIANT)
         subsets = prereg["evaluation_subsets"]
         b2_ids = sorted(prereg["b2_reference"]["wrong_ids"] + prereg["b2_reference"]["right_ids"])
-        expected_ids = ({"all": (b2_ids, 900)} if prereg["format"] in (FORMAT_V8, FORMAT_V11) else
+        expected_ids = ({"all": (b2_ids, 900)} if prereg["format"] in (FORMAT_V8, FORMAT_V11, FORMAT_V12) else
                         dict(zip(HALVES, ((ids, 450) for ids in _halves(b2_ids)))) if prereg["format"] in TWO_STAGE else
                         {"wrong": (prereg["b2_reference"]["wrong_ids"], 342), "rest": (prereg["b2_reference"]["right_ids"], 558)})
-        if prereg["format"] == FORMAT_V11 and ("screen_gate" in prereg or prereg.get("supplementary_scoring", {}).get("separate_from_v8") is not True):
+        if prereg["format"] in (FORMAT_V11, FORMAT_V12) and ("screen_gate" in prereg or prereg.get("supplementary_scoring", {}).get("separate_from_v8") is not True):
             raise ValueError("proof_eval: v11 has no screen gate and requires separate supplementary scoring")
         tags = tuple(expected_ids)  # v5-v7: wrong, rest; v8: all; v9: half-a, half-b (run order)
         expected_runs = [{"arm": arm, "variant": variant, "subset": tag, "role": "statistical"}
-                         for arm in ((final,) if prereg["format"] == FORMAT_V11 else ("F0", final)) for tag in tags]
+                         for arm in ((final,) if prereg["format"] in (FORMAT_V11, FORMAT_V12) else ("F0", final)) for tag in tags]
         if (set(prereg["arms"]) != {"F0", final} or prereg["runs"] != expected_runs
                 or prereg["protocol_variants"] != {variant: _variant_entry(variant)}
                 or set(subsets) != set(tags) or len(set(b2_ids)) != 900
@@ -1373,6 +1437,17 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
             if not re.fullmatch(r"[0-9a-f]{64}", str(prereg["arms"][final].get(key, ""))):
                 tag, _, kind, *_ = FINAL_TAGS[final]
                 raise ValueError(f"proof_eval: {tag} final {kind} model reference is not bound")
+    if prereg["format"] == FORMAT_V12:
+        from fine_tuning.error_note.v17_eval import CAPACITY_RULE, SLOTS, calibration_timeout
+
+        if (prereg.get("execution_contract") != {
+                "slots": SLOTS, "capacity_rule_sha256": digest(CAPACITY_RULE), "serving_kind": LORA_KIND,
+                "same_start_resume": True, "downtime_counts": True,
+                "deadline_extension": "append-only-user-receipt"}
+                or prereg.get("evaluation_watchdog_seconds") != calibration_timeout(prereg.get("calibration", {}))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(prereg.get("calibration_sha256", "")))
+                or set(prereg.get("reference_finish_strata", {})) != set(b2_ids)):
+            raise ValueError("proof_eval: v17 measured evaluation registration mismatch")
     return prereg, value
 
 
@@ -1749,7 +1824,18 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
         if cells:
             full_900[arm] = {"items": total, "seeds": cells, "mean_correct": _mean(c["correct"] for c in cells.values())}
     screen = _screen(prereg, subsets, full_900, starts, failed) if v9 else None
+    strata = {}
+    if prereg["format"] == FORMAT_V12:
+        from fine_tuning.error_note.v17_eval import paired_report
+
+        reference = prereg["reference_finish_strata"]
+        for key, run in runs.items():
+            rows = [json.loads(line) for line in (Path(run["run_dir"]) / "predictions.jsonl").read_text().splitlines()]
+            candidate = {r["id"]: r for r in rows}
+            # Frozen loop flags, not candidate behavior, define the historical strata.
+            strata[key[0]] = paired_report(reference, candidate)
     return {
+        **({"reference_finish_strata": strata} if strata else {}),
         "format": "notebook-rl-proof-report-v2", "preregistration_sha256": prereg_sha,
         **({"preregistration_format": prereg["format"]} if final is not None else {}),
         "single_answer_rule": prereg["single_answer_rule"],
@@ -1990,6 +2076,16 @@ def render_markdown(report: dict) -> str:
         lines += [f"| {arm} | {seed} | {c['correct']} | {pct(c['accuracy'])}% |"
                   for arm, block in report["full_900"].items() for seed, c in block["seeds"].items()]
         lines.append("")
+    for arm, strata in report.get("reference_finish_strata", {}).items():
+        lines += [f"Reference termination strata ({arm}; stored B2 comparison):", "",
+                  "| stratum | n | B2 correct | candidate correct | gains | losses | net | McNemar p |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for tag in ("reference_length_or_loop", "reference_normal", "both_normal", "candidate_only_length_or_loop"):
+            row = strata[tag]
+            lines.append(f"| {tag} | {row['n']} | {row['reference_correct']} | {row['candidate_correct']} | "
+                         f"{row['f0_wrong_ft_right']} | {row['f0_right_ft_wrong']} | {row['net_change']} | "
+                         f"{row['p_value']:.4g} |")
+        lines += ["", strata["content_accuracy_improvement"], ""]
     lines += [f"Course-facing run: {report['course_facing']['status']}", ""]
     lines += [f"- Limitation: {text}" for text in report["limitations"]]
     lines += ["", report["single_answer_rule"], ""]
@@ -2027,13 +2123,14 @@ def main(argv: list[str] | None = None) -> int:
     pre.add_argument("--all-subset", type=Path, help="v8/v11 only: proof-eval-subset-all-v1 JSON, the 900 sorted original IDs")
     pre.add_argument("--half-a-subset", type=Path, help="v9/v10 only: proof-eval-subset-half-a-v1 JSON (450 IDs)")
     pre.add_argument("--half-b-subset", type=Path, help="v9/v10 only: proof-eval-subset-half-b-v1 JSON (450 IDs)")
-    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11"), default="v3",
+    pre.add_argument("--format", choices=("v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12"), default="v3",
                      help=f"v3 = {FORMAT}, v4 = {FORMAT_V4}, v5 = {FORMAT_V5} (final FT-NOTE-V3, declared checkpoint), "
                           f"v6 = {FORMAT_V6} (final FT-HYB-V4), v7 = {FORMAT_V7} (final FT-SINGLE), "
                           f"v8 = {FORMAT_V8} (final FT-SINGLE, one 900-item run), "
                           f"v9 = {FORMAT_V9} (final FT-SINGLE, half-a then half-b past the screen gate), "
                           f"v10 = {FORMAT_V10} (v9 for a v15 export with unmerged adapters), "
                           f"v11 = {FORMAT_V11} (v16b unmerged, one full 900-item run)")
+    pre.add_argument("--calibration", type=Path, help="v12 only: sealed measured v17 calibration receipt")
     pre.add_argument("--ft-v3-model-ref", type=Path, help="required for v5; final NOTE export fixed before evaluation")
     pre.add_argument("--ft-v4-model-ref", type=Path, help="required for v6; final hybrid export fixed before evaluation")
     pre.add_argument("--ft-single-model-ref", type=Path, help="required for v7; final campaign export fixed before evaluation")
@@ -2102,7 +2199,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref, all_subset=args.all_subset, half_a_subset=args.half_a_subset, half_b_subset=args.half_b_subset)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref, all_subset=args.all_subset, half_a_subset=args.half_a_subset, half_b_subset=args.half_b_subset, calibration=args.calibration)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset,
                              artifact_root=artifact_root())

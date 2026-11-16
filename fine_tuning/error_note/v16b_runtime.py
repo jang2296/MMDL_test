@@ -65,6 +65,29 @@ def kv_budget_v16b(extra_reserved_gib: float) -> float:
     return budget
 
 
+def reserve_request_v17(prepared: dict, actual_kv_tokens: int, block_size: int,
+                        live_reservations: list[int], *, active: int, ceiling: int = 16) -> dict:
+    """Reserve the entire prepared prompt and future completion, including native waiting requests."""
+    values = (actual_kv_tokens, block_size, ceiling)
+    if any(type(v) is not int or v < 1 for v in values) or ceiling > 16:
+        raise ValueError("v17 capacity: positive measured KV, block size and ceiling <=16 required")
+    prompt, cap = prepared["prompt_tokens"], prepared["max_tokens"]
+    if (type(prompt) is not int or prompt < 0 or type(cap) is not int or cap < 1
+            or type(active) is not int or active < 0 or active != len(live_reservations)
+            or any(type(v) is not int or v < 1 or v % block_size for v in live_reservations)):
+        raise ValueError("v17 capacity: exact prompt, cap and live reservation ledger required")
+    usable = actual_kv_tokens * 9 // 10
+    reserve = ((prompt + cap + block_size - 1) // block_size) * block_size
+    if reserve > usable:
+        raise RuntimeError("CAPACITY_INSUFFICIENT: one full request exceeds actual usable training KV")
+    reserved = sum(live_reservations)
+    if reserved > usable or active > ceiling:
+        raise RuntimeError("v17 capacity: live reservation ledger exceeds capacity")
+    return {"version": "full-request-reservation-v1", "train_KV_capacity": actual_kv_tokens,
+            "usable_tokens": usable, "block_size": block_size, "request_reserved_tokens": reserve,
+            "reserved_tokens": reserved, "active": active, "ceiling": ceiling,
+            "status": "ADMIT" if active < ceiling and reserved + reserve <= usable else "WAIT"}
+
 @dataclass
 class RuntimeCallbacks:
     make_request: Callable
@@ -74,6 +97,7 @@ class RuntimeCallbacks:
     update: Callable | None = None
     checkpoint: Callable | None = None
     guard: Callable | None = None
+    checkpoint_due: Callable | None = None
 
 
 class LocalSequentialSampler:
@@ -180,6 +204,12 @@ class V16bScheduler:
                  callbacks: RuntimeCallbacks, restore: bool = False):
         self.sampler, self.plan, self.protocol = sampler, plan, protocol
         self.grade, self.verify, self.callbacks = grade, verify, callbacks
+        self.v17 = protocol.get("version") == "error-note-v17"
+        self._submitting = False
+        self.admission_wait_seconds = 0.0
+        self._heartbeat_at = 0.0
+        self.host_stage_seconds = {"request_preparation": 0.0, "completion_validation": 0.0,
+                                   "row_construction": 0.0, "journal_serialization": 0.0}
         self.out, self.local_sequential = Path(out), local_sequential
         self.out.mkdir(parents=True, exist_ok=True)
         if isinstance(items, dict):
@@ -219,10 +249,12 @@ class V16bScheduler:
             raise RuntimeError("v16b runtime: existing request journal requires explicit drain restore")
 
     def _append(self, event: dict) -> None:
+        serialization_started = time.perf_counter()
         with (self.out / "requests.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
+        self.host_stage_seconds["journal_serialization"] += time.perf_counter() - serialization_started
 
     def _submit_stage(self, block: int, kind: str, version: int) -> None:
         if not 0 <= block < len(self.blocks):
@@ -233,7 +265,9 @@ class V16bScheduler:
         self.stages[key] = []
         for item in self.blocks[block]:
             pid = item["problem_id"]
+            preparation_started = time.perf_counter()
             request = self.callbacks.make_request(item, kind, version, self.records[pid])
+            self.host_stage_seconds["request_preparation"] += time.perf_counter() - preparation_started
             if request is None:
                 if kind == "RESOLVE" and hasattr(self.sampler, "forget_item"):
                     self.sampler.forget_item(pid)
@@ -259,21 +293,43 @@ class V16bScheduler:
             previous = self._rollback_started.get(rid)
             if previous is not None and previous != _pin(stored):
                 raise RuntimeError("v16b runtime: rollback changed the original policy, seed or request")
+            prepared = None
+            if self.v17 and not self.local_sequential:
+                preparation_started = time.perf_counter()
+                prepared = self.sampler.prepare_request_v17(request)
+                self.host_stage_seconds["request_preparation"] += time.perf_counter() - preparation_started
+                wait_started = time.perf_counter()
+                while not self.sampler.can_submit_v17(prepared):
+                    if not self.sampler.has_unfinished_requests():
+                        raise RuntimeError("CAPACITY_INSUFFICIENT: no live request can release training KV")
+                    self.step()
+                self.admission_wait_seconds += time.perf_counter() - wait_started
+                request["admit_step"] = self.sampler.engine_steps
             self._append({"status": "STARTED", **stored})
             self.requests[rid] = stored
             self.stages[key].append(rid)
-            self.sampler.submit(request)
+            if prepared is None:
+                self.sampler.submit(request)
+            else:
+                self.sampler.submit(request, prepared=prepared)
 
     def submit_for_version(self, v: int) -> None:
         if v != self.version or v > self.last_update:
             raise ValueError("v16b runtime: admission version differs from the update cursor")
-        if v == 0:
-            self._submit_stage(0, "T1", v)
-            self._submit_stage(0, "OBS", v)
-        self._submit_stage(v + 1, "T1", v)
-        self._submit_stage(v + 1, "OBS", v)
-        self._submit_stage(v - 1, "NOTE", v)
-        self._submit_stage(v - 2, "RESOLVE", v)
+        self._submitting = True
+        try:
+            if v == 0:
+                self._submit_stage(0, "T1", v)
+                self._submit_stage(0, "OBS", v)
+            self._submit_stage(v + 1, "T1", v)
+            self._submit_stage(v + 1, "OBS", v)
+            self._submit_stage(v - 1, "NOTE", v)
+            self._submit_stage(v - 2, "RESOLVE", v)
+        except BaseException:
+            # An incomplete stage is never a closed admission/checkpoint boundary.
+            raise
+        else:
+            self._submitting = False
 
     def _closed_stage(self, block: int, kind: str) -> bool:
         if not 0 <= block < len(self.blocks):
@@ -282,7 +338,7 @@ class V16bScheduler:
         return key in self.stages and all(rid in self.closed for rid in self.stages[key])
 
     def ready_for_update(self, v: int) -> bool:
-        return (v == self.version and all(self._closed_stage(b, kind) for b, kind in
+        return (not self._submitting and v == self.version and all(self._closed_stage(b, kind) for b, kind in
                 ((v, "T1"), (v, "OBS"), (v - 1, "NOTE"), (v - 3, "RESOLVE")))
                 and self.sampler.prefill_barrier())
 
@@ -291,6 +347,16 @@ class V16bScheduler:
         started = time.perf_counter()
         outputs = self.sampler.step()
         self.generation_seconds += time.perf_counter() - started
+        now = time.perf_counter()
+        if (self.v17 and not self.local_sequential and hasattr(self.sampler, "heartbeat_v17")
+                and now - self._heartbeat_at >= 60):
+            self.sampler.admission_wait_seconds = self.admission_wait_seconds
+            heartbeat = {"schema": "v17-train-heartbeat-v1", "slot": self.version,
+                         "engine_steps": self.sampler.engine_steps, "clock": "time.perf_counter",
+                         "observed_at": now, **self.sampler.heartbeat_v17()}
+            _write(self.out / "train-heartbeat.json", heartbeat)
+            print("V17_TRAIN_HEARTBEAT " + json.dumps(heartbeat, sort_keys=True), flush=True)
+            self._heartbeat_at = now
         for request, output in outputs:
             rid, pid, kind = request["request_id"], request["problem_id"], request["kind"]
             if rid not in self.requests or rid in self.closed:
@@ -303,7 +369,9 @@ class V16bScheduler:
             record[kind.lower()] = output
             item = self.blocks[request["block_id"]][[i["problem_id"] for i in self.blocks[request["block_id"]]].index(pid)]
             if self.callbacks.complete is not None:
+                validation_started = time.perf_counter()
                 updates = self.callbacks.complete(item, kind, output, record)
+                self.host_stage_seconds["completion_validation"] += time.perf_counter() - validation_started
                 if updates:
                     record.update(updates)
             self.closed[rid] = output
@@ -316,11 +384,13 @@ class V16bScheduler:
     def rows_for_update(self, v: int) -> list[dict]:
         if not self.ready_for_update(v):
             raise RuntimeError("v16b runtime: update dependencies or visual-prefill barrier are open")
+        construction_started = time.perf_counter()
         rows = []
         for block, kind in ((v, "T1"), (v, "OBS"), (v - 1, "NOTE"), (v - 3, "RESOLVE")):
             if 0 <= block < len(self.blocks):
                 for item in self.blocks[block]:
                     rows.extend(self.callbacks.rows(kind, item, self.records[item["problem_id"]]))
+        self.host_stage_seconds["row_construction"] += time.perf_counter() - construction_started
         payload = {"version": v, "rows": rows}
         path = self.out / f"rows-{v}.json"
         if path.exists() and json.loads(path.read_text()) != payload:
@@ -391,7 +461,7 @@ class V16bScheduler:
                 "coexistence_reports": getattr(self.sampler, "coexistence_reports", [])}
 
     def save_drain_state(self, *, name: str = "drain-state.json") -> dict:
-        if self.sampler.has_unfinished_requests() or set(self.requests) != set(self.closed):
+        if self._submitting or self.sampler.has_unfinished_requests() or set(self.requests) != set(self.closed):
             raise RuntimeError("v16b runtime: checkpoint requires a complete engine drain")
         state = self.state()
         journal = self.out / "requests.jsonl"
@@ -483,6 +553,8 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
         return {"status": "COMPLETE", "version": runtime.version, "updates": [], "state": runtime.state()}
     slot_started = time.perf_counter()
     generation_before = runtime.generation_seconds
+    host_stage_before = dict(runtime.host_stage_seconds)
+    admission_before = runtime.admission_wait_seconds
     sampler.add_version(bundle, runtime.version)
     while getattr(sampler, "_ready_outputs", None):
         runtime.step()
@@ -499,7 +571,11 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
                    or r.get("pg") is True]
         mixed = sum(bool(r.get("mixed_version", r.get("generation", {}).get("mixed_version"))) for r in rl_rows)
         contract = runtime.update_contract(v)
-        if rl_rows and mixed / len(rl_rows) > .05:
+        if runtime.v17:
+            mixed_all = sum(bool(r.get("mixed_version", r.get("generation", {}).get("mixed_version"))) for r in rows)
+            if mixed_all:
+                contract.update(external_hold="MIXED_VERSION", mixed_fraction=mixed_all / len(rows))
+        elif rl_rows and mixed / len(rl_rows) > .05:
             contract.update(external_hold="MIXED_VERSION", mixed_fraction=mixed / len(rl_rows))
         with deterministic_update():
             update_started = time.perf_counter()
@@ -513,7 +589,9 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
             stop.append("STOP_REQUESTED")
         if (Path(out) / "WATCHDOG_STOP").exists():
             stop.append("WATCHDOG_STOP")
-        checkpoint = bool(stop) or (protocol.get("prep_updates", 0) + runtime.version) % 8 == 0 or v == runtime.last_update
+        checkpoint = (bool(stop) or (protocol.get("prep_updates", 0) + runtime.version) % 8 == 0 or v == runtime.last_update
+                      or (runtime.v17 and (bool(stats.get("checkpoint_required")) or
+                          (callbacks.checkpoint_due is not None and callbacks.checkpoint_due(v)))))
         checkpoint_seconds = drain_generation_seconds = 0.0
         if checkpoint:
             generation_before_drain = runtime.generation_seconds
@@ -521,7 +599,9 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
             drain_generation_seconds = runtime.generation_seconds - generation_before_drain
             checkpoint_started = time.perf_counter()
             state = runtime.save_drain_state()
-            callbacks.checkpoint(v, state, runtime.pending_descriptors())
+            checkpoint_result = callbacks.checkpoint(v, state, runtime.pending_descriptors())
+            if runtime.v17 and isinstance(checkpoint_result, dict):
+                stop.extend(checkpoint_result.get("stop_reasons", []))
             checkpoint_seconds = time.perf_counter() - checkpoint_started
         wall_seconds = time.perf_counter() - slot_started
         generation_seconds = runtime.generation_seconds - generation_before
@@ -536,6 +616,22 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
             "idle_wait_seconds": 0.0,
             "idle_semantics": "no standalone idle wait; sampler.step waits count as generation; preparation and verification count as overhead",
             "checkpoint": checkpoint}
+        if runtime.v17:
+            timing.update(schema="v17-update-timing-v1",
+                          host_stage_seconds={k: value - host_stage_before[k] for k, value in runtime.host_stage_seconds.items()},
+                          host_stage_semantics="per-slot host wall deltas; nested preparation/validation are not device timings",
+                          admission_wait_seconds=runtime.admission_wait_seconds - admission_before,
+                          gpu_seconds=stats.get("gpu_seconds"),
+                          gpu_timing_semantics="null unless measured by the update callback with device synchronization",
+                          negative_candidate_tokens=stats.get("t1_negative_candidate_tokens"),
+                          negative_retained_tokens=stats.get("t1_negative_retained_tokens"),
+                          negative_retained_ratio=stats.get("t1_negative_retained_ratio"),
+                          loop_confirmed=stats.get("loop_confirmed"),
+                          loop_tokens_penalized=stats.get("loop_tokens_penalized"),
+                          length_nonloop_excluded=stats.get("length_nonloop_excluded"))
+            if hasattr(sampler, "heartbeat_v17") and not local_sequential:
+                sampler.admission_wait_seconds = runtime.admission_wait_seconds
+                timing["train_KV"] = sampler.heartbeat_v17()
         timing_path = runtime.out / f"update-timing-{v}.json"
         if timing_path.exists():
             raise RuntimeError("v16b runtime: sealed update timing already exists")
@@ -545,6 +641,8 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
                     "stop_reasons": stop, "updates": updates, "state": runtime.state()}
         slot_started = time.perf_counter()
         generation_before = runtime.generation_seconds
+        host_stage_before = dict(runtime.host_stage_seconds)
+        admission_before = runtime.admission_wait_seconds
         sampler.add_version(bundle, runtime.version)
         while getattr(sampler, "_ready_outputs", None):
             runtime.step()

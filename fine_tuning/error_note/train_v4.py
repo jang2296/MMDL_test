@@ -267,6 +267,10 @@ def encode_single_row(processor: Any, model_config: Any, row: dict, images: list
     is the module constant IMAGE."""
     from .content_v16 import ROW_SCHEMA
 
+    if row.get("schema") == "error-note-v17-row-v1":
+        from .train_v17 import encode_v17_row
+
+        return encode_v17_row(processor, model_config, row, images, image=image or IMAGE)
     if row.get("schema") == "error-note-v16b-row-v1":
         from .train_v16b import encode_v16b_row
 
@@ -611,6 +615,11 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     mass (no row cap); the LR schedule and the A2 minimum are fixed by the contract."""
     from .protocol import VERSION_CONTENT_V16, VERSION_V16B
 
+    if contract.get("version") == "error-note-v17":
+        from .train_v17 import backward_v17_block
+
+        selected_v17 = tuple(components) if set(components) <= {"PG", "RL", "OBS", "KL", "A1", "C", "N", "PREP_SELF", "PREP_HUMAN"} else None
+        return backward_v17_block(bundle, encoded, contract, token_budget, components=selected_v17, capacity=capacity)
     if contract.get("version") == VERSION_V16B:
         from .train_v16b import backward_v16b_block
 

@@ -42,13 +42,22 @@ advance-main runs total-19 blocks instead of 200, and the final checkpoint is ch
 Optional single-direct `warm_start` = {plan,checkpoint,reload}_{path,sha256} + slot (v15 warm start v2; needs
 execution_max_blocks, 19 < slot < total): pins -> pin the three warm files -> advance-main --continue-main --direct-main
 total-slot -> reload checkpoint-<total>; every campaign call carries the six --warm-start-* arguments, and there is no export.
+
+Stages v17-calibration and v17 take error-note-plan-params-v17. Stage the private bundle before approved start.sh;
+the calibration chain verifies it, then runs source/doctor/preparation and separate BF16 functional/throughput checks.
+Seal the main spec only after the two measured receipt files exist, adding their raw-file SHA256 pins. Both phases
+share the recovery parent params.run_dir and out_root; use different child job.run_dir values for their immutable chain
+logs. The main funding gate checks the declared balance snapshot; execution uses the approved job.financial watchdog.
+The 14..17-hour target supplies neither a training cutoff nor job.max_main_seconds.
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import argparse
 import json
 import math
 import posixpath
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -63,7 +72,7 @@ PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
 V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
 SINGLE_STAGES = ("single-pilot", "single-main", "single-direct")
-STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES, "content-v16", "v16b")
+STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES, "content-v16", "v16b", "v17-calibration", "v17")
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
 PATH_KEYS = ("python", "repo_root", "build_root", "model_path", "out_root")
@@ -114,6 +123,8 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"stage must be one of {STAGES}")
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
+    if stage in ("v17-calibration", "v17"):
+        return _check_v17(params, calibration=stage == "v17-calibration")
     if stage == "v16b":
         return _check_v16b(params)
     if stage == "content-v16":
@@ -662,8 +673,315 @@ def _plan_v16b(p: dict[str, Any]) -> dict[str, Any]:
             "steps": steps}
 
 
+
+PARAMS_VERSION_V17 = "error-note-plan-params-v17"
+V17_STANDING_EVALUATION_AUTHORIZATION = (
+    "User 2026-11-17 standing run instruction: run v17 on RunPod and report the MMMU 900 V8 and V8+CompassVerifier "
+    "scores when all results are in. Pre-authorizes EVAL_REVIEW_REQUIRED only; DEGRADED is never pre-authorized.")
+V17_PATHS = tuple(name for name in V16B_PATHS if name != "handoff_root") + (
+    "guard_manifest_path", "performance_requests_path", "performance_model_ref_path",
+    "calibration_path", "functional_receipt_path",
+)
+V17_HASHED = V16B_HASHED + ("hardware", "guard_manifest", "performance_requests", "performance_model_ref")
+V17_FUNDING_KEYS = {
+    "balance_usd", "balance_observed_at", "first_bill_at", "storage_usd_per_hour",
+    "recovery_reserve_usd", "recovery_seconds", "other_post_train_seconds",
+    "next_train_seconds", "funding_deadline_utc",
+}
+
+
+def _check_v17(params: dict[str, Any], *, calibration: bool) -> dict[str, Any]:
+    keys = {"version", "commit", "timeouts", "hourly_usd", "gpu_type", "funding",
+            "long_tail_allowance_seconds", "long_tail_basis", *V17_PATHS,
+            *(name + "_sha256" for name in V17_HASHED)}
+    if not calibration:
+        keys |= {"calibration_sha256", "functional_receipt_sha256"}
+    if set(params) != keys or params.get("version") != PARAMS_VERSION_V17:
+        raise ValueError("v17 plan: exact versioned parameters required")
+    legacy = {name: params[name] for name in V16B_PATHS if name != "handoff_root"}
+    legacy |= {name + "_sha256": params[name + "_sha256"] for name in V16B_HASHED}
+    legacy |= {"version": PARAMS_VERSION_V16B, "commit": params["commit"],
+               "gpu_type": params["gpu_type"], "hourly_usd": params["hourly_usd"],
+               "handoff_root": params["run_dir"], "timeouts": {
+                   "cpu": 1, "reload": 1, "export": 1, "compass": 1, "evaluate": 23400}}
+    _check_v16b(legacy)
+    for name in V17_PATHS:
+        value = params[name]
+        if (not isinstance(value, str) or not value.startswith("/") or value == "/"
+                or posixpath.normpath(value) != value):
+            raise ValueError(f"v17 plan: canonical absolute {name} required")
+    for name in (*V17_HASHED, *(("calibration", "functional_receipt") if not calibration else ())):
+        if not isinstance(params[name + "_sha256"], str) or not HEX64.fullmatch(params[name + "_sha256"]):
+            raise ValueError(f"v17 plan: SHA256 required for {name}")
+    for name in ("guard_manifest_path", "performance_requests_path", "performance_model_ref_path",
+                 "calibration_path", "functional_receipt_path"):
+        if posixpath.commonpath((params["repo_root"], params[name])) == params["repo_root"]:
+            raise ValueError(f"v17 plan: private {name} must be outside repository")
+    for name in ("calibration_path", "functional_receipt_path"):
+        if posixpath.commonpath((params["run_dir"], params[name])) != params["run_dir"]:
+            raise ValueError(f"v17 plan: {name} must be inside recovered run_dir")
+    timeouts = params["timeouts"]
+    if (not isinstance(timeouts, dict) or set(timeouts) != {"cpu", "reload", "export", "compass", "calibrate"}
+            or any(type(value) is not int or value <= 0 for value in timeouts.values())):
+        raise ValueError("v17 plan: finite non-training timeouts required; evaluation is calibrated")
+    tail = params["long_tail_allowance_seconds"]
+    if isinstance(tail, bool) or not isinstance(tail, (int, float)) or not math.isfinite(tail) or tail <= 0:
+        raise ValueError("v17 plan: explicit positive long-tail allowance required")
+    if not isinstance(params["long_tail_basis"], str) or not params["long_tail_basis"].strip():
+        raise ValueError("v17 plan: explicit long-tail scenario basis required")
+    funding = params["funding"]
+    if not isinstance(funding, dict) or set(funding) != V17_FUNDING_KEYS:
+        raise ValueError("v17 plan: actual balance, billing, storage and recovery fields required")
+    from fine_tuning.notebook_rl.pod.common import parse_utc
+
+    for name in ("balance_observed_at", "first_bill_at"):
+        if not isinstance(funding[name], str):
+            raise ValueError(f"v17 plan: UTC {name} required")
+        parse_utc(funding[name])
+    if funding["funding_deadline_utc"] is not None:
+        if not isinstance(funding["funding_deadline_utc"], str):
+            raise ValueError("v17 plan: optional funding deadline must be UTC text")
+        parse_utc(funding["funding_deadline_utc"])
+    for name in ("balance_usd", "storage_usd_per_hour", "recovery_reserve_usd", "recovery_seconds",
+                 "other_post_train_seconds", "next_train_seconds"):
+        value = funding[name]
+        zero_allowed = name in ("storage_usd_per_hour", "recovery_reserve_usd", "other_post_train_seconds")
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                or value < 0 or (value == 0 and not zero_allowed)):
+            raise ValueError(f"v17 plan: finite actual funding.{name} required")
+    if not calibration:
+        _v17_calibration(params)
+    return params
+
+
+def _v17_calibration(p: dict[str, Any]) -> dict[str, Any]:
+    from .v17_eval import calibration_timeout
+
+    loaded = {}
+    for name in ("calibration", "functional_receipt"):
+        raw = Path(p[name + "_path"]).read_bytes()
+        if sha256_bytes(raw) != p[name + "_sha256"]:
+            raise ValueError(f"v17 plan: {name} file SHA256 differs")
+        loaded[name] = json.loads(raw)
+    receipt = loaded["calibration"]
+    calibration_timeout(receipt)
+    if receipt.get("code_commit") != p["commit"]:
+        raise ValueError("v17 plan: calibration source commit differs from the published main source")
+    probe = receipt.get("probe", {})
+    if (probe.get("long_tail_allowance_seconds") != p["long_tail_allowance_seconds"]
+            or probe.get("long_tail_basis") != p["long_tail_basis"]
+            or probe.get("requests_sha256") != p["performance_requests_sha256"]):
+        raise ValueError("v17 plan: calibrated performance inputs differ from the sealed main parameters")
+    functional = loaded["functional_receipt"]
+    if (not isinstance(functional, dict) or functional.get("version") != "v17-bf16-preflight-v1"
+            or functional.get("status") != "PASS" or functional.get("code_commit") != p["commit"]):
+        raise ValueError("v17 plan: same-source BF16 functional receipt required before main sealing")
+    return receipt
+
+
+def verify_source_v17(repo_root: Path, commit: str, output: Path) -> dict[str, Any]:
+    """Check an already fetched publication locally; never fetch or publish code."""
+    if not HEX40.fullmatch(commit):
+        raise ValueError("v17 source: full published commit required")
+    repo = repo_root.resolve()
+    if output.resolve().is_relative_to(repo):
+        raise ValueError("v17 source: receipt must be outside the clean clone")
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(repo), *args], check=True, text=True,
+                              capture_output=True).stdout.strip()
+
+    if Path(git("rev-parse", "--show-toplevel")).resolve() != repo:
+        raise ValueError("v17 source: exact clone root required")
+    if git("rev-parse", "HEAD") != commit or git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("v17 source: exact clean clone commit required")
+    from fine_tuning.notebook_rl.pod.verify import ORIGINS
+
+    origin = git("remote", "get-url", "origin")
+    refs = git("for-each-ref", "--format=%(refname)", "--contains", commit, "refs/remotes/origin")
+    if origin not in ORIGINS or not refs:
+        raise ValueError("v17 source: fetched MMDL_test publication reference required")
+    body = {"version": "v17-clean-published-source-v1", "status": "PASS", "code_commit": commit,
+            "origin": origin, "publication_refs": sorted(refs.splitlines()), "network_checked": False}
+    body["sha256"] = sha256_bytes(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(body, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    return body
+
+
+def _plan_v17(p: dict[str, Any], *, calibration: bool) -> dict[str, Any]:
+    from fine_tuning.notebook_rl.pod.common import parse_utc
+    from .protocol import VERSION_V17, V17_IDENTIFIERS, V17_SPECIFICATION_SHA256
+    from .v17_eval import calibration_timeout
+
+    py, out = p["python"], p["out_root"]
+    template = _plan_v16b(p | {"handoff_root": p["run_dir"],
+                              "timeouts": p["timeouts"] | {"evaluate": 23400}})
+    steps = template["steps"]
+    prep_end = next(index for index, item in enumerate(steps) if item["name"] == "campaign-advance")
+    selected = steps[:prep_end] if calibration else steps[prep_end:]
+    source = f"{out}/source-{'calibration' if calibration else 'main'}.json"
+    doctor = f"{out}/doctor.json"
+    prefix = [{"name": "verify-published-source", "argv": [
+        py, "-m", "fine_tuning.error_note.plan", "verify-source", "--repo-root", p["repo_root"],
+        "--commit", p["commit"], "--output", source],
+        "expect_files": [source], "timeout_seconds": p["timeouts"]["cpu"]}]
+    if calibration:
+        prefix += [
+            {"name": "doctor", "argv": [py, "-m", "mmdl.runtime.environment", "--output", doctor,
+                "--storage-path", p["run_dir"], "--required-gib", "50"],
+             "expect_files": [doctor], "timeout_seconds": p["timeouts"]["cpu"]},
+            {"name": "doctor-content-gate", "argv": [
+                py, "-m", "fine_tuning.error_note.v17_eval", "doctor", "--input", doctor],
+             "expect_files": [], "timeout_seconds": p["timeouts"]["cpu"]},
+        ]
+    hashes = V17_HASHED if calibration else (*V17_HASHED, "calibration", "functional_receipt")
+    hash_steps = []
+    for name in hashes:
+        hash_steps.append({"name": f"pin-v17-{name.replace('_', '-')}",
+            "argv": [py, "-m", CHAIN, "pin", "--file", p[name + "_path"], "--sha256", p[name + "_sha256"]],
+            "expect_files": [], "timeout_seconds": p["timeouts"]["cpu"]})
+    if calibration:
+        prefix += [item for item in hash_steps if item["name"] == "pin-v17-bundle-manifest"]
+        staging = [item for item in selected if item["name"] == "verify-data"]
+        selected = (staging + [item for item in hash_steps if item["name"] != "pin-v17-bundle-manifest"]
+                    + [item for item in selected if not item["name"].startswith("pin-")
+                       and item["name"] not in ("stage-data", "verify-data")])
+    else:
+        prefix += hash_steps
+    for item in selected:
+        argv = item["argv"]
+        if "fine_tuning.error_note.prep_v16b" in argv or "fine_tuning.error_note.campaign_v16b" in argv:
+            argv += ["--version", VERSION_V17]
+        if item["name"] == "guard-falsealarm-gate":
+            item["argv"] = [py, "-m", "fine_tuning.error_note.guard_v16b",
+                "--version", VERSION_V17, "--manifest", p["guard_manifest_path"],
+                "--check-receipt", p["guard_falsealarm_path"]]
+    campaign = f"{out}/campaign"
+    campaign_cmd = [py, "-m", "fine_tuning.error_note.campaign_v16b"]
+    common = ["--data-root", p["data_root"], "--prep-root", f"{out}/prep", "--model-path", p["model_path"],
+              "--output", campaign, "--precision", "bf16", "--engine", "vllm", "--version", VERSION_V17,
+              "--code-commit", p["commit"]]
+    if calibration:
+        selected += [
+            {"name": "bf16-functional-calibration", "argv": [
+                *campaign_cmd, "calibrate", *common, "--allow-model-run",
+                "--receipt-output", p["functional_receipt_path"]],
+             "expect_files": [p["functional_receipt_path"]], "timeout_seconds": p["timeouts"]["calibrate"]},
+            {"name": "eval-throughput-calibration", "argv": ["/usr/bin/env", "MMDL_EVAL_SLOTS=8",
+                "VLLM_ENABLE_V1_MULTIPROCESSING=0", py, "-m", "fine_tuning.error_note.v17_eval", "probe",
+                "--requests", p["performance_requests_path"], "--model-path", p["model_path"],
+                "--model-ref", p["performance_model_ref_path"], "--base-path", p["model_path"],
+                "--hardware", p["hardware_path"], "--output", p["calibration_path"],
+                "--long-tail-allowance-seconds", str(p["long_tail_allowance_seconds"]),
+                "--long-tail-basis", p["long_tail_basis"], "--require-commit", p["commit"]],
+             "expect_files": [p["calibration_path"]], "timeout_seconds": p["timeouts"]["calibrate"]},
+        ]
+        watchdog = None
+    else:
+        watchdog = calibration_timeout(_v17_calibration(p))
+        prereg = f"{out}/proof/prereg.json"
+        final_preflight = f"{out}/final-preflight.json"
+        for item in selected:
+            name, argv = item["name"], item["argv"]
+            if "fine_tuning.error_note.campaign_v16b" in argv:
+                if "--code-commit" not in argv:
+                    argv += ["--code-commit", p["commit"]]
+                argv += ["--calibration", p["calibration_path"], "--calibration-sha256", p["calibration_sha256"],
+                         "--functional-receipt", p["functional_receipt_path"],
+                         "--functional-receipt-sha256", p["functional_receipt_sha256"]]
+            if name == "preregister-v11":
+                item["name"] = "preregister-v17"
+                argv[argv.index("--format") + 1] = "v12"
+                argv += ["--calibration", p["calibration_path"]]
+            if name == "ledger-start":
+                argv[argv.index("--variant") + 1] = "mmmu-val-v8-b2-seed3407-v1"
+                argv[argv.index("--run-id") + 1] = "v17-ft-single"
+            if name == "evaluate-900":
+                argv[argv.index("MMDL_EVAL_SLOTS=auto")] = "MMDL_EVAL_SLOTS=8"
+                proof_start = argv.index(PROOF)
+                normal = argv[proof_start + 2:]
+                normal += ["--base-path", p["model_path"]]
+                normal[normal.index("--run-id") + 1] = "v17-ft-single"
+                funding_args = ["--recovery-reserve-seconds", str(p["funding"]["recovery_seconds"])]
+                if p["funding"]["funding_deadline_utc"] is not None:
+                    funding_args += ["--funding-deadline-epoch",
+                        str(parse_utc(p["funding"]["funding_deadline_utc"]).timestamp())]
+                item["argv"] = [*argv[:proof_start], "fine_tuning.error_note.v17_eval", "run",
+                    "--prereg", prereg, "--ledger", f"{out}/proof/ledger.jsonl",
+                    "--calibration", p["calibration_path"], "--preflight", final_preflight,
+                    *funding_args, "--", *normal]
+                item["timeout_seconds"] = watchdog
+                item["expect_files"] = [f"{out}/eval-artifacts/runs/v17-ft-single/summary.json"]
+            if name in ("v8-analyze", "compass-separate"):
+                item["argv"] = [value.replace("/v16b-ft-single/", "/v17-ft-single/") for value in argv]
+            if name == "v8-analyze":
+                index = item["argv"].index("--runs") + 1
+                item["argv"][index] = item["argv"][index].replace("/v16b-ft-single", "/v17-ft-single")
+        # The external effect set is EXPOSURE_HISTORY_INCOMPLETE, so the admission is EVAL_REVIEW_REQUIRED unless
+        # DEGRADED. The user's 2026-11-17 run instruction is recorded as the decision; DEGRADED still stops here.
+        decision = f"{out}/evaluation-decision.json"
+        for item in selected:
+            if item["name"] in ("require-complete", "export"):
+                item["argv"] += ["--evaluation-decision", decision]
+        selected.insert(next(i for i, item in enumerate(selected) if item["name"] == "require-complete"), {
+            "name": "evaluation-decision", "argv": [py, "-m", "fine_tuning.error_note.v17_eval", "decide",
+                "--campaign-output", campaign, "--authorization", V17_STANDING_EVALUATION_AUTHORIZATION,
+                "--output", decision],
+            "expect_files": [decision], "timeout_seconds": p["timeouts"]["cpu"]})
+        export_index = next(index for index, item in enumerate(selected) if item["name"] == "export")
+        selected.insert(export_index + 1, {"name": "final-adapter-preflight",
+            "argv": ["/usr/bin/env", "MMDL_EVAL_SLOTS=8", "VLLM_ENABLE_V1_MULTIPROCESSING=0",
+                     *campaign_cmd, "preflight", *common, "--allow-model-run",
+                     "--export-output", f"{out}/export-final", "--preflight-output", final_preflight,
+                     "--hardware", p["hardware_path"], "--eval-protocol",
+                     f"{p['repo_root']}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml",
+                     "--calibration", p["calibration_path"], "--calibration-sha256", p["calibration_sha256"],
+                     "--functional-receipt", p["functional_receipt_path"],
+                     "--functional-receipt-sha256", p["functional_receipt_sha256"],
+                     "--evaluation-decision", decision],
+            "expect_files": [final_preflight], "timeout_seconds": p["timeouts"]["calibrate"]})
+    canonical = json.dumps(p, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    funding = dict(p["funding"]) | {"hourly_usd": p["hourly_usd"], "recharge_wait_seconds": 1800,
+        "poll_seconds": 600, "reserve_usd": p["funding"]["recovery_reserve_usd"],
+        "evaluation_watchdog_seconds": watchdog, "calibration_sha256": p.get("calibration_sha256")}
+    funding["post_train_hours"] = (None if watchdog is None else
+        (watchdog + funding["other_post_train_seconds"] + funding["recovery_seconds"]) / 3600)
+    funding["snapshot_only"] = True
+    funding["execution_authority"] = "approved-job.financial-and-start.sh-budget-watchdog"
+    if watchdog is not None:
+        from .guard_v16b import funding_decision_v17
+
+        decision = funding_decision_v17(funding["balance_usd"], p["hourly_usd"],
+            parse_utc(funding["balance_observed_at"]).timestamp(), evaluation_seconds=watchdog,
+            other_post_train_seconds=funding["other_post_train_seconds"], recovery_seconds=funding["recovery_seconds"],
+            storage_usd_per_hour=funding["storage_usd_per_hour"], reserve_usd=funding["recovery_reserve_usd"],
+            next_train_seconds=funding["next_train_seconds"])
+        if decision["status"] != "CONTINUE":
+            raise ValueError("v17 plan: actual funding snapshot cannot protect calibrated evaluation and recovery; recharge required")
+        funding["initial_snapshot_decision"] = decision
+    return {"version": SPEC_VERSION, "meta": {
+        "stage": "v17-calibration" if calibration else "v17", "job_stage": "single-main",
+        "params_sha256": sha256_bytes(canonical.encode()), "generator": "fine_tuning.error_note.plan",
+        "protocol_version": VERSION_V17, "protocol_contract": deepcopy(V17_IDENTIFIERS),
+        "specification_sha256": V17_SPECIFICATION_SHA256, "total_timeout_seconds": None,
+        "training_elapsed_cutoff": None, "target_total_hours": [14, 17],
+        "evaluation_watchdog_seconds": watchdog, "calibration_sha256": p.get("calibration_sha256"),
+        "calibration_must_precede_main_seal": True, "initial_policy": "fresh_F0",
+        "data_staging": "private-bundle-stage-before-approved-start.sh;chain-verifies-only",
+        "training_counts": {"main": 3000, "prep_candidates": 512, "development": 200},
+        "funding": funding, "guard_stop_auto_evaluate": False, "gpu_type": p["gpu_type"],
+        "cloud_execution": False,
+        "after_run_closed": [py, "-m", "fine_tuning.notebook_rl.pod.collect", "pack", "--out-dir",
+                            f"{out}/recovery", "--name", "v17-final", p["run_dir"]]},
+        "steps": prefix + selected}
+
 def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     p = _check(stage, params)
+    if stage in ("v17-calibration", "v17"):
+        return _plan_v17(p, calibration=stage == "v17-calibration")
     if stage == "v16b":
         return _plan_v16b(p)
     if stage == "content-v16":
@@ -760,13 +1078,21 @@ def main(argv: list[str] | None = None) -> int:
     plan_parser.add_argument("--stage", choices=STAGES, required=True)
     plan_parser.add_argument("--params", type=Path, required=True)
     plan_parser.add_argument("--output", type=Path, required=True)
+    source_parser = sub.add_parser("verify-source", help="verify an existing clean published v17 clone")
+    source_parser.add_argument("--repo-root", type=Path, required=True)
+    source_parser.add_argument("--commit", required=True)
+    source_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "verify-source":
+            receipt = verify_source_v17(args.repo_root, args.commit, args.output)
+            print(receipt["sha256"])
+            return 0
         text = json.dumps(plan(args.stage, json.loads(args.params.read_text(encoding="utf-8"))),
                           indent=2, sort_keys=True) + "\n"
         with args.output.open("x", encoding="utf-8") as stream:
             stream.write(text)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     print(sha256_bytes(text.encode()))

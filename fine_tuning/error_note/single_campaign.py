@@ -72,7 +72,7 @@ def _plan_check(plan: dict) -> None:
     if plan.get("version") == CONTENT_CAMPAIGN_VERSION:
         _content_plan_check(plan)
         return
-    if plan.get("version") == "single-campaign-v16b":
+    if plan.get("version") in ("single-campaign-v16b", "single-campaign-v17"):
         from .campaign_v16b import _plan_check as _plan_check_v16b
         _plan_check_v16b(plan)
         return
@@ -307,7 +307,7 @@ def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoi
 
 
 def prepare(args: argparse.Namespace) -> dict:
-    if getattr(args, "version", None) == "error-note-v16b":
+    if getattr(args, "version", None) in ("error-note-v16b", "error-note-v17"):
         from .campaign_v16b import prepare as _prepare_v16b
         return _prepare_v16b(args)
     with single._runtime_lock(args.output, ".campaign.lock"):
@@ -599,9 +599,9 @@ def run_campaign(plan: dict, *, output: Path, model_path: Path, actors: dict, pr
     A valid checkpoint is the commit authority. Uncertain generated requests are never retried.
     ``reference`` (v11) maps a problem id to its dataset reference text; it reaches the note prompt only.
     """
-    if plan.get("version") == "single-campaign-v16b":
+    if plan.get("version") in ("single-campaign-v16b", "single-campaign-v17"):
         from .campaign_v16b import run_campaign as run_v16b_campaign
-        args = SimpleNamespace(data_root=Path(plan["data_root"]), prep_root=Path(plan["prep_root"]),
+        args = argparse.Namespace(data_root=Path(plan["data_root"]), prep_root=Path(plan["prep_root"]),
             model_path=model_path, output=output, precision=plan["protocol"]["precision"],
             local_sequential=plan["local_sequential"], nf4_cache=Path(plan["nf4_cache"]) if plan["nf4_cache"] else None,
             allow_model_run=allow_update or reload_only, allow_update=allow_update, allow_save=allow_save,
@@ -1053,7 +1053,8 @@ def main(argv: list[str] | None = None) -> int:
     import sys
     values = list(sys.argv[1:] if argv is None else argv)
     if ("--data-root" in values or "--version=error-note-v16b" in values
-            or "error-note-v16b" in values):
+            or "error-note-v16b" in values or "--version=error-note-v17" in values
+            or "error-note-v17" in values):
         from .campaign_v16b import main as main_v16b
         return main_v16b(values)
     from fine_tuning.notebook_rl.dataset import load_images

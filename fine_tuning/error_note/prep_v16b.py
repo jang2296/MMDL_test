@@ -36,11 +36,27 @@ def read_sealed(path: Path) -> dict:
         raise ValueError(f"v16b: sealed artifact changed: {path.name}")
     return value
 
+def data_api(version: str = "error-note-v16b"):
+    if version == "error-note-v17":
+        from . import v17_data
+        return v17_data
+    if version != "error-note-v16b":
+        raise ValueError("unknown preparation version")
+    from . import data_v16b
+    return data_v16b
 
-def preflight_items(items: list[dict]) -> dict:
+
+def preflight_items(items: list[dict], *, version: str = "error-note-v16b") -> dict:
     """Check every native note contract and optional observation shape without loading a model."""
     from .v16b_rows import build_obs_prompt_v16b, observation_eligibility_v16b, problem_contract_v16b
 
+    if version == "error-note-v17":
+        from .v17_rows import problem_contract_v17, observation_eligibility_v17, build_obs_request_v17
+        problem_contract_v16b = problem_contract_v17
+        observation_eligibility_v16b = observation_eligibility_v17
+        build_obs_prompt_v16b = build_obs_request_v17
+    elif version != "error-note-v16b":
+        raise ValueError("unknown data preflight version")
     records = []
     for item in items:
         contract = problem_contract_v16b(item)
@@ -49,15 +65,20 @@ def preflight_items(items: list[dict]) -> dict:
             build_obs_prompt_v16b(item)
         records.append({"problem_id": item["problem_id"], "note_contract_sha256": digest(contract),
                         "observation_eligibility": eligibility})
-    return {"version": "v16b-data-contract-preflight-v1", "count": len(records), "items": records,
+        if version == "error-note-v17":
+            records[-1]["repair_supported"] = bool(contract.get("supported"))
+    return {"version": ("v17-data-contract-preflight-v1" if version == "error-note-v17" else "v16b-data-contract-preflight-v1"), "count": len(records), "items": records,
             "observation_eligible": sum(row["observation_eligibility"]["eligible"] for row in records),
             "first_solution_count": len(records), "model_loaded": False}
 
 
-def select(data_root: Path, output: Path, *, local_sequential: bool = False) -> dict:
-    from .data_v16b import _identities, load_items, validate
+def select(data_root: Path, output: Path, *, local_sequential: bool = False,
+           version: str = "error-note-v16b") -> dict:
+    from .data_v16b import _identities
 
-    validation = validate(data_root)
+    data = data_api(version)
+    load_items = data.load_items
+    validation = data.validate(data_root)
     splits = {name: load_items(data_root, name) for name in ("train", "prep", "monitor")}
     previous: set[tuple[str, str]] = set()
     for name, items in splits.items():
@@ -70,13 +91,19 @@ def select(data_root: Path, output: Path, *, local_sequential: bool = False) -> 
     if len(splits["prep"]) != 512 or len(splits["train"]) != 3000:
         raise ValueError("v16b preparation: the frozen 512/3000 payload is required")
     preflight = seal(output / "data-contract-preflight.json", preflight_items(
-        [item for items in splits.values() for item in items]))
+        [item for items in splits.values() for item in items], version=version))
+    if version == "error-note-v17" and not local_sequential:
+        from .guard_v16b import SignalGateV17
+        supported = [r["problem_id"] for r in preflight["items"] if r.get("repair_supported")
+                     and r["problem_id"] in {item["problem_id"] for item in splits["train"]}]
+        order = [item["problem_id"] for item in splits["train"]]
+        SignalGateV17([order[i:i + 16] for i in range(0, len(order), 16)], supported)
     if local_sequential:
         # A native human target guarantees that the short functional run can exercise preparation SFT.
         splits["prep"] = sorted(splits["prep"], key=lambda x: (
             not bool(x.get("references", {}).get("human_solution")), digest(x["problem_id"])))[:2]
         splits["monitor"] = splits["monitor"][:2]
-    return seal(output / "selection.json", {"version": VERSION, "local_sequential": local_sequential,
+    return seal(output / "selection.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "local_sequential": local_sequential,
         "data_root": str(data_root.absolute()), "payload_sha256": file_sha(data_root / "payload-receipt.json"),
         "prep_manifest_sha256": file_sha(data_root / "prep-manifest.json"),
         "validation": validation, "data_contract_preflight_sha256": preflight["sha256"], "prep_ids": [x["problem_id"] for x in splits["prep"]],
@@ -132,11 +159,25 @@ def make_request(item: dict, prompt: str, stage: str, *, cap: int, sampling: dic
 
 def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, split: str, out: Path,
             stage: str, protocol_sha256: str, sampling: dict, cap: int, version: int = 0,
-            observation: bool = False) -> list[dict]:
+            observation: bool = False, algorithm_version: str = "error-note-v16b",
+            baseline_receipts: dict[str, dict] | None = None) -> list[dict]:
     """One durable request per parent/stage; ambiguous interrupted requests require recovery."""
     from .rl import policy_sha256
     from .v16b_rows import build_obs_prompt_v16b, observation_eligibility_v16b
 
+    if algorithm_version == "error-note-v17":
+        from .v17_rows import build_obs_request_v17, observation_eligibility_v17
+        observation_eligibility_v16b = observation_eligibility_v17
+        def build_obs_prompt_v16b(item):
+            return build_obs_request_v17(item)["prompt"]
+    elif algorithm_version != "error-note-v16b":
+        raise ValueError("unknown collection version")
+    if baseline_receipts is not None:
+        if algorithm_version != "error-note-v17" or set(baseline_receipts) != {item["problem_id"] for item in items}:
+            raise ValueError("calibration baseline membership must be sealed before collection")
+        for receipt in baseline_receipts.values():
+            if receipt.get("sha256") != digest({k: v for k, v in receipt.items() if k != "sha256"}):
+                raise ValueError("calibration baseline receipt changed")
     policy = policy_sha256(bundle)
     if hasattr(sampler, "protocol_sha256"):
         sampler.protocol_sha256 = protocol_sha256
@@ -184,6 +225,11 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
         prompt = build_obs_prompt_v16b(item) if observation else p0(item)
         request = make_request(item, prompt, stage, cap=cap, sampling=sampling, version=version,
             protocol_sha256=protocol_sha256, policy_sha256=policy, engine_step=sampler.engine_steps)
+        if baseline_receipts is not None:
+            from .collect import single_request_sha256
+            key = "obs_baseline_receipt" if observation else "baseline_receipt"
+            request[key] = baseline_receipts[item["problem_id"]]
+            request["request_sha256"] = single_request_sha256(request)
         rid = request["request_id"]
         path = out / "generations" / (rid + ".json")
         previous = [row for row in logged if row["request_id"] == rid]
@@ -201,7 +247,15 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
             raise ValueError("v16b: result has no request ownership ledger")
         append_jsonl(ledger, {"request_id": rid, "status": "STARTED",
                               "request_sha256": request["request_sha256"]})
-        sampler.submit(request)
+        if algorithm_version == "error-note-v17" and hasattr(sampler, "prepare_request_v17"):
+            prepared = sampler.prepare_request_v17(request)
+            while not sampler.can_submit_v17(prepared):
+                if not pending:
+                    raise ValueError("v17 collection: request cannot fit the actual KV reservation")
+                finish_pending(keep=len(pending) - 1)
+            sampler.submit(request, prepared=prepared)
+        else:
+            sampler.submit(request)
         pending[rid] = (item, prompt)
         # Bound host image memory as well as the engine's active request count: keep one slot free.
         slots = getattr(sampler, "max_num_seqs", 1)
@@ -222,34 +276,48 @@ def summary(records: list[dict]) -> dict:
 
 
 def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image: dict,
-             local_sequential: bool = False) -> dict:
-    from .data_v16b import load_items
+             local_sequential: bool = False, version: str = "error-note-v16b") -> dict:
     from .protocol import EVAL_SAMPLING_V16B, TRAIN_SAMPLING_V16B
 
-    selection = select(data_root, output, local_sequential=local_sequential)
-    context = {"version": VERSION, "selection_sha256": selection["sha256"],
+    data = data_api(version)
+    selection = select(data_root, output, local_sequential=local_sequential, version=version)
+    is_v17 = version == "error-note-v17"
+    context = {"version": "v17-preparation-v1" if is_v17 else VERSION,
+               "selection_sha256": selection["sha256"],
                "image": image, "cap": 256 if local_sequential else 8192, "initial_policy": "fresh_F0"}
     contract = digest(context)
-    splits = {name: {item["problem_id"]: item for item in load_items(data_root, name)} for name in ("prep", "monitor")}
+    splits = {name: {item["problem_id"]: item for item in data.load_items(data_root, name)}
+              for name in ("prep", "monitor")}
     preps = [splits["prep"][pid] for pid in selection["prep_ids"]]
     monitors = [splits["monitor"][pid] for pid in selection["monitor_ids"]]
     kwargs = dict(data_root=data_root, protocol_sha256=contract, cap=context["cap"])
-    prep = collect(bundle, sampler, preps, split="prep", out=output / "prep", stage="v16b-prep",
+    if is_v17:
+        kwargs["algorithm_version"] = version
+    prefix = "v17" if is_v17 else "v16b"
+    prep = collect(bundle, sampler, preps, split="prep", out=output / "prep", stage=prefix + "-prep",
                    sampling=EVAL_SAMPLING_V16B, **kwargs)
-    monitor = collect(bundle, sampler, monitors, split="monitor", out=output / "monitor-f0", stage="v16b-monitor",
-                      sampling=EVAL_SAMPLING_V16B, **kwargs)
-    obs = collect(bundle, sampler, preps, split="prep", out=output / "prep-obs", stage="v16b-prep-obs",
+    monitor = collect(bundle, sampler, monitors, split="monitor", out=output / "monitor-f0",
+                      stage=prefix + "-monitor", sampling=EVAL_SAMPLING_V16B, **kwargs)
+    obs = collect(bundle, sampler, preps, split="prep", out=output / "prep-obs", stage=prefix + "-prep-obs",
                   sampling=TRAIN_SAMPLING_V16B, observation=True,
                   **(kwargs | {"cap": 256 if local_sequential else 1024}))
-    return seal(output / "f0-generations.json", context | {"prep": prep, "monitor": monitor, "obs": obs,
-                "monitor_summary": summary(monitor)})
+    result = context | {"prep": prep, "monitor": monitor, "obs": obs, "monitor_summary": summary(monitor)}
+    if is_v17:
+        effects = data.load_items(data_root, "effect")
+        if local_sequential:
+            effects = effects[:2]
+        effect = collect(bundle, sampler, effects, split="effect", out=output / "effect-f0",
+                         stage="v17-effect", sampling=EVAL_SAMPLING_V16B, **kwargs)
+        result.update(effect=effect, effect_summary=summary(effect))
+    return seal(output / "f0-generations.json", result)
 
 
-def rows(data_root: Path, output: Path, tokenizer: Any, *, local_sequential: bool = False) -> dict:
-    from .data_v16b import load_items
+def rows(data_root: Path, output: Path, tokenizer: Any, *, local_sequential: bool = False,
+         version: str = "error-note-v16b") -> dict:
+    load_items = data_api(version).load_items
     from .v16b_rows import obs_score, prep_prior_v16b, prep_rows
 
-    selection = select(data_root, output, local_sequential=local_sequential)
+    selection = select(data_root, output, local_sequential=local_sequential, version=version)
     generated = read_sealed(output / "f0-generations.json")
     if generated["selection_sha256"] != selection["sha256"]:
         raise ValueError("v16b: F0 preparation selection changed")
@@ -258,21 +326,34 @@ def rows(data_root: Path, output: Path, tokenizer: Any, *, local_sequential: boo
                for row in generated["prep"]]
     if [row["problem_id"] for row in records] != selection["prep_ids"]:
         raise ValueError("v16b: incomplete F0 preparation")
-    selected = prep_rows(records, tokenizer=tokenizer)
+    if version == "error-note-v17":
+        from .v17_rows import prep_rows_with_receipts_v17
+        selected, receipts = prep_rows_with_receipts_v17(records, tokenizer=tokenizer)
+        seal(output / "prep-admission.json", {"version": "v17-prep-admission-v1",
+             "selection_sha256": selection["sha256"], "receipts": receipts})
+    else:
+        selected = prep_rows(records, tokenizer=tokenizer)
     if not selected:
         raise ValueError("v16b: preparation has no admissible SFT rows")
     batches = [selected[index:index + 16] for index in range(0, len(selected), 16)]
-    sealed = seal(output / "prep-rows.json", {"version": VERSION, "selection_sha256": selection["sha256"],
+    sealed = seal(output / "prep-rows.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "selection_sha256": selection["sha256"],
         "f0_generations_sha256": generated["sha256"], "rows": selected, "batches": batches,
         "prep_updates": len(batches), "local_sequential": local_sequential})
     prior = prep_prior_v16b(records)
     scores: dict[str, list[float]] = defaultdict(list)
     for row in generated["obs"]:
         item, out = items[row["problem_id"]], row["output"]
-        score = obs_score(item, item["layer"], out["text"], finish_reason=out["finish_reason"])
+        if version == "error-note-v17":
+            from .v17_rows import audit_observation_v17
+            from .v17_data import private_verifier
+            receipt = audit_observation_v17(dict(item, obs=out),
+                verifier=private_verifier(item), tokenizer=tokenizer)
+            score = {"score": receipt["reward"]}
+        else:
+            score = obs_score(item, item["layer"], out["text"], finish_reason=out["finish_reason"])
         if score.get("score") is not None:
             scores[item["layer"]].append(score["score"])
-    seal(output / "baseline-init.json", {"version": VERSION, "prep_rows_sha256": sealed["sha256"],
+    seal(output / "baseline-init.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "prep_rows_sha256": sealed["sha256"],
         "source_rates": prior["source_rates"], "overall": prior["overall"],
         "layer_rates": {layer: sum(values) / len(values) for layer, values in scores.items()},
         "missing_obs_policy": "first-admission-batch-zero-advantage", "prep_prior": prior})
@@ -292,6 +373,7 @@ def eta_report(block_seconds: list[float], *, done: int, total: int) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("select", "generate", "rows"))
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17"), default="error-note-v16b")
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path)
@@ -309,17 +391,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "select":
-        result = select(args.data_root, args.output, local_sequential=args.local_sequential)
+        result = select(args.data_root, args.output, local_sequential=args.local_sequential, version=args.version)
     elif args.command == "rows":
         from transformers import AutoProcessor
         if args.model_path is None:
             raise ValueError("v16b preparation: --model-path is required")
         processor = AutoProcessor.from_pretrained(str(args.model_path), local_files_only=True)
-        result = rows(args.data_root, args.output, processor.tokenizer, local_sequential=args.local_sequential)
+        result = rows(args.data_root, args.output, processor.tokenizer, local_sequential=args.local_sequential, version=args.version)
     else:
         if not args.allow_model_run or args.model_path is None:
             raise ValueError("v16b preparation: explicit --allow-model-run and --model-path are required")
-        select(args.data_root, args.output, local_sequential=args.local_sequential)
+        select(args.data_root, args.output, local_sequential=args.local_sequential, version=args.version)
         from .campaign_v16b import load_f0, make_sampler
         from .protocol import SINGLE_IMAGE_V14, SMOKE_IMAGE_V16B, TRAIN_SAMPLING_V16B
         from .run_v16 import _setup_execution
@@ -331,7 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             sampler.add_version(bundle, 0)
             sampler.add_version(bundle, 1)
         result = generate(args.data_root, args.output, bundle, sampler, image=image,
-                          local_sequential=args.local_sequential)
+                          local_sequential=args.local_sequential, version=args.version)
         sampler.release()
     print(json.dumps({"status": "PREPARED", "sha256": result["sha256"], "command": args.command}))
     return 0

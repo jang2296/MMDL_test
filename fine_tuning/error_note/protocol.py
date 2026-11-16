@@ -710,3 +710,126 @@ def v16b_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
         "baseline_receipts": copy.deepcopy(baseline_receipts or {}),
         "reward_values": copy.deepcopy(reward_values or {}), "protocol_sha256": protocol["sha256"],
     }
+
+
+# v17 is additive: the builders and golden outputs above retain their original contracts.
+VERSION_V17 = "error-note-v17"
+V17_CONTRACT_HASHES = V16B_CONTRACT_HASHES
+V17_SPECIFICATION_SHA256 = "0899453deb1b5dd3f351977589feb6a55d4d6a5cdfde0a754a73ee607c78cd27"
+V17_IDENTIFIERS = {
+    "row_schema": "error-note-v17-row-v1", "claim_schema": "v17-claim-ledger-v1",
+    "capability_schema": "v17-capability-v1", "probability_space_rl": "processed-full-vocab-v1",
+    "probability_space_sft": "raw-full-vocab-v1", "note_mask": "verified-corrected-value-content-only-v1",
+    "obs_reward": "bounded-scope-f1-v1", "negative_t1_mask": "probability-le-0.5",
+    "negative_obs_mask": "all-sampled-actions", "loop_signal": "confirmed-loop-negative-pg-v1",
+    "loop_detector": "contract.is_loop(window=3000, ratio=0.12)",
+    "loop_token_scope": "detected-window-no-probability-mask", "eval_adapter_serving": "unmerged-lora",
+    "comparison_strata": "f0-termination-state-v1", "mixed_policy_action": "hold-any-mixed-source",
+    "main_parent_denominator": 16, "prep_denominator": "actual-rows",
+    "f0_main_positions": "stratified-64-bin-weighted-v1", "f0_prep_positions": "first-4",
+    "f0_position_salt": "v17-f0-stratified-64-v1", "signal_gate_supported_parents": 32,
+    "signal_gate_verified_repair_parents": 3, "training_concurrency_ceiling": 16,
+    "training_kv_admission": "full-request-reservation-v1", "short_drift_warning_delta": 0.05,
+    "short_drift_stop_min_delta": 0.15, "short_drift_stop_se_multiplier": 4,
+    "eval_concurrency": 8, "eval_kv_capacity_margin": 0.10, "eval_refill": "continuous",
+    "eval_resume": "immutable-completed-same-registration-v1",
+    "eval_watchdog_source": "sealed-throughput-calibration", "total_timeout_seconds": None,
+    "training_elapsed_cutoff": None, "target_total_hours": [14, 17],
+}
+
+
+def v17_prompts_sha256() -> str:
+    from .v17_data import public_schema
+    from .v17_rows import NOTE_INSTRUCTION_V17, OBS_INSTRUCTION_V17, RESOLVE_INSTRUCTION_V17
+
+    return _digest({"note": NOTE_INSTRUCTION_V17, "obs": OBS_INSTRUCTION_V17,
+                    "resolve": RESOLVE_INSTRUCTION_V17,
+                    "observation_scopes": [public_schema(layer) for layer in ("geometry", "graph", "scene", "chart")]})
+
+
+def plain_protocol_v17(precision: str, *, rl_blocks: int, prep_updates: int,
+                       contracts: dict[str, str], image: dict | None = None,
+                       local_smoke: bool = False) -> dict:
+    """Seal v17 separately while sharing the unchanged F0, optimizer and schedule checks."""
+    body = plain_protocol_v16b(precision, rl_blocks=rl_blocks, prep_updates=prep_updates,
+                              contracts=contracts, image=image, local_smoke=local_smoke)
+    del body["sha256"]
+    prompts = v17_prompts_sha256()
+    contract = body["training_contract"]
+    contract.update(copy.deepcopy(V17_IDENTIFIERS))
+    contract.update({
+        "version": VERSION_V17, "specification_sha256": V17_SPECIFICATION_SHA256,
+        "prompts_sha256": prompts, "monitor_items": 200, "note_input_max_tokens": 16384,
+        "measure_component_gradients": False, "eval_max_new_tokens": 32768, "eval_max_model_len": 40960,
+        "sampling_controls": {"do_sample": True, "repetition_penalty": 1.0, "num_beams": 1},
+        "sft_weights": {"PREP_SELF": 1.0, "PREP_HUMAN": 1.0, "A1": 0.20, "C": 0.35, "N": 0.05},
+        "anchor": {"positions": 64, "beta": 0.02, "rl_denominator": 16,
+                   "prep_denominator": "actual_rows", "reference": "fresh_F0",
+                   "selection": "stratified-64-bin-weighted-v1", "prep_positions": 4,
+                   "prep_beta": 0.5, "salt": "v17-f0-stratified-64-v1"},
+        "funding": {"reserve_source": "sealed-throughput-calibration",
+                    "recharge_wait_min": 30, "time_target_is_stop": False},
+        "signal_gate": {"supported_parents": 32, "verified_repair_parents": 3,
+                        "require_verified_content_tokens": True,
+                        "require_nonzero_finite_n_gradient_and_saved_update": True,
+                        "close_pending_note_resolve_before_check": True},
+    })
+    contract["pg"].update({"hold_mixed_fraction": 0.0, "negative_obs_mask": "all-sampled-actions"})
+    contract["prep"].update({"self_tokens": [1, 8192], "self_acceptance": "verified-solution-v17",
+                             "probability_space_sft": "raw-full-vocab-v1"})
+    contract["guard"].update({
+        "count_rule": "recent >= max(4, ceil(2*scaled_ref), ceil(scaled_ref + 4*sqrt(scaled_ref)))",
+        "short_drift": {"reference_blocks": 24, "recent_blocks": 12, "start_block": 36,
+                        "tokens": 32, "warning_delta": 0.05, "stop_min_delta": 0.15,
+                        "stop_se_multiplier": 4, "denominator": "actual_parents"},
+    })
+    contract["reward"].update({
+        "LOOP_CONFIRMED": {"reward": 0.0, "pg": True, "scope": "last-3000-chars",
+                           "probability_mask": False, "row_cap": 2048},
+        "LENGTH": {"reward": 0.0, "pg": False},
+    })
+    body.update({"version": VERSION_V17, "prompts_sha256": prompts,
+                 "specification_sha256": V17_SPECIFICATION_SHA256})
+    return body | {"sha256": _digest(body)}
+
+
+def validate_protocol_v17(protocol: dict) -> None:
+    """Reject resealed changes to v17's fixed values as well as digest tampering."""
+    try:
+        contract = protocol["training_contract"]
+        expected = plain_protocol_v17(protocol["precision"], rl_blocks=contract["rl_blocks"],
+            prep_updates=contract["prep_updates"], contracts=contract["hashes"], image=protocol["image"],
+            local_smoke=contract["local_smoke"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v17 protocol: invalid sealed protocol") from exc
+    if protocol != expected:
+        raise ValueError("v17 protocol: invalid sealed protocol")
+
+
+def v17_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
+                           policy_sha256: str, expected_problem_ids: list[str],
+                           expected_obs_problem_ids: list[str] | None = None,
+                           note_problem_ids: list[str] | None = None,
+                           resolve_problem_ids: list[str] | None = None,
+                           baseline_receipts: dict | None = None,
+                           reward_values: dict | None = None) -> dict:
+    """Keep global slots and the two-policy delayed schedule identical to v16b."""
+    validate_protocol_v17(protocol)
+    base = protocol["training_contract"]
+    prep = base["prep_updates"]
+    if (type(global_slot) is not int or not 0 <= global_slot < base["total_slots"]
+            or phase not in ("prep", "rl") or (global_slot < prep) != (phase == "prep")
+            or not isinstance(policy_sha256, str) or len(policy_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in policy_sha256)):
+        raise ValueError("v17 protocol: invalid phase, slot or current policy hash")
+    block = global_slot if phase == "prep" else global_slot - prep
+    return copy.deepcopy(base) | {
+        "phase": phase, "global_slot": global_slot, "block_id": block,
+        "policy_version": block if phase == "rl" else 0, "policy_sha256": policy_sha256,
+        "expected_problem_ids": list(expected_problem_ids),
+        "expected_obs_problem_ids": list(expected_obs_problem_ids or []),
+        "note_problem_ids": list(note_problem_ids or []),
+        "resolve_problem_ids": list(resolve_problem_ids or []),
+        "baseline_receipts": copy.deepcopy(baseline_receipts or {}),
+        "reward_values": copy.deepcopy(reward_values or {}), "protocol_sha256": protocol["sha256"],
+    }

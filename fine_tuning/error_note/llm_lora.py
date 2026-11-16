@@ -476,6 +476,18 @@ def _fit(dv: torch.Tensor, dh: torch.Tensor) -> dict:
     return entry
 
 
+def pf5_contract_v17(bundle: Any, stage: str) -> dict:
+    """F0 has no effect-power requirement; trained adapters must establish application power."""
+    if stage not in ("f0", "trained"):
+        raise ValueError("v17 PF5: explicit f0 or trained stage required")
+    parameters = [p for name, p in bundle.model.named_parameters() if ".lora_B." in name]
+    if not parameters:
+        raise ValueError("v17 PF5: no LoRA B inventory")
+    if stage == "f0" and any(bool(torch.count_nonzero(p.detach())) for p in parameters):
+        raise ValueError("v17 PF5: F0 stage requires every LoRA B tensor to be zero")
+    return {"version": "v17-pf5-stage-contract-v1", "stage": stage,
+            "require_power": stage == "trained", "effect_requirement": "REQUIRED" if stage == "trained" else "NOT_APPLICABLE_F0"}
+
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
                 h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
                 cap: float, require_power: bool = True) -> dict:
