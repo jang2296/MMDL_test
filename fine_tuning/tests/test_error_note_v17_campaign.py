@@ -36,6 +36,8 @@ class CpuEngine:
         return copy.deepcopy(self.registry)
 
     def add_version(self, bundle, version):
+        if str(version) in self.registry:  # the real sampler refuses an already registered version
+            raise RuntimeError("v16b vLLM: registry, fresh version and visual-prefill barrier required")
         self.release_idle_versions()
         self.registry[str(version)] = {"policy_sha256": "a" * 64, "refcount": 0}
 
@@ -264,6 +266,8 @@ class CampaignIntegration(unittest.TestCase):
                     self.assertFalse(durable["signal_gate_monitor_pending"])
                     self.assertEqual(len(calls), resumed[0][0])
                     self.assertEqual([entry for entry in engine.admissions if entry[0].startswith("train")], resumed[0][1])
+                    # run_v16b registers the next version at once: the gate monitor must not leave it registered.
+                    self.assertEqual({v: e for v, e in engine.registry.items() if not e["refcount"]}, {})
                     raise GateResumeVerified()
                 return actual_run(*a, **kwargs)
             if gate_crash:

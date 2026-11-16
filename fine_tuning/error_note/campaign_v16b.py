@@ -626,6 +626,9 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                 cap=cfg["max_tokens"]["monitor"], version=version, **options)
         finally:
             checkpoint.restore_rng(saved_rng)
+            # collect() registers `version`; the signal-gate monitor uses the next policy version, which run_v16b
+            # registers again right after (add_version refuses an existing version), so release it here.
+            sampler.release_idle_versions()
         body = {"version": "v17-monitor-v1" if is_v17 else "v16b-monitor-v1", "records": records,
                 "summary": summary(records), "checkpoint": state["checkpoint"], "plan_sha256": plan["sha256"]}
         if is_v17:
