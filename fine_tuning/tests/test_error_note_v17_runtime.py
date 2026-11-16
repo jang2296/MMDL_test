@@ -114,13 +114,21 @@ class CapacityTests(unittest.TestCase):
         sampler.actual_kv_tokens, sampler.kv_block_size, sampler.max_num_seqs = 128, 16, 16
         sampler.sampling, sampler.eos_token_ids = request["sampling"], [9]
         core = Mock()
-        sampler.engine = SimpleNamespace(llm=SimpleNamespace(llm_engine=core))
+        sampler.engine = SimpleNamespace(llm=SimpleNamespace(llm_engine=core), model_config=SimpleNamespace(image_token_id=7))
         sampler._scheduler = lambda: SimpleNamespace(requests={request["request_id"]: SimpleNamespace(lora_request=None)})
         prepared = {"request_sha256": single_request_sha256(request), "prompt_tokens": 1,
                     "max_tokens": 8, "item": {"prompt_token_ids": [1]}, "prompt": {}}
         with patch("vllm.SamplingParams"), self.assertRaisesRegex(RuntimeError, "completion cap changed"):
             sampler.submit(request, prepared=prepared | {"max_tokens": 1})
+        # Image prompts travel collapsed (one token per image span, vLLM re-expands): accepted; expanded: refused.
+        image_item = {"prompt_token_ids": [1, 5, 7, 7, 7, 6, 2, 5, 7, 7, 6]}
+        with patch("vllm.SamplingParams"), self.assertRaisesRegex(RuntimeError, "native prompt differs"):
+            sampler.submit(request, prepared=prepared | {"item": image_item, "prompt": dict(image_item)})
         core.add_request.assert_not_called()
+        with patch("vllm.SamplingParams"), self.assertRaisesRegex(RuntimeError, "request LoRA"):
+            sampler.submit(request, prepared=prepared | {"item": image_item, "prompt_tokens": 11,
+                                                         "prompt": {"prompt_token_ids": [1, 5, 7, 6, 2, 5, 7, 6]}})
+        core.abort_request.reset_mock()
         with patch("vllm.SamplingParams"), self.assertRaisesRegex(RuntimeError, "request LoRA"):
             sampler.submit(request, prepared=prepared)
         core.abort_request.assert_called_once_with([request["request_id"]])

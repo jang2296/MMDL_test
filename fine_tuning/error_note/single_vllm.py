@@ -538,7 +538,11 @@ class SingleVllmSampler:
         item, prompt = prepared["item"], prepared["prompt"]
         if prepared["max_tokens"] != request["max_tokens"]:
             raise RuntimeError("v17 capacity: prepared completion cap changed")
-        if list(prompt.get("prompt_token_ids", item["prompt_token_ids"])) != list(item["prompt_token_ids"]):
+        # The engine transport collapses each registered image span (a run of image tokens) to one token that vLLM
+        # re-expands (engines.VLLMRolloutEngine._prompt); the reserved count stays the expanded prompt length.
+        ids, image_token = list(item["prompt_token_ids"]), self.engine.model_config.image_token_id
+        collapsed = [t for i, t in enumerate(ids) if not (t == image_token and i and ids[i - 1] == image_token)]
+        if list(prompt.get("prompt_token_ids", collapsed)) != collapsed:
             raise RuntimeError("v17 capacity: native prompt differs from reserved prepared prompt")
         reservation = None
         if getattr(self, "protocol_version", None) == "error-note-v17":
