@@ -102,7 +102,8 @@ def capacity_receipt(engine: Any, version: str, *, max_model_len: int = 40960,
     return result
 
 
-PROBE_CAP_SECONDS = 900  # 2026-11-17: forced-long probe needs time to reach a 32,768-token context
+PROBE_CAP_SECONDS = 2700  # 2026-11-17 A100 eager 8 slots: ~15 tok/s per request at long context, the first wave
+# reaches 32,768 tokens after ~2,000 s (900 s observed only 17,423)
 
 
 def calibration_receipt(probe: dict) -> dict:
@@ -764,7 +765,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
 
 
 def probe(args: argparse.Namespace) -> dict:
-    """One explicitly invoked non-benchmark diagnostic, bounded to 16 inputs and fifteen minutes.
+    """One explicitly invoked non-benchmark diagnostic, bounded to 16 inputs and PROBE_CAP_SECONDS.
 
     The performance-only requests are short-answer sources, so every request is forced long (ignore_eos, the B2
     32,768 cap unchanged): eight concurrent long generations are the slowest regime of the 900 evaluation, and the
@@ -864,7 +865,7 @@ def probe(args: argparse.Namespace) -> dict:
                         "raw_response": backend.processor.tokenizer.decode(token_ids, skip_special_tokens=True,
                                                                              clean_up_tokenization_spaces=False),
                         "status": "DIAGNOSTIC_PARTIAL_NOT_SCORED", "requests_sha256": sha256_file(args.requests)})
-                raise TimeoutError("v17: performance-only probe reached its fifteen-minute diagnostic cap")
+                raise TimeoutError("v17: performance-only probe reached its diagnostic cap")
 
         def requests():
             for item in items:

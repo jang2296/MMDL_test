@@ -196,7 +196,7 @@ def calibrate(args: Any, plan: dict) -> dict:
         sampler.add_version(bundle, 0)
         sampler.add_version(bundle, 1)
         collected = prep.collect(bundle, sampler, items, data_root=args.data_root, split="performance",
-            out=Path(args.output) / "preflight-generations", stage="V17_BF16_PREFLIGHT_T1",
+            out=Path(args.output) / "preflight-generations", stage="v17-bf16-preflight-t1",
             protocol_sha256=plan["protocol"]["sha256"], sampling=TRAIN_SAMPLING_V16B, cap=8192,
             algorithm_version="error-note-v17", baseline_receipts=baselines)
         if len(collected) != len(items) or sampler.has_unfinished_requests():
