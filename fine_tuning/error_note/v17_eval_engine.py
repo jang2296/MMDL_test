@@ -242,7 +242,7 @@ def _raw_decoded(output: Any, token: int, count: int) -> list[float]:
 
 
 def decode_pf5(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict,
-               timing: dict, mode: str, root: Path) -> dict:
+               timing: dict, mode: str, root: Path, vision_exception: str | None = None) -> dict:
     """Supplement the historical prefill PF5 with real amplified autoregressive decode."""
     from vllm import SamplingParams
     from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
@@ -271,7 +271,7 @@ def decode_pf5(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dic
     swap = lora_preflight.adapter_swap(backend.llm.llm_engine, bundle, backend.lora_request, root)
     columns, restored = llm_lora.vllm_columns(bundle, backend.vision_hooks, probe, pairs, backend.lora_request, swap)
     report = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
-                                  require_power=True)
+                                  require_power=True, vision_exception=vision_exception)
     report["restored"] = llm_lora.check_identity(backend.llm, bundle, restored.lora_int_id, backend.vision_hooks)
     report |= {"graph_replay_deltas": replay_deltas, "generated_decode_tokens_per_probe": DECODE_TOKENS,
                "raw_logprobs": True, "native_allowed_token_ids": True, "diagnostic_only": True}
@@ -560,9 +560,11 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
             pf5 = {"format": "lora-preflight-v1", "model_ref_sha256": sha256_file(args.model_ref),
                    "protocol_id": cfg["protocol_id"], "files": files,
                    "engine": lora_preflight.engine_checks(backend, bundle, prep, pairs, reference,
-                                                          protocol_version="error-note-v17", stage="trained")}
+                                                          protocol_version="error-note-v17", stage="trained",
+                                                          vision_exception=getattr(args, "pf5_vision_exception", None))}
             pf5["decode_engine"] = decode_pf5(backend, bundle, prep, decode_pairs, decode_reference,
-                                                timing, mode, root / "amplified-adapters")
+                                                timing, mode, root / "amplified-adapters",
+                                                vision_exception=getattr(args, "pf5_vision_exception", None))
             pf5["pass"] = files["pass"] and pf5["engine"]["pass"] and pf5["decode_engine"]["pass"]
             exclusive(root / "pf5.json", pf5)
             report["preflight"] = {"path": str((root / "pf5.json").resolve()),
@@ -892,6 +894,8 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--max-seconds", type=float, default=PROBE_CAP_SECONDS)
     command.add_argument("--long-tail-allowance-seconds", type=float, default=1800.)
     command.add_argument("--long-tail-basis", default="explicit conservative 30-minute load/tail scenario")
+    command.add_argument("--pf5-vision-exception", default=None,
+                         help="recorded user authorization: evaluate with the vision LoRA application unconfirmed")
     args = parser.parse_args(argv)
     result = validate(args)
     print(json.dumps({key: result[key] for key in ("status", "selected_mode", "safe_slots",

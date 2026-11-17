@@ -413,6 +413,15 @@ class SlopeTests(unittest.TestCase):
         self.assertFalse(scaled["pass"])
         self.assertAlmostEqual(scaled["amplified"]["vision_only"]["slope"], .4, delta=.05)
         self.assertGreater(scaled["amplified"]["vision_only"]["correlation"], .9)
+        excepted = llm_lora.slope_check(**pf5_columns(**shape, vision_only=True, vision=.4), cap=.04,
+                                        vision_exception="user 2026-11-17: vision unconfirmed")
+        self.assertTrue(excepted["pass"])
+        self.assertEqual(excepted["vision_exception"], "user 2026-11-17: vision unconfirmed")
+        self.assertFalse(excepted["amplified"]["vision_only"]["gating"] or excepted["amplified"]["vision"]["gating"])
+        self.assertFalse(llm_lora.slope_check(**pf5_columns(**shape, vision_only=True, llm=.5), cap=.04,
+                                              vision_exception="x")["pass"])  # LLM still gates
+        with self.assertRaisesRegex(ValueError, "authorization"):
+            llm_lora.slope_check(**pf5_columns(**shape, vision_only=True), cap=.04, vision_exception=" ")
         columns = pf5_columns(**shape, vision_only=True)
         del columns["ha_vis"]
         with self.assertRaisesRegex(ValueError, "both engines"):

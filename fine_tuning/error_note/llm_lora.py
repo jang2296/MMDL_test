@@ -496,7 +496,7 @@ def pf5_contract_v17(bundle: Any, stage: str) -> dict:
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
                 h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
                 cap: float, require_power: bool = True, va_vis: list[float] | None = None,
-                ha_vis: list[float] | None = None) -> dict:
+                ha_vis: list[float] | None = None, vision_exception: str | None = None) -> dict:
     """PF5 on teacher-forced log-probs. v_*: vLLM (on = LoRA + hooks, llm = LoRA only, off = neither); h_*: HF (on,
     vision scaling 0, all scaling 0); va_* / ha_*: the same with every LoRA B x AMPLIFY (vLLM adapter file and hook
     buffers, HF scaling). A trained adapter's effect can sit at the BF16 cross-engine noise (A100 4B v14: 0.05 rms vs
@@ -510,7 +510,11 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
     is a small difference of two outputs of the LLM-x16-saturated model; on the trained v17 adapter (vision 2.5% of
     the total) its slope ~= correlation ~= 0.4 on four probes, the signature of cross-engine BF16 noise in both
     regressor and response, not of a scale error (which keeps correlation ~1). When given, "vision_only" takes the
-    vision gate with the same SLOPE_RANGE / MIN_CORRELATION and the joint "vision" is recorded, not gating."""
+    vision gate with the same SLOPE_RANGE / MIN_CORRELATION and the joint "vision" is recorded, not gating.
+    vision_exception: a recorded user authorization to evaluate with the vision application unconfirmed; both vision
+    components are then measured and reported but not gating (total / LLM and every other check still gate)."""
+    if vision_exception is not None and (not isinstance(vision_exception, str) or not vision_exception.strip()):
+        raise ValueError("llm_lora: a vision exception needs its recorded authorization text")
     columns = [torch.tensor(x, dtype=torch.float64) for x in (v_on, v_llm, v_off, h_on, h_llm, h_off, va_on, va_llm,
                                                                 ha_on, ha_llm)]
     v1, vl, v0, h1, hl, h0, a1, al, g1, gl = columns
@@ -542,8 +546,10 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
         if entry["rms_effect"] >= MIN_EFFECT:
             entry["pass"] = (SLOPE_RANGE[0] <= entry["slope"] <= SLOPE_RANGE[1]
                              and entry["correlation"] >= MIN_CORRELATION)
-            entry["gating"] = not (key == "vision" and "vision_only" in amplified)
+            entry["gating"] = not ((key == "vision" and "vision_only" in amplified)
+                                   or (vision_exception is not None and key in ("vision", "vision_only")))
             ok = ok and (entry["pass"] or not entry["gating"])
     return {"tokens": int(v1.numel()), "cap": cap, "amplify": AMPLIFY, "mean_abs_on": err_on,
             "mean_abs_off_vs_on": err_off, "amplified_mean_abs_on": float((a1 - g1).abs().mean()),
-            "real": real, "amplified": amplified, "power": bool(power), "pass": bool(ok)}
+            "real": real, "amplified": amplified, "power": bool(power), "pass": bool(ok),
+            **({"vision_exception": vision_exception} if vision_exception is not None else {})}

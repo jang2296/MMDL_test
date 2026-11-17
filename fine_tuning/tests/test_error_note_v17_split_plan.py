@@ -95,6 +95,19 @@ class V17SplitPlanTests(unittest.TestCase):
         self.assertEqual(command[command.index("--baseline-raw") + 1], p["b2_lengths_path"])
         self.assertEqual(command[command.index("--model-ref") + 1], p["export_root"] + "/model_ref.json")
 
+    def test_pf5_vision_exception_is_an_optional_recorded_eval_flag(self):
+        p = split_params(Path("/private/eval"), "v17-eval")
+        self.assertNotIn("--pf5-vision-exception", json.dumps(check_spec(planner.plan("v17-eval", p))))
+        p["pf5_vision_exception"] = "User 2026-11-17: evaluate with the vision application unconfirmed"
+        step = {s["name"]: s for s in check_spec(planner.plan("v17-eval", p))["steps"]}["eval-engine-validation"]
+        self.assertEqual(step["argv"][step["argv"].index("--pf5-vision-exception") + 1], p["pf5_vision_exception"])
+        for bad in ("", " ", 1):
+            with self.assertRaisesRegex(ValueError, "pf5_vision_exception"):
+                planner.plan("v17-eval", p | {"pf5_vision_exception": bad})
+        train = split_params(Path("/private/train"), "v17-train") | {"pf5_vision_exception": "x"}
+        with self.assertRaisesRegex(ValueError, "exact versioned"):
+            planner.plan("v17-train", train)
+
     def test_split_validation_rejects_unbound_estimates_and_wrong_reserve(self):
         for stage, key in (("v17-train", "training_estimate_basis"), ("v17-eval", "long_tail_basis")):
             p = split_params(Path("/private/run"), stage)

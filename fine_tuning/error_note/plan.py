@@ -1001,8 +1001,12 @@ def _check_v17_split(stage: str, p: dict[str, Any]) -> dict[str, Any]:
               {"long_tail_allowance_seconds", "long_tail_basis", "eval_engine_mode"})
     keys = {"version", "commit", "timeouts", "hourly_usd", "gpu_type", "funding",
             *V17_SPLIT_COMMON_PATHS, *paths, *(name + "_sha256" for name in hashed), *extras}
-    if set(p) != keys or p.get("version") != PARAMS_VERSION_V17_SPLIT:
+    optional = set() if training else {"pf5_vision_exception"}
+    if not keys <= set(p) <= keys | optional or p.get("version") != PARAMS_VERSION_V17_SPLIT:
         raise ValueError("v17 split plan: exact versioned stage parameters required")
+    if "pf5_vision_exception" in p and (not isinstance(p["pf5_vision_exception"], str)
+                                         or not p["pf5_vision_exception"].strip()):
+        raise ValueError("v17 split plan: pf5_vision_exception must be the recorded authorization text")
     if not isinstance(p["commit"], str) or not HEX40.fullmatch(p["commit"]):
         raise ValueError("v17 split plan: full published commit required")
     for name in (*V17_SPLIT_COMMON_PATHS, *paths):
@@ -1181,7 +1185,9 @@ def _plan_v17_eval(p: dict[str, Any]) -> dict[str, Any]:
             "auto" if p["eval_engine_mode"] == "cuda_graph" else "eager",
             "--max-seconds", str(p["timeouts"]["calibrate"]),
             "--long-tail-allowance-seconds", str(p["long_tail_allowance_seconds"]),
-            "--long-tail-basis", p["long_tail_basis"]], [validation], "validate", p["timeouts"]),
+            "--long-tail-basis", p["long_tail_basis"],
+            *(["--pf5-vision-exception", p["pf5_vision_exception"]] if "pf5_vision_exception" in p else [])],
+            [validation], "validate", p["timeouts"]),
         {"name": "finalize-and-run-evaluation", "argv": [py, "-m", "fine_tuning.error_note.plan",
             "finalize-evaluation", "--params-json", json.dumps(p, sort_keys=True, separators=(",", ":")),
             "--engine-validation", validation, "--output-dir", f"{out}/continuation", "--run"],

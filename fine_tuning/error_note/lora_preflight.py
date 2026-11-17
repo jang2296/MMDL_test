@@ -149,7 +149,8 @@ def adapter_swap(engine: Any, bundle: Any, real: Any, root: Path) -> Any:
 
 
 def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict[str, list[float]], *,
-                  protocol_version: str | None = None, stage: str = "trained") -> dict:
+                  protocol_version: str | None = None, stage: str = "trained",
+                  vision_exception: str | None = None) -> dict:
     """pf1-pf3, pf5 and pf2_restored on a VLLMBackend built with kind unmerged-lora (proof_eval.attach_lora ran in its
     __init__); pf5 runs the training sampler's real + amplified probe (llm_lora.vllm_columns / slope_check)."""
     from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
@@ -171,7 +172,8 @@ def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: 
     report["pf3"] = llm_lora.check_base(llm, bundle, frozen)
     power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version == "error-note-v17" else None
     report["pf5"] = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
-                                       require_power=power["require_power"] if power is not None else True)
+                                       require_power=power["require_power"] if power is not None else True,
+                                       vision_exception=vision_exception)
     if power is not None:
         report["pf5"]["stage_contract"] = power
         report["pf5"]["effect_status"] = ("PASS" if report["pf5"]["pass"] and report["pf5"]["power"]
