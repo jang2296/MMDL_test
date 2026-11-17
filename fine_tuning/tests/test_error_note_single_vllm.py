@@ -346,17 +346,26 @@ class PushMergerTests(unittest.TestCase):
             llm_lora.push_mergers(self.engine(vllm_names + ["visual.merger.norm.weight"], []), self.named(), 1)
 
 
-def pf5_columns(size: float, noise: float, llm: float = 1.0, vision: float = 1.0, seed: int = 3) -> dict:
-    """slope_check columns over 128 tokens: LLM / vision adapter effects of std `size`; vLLM applies them x `llm` /
-    x `vision` (1 = exact); every column, HF and vLLM, carries its own numeric noise of std `noise`."""
+def pf5_columns(size: float, noise: float, llm: float = 1.0, vision: float = 1.0, seed: int = 3,
+                vision_size: float | None = None, vision_only: bool = False, joint_noise: float = 0.0) -> dict:
+    """slope_check columns over 128 tokens: LLM / vision adapter effects of std `size` (`vision_size` for vision);
+    vLLM applies them x `llm` / x `vision` (1 = exact); every column, HF and vLLM, carries its own numeric noise of std
+    `noise`. vision_only adds va_vis / ha_vis (vision x AMPLIFY, LLM off); joint_noise is extra engine-specific error
+    on the LLM-x16 joint columns ha_on / va_on (the saturated regime)."""
     g, k = torch.Generator().manual_seed(seed), llm_lora.AMPLIFY
     off = -5 + torch.randn(128, generator=g)
-    d_llm, d_vis = torch.randn(128, generator=g) * size, torch.randn(128, generator=g) * size
+    d_llm = torch.randn(128, generator=g) * size
+    d_vis = torch.randn(128, generator=g) * (size if vision_size is None else vision_size)
     exact = {"h_off": off, "h_llm": off + d_llm, "h_on": off + d_llm + d_vis, "ha_llm": off + k * d_llm,
              "ha_on": off + k * (d_llm + d_vis), "v_off": off, "v_llm": off + llm * d_llm,
              "v_on": off + llm * d_llm + vision * d_vis, "va_llm": off + k * llm * d_llm,
              "va_on": off + k * (llm * d_llm + vision * d_vis)}
-    return {key: (value + torch.randn(128, generator=g) * noise).tolist() for key, value in exact.items()}
+    if vision_only:
+        exact |= {"ha_vis": off + k * d_vis, "va_vis": off + k * vision * d_vis}
+    out = {key: value + torch.randn(128, generator=g) * noise for key, value in exact.items()}
+    for key in ("ha_on", "va_on"):
+        out[key] = out[key] + torch.randn(128, generator=g) * joint_noise
+    return {key: value.tolist() for key, value in out.items()}
 
 
 class SlopeTests(unittest.TestCase):
@@ -388,6 +397,26 @@ class SlopeTests(unittest.TestCase):
         self.assertAlmostEqual(alpha16["amplified"]["llm"]["slope"], .5, delta=.05)
         no_hooks = self.check(size=.2, noise=.005, vision=0.0)
         self.assertFalse(no_hooks["pass"] or no_hooks["amplified"]["vision"]["pass"])
+
+    def test_vision_only_probe_gates_vision_when_the_joint_probe_is_noise_bound(self):
+        # v17 eval pod: vision 2.5% of the effect; joint vision slope ~= correlation ~= 0.4 (noise, not scale).
+        shape = {"size": .08, "vision_size": .004, "noise": .005, "joint_noise": .06, "seed": 11}
+        old = self.check(**shape)
+        self.assertFalse(old["pass"])
+        self.assertFalse(old["amplified"]["vision"]["pass"])
+        new = self.check(**shape, vision_only=True)
+        self.assertTrue(new["pass"], new)
+        self.assertFalse(new["amplified"]["vision"]["pass"])
+        self.assertFalse(new["amplified"]["vision"]["gating"])
+        self.assertTrue(new["amplified"]["vision_only"]["pass"] and new["amplified"]["vision_only"]["gating"])
+        scaled = self.check(**shape, vision_only=True, vision=.4)  # a real 40% application keeps correlation ~1
+        self.assertFalse(scaled["pass"])
+        self.assertAlmostEqual(scaled["amplified"]["vision_only"]["slope"], .4, delta=.05)
+        self.assertGreater(scaled["amplified"]["vision_only"]["correlation"], .9)
+        columns = pf5_columns(**shape, vision_only=True)
+        del columns["ha_vis"]
+        with self.assertRaisesRegex(ValueError, "both engines"):
+            llm_lora.slope_check(**columns, cap=.04)
 
     def test_amplified_effect_below_min_effect_fails_for_lack_of_power(self):
         weak = self.check(size=.001, noise=.001)
@@ -446,13 +475,15 @@ class VllmColumnsTests(unittest.TestCase):
                                    "v_llm": ["p0:real:0", "p1:real:0", "p1:real:0"],
                                    "v_off": ["p0:None:0", "p1:None:0", "p1:None:0"],
                                    "va_on": ["p0:amp:1", "p1:amp:1", "p1:amp:1"],
-                                   "va_llm": ["p0:amp:0", "p1:amp:0", "p1:amp:0"]})
+                                   "va_llm": ["p0:amp:0", "p1:amp:0", "p1:amp:0"],
+                                   "va_vis": ["p0:None:1", "p1:None:1", "p1:None:1"]})
         self.assertEqual((restored, swaps, hooks.loaded, hooks.on), ("restored", [16, 1], ["vision-x16", "vision-x1"], True))
 
     def test_hooks_found_off_stay_off_and_a_failed_probe_still_restores(self):
         hooks, swaps = FakeHooks(False), []
         columns, _ = self.run_columns(hooks, swaps)
         self.assertEqual(columns["va_on"][0], "p0:amp:0")  # the engine as found: hooks off
+        self.assertEqual(columns["va_vis"][0], "p0:None:1")  # vision-only probe forces the amplified hooks on
         self.assertFalse(hooks.on)
         hooks, swaps = FakeHooks(True), []
         with self.assertRaisesRegex(RuntimeError, "probe failed"):

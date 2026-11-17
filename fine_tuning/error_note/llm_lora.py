@@ -37,7 +37,8 @@ SLOPE_RANGE, MIN_CORRELATION, MIN_EFFECT = (0.85, 1.15), 0.9, 0.05
 AMPLIFY = 16
 # HF/PEFT reference columns of PF5: per-group scaling factors (absent group = as trained, 0 = off).
 HF_PROBES: dict[str, dict[str, float]] = {"h_on": {}, "h_llm": {"V": 0.0}, "h_off": {"L": 0.0, "V": 0.0},
-             "ha_on": {"L": AMPLIFY, "V": AMPLIFY}, "ha_llm": {"L": AMPLIFY, "V": 0.0}}
+             "ha_on": {"L": AMPLIFY, "V": AMPLIFY}, "ha_llm": {"L": AMPLIFY, "V": 0.0},
+             "ha_vis": {"L": 0.0, "V": AMPLIFY}}
 
 
 def scope_qwen3vl_lora() -> None:
@@ -434,9 +435,10 @@ def vllm_columns(bundle: Any, hooks: VisionHooks, probe: Any, pairs: list, lora:
     engine's only adapter and returns its LoRARequest (amplified: a never-used id; factor 1, the real adapter: a fresh
     id in training, the export's own request in evaluation, lora_preflight.adapter_swap).
     Real adapter: v_on (LoRA + hooks as found), v_llm (LoRA only), v_off (neither). Amplified: va_on / va_llm with
-    swap(AMPLIFY) and the hook B buffers x AMPLIFY. Afterwards, also on error, swap(1) restores the real adapter and
-    vision_lora(bundle) the hook buffers, hooks.on as found; the caller re-checks PF2 on the returned request."""
-    columns: dict[str, list[float]] = {key: [] for key in ("v_on", "v_llm", "v_off", "va_on", "va_llm")}
+    swap(AMPLIFY) and the hook B buffers x AMPLIFY; va_vis: hooks x AMPLIFY on with no LLM adapter (vision-only).
+    Afterwards, also on error, swap(1) restores the real adapter and vision_lora(bundle) the hook buffers, hooks.on as
+    found; the caller re-checks PF2 on the returned request."""
+    columns: dict[str, list[float]] = {key: [] for key in ("v_on", "v_llm", "v_off", "va_on", "va_llm", "va_vis")}
     state = hooks.on
 
     def run(on: str, llm: str, request_lora: Any, off: bool) -> None:
@@ -457,6 +459,9 @@ def vllm_columns(bundle: Any, hooks: VisionHooks, probe: Any, pairs: list, lora:
         hooks.load(vision_lora(bundle, AMPLIFY))
         hooks.on = state
         run("va_on", "va_llm", amplified, False)
+        hooks.on = True
+        for request, completion in pairs:
+            columns["va_vis"] += probe(request, completion, None)
     finally:
         hooks.load(vision_lora(bundle))
         hooks.on = state
@@ -490,7 +495,8 @@ def pf5_contract_v17(bundle: Any, stage: str) -> dict:
 
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
                 h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
-                cap: float, require_power: bool = True) -> dict:
+                cap: float, require_power: bool = True, va_vis: list[float] | None = None,
+                ha_vis: list[float] | None = None) -> dict:
     """PF5 on teacher-forced log-probs. v_*: vLLM (on = LoRA + hooks, llm = LoRA only, off = neither); h_*: HF (on,
     vision scaling 0, all scaling 0); va_* / ha_*: the same with every LoRA B x AMPLIFY (vLLM adapter file and hook
     buffers, HF scaling). A trained adapter's effect can sit at the BF16 cross-engine noise (A100 4B v14: 0.05 rms vs
@@ -499,10 +505,22 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
     slope/correlation are diagnostics only (no pass/fail). The application MECHANISM is tested on the AMPLIFIED
     effects: the total effect must be >= MIN_EFFECT (else FAIL: no power) and every component (total / llm / vision)
     with effect >= MIN_EFFECT within SLOPE_RANGE and MIN_CORRELATION. Wrong scale gives slope ~0.5/2, a merged path
-    ~0.45 (LLM) / ~0.12 (vision)."""
+    ~0.45 (LLM) / ~0.12 (vision).
+    va_vis / ha_vis (v17 eval, 2026-11-17): vision x AMPLIFY with the LLM adapter off. The joint "vision" component
+    is a small difference of two outputs of the LLM-x16-saturated model; on the trained v17 adapter (vision 2.5% of
+    the total) its slope ~= correlation ~= 0.4 on four probes, the signature of cross-engine BF16 noise in both
+    regressor and response, not of a scale error (which keeps correlation ~1). When given, "vision_only" takes the
+    vision gate with the same SLOPE_RANGE / MIN_CORRELATION and the joint "vision" is recorded, not gating."""
     columns = [torch.tensor(x, dtype=torch.float64) for x in (v_on, v_llm, v_off, h_on, h_llm, h_off, va_on, va_llm,
                                                                 ha_on, ha_llm)]
     v1, vl, v0, h1, hl, h0, a1, al, g1, gl = columns
+    if (va_vis is None) != (ha_vis is None):
+        raise ValueError("llm_lora: vision-only probe needs both engines")
+    if va_vis is not None:
+        av, gv = (torch.tensor(x, dtype=torch.float64) for x in (va_vis, ha_vis))
+        if av.shape != v1.shape or gv.shape != v1.shape:
+            raise ValueError("llm_lora: probe vectors must be nonempty and aligned")
+        columns += [av, gv]
     if not (v1.numel() and all(t.shape == v1.shape for t in columns)):
         raise ValueError("llm_lora: probe vectors must be nonempty and aligned")
     finite = all(bool(torch.isfinite(t).all()) for t in columns)
@@ -511,18 +529,21 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
                                                   ("vision", v1 - vl, h1 - hl))}
     amplified = {key: _fit(dv, dh) for key, dv, dh in (("total", a1 - v0, g1 - h0), ("llm", al - v0, gl - h0),
                                                        ("vision", a1 - al, g1 - gl))}
+    if va_vis is not None:
+        amplified["vision_only"] = _fit(av - v0, gv - h0)
     # v16b (require_power False): a fresh-F0 (all-zero B) or barely trained adapter has no testable effect; record
     # power False instead of failing. Agreement (err_on <= cap) and every powered slope/correlation test still apply.
     power = amplified["total"]["rms_effect"] >= MIN_EFFECT
     ok = finite and err_on <= cap and (power or not require_power)
     if real["total"]["rms_effect"] >= MIN_EFFECT:
         ok = ok and err_on < err_off
-    for entry in amplified.values():
+    for key, entry in amplified.items():
         entry["pass"] = None  # None: effect too small to test
         if entry["rms_effect"] >= MIN_EFFECT:
             entry["pass"] = (SLOPE_RANGE[0] <= entry["slope"] <= SLOPE_RANGE[1]
                              and entry["correlation"] >= MIN_CORRELATION)
-            ok = ok and entry["pass"]
+            entry["gating"] = not (key == "vision" and "vision_only" in amplified)
+            ok = ok and (entry["pass"] or not entry["gating"])
     return {"tokens": int(v1.numel()), "cap": cap, "amplify": AMPLIFY, "mean_abs_on": err_on,
             "mean_abs_off_vs_on": err_off, "amplified_mean_abs_on": float((a1 - g1).abs().mean()),
             "real": real, "amplified": amplified, "power": bool(power), "pass": bool(ok)}
