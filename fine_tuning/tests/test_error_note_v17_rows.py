@@ -117,6 +117,14 @@ class V17Rows(unittest.TestCase):
         self.assertIn("MULTIPLE_FINAL_ANSWERS", reasons(body + "Final answer: A\nFinal answer: B"))
         self.assertIn("FINAL_ANSWER_MISMATCH", reasons(body + "Final answer: B", extracted="A"))
 
+    def test_latex_source_values_are_left_out_of_the_checkable_catalog(self):
+        item = record("AB = 7\nFinal answer: A", status="CORRECT")
+        private = verifier(item, [{"kind": "SEGMENT_LABEL", "entity": ["A", "B"], "value": "2\\sqrt{3}"},
+                                  {"kind": "SEGMENT_LABEL", "entity": ["A", "C"], "value": "7"}])
+        self.assertEqual([f["entity"] for f in rows._source_catalog(private)], ["segment AC"])
+        receipt = rows.verify_solution_v17(item, tokenizer=TOKENIZER, gold="A", choices=["first", "second"], verifier=private)
+        self.assertNotIn("UNSUPPORTED_SOURCE_FACT", str(receipt))
+
     def test_observation_prompt_forbids_an_empty_claim_list(self):
         prompt = rows.build_obs_request_v17({"problem_id": "fixture", "layer": "graph", "image_paths": [],
                                              "image_sha256": []})["prompt"]

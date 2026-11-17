@@ -323,6 +323,10 @@ def _source_catalog(verifier: dict) -> list[dict]:
     catalog = []
     for index, fact in enumerate(verifier.get("facts", [])):
         kind, entity = fact["kind"], fact["entity"]
+        # 2026-11-17 pod crash at RL block 20: 12 Geometry3K labels are LaTeX ("2\sqrt{3}", "\frac{1}{4}x"); the bounded
+        # scanner (_catalog) accepts only atomic values, so such facts are left out of the checkable catalog.
+        if not bounded._ATOM.fullmatch(str(fact["value"])):
+            continue
         if kind in {"SEGMENT_LABEL", "ANGLE_LABEL"}:
             name = ("segment " if kind == "SEGMENT_LABEL" else "angle ") + "".join(entity)
         elif kind == "EDGE_WEIGHT":
