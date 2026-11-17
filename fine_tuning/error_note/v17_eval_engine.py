@@ -454,7 +454,72 @@ def _manifest(path: Path, expected: str) -> dict:
     return value
 
 
-def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False) -> dict:
+DISCOVERY_SECONDS = 1200  # one fresh process: model load, LoRA, compile/graph capture, KV profiling
+DISCOVERY_ROUNDS = 3
+
+
+def stable_slots(measure: Any) -> tuple[int, list[dict]]:
+    """Largest slot count whose own fresh engine can hold it: start from the one-slot engine's safe count and
+    lower it while an engine built at that count (larger graph pool, less KV) reports fewer safe slots."""
+    history: list[dict] = []
+    capacity = measure(1)
+    history.append({"constructed_slots": 1, **capacity})
+    candidate = capacity["safe_slots"]
+    for _ in range(DISCOVERY_ROUNDS):
+        if candidate <= 1:
+            return 1, history
+        capacity = measure(candidate)
+        history.append({"constructed_slots": candidate, **capacity})
+        if capacity["safe_slots"] >= candidate:
+            return candidate, history
+        candidate = capacity["safe_slots"]
+    raise ValueError("v17 engine: safe slot capacity did not stabilize after graph allocation")
+
+
+def _discovery_worker(args: Any, mode: str, slots: int, path: Path, context: dict) -> None:
+    from mmdl.evaluation import engine as evaluation
+    from mmdl.evaluation.backends.vllm_backend import VLLMBackend
+    from fine_tuning.notebook_rl import proof_eval as pe
+
+    model_path = args.model_ref.parent / "model"
+    with engine_execution(mode, slots), pe.registered_variants(slots=slots, log_stats=True):
+        evaluation.verify_model(model_path, context["model_ref"])
+        backend = VLLMBackend(str(model_path), context["config"], context["hardware"], pe.LORA_KIND,
+                              str(args.base_path))
+    capacity = capacity_observation(backend.llm.llm_engine, backend.vllm_version)
+    backend.llm.llm_engine.engine_core.shutdown()
+    exclusive(path, seal({"version": "v17-capacity-discovery-v1", "engine_mode": mode, "constructed_slots": slots,
+                          **capacity}))
+
+
+def discover_slots(args: Any, mode: str, root: Path, context: dict) -> tuple[int, list[dict]]:
+    """Each capacity measurement is a fresh spawned process, like the later 900-question evaluation process."""
+    root.mkdir(parents=True, exist_ok=False)
+
+    def measure(slots: int) -> dict:
+        path = root / f"capacity-{len(list(root.glob('capacity-*.json'))) + 1}-{slots}.json"
+        process = multiprocessing.get_context("spawn").Process(
+            target=_discovery_worker, args=(args, mode, slots, path, context))
+        process.start()
+        process.join(timeout=DISCOVERY_SECONDS)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=30)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            raise ValueError("v17 engine: capacity discovery exceeded its technical deadline")
+        if process.exitcode != 0 or not path.is_file():
+            raise ValueError(f"v17 engine: capacity discovery process exit {process.exitcode}")
+        value = checked(read_json(path))
+        return {k: value[k] for k in ("actual_blocks", "block_size", "actual_kv_token_capacity", "usable_tokens",
+                                      "reserved_per_request", "safe_slots")}
+
+    return stable_slots(measure)
+
+
+def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False,
+             slots: int = 1, discovery: list | None = None) -> dict:
     """One concrete final-model engine; every observation and PF5 belongs to this instance."""
     import torch
     from mmdl.evaluation import engine as evaluation
@@ -483,24 +548,13 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
         decode_reference = llm_lora.hf_columns(bundle, prep, decode_pairs)
         bundle.model.to("cpu")
         torch.cuda.empty_cache()
-        # Discover capacity on one slot, then rebuild at exactly its measured safe slot count.
-        slots = 1
-        for discovery in range(3):
-            with engine_execution(mode, slots), pe.registered_variants(slots=slots, log_stats=True):
-                evaluation.verify_model(model_path, context["model_ref"])
-                backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(args.base_path))
-            capacity = capacity_observation(backend.llm.llm_engine, backend.vllm_version)
-            report.setdefault("capacity_discovery", []).append({"constructed_slots": slots, **capacity})
-            if slots == capacity["safe_slots"]:
-                observed = observe_engine(backend, mode, slots)
-                break
-            backend.llm.llm_engine.engine_core.shutdown()
-            backend = None
-            gc.collect()
-            torch.cuda.empty_cache()
-            slots = capacity["safe_slots"]
-        else:
-            raise ValueError("v17 engine: safe slot capacity did not stabilize after graph allocation")
+        # Slots come from fresh-process discovery (discover_slots), so this process builds exactly one engine:
+        # an in-process rebuild may not release weights/KV/graph pools (vLLM 0.11 needs 0.9 of total free).
+        report["capacity_discovery"] = discovery or []
+        with engine_execution(mode, slots), pe.registered_variants(slots=slots, log_stats=True):
+            evaluation.verify_model(model_path, context["model_ref"])
+            backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(args.base_path))
+        observed = observe_engine(backend, mode, slots)
         report["observed_engine"] = observed
         with diagnostic_timing() as timing:
             pf5 = {"format": "lora-preflight-v1", "model_ref_sha256": sha256_file(args.model_ref),
@@ -552,8 +606,9 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
     return report
 
 
-def _attempt_worker(args: Any, mode: str, root: Path, context: dict, reference_only: bool) -> None:
-    report = _attempt(args, mode, root, context, reference_only=reference_only)
+def _attempt_worker(args: Any, mode: str, root: Path, context: dict, reference_only: bool,
+                    slots: int = 1, discovery: list | None = None) -> None:
+    report = _attempt(args, mode, root, context, reference_only=reference_only, slots=slots, discovery=discovery)
     exclusive(root / "measurement.json", seal(report))
 
 
@@ -564,13 +619,21 @@ def validation_timeout_seconds(max_seconds: float, mode: str = "auto") -> int:
         raise ValueError("v17 engine: invalid bounded validation timeout inputs")
     full_attempts = 1 if mode == "eager" else 2
     reference_attempts = 1 if mode == "eager" else 2
-    return math.ceil(full_attempts * (2 * max_seconds + 1830) + reference_attempts * 1830 + 60)
+    discovery = (1 + DISCOVERY_ROUNDS) * (DISCOVERY_SECONDS + 60)
+    return math.ceil(full_attempts * (2 * max_seconds + 1830 + discovery) + reference_attempts * 1830 + 60)
 
 
 def _isolated_attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False) -> dict:
     """Fresh process per mode releases CUDA graphs, workers and HF models before the next engine."""
+    slots, discovery = 1, []
+    if not reference_only:
+        try:
+            slots, discovery = discover_slots(args, mode, root.parent / (root.name + "-capacity"), context)
+        except Exception as exc:
+            return {"version": "v17-engine-attempt-v1", "engine_mode": mode, "reference_only": reference_only,
+                    "status": "FAIL", "reasons": [{"type": type(exc).__name__, "message": str(exc)}]}
     process = multiprocessing.get_context("spawn").Process(
-        target=_attempt_worker, args=(args, mode, root, context, reference_only))
+        target=_attempt_worker, args=(args, mode, root, context, reference_only, slots, discovery))
     process.start()
     process.join(timeout=(0 if reference_only else 2 * args.max_seconds) + 1800)
     if process.is_alive():

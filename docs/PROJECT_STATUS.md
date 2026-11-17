@@ -1,5 +1,14 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-11-17 — v17 학습·평가 분리판 실행 (Claude Code 인계 후)
+
+- Codex 분리 구현(`claudedocs/handoff_v17_train_eval_split_20261117.md`, 로컬 469개 통과)을 재검사(v17 195개 통과)·Opus 정적 점검 후 학습 커밋 MMDL_test `02962db`로 게시.
+  정적 점검: 학습 체인 19단계·포드 작업 연결 정상. 평가 체인 결함 2건(D1 900 평가 시작 시 KV 블록 수까지 같아야 해 새 프로세스에서 거절될 가능성, D2 같은 프로세스에서 엔진 재생성) → 학습 중 수정해 평가 커밋으로 분리 게시.
+  - D1: 엔진 비교에서 KV 용량 값만 제외, 실행 설정은 그대로 비교, `slots ≤ safe_slots` 유지(`v17_eval.py`).
+  - D2: 칸 수 탐색을 매 측정 새 프로세스로(`stable_slots`·`discover_slots`), 검증 엔진은 한 번만 생성. 검증 시간 한도 공식에 탐색 포함(auto 28,260초, eager 14,160초).
+  - 검사: v16b·v17 322개 통과, Ruff 통과.
+- 포드 `8iayvvmvauenn8` 커뮤니티 A100 SXM 1.39달러/시(PCIe 재고 없음, GraphQL 생성 — 로컬 DNS가 `rest.runpod.io`를 못 찾음), 과금 시작 02:10:10Z. 자료 업로드 343초, 설치(uv) 2분.
+  사용자 충전 반영 잔액 31.46달러(02:22:37Z). 예약금 기준 정지 23:57Z. 학습 체인 시작 02:25:17Z(spec `7d9ee22c…`).
 ## 2026-11-17 — v17 학습·평가 분리 구현 완료, Claude Code 인계
 
 - 사용자 목표 `claudedocs/plan_v17_train_eval_split_20261117.md`의 A·B를 구현했다. 인계 정본은 `claudedocs/handoff_v17_train_eval_split_20261117.md`. 새 stage `v17-train`은 평가 처리량 영수증 없이 준비·기능 확인·본학습·완료·재로딩·비병합 내보내기·학습 결과 봉인까지 연결한다. 별도 `v17-eval`은 원래 학습 결과·소스·보호된 평가 의미를 확인하고 최종 모델 검증 후 실측 모드·칸 수·watchdog으로 continuation을 봉인한다.

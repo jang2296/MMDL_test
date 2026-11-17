@@ -104,6 +104,7 @@ def capacity_receipt(engine: Any, version: str, *, max_model_len: int = 40960,
     return result
 
 
+ENGINE_CAPACITY_KEYS = ("actual_blocks", "actual_kv_token_capacity", "usable_tokens", "safe_slots", "sha256")
 PROBE_CAP_SECONDS = 2700  # 2026-11-17 A100 eager 8 slots: ~15 tok/s per request at long context, the first wave
 # reaches 32,768 tokens after ~2,000 s (900 s observed only 17,423)
 
@@ -653,7 +654,12 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
             from .v17_eval_engine import observe_engine
 
             observed = observe_engine(backend, registration["execution_contract"]["engine_mode"], slots)
-            if observed != registration["observed_engine"]:
+            # KV blocks depend on the non-torch memory of each process (vLLM 0.11 profiling), so a fresh 900-run
+            # process need not match the validation process block-for-block; observe_engine still refuses
+            # slots > safe_slots. Every execution setting (mode, graph config, sampler, dtype, slots) must match.
+            def execution(value: dict) -> dict:
+                return {k: v for k, v in value.items() if k not in ENGINE_CAPACITY_KEYS}
+            if execution(observed) != execution(registration["observed_engine"]):
                 raise ValueError("v17: actual engine differs from final-model validation")
             capacity = observed | {"actual_blocks": backend.llm.llm_engine.engine_core.engine_core.scheduler.kv_cache_config.num_blocks}
             original_describe, original_stream = backend.describe, backend.generate_stream

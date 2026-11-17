@@ -66,7 +66,7 @@ class SplitEvaluationTests(unittest.TestCase):
         backend.generate_stream = MethodType(VLLMBackend.generate_stream, backend)
         return backend
 
-    def exercise(self, registration, *, resume=False, stop_after=None, fail_enqueue=False):
+    def exercise(self, registration, *, resume=False, stop_after=None, fail_enqueue=False, observed=None):
         run_dir = self.root / "run"
         identity = {"model_sha256": "a" * 64, "mode": "partial"}
         submitted, prepared = [], []
@@ -78,7 +78,8 @@ class SplitEvaluationTests(unittest.TestCase):
             return {"sample_id": sid, "seed": sample_seed(3407, sid)}, record(sid)
 
         with mock.patch.object(evaluation, "prepare_request", side_effect=prepare), \
-             mock.patch("fine_tuning.error_note.v17_eval_engine.observe_engine", return_value=registration["observed_engine"]):
+             mock.patch("fine_tuning.error_note.v17_eval_engine.observe_engine",
+                        return_value=registration["observed_engine"] if observed is None else observed):
             with ev.evaluation_hooks(run_dir, registration, time.time() + 60) as ready:
                 with evaluation.RunWriter(run_dir, identity, registration["expected_ids"], resume=resume) as writer:
                     ready(backend)
@@ -134,6 +135,16 @@ class SplitEvaluationTests(unittest.TestCase):
         self.assertEqual(len(list((run_dir / "samples").glob("*.json"))), 7)
         with self.assertRaises(ValueError):
             ev.submission_audit(run_dir, registration | {"slots": 3})
+
+    def test_fresh_process_kv_capacity_may_differ_but_execution_settings_may_not(self):
+        registration = self.registration()
+        # A fresh 900-run process counts different non-torch memory, so its KV blocks differ from validation.
+        fresh = dict(registration["observed_engine"], actual_kv_token_capacity=430000, sha256="0" * 64)
+        self.assertEqual(len(self.exercise(registration, observed=fresh)), 7)
+        changed = dict(registration["observed_engine"], enforce_eager=True)
+        (self.root / "run").rename(self.root / "run-first")
+        with self.assertRaisesRegex(ValueError, "actual engine differs"):
+            self.exercise(registration, observed=changed)
 
     def test_enqueue_interruption_retains_intent_and_detects_tampering(self):
         registration = self.registration()

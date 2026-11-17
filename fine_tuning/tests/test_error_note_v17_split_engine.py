@@ -97,6 +97,26 @@ class SplitEngineTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
 
+    def test_stable_slots_uses_fresh_engines_and_never_exceeds_own_capacity(self):
+        def measured(table):
+            calls = []
+            def measure(slots):
+                calls.append(slots)
+                return {"safe_slots": table[slots]}
+            return measure, calls
+        measure, calls = measured({1: 10, 10: 9, 9: 9})   # graph pool grows with slots
+        self.assertEqual(engine.stable_slots(measure)[0], 9)
+        self.assertEqual(calls, [1, 10, 9])
+        measure, calls = measured({1: 9, 9: 9})           # eager: stable at once
+        self.assertEqual(engine.stable_slots(measure)[0], 9)
+        measure, _ = measured({1: 10, 10: 11})            # an engine may hold more than it was built for
+        self.assertEqual(engine.stable_slots(measure)[0], 10)
+        measure, _ = measured({1: 1})
+        self.assertEqual(engine.stable_slots(measure)[0], 1)
+        measure, _ = measured({1: 10, 10: 9, 9: 8, 8: 7})
+        with self.assertRaisesRegex(ValueError, "did not stabilize"):
+            engine.stable_slots(measure)
+
     def test_capacity_exact_floor_including_graph_allocation(self):
         for blocks in (3000, 10000, 25000, 27776):
             backend = backend_value(blocks=blocks)
@@ -288,9 +308,9 @@ class SplitEngineTests(unittest.TestCase):
         self.assertIs(Graph.replay, original_replay)
 
     def test_technical_validation_bound_covers_full_fallback_and_independent_references(self):
-        self.assertEqual(engine.validation_timeout_seconds(2700), 18180)
-        self.assertEqual(engine.validation_timeout_seconds(2700, "cuda_graph"), 18180)
-        self.assertEqual(engine.validation_timeout_seconds(2700, "eager"), 9120)
+        self.assertEqual(engine.validation_timeout_seconds(2700), 28260)
+        self.assertEqual(engine.validation_timeout_seconds(2700, "cuda_graph"), 28260)
+        self.assertEqual(engine.validation_timeout_seconds(2700, "eager"), 14160)
         with self.assertRaises(ValueError):
             engine.validation_timeout_seconds(2701)
 
