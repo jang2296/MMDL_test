@@ -589,6 +589,8 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
 
     def snapshot_loop():
         while not finished.wait(10):
+            if "writer" not in state:
+                continue  # the RunWriter creates run_dir (exist_ok=False); a heartbeat must never create it first
             try:
                 heartbeat.emit()
                 if run_dir.is_dir():

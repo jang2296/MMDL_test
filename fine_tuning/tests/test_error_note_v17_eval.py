@@ -5,6 +5,7 @@ import copy
 import json
 import math
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import nullcontext
@@ -187,6 +188,32 @@ class V17EvalTests(unittest.TestCase):
                     self.assertIn("recovery_provenance", writer.completed[ids[4]])
         self.assertEqual(old, {name: sha256_file(run_dir / "samples" / name) for name in old})
         self.assertIs(evaluation.RunWriter, RunWriter)
+
+    def test_heartbeat_thread_never_creates_the_run_directory_before_the_writer(self):
+        # Pod 2026-11-18: 30 dataset configs took >10 s; the 10 s heartbeat created run_dir and the fresh RunWriter
+        # (exist_ok=False) refused it.
+        ids = ["item-0", "item-1"]
+        run_dir = self.root / "runs/fresh"
+        identity = {"model_sha256": "a" * 64, "mode": "partial"}
+        registration = {"expected_ids": ids, "model_sha256": identity["model_sha256"]}
+        ticks = []
+
+        class FastEvent(threading.Event):
+            def wait(self, timeout=None):
+                ticks.append(timeout)
+                return len(ticks) > 3 or super().wait(0)
+
+        emit = ev.Heartbeat.emit
+        with mock.patch.object(ev.threading, "Event", FastEvent), mock.patch("mmdl.evaluation.writer.render"), \
+                mock.patch.object(ev.Heartbeat, "emit", lambda self, force=False: emit(self, force=True)):
+            with ev.evaluation_hooks(run_dir, registration, time.time() + 60):
+                for _ in range(200):
+                    if len(ticks) > 3:
+                        break
+                    time.sleep(.01)
+                self.assertFalse(run_dir.exists())
+                with evaluation.RunWriter(run_dir, identity, ids) as writer:
+                    self.assertEqual(writer.completed, {})
 
     def test_actual_stream_refills_eight_and_resume_generates_six_remaining_ids(self):
         from mmdl.evaluation.backends.vllm_backend import VLLMBackend
