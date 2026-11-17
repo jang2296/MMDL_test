@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
 import os
@@ -10,6 +11,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from pathlib import Path
 
 BILLING_SKEW_SECONDS = 300  # clock skew tolerated for a billing start in the future
 
@@ -37,6 +39,70 @@ def check_billing_start(billing_start: dt.datetime, now: dt.datetime | None = No
     now = now or dt.datetime.now(dt.timezone.utc)
     if billing_start > now + dt.timedelta(seconds=skew_seconds):
         raise ValueError("Billing start is in the future; give the Pod's actual first billing time")
+
+
+def reserve_deadline(snapshot: dt.datetime, balance_usd: float, reserve_usd: float,
+                     hourly_usd: float, now: dt.datetime | None = None) -> dt.datetime:
+    """The measured balance reaches the fixed recovery reserve at this instant."""
+    if (any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+            for v in (balance_usd, reserve_usd, hourly_usd))
+            or reserve_usd != 1.5 or balance_usd < 0 or hourly_usd <= 0):
+        raise ValueError("Reserve-only mode needs a finite balance, positive rate and USD 1.5 reserve")
+    if snapshot > (now or dt.datetime.now(dt.timezone.utc)) + dt.timedelta(seconds=BILLING_SKEW_SECONDS):
+        raise ValueError("Balance snapshot is in the future")
+    return snapshot + dt.timedelta(seconds=(balance_usd - reserve_usd) / hourly_usd * 3600)
+
+
+def balance_extension_sha256(value: dict) -> str:
+    payload = {key: item for key, item in value.items() if key != "sha256"}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                     allow_nan=False).encode()).hexdigest()
+
+
+def check_balance_extension(value: dict, *, previous: str, deadline: dt.datetime,
+                            snapshot: dt.datetime, owned_pod_id: str, hourly_usd: float,
+                            now: dt.datetime | None = None) -> tuple[dt.datetime, dt.datetime]:
+    """Validate an explicit top-up against the same Pod, price and preceding receipt."""
+    keys = {"version", "previous", "owned_pod_id", "balance_snapshot_utc", "balance_usd",
+            "reserve_usd", "hourly_usd", "old_deadline_utc", "new_deadline_utc",
+            "topup_reference", "authorization", "confirmed_by", "sha256"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or value["version"] != "pod-balance-extension-v1"
+            or value["sha256"] != balance_extension_sha256(value)
+            or value["previous"] != previous or value["owned_pod_id"] != owned_pod_id
+            or value["hourly_usd"] != hourly_usd or value["reserve_usd"] != 1.5
+            or value["old_deadline_utc"] != deadline.isoformat()
+            or value["confirmed_by"] not in ("user", "claude")
+            or any(not isinstance(value[k], str) or not value[k].strip()
+                   for k in ("topup_reference", "authorization"))):
+        raise ValueError("Invalid approved balance extension receipt")
+    current = utc(value["balance_snapshot_utc"])
+    extended = reserve_deadline(current, value["balance_usd"], value["reserve_usd"],
+                                value["hourly_usd"], now)
+    if (current <= snapshot or extended <= deadline
+            or value["new_deadline_utc"] != extended.isoformat()):
+        raise ValueError("Top-up must use a newer measured snapshot and extend the reserve deadline")
+    return extended, current
+
+
+def balance_extensions(directory: str | Path, *, root_sha256: str, owned_pod_id: str,
+                       snapshot: dt.datetime, balance_usd: float, hourly_usd: float,
+                       seen: tuple[str, ...] = (), now: dt.datetime | None = None
+                       ) -> tuple[dt.datetime, dt.datetime, tuple[str, ...]]:
+    deadline = reserve_deadline(snapshot, balance_usd, 1.5, hourly_usd, now)
+    previous, hashes = root_sha256, []
+    for index, path in enumerate(sorted(Path(directory).glob("*.json")), 1):
+        if path.is_symlink() or path.name != f"{index:06d}.json":
+            raise ValueError("Balance extensions must be append-only numbered JSON receipts")
+        value = json.loads(path.read_text())
+        deadline, snapshot = check_balance_extension(
+            value, previous=previous, deadline=deadline, snapshot=snapshot,
+            owned_pod_id=owned_pod_id, hourly_usd=hourly_usd, now=now)
+        hashes.append(value["sha256"])
+        previous = value["sha256"]
+    if tuple(hashes[:len(seen)]) != seen:
+        raise ValueError("An accepted balance extension was removed or replaced")
+    return deadline, snapshot, tuple(hashes)
 
 
 def write_result(path: str, result: dict) -> None:
@@ -82,6 +148,11 @@ def main() -> int:
     for name in ("balance-usd", "reserve-usd", "hourly-usd"):
         parser.add_argument("--"+name, type=float, required=True)
     parser.add_argument("--max-seconds", type=float, default=3600)
+    parser.add_argument("--financial-mode", choices=("legacy", "balance_reserve_only"), default="legacy")
+    parser.add_argument("--balance-snapshot-utc")
+    parser.add_argument("--extension-receipts")
+    parser.add_argument("--extension-root-sha256")
+    parser.add_argument("--reserve-stop-receipt")
     parser.add_argument("--result-file", help="also write the result JSON here: when a budget stop is "
                         "decided (before the group is stopped) and at exit; the directory must exist")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -91,9 +162,12 @@ def main() -> int:
     result: dict[str, object] = {}
 
     def persist() -> None:
-        if args.result_file:
+        paths = [args.result_file] if args.result_file else []
+        if result.get("status") == "BUDGET_STOP" and args.financial_mode == "balance_reserve_only":
+            paths += [args.reserve_stop_receipt]
+        for path in paths:
             try:
-                write_result(args.result_file, result)
+                write_result(path, result)
             except OSError as exc:
                 result["result_file_error"] = f"{type(exc).__name__}: {exc}"
     try:
@@ -105,12 +179,30 @@ def main() -> int:
         if not command:
             raise ValueError("A command after -- is required")
         check_billing_start(utc(args.billing_start_utc))
-        deadline = effective_deadline(utc(args.gpu_cutoff_utc), utc(args.billing_start_utc),
-                                      args.balance_usd, args.reserve_usd, args.hourly_usd)
-        allowed = min(args.max_seconds, (deadline-dt.datetime.now(dt.timezone.utc)).total_seconds()-120)
+        reserve_only = args.financial_mode == "balance_reserve_only"
+        seen: tuple[str, ...] = ()
+        if reserve_only:
+            if (args.reserve_usd != 1.5 or not args.extension_receipts
+                    or not Path(args.extension_receipts).is_absolute()
+                    or not args.reserve_stop_receipt or not Path(args.reserve_stop_receipt).is_absolute()
+                    or not args.extension_root_sha256 or len(args.extension_root_sha256) != 64
+                    or any(c not in "0123456789abcdef" for c in args.extension_root_sha256)):
+                raise ValueError("Reserve-only watchdog needs fixed reserve and bound extension receipts")
+            snapshot = utc(args.balance_snapshot_utc)
+            deadline, _, seen = balance_extensions(
+                args.extension_receipts, root_sha256=args.extension_root_sha256,
+                owned_pod_id=args.owned_pod_id, snapshot=snapshot, balance_usd=args.balance_usd,
+                hourly_usd=args.hourly_usd)
+            allowed = (deadline - dt.datetime.now(dt.timezone.utc)).total_seconds()
+            result.update(financial_mode=args.financial_mode, extension_sha256=list(seen))
+        else:
+            deadline = effective_deadline(utc(args.gpu_cutoff_utc), utc(args.billing_start_utc),
+                                          args.balance_usd, args.reserve_usd, args.hourly_usd)
+            allowed = min(args.max_seconds, (deadline-dt.datetime.now(dt.timezone.utc)).total_seconds()-120)
         result.update(deadline_utc=deadline.isoformat(), timeout_seconds=max(0, allowed))
         if allowed <= 0:
-            raise TimeoutError("Budget cannot retain the 120-second recovery reserve")
+            raise TimeoutError("Measured balance reached the USD 1.5 reserve" if reserve_only else
+                               "Budget cannot retain the 120-second recovery reserve")
         def interrupted(signum, _frame):
             raise SystemExit(128+signum)
 
@@ -125,12 +217,39 @@ def main() -> int:
         process = subprocess.Popen(command, start_new_session=True, stdin=subprocess.DEVNULL,
                                    env=environment)
         result["pid"] = process.pid
-        code = process.wait(timeout=allowed)
+        if reserve_only:
+            while True:
+                deadline, _, seen = balance_extensions(
+                    args.extension_receipts, root_sha256=args.extension_root_sha256,
+                    owned_pod_id=args.owned_pod_id, snapshot=snapshot, balance_usd=args.balance_usd,
+                    hourly_usd=args.hourly_usd, seen=seen)
+                result.update(deadline_utc=deadline.isoformat(), extension_sha256=list(seen))
+                remaining = (deadline - dt.datetime.now(dt.timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    raise TimeoutError("Measured balance reached the USD 1.5 reserve")
+                try:
+                    code = process.wait(timeout=min(1.0, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        else:
+            code = process.wait(timeout=allowed)
         result.update(status="EXITED", returncode=code)
         code = code if code >= 0 else 128-code
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         result.update(status="BUDGET_STOP", reason=str(exc))
+        if args.financial_mode == "balance_reserve_only":
+            result.update(required_action="POD_STOP_REQUIRED", recovery_status="RECOVERY_REQUIRED",
+                          owned_pod_id=args.owned_pod_id, result_file=args.result_file,
+                          automatic_pod_stop=False)
         persist()  # before the group is stopped, so the child can record BUDGET_STOP, not a kill
+        if args.financial_mode == "balance_reserve_only":
+            try:
+                print(f"POD_STOP_REQUIRED: preserve results, then stop owned Pod {args.owned_pod_id}; "
+                      f"receipt {args.reserve_stop_receipt}. Workload stop does not stop Pod billing.",
+                      flush=True)
+            except OSError:
+                pass  # the durable receipt survives a dropped terminal
         code = 124
     except (KeyboardInterrupt, SystemExit) as exc:
         code = 130 if isinstance(exc, KeyboardInterrupt) else (exc.code if isinstance(exc.code, int) else 1)

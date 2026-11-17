@@ -283,6 +283,122 @@ def _plain_file(path: Path, root: Path) -> Path:
     return path
 
 
+def _split_resume_inputs(prereg: dict, registered: dict, model_ref: Path, calibration: Path,
+                         preflight: Path, training_seal: Path, *, verify_training: bool) -> dict:
+    from fine_tuning.error_note import v17_eval
+    from fine_tuning.error_note.v17_artifacts import VERSION, verify_training_artifacts
+
+    try:
+        _plain_file(training_seal, training_seal.parent)
+        sealed = (verify_training_artifacts(training_seal) if verify_training
+                  else v17_eval.checked(read_json(training_seal)))
+        validation = read_json(calibration)
+        ids = prereg["evaluation_subsets"]["all"]["ids"]
+        contract = v17_eval.split_execution_contract(validation, ids)
+        seal_sha, engine_sha, model_sha = (sha256_file(training_seal), sha256_file(calibration), sha256_file(model_ref))
+        if (sealed.get("version") != VERSION or sealed.get("status") != "SEALED"
+                or validation != prereg["engine_validation"] or sha256_file(preflight) != engine_sha
+                or any(owner.get("engine_validation_sha256") != engine_sha for owner in (prereg, registered))
+                or any(owner.get("training_artifacts_file_sha256") != seal_sha for owner in (prereg, registered))
+                or any(owner.get("execution_contract") != contract for owner in (prereg, registered))
+                or validation["training_artifact_sha256"] != seal_sha
+                or validation["training_artifact_file_sha256"] != seal_sha
+                or validation.get("training_artifact_content_sha256") != sealed["sha256"]
+                or validation["model_ref_sha256"] != model_sha
+                or sealed["export"]["model_ref"]["file_sha256"] != model_sha
+                or registered.get("calibration_sha256") != engine_sha or registered.get("preflight_sha256") != engine_sha
+                or prereg.get("calibration_sha256") != engine_sha or registered.get("model_ref_sha256") != model_sha
+                or registered.get("slots") != contract["slots"] or registered.get("expected_ids") != ids
+                or registered.get("observed_engine") != validation["observed_engine"]
+                or registered.get("evaluation_commit") != validation["evaluation_commit"]):
+            raise ValueError("selected execution/model/training-seal binding mismatch")
+        return contract
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CollectError("v17 split resume inputs invalid: " + str(exc)) from exc
+
+
+def _split_resume_audit(run_dir: Path, registration: dict, *, refresh: bool) -> dict:
+    from fine_tuning.error_note import v17_eval
+
+    try:
+        audit = v17_eval.submission_audit(run_dir, registration)
+        event_path = run_dir / "submission_events.jsonl"
+        events = [v17_eval.checked(json.loads(line)) for line in event_path.read_text().splitlines()] if event_path.exists() else []
+        path = run_dir / "submission_audit.json"
+        if path.exists():
+            _plain_file(path, run_dir)
+            stored = v17_eval.checked(read_json(path))
+            count = stored.get("events")
+            if type(count) is not int or not 0 <= count <= len(events):
+                raise ValueError("invalid derived submission audit length")
+            prefix = events[:count]
+            accepted = [e["id"] for e in prefix if e["event"] == "ACCEPTED"]
+            intents = [e["id"] for e in prefix if e["event"] == "INTENT"]
+            expected = v17_eval.seal({**{k: v for k, v in audit.items() if k != "sha256"},
+                "events": count, "last_event_sha256": prefix[-1]["sha256"] if prefix else None,
+                "actual_submission_sha256": v17_eval.digest(accepted), "actual_submitted_ids": accepted,
+                "submission_intent_sha256": v17_eval.digest(intents), "submission_intent_ids": intents,
+                "interrupted_intent_id": prefix[-1]["id"] if prefix and prefix[-1]["event"] == "INTENT" else None})
+            if stored != expected or not refresh and stored != audit:
+                raise ValueError("derived submission audit differs from durable events")
+        elif not refresh:
+            raise ValueError("missing derived submission audit")
+        accepted_pairs = {(e["invocation_id"], e["id"]) for e in events if e["event"] == "ACCEPTED"}
+        for path in (run_dir / "final_raw").glob("*.json"):
+            final = v17_eval.checked(read_json(path))
+            if (final["invocation_id"], final["record"]["id"]) not in accepted_pairs:
+                raise ValueError("FINAL_RAW lacks its accepted submission event")
+        backend_path = run_dir / "backend.json"
+        if backend_path.exists() and read_json(backend_path).get("v17_actual_engine") != registration["observed_engine"]:
+            raise ValueError("actual backend differs from selected engine")
+        if refresh:
+            write_json(run_dir / "submission_audit.json", audit)
+        return audit
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CollectError("v17 split submission audit invalid: " + str(exc)) from exc
+
+
+def _split_resume_evidence(validation_path: Path, run_dir: Path, *, archive_root: Path | None = None) -> list[tuple[Path, str]]:
+    from fine_tuning.error_note import v17_eval
+
+    try:
+        validation = read_json(validation_path)
+        expected: dict[str, str] = {}
+        for ref in [*validation["attempts"],
+                    {"path": validation["preflight_report"], "sha256": validation["preflight_file_sha256"]}]:
+            original = ref["path"]
+            if not Path(original).is_absolute() or ".." in Path(original).parts:
+                raise ValueError("engine evidence requires its original absolute path")
+            if original in expected and expected[original] != ref["sha256"]:
+                raise ValueError("engine evidence path has conflicting hashes")
+            expected[original] = ref["sha256"]
+        records, sources = [], []
+        for index, (original, expected_sha) in enumerate(sorted(expected.items())):
+            target = f"eval/inputs/engine-evidence/{index:04}.json"
+            path = Path(original) if archive_root is None else archive_root / target
+            _plain_file(path, path.parent if archive_root is None else archive_root)
+            if sha256_file(path) != expected_sha:
+                raise ValueError("measured engine evidence bytes changed")
+            records.append({"original_path": original, "path": target, "sha256": expected_sha,
+                            "bytes": path.stat().st_size})
+            sources.append((path, target))
+        mapping = v17_eval.seal({"version": "v17-engine-evidence-v1",
+            "engine_validation_sha256": sha256_file(validation_path), "files": records,
+            "restore_policy": "restore exact bytes to original paths inside the owned volume before same-START resume"})
+        mapping_path = run_dir / "engine_evidence_mapping.json"
+        if mapping_path.exists() or mapping_path.is_symlink():
+            _plain_file(mapping_path, run_dir)
+        if archive_root is None:
+            if mapping_path.exists() and v17_eval.checked(read_json(mapping_path)) != mapping:
+                raise ValueError("existing engine evidence mapping differs")
+            write_json(mapping_path, mapping)
+        elif v17_eval.checked(read_json(mapping_path)) != mapping:
+            raise ValueError("archived engine evidence mapping differs")
+        return sources
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CollectError("v17 split engine evidence invalid: " + str(exc)) from exc
+
+
 def pack_eval(params: Any, stage: str, run_dir: Path, out_dir: Path,
               name: str | None = None) -> dict[str, Any]:
     """Pack one evaluation stage: its start.sh run dir and the inputs of `proof_eval analyze`.
@@ -402,6 +518,8 @@ def pack_eval_resume(run_dir: Path, prereg: Path, ledger: Path, model_ref: Path,
             or sha256_file(calibration) != registration["calibration_sha256"]
             or sha256_file(model_ref) != registration["arms"][pe.ARM_SINGLE]["model_ref_sha256"]):
         raise CollectError("v17 resume archive inputs differ from the original START/model/calibration")
+    split = "engine_validation" in registration
+    training_seal = None
     manifest = read_json(run_dir / "run_manifest.json")
     required = ("variant_registration.json", "environment.json", "code_files.json", "locations.json",
                 "resolved_eval_config.yaml", "resolved_hardware_config.yaml")
@@ -428,6 +546,15 @@ def pack_eval_resume(run_dir: Path, prereg: Path, ledger: Path, model_ref: Path,
             raise CollectError("v17 resume archive lacks backend identity")
         if (writer.completed or finals) and not list((run_dir / "inference_invocations").glob("*.json")):
             raise CollectError("v17 resume archive lacks invocation provenance")
+        engine_sources = []
+        if split:
+            if not isinstance(variant.get("training_artifacts_path"), str):
+                raise CollectError("v17 split resume archive lacks its training-artifact seal path")
+            training_seal = Path(variant["training_artifacts_path"])
+            _split_resume_inputs(registration, variant, model_ref, calibration, preflight, training_seal,
+                                 verify_training=True)
+            _split_resume_audit(run_dir, variant, refresh=True)
+            engine_sources = _split_resume_evidence(calibration, run_dir)
         snapshot = v17_eval.incremental_manifest(run_dir, force=True)
         assert snapshot is not None
         sources = []
@@ -446,6 +573,9 @@ def pack_eval_resume(run_dir: Path, prereg: Path, ledger: Path, model_ref: Path,
                                (ledger, "ledger.jsonl"), (model_ref, "model_ref.json"), (calibration, "calibration.json"),
                                (preflight, "preflight.json")):
             sources.append((source, "eval/inputs/" + target))
+        if training_seal is not None:
+            sources.append((training_seal, "eval/inputs/training-artifacts.json"))
+            sources.extend(engine_sources)
         unique: dict[str, Path] = {}
         for source, target in sources:
             if target in unique and unique[target] != source:
@@ -510,10 +640,16 @@ def verify_eval_resume_tree(root: Path, manifest: dict) -> dict:
     starts = [e for e in events if e["event"] == "START" and e["run_id"] == rid]
     registered = read_json(base / pe.REGISTRATION_FILE)
     run = read_json(base / "run_manifest.json")
+    split = "engine_validation" in prereg
+    if split:
+        _split_resume_inputs(prereg, registered, inputs / "model_ref.json", inputs / "calibration.json",
+                             inputs / "preflight.json", inputs / "training-artifacts.json", verify_training=False)
+        _split_resume_audit(base, registered, refresh=False)
+        _split_resume_evidence(inputs / "calibration.json", base, archive_root=root)
     if (prereg["format"] != pe.FORMAT_V12 or len(starts) != 1
             or starts[0]["preregistration_sha256"] != prereg_sha
             or registered.get("preregistration_sha256") != prereg_sha
-            or registered.get("serving_kind") != pe.LORA_KIND or registered.get("slots") != 8
+            or registered.get("serving_kind") != pe.LORA_KIND or (not split and registered.get("slots") != 8)
             or run["expected_ids"] != prereg["evaluation_subsets"]["all"]["ids"]
             or sha256_file(inputs / "model_ref.json") != registered["model_ref_sha256"]
             or sha256_file(inputs / "calibration.json") != registered["calibration_sha256"]

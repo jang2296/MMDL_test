@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import data_bundle
-from .job import EVAL_STAGES, TRAINING_STAGES
+from .job import EVAL_STAGES, TRAINING_STAGES, check_repo_root
 from .common import (HEX40, QUICK_SPAN, file_digests, quick_digest, read_json, sha256_bytes,
                      sha256_file, utc_now, write_json)
 
@@ -250,7 +250,7 @@ def run_checks(*, repo_root: str | Path, commit: str, volume_root: str | Path,
                run_dir: str | Path, data: dict[str, Any] | None, min_free_gib: float,
                quick: bool = False, mount_path: str = "/workspace",
                disk_path: str | Path | None = None, workers: int = 4,
-               stage: str | None = None) -> dict[str, Any]:
+               stage: str | None = None, job: dict[str, Any] | None = None) -> dict[str, Any]:
     """stage None (direct callers) runs the training-data checks only; the CLI passes the job stage."""
     started = time.monotonic()
     repo, volume = Path(repo_root), Path(volume_root)
@@ -258,6 +258,10 @@ def run_checks(*, repo_root: str | Path, commit: str, volume_root: str | Path,
     context: dict[str, Any] = {}
 
     def clone() -> str:
+        if job is not None and "repo_root" in job:
+            check_repo_root(job, Path(__file__).resolve().parents[3])
+            if repo.resolve() != Path(job["repo_root"]) or commit != job["commit"]:
+                raise ValueError("verify arguments differ from job repo_root/commit")
         if not HEX40.match(commit):
             raise ValueError("commit must be a 40-char lowercase hex SHA")
         if _git(repo, "rev-parse", "HEAD") != commit:
@@ -420,7 +424,7 @@ def main(argv: list[str] | None = None) -> int:
                         volume_root=args.volume_root, run_dir=args.run_dir, quick=args.quick,
                         data=job.get("data"), min_free_gib=job["min_free_gib"],
                         mount_path=args.mount_path, disk_path=args.disk_path,
-                        workers=args.workers, stage=job["stage"])
+                        workers=args.workers, stage=job["stage"], job=job)
     write_json(Path(args.run_dir) / "preflight.json", result)
     print(json.dumps({k: result[k] for k in ("ok", "hash_mode", "full_sha256_verified",
                                               "elapsed_seconds")}))

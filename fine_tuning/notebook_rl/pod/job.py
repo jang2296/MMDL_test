@@ -22,13 +22,17 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
 import posixpath
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
-from fine_tuning.budget import check_billing_start, effective_deadline
+from fine_tuning.budget import (balance_extension_sha256, balance_extensions, check_balance_extension,
+                                check_billing_start, effective_deadline, reserve_deadline)
 
 from .common import HEX40, HEX64, parse_utc, read_json, sha256_bytes, sha256_file
 
@@ -42,7 +46,7 @@ ENVIRONMENTS = ("experiments", "vllm", "proof")  # proof = vllm lock + bitsandby
 KEYS = {"version", "commit", "volume_root", "run_dir", "stage", "smoke", "main",
         "max_main_seconds", "min_free_gib", "financial", "data", "approval"}
 PREP_KEYS = {"version", "commit", "volume_root", "environment", "financial", "approval"}
-OPTIONAL_KEYS = {"max_approval_age_hours"}  # an approval older than this is refused
+OPTIONAL_KEYS = {"max_approval_age_hours", "repo_root", "financial_mode"}  # an approval older than this is refused
 PREP_OPTIONAL_KEYS = {"eval_data"}  # bool, default false
 DEFAULT_APPROVAL_AGE_HOURS = 72
 MAX_APPROVAL_AGE_HOURS = 168
@@ -59,7 +63,7 @@ RECOVERY_RESERVE_SECONDS = 120  # same reserve budget.py keeps
 MAX_MAIN_SECONDS = 7 * 86400
 SKEW_SECONDS = 60
 GET_FIELDS = ("version", "commit", "volume_root", "run_dir", "stage", "max_main_seconds",
-              "min_free_gib", "environment", "owned_pod_id", "eval_data")
+              "min_free_gib", "environment", "owned_pod_id", "eval_data", "repo_root", "financial_mode")
 
 
 class JobError(ValueError):
@@ -101,10 +105,11 @@ def _absolute(value: Any, name: str) -> str:
     return value
 
 
-def _financial(value: Any, now: dt.datetime) -> dt.datetime:
+def _financial(value: Any, now: dt.datetime, mode: str = "legacy") -> dt.datetime:
     """Validate the bounds the watchdog will use; return the effective deadline."""
-    if not isinstance(value, dict) or set(value) != set(FINANCIAL_KEYS):
-        raise JobError(f"financial must have exactly the keys {sorted(FINANCIAL_KEYS)}")
+    keys = set(FINANCIAL_KEYS) | ({"balance_snapshot_utc"} if mode == "balance_reserve_only" else set())
+    if not isinstance(value, dict) or set(value) != keys:
+        raise JobError(f"financial must have exactly the keys {sorted(keys)}")
     if not isinstance(value["owned_pod_id"], str) or not POD_ID.match(value["owned_pod_id"]):
         raise JobError("financial.owned_pod_id must be the RunPod Pod id")
     numbers = [_number(value[key], f"financial.{key}")
@@ -113,6 +118,9 @@ def _financial(value: Any, now: dt.datetime) -> dt.datetime:
         cutoff = parse_utc(value["gpu_cutoff_utc"])
         start = parse_utc(value["billing_start_utc"])
         check_billing_start(start, now)
+        if mode == "balance_reserve_only":
+            return reserve_deadline(parse_utc(value["balance_snapshot_utc"]),
+                                    numbers[0], numbers[1], numbers[2], now=now)
         return effective_deadline(cutoff, start, *numbers)
     except (TypeError, ValueError, AttributeError) as exc:
         raise JobError(f"financial: {exc}") from exc
@@ -177,7 +185,19 @@ def validate_job(job: Any, workspace: str = "/workspace",
         raise JobError("commit must be a 40-char lowercase hex SHA")
     _workspace_child(job["volume_root"], workspace, "volume_root")
     now = now or dt.datetime.now(dt.timezone.utc)
-    _financial(job["financial"], now)
+    mode = job.get("financial_mode", "legacy")
+    if mode not in ("legacy", "balance_reserve_only"):
+        raise JobError("unknown financial_mode")
+    if mode == "balance_reserve_only":
+        if prep or job.get("stage") not in ("single-main", "eval-course"):
+            raise JobError("reserve-only mode is for split training/evaluation jobs")
+        if "repo_root" not in job:
+            raise JobError("split jobs require repo_root")
+    if "repo_root" in job:
+        _absolute(job["repo_root"], "repo_root")
+        if mode == "balance_reserve_only" and job["stage"] == "eval-course" and job["repo_root"] != "/root/MMDL_test_eval":
+            raise JobError("split evaluation repo_root must be /root/MMDL_test_eval")
+    _financial(job["financial"], now, mode)
     if job["version"] == PREP_VERSION:
         if job["environment"] not in ENVIRONMENTS:
             raise JobError(f"environment must be one of {ENVIRONMENTS}")
@@ -235,8 +255,9 @@ def required_seconds(job: dict[str, Any]) -> int:
 def budget_fit(job: dict[str, Any], now: dt.datetime | None = None) -> dict[str, Any]:
     """Does the job's whole bound fit before the watchdog deadline (budget.py's rule)?"""
     now = now or dt.datetime.now(dt.timezone.utc)
-    deadline = _financial(job["financial"], now)
-    remaining = (deadline - now).total_seconds() - RECOVERY_RESERVE_SECONDS
+    mode = job.get("financial_mode", "legacy")
+    deadline = _financial(job["financial"], now, mode)
+    remaining = (deadline - now).total_seconds() - (0 if mode == "balance_reserve_only" else RECOVERY_RESERVE_SECONDS)
     required = required_seconds(job)
     return {"deadline_utc": deadline.isoformat(), "usable_seconds": math.floor(remaining),
             "required_seconds": required, "fits": required <= remaining}
@@ -244,8 +265,76 @@ def budget_fit(job: dict[str, Any], now: dt.datetime | None = None) -> dict[str,
 
 def financial_argv(job: dict[str, Any]) -> list[str]:
     """The watchdog flags, derived only from the approved job."""
-    return [item for key in FINANCIAL_KEYS
-            for item in ("--" + key.replace("_", "-"), str(job["financial"][key]))]
+    result = [item for key in FINANCIAL_KEYS
+              for item in ("--" + key.replace("_", "-"), str(job["financial"][key]))]
+    if job.get("financial_mode") == "balance_reserve_only":
+        result += ["--financial-mode", "balance_reserve_only", "--balance-snapshot-utc",
+                   job["financial"]["balance_snapshot_utc"],
+                   "--extension-receipts", str(Path(job["run_dir"]) / "financial_extensions"),
+                   "--extension-root-sha256", content_sha256(job),
+                   "--reserve-stop-receipt", job["run_dir"] + ".reserve-stop.json"]
+    return result
+
+
+def check_repo_root(job: dict[str, Any], executing_root: str | Path) -> None:
+    """A split job must execute the start/verify code of its declared pinned clone."""
+    if "repo_root" not in job:
+        return
+    root = Path(executing_root).resolve()
+    if Path(job["repo_root"]) != root:
+        raise JobError("job.repo_root differs from the executing start.sh/verify clone")
+    for arguments, expected in ((("rev-parse", "--show-toplevel"), str(root)),
+                                (("rev-parse", "HEAD"), job["commit"])):
+        try:
+            actual = subprocess.check_output(["git", "-C", str(root), *arguments], text=True).strip()
+        except subprocess.CalledProcessError as exc:
+            raise JobError("cannot identify the executing clone") from exc
+        if actual != expected:
+            raise JobError("executing clone root/commit differs from the job")
+
+
+def extend_financial(job: dict[str, Any], *, balance_snapshot_utc: str, balance_usd: float,
+                     topup_reference: str, authorization: str, confirmed_by: str,
+                     now: dt.datetime | None = None) -> Path:
+    """Append one explicit top-up receipt without altering the approved running job."""
+    if job.get("financial_mode") != "balance_reserve_only":
+        raise JobError("only reserve-only split jobs support balance extensions")
+    now = now or dt.datetime.now(dt.timezone.utc)
+    bounds = job["financial"]
+    directory = Path(job["run_dir"]) / "financial_extensions"
+    if not directory.parent.is_dir():
+        raise JobError("balance extensions require the existing owned run directory")
+    snapshot = parse_utc(balance_snapshot_utc)
+    if now - snapshot > dt.timedelta(minutes=5):
+        raise JobError("top-up balance snapshot must be measured within five minutes")
+    root = content_sha256(job)
+    old_deadline, old_snapshot, hashes = balance_extensions(
+        directory, root_sha256=root, owned_pod_id=bounds["owned_pod_id"],
+        snapshot=parse_utc(bounds["balance_snapshot_utc"]), balance_usd=bounds["balance_usd"],
+        hourly_usd=bounds["hourly_usd"], now=now)
+    deadline = reserve_deadline(snapshot, balance_usd, 1.5, bounds["hourly_usd"], now)
+    value = {"version": "pod-balance-extension-v1", "previous": hashes[-1] if hashes else root,
+             "owned_pod_id": bounds["owned_pod_id"], "balance_snapshot_utc": balance_snapshot_utc,
+             "balance_usd": balance_usd, "reserve_usd": 1.5, "hourly_usd": bounds["hourly_usd"],
+             "old_deadline_utc": old_deadline.isoformat(), "new_deadline_utc": deadline.isoformat(),
+             "topup_reference": topup_reference, "authorization": authorization,
+             "confirmed_by": confirmed_by}
+    value["sha256"] = balance_extension_sha256(value)
+    check_balance_extension(value, previous=value["previous"], deadline=old_deadline,
+                            snapshot=old_snapshot, owned_pod_id=bounds["owned_pod_id"],
+                            hourly_usd=bounds["hourly_usd"], now=now)
+    directory.mkdir(exist_ok=True)
+    path = directory / f"{len(hashes) + 1:06d}.json"
+    descriptor, temporary = tempfile.mkstemp(prefix=".balance-extension-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        os.unlink(temporary)
+    return path
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -259,6 +348,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="refuse unless smoke[0] and main[0] are that manifest's venv python")
     choice.add_argument("--financial-argv", action="store_true",
                         help="print the NUL-separated watchdog flags from job.financial")
+    choice.add_argument("--require-repo-root", metavar="EXECUTING_ROOT")
+    choice.add_argument("--extend-financial", action="store_true")
+    parser.add_argument("--balance-snapshot-utc")
+    parser.add_argument("--balance-usd", type=float)
+    parser.add_argument("--topup-reference")
+    parser.add_argument("--authorization")
+    parser.add_argument("--confirmed-by", choices=("user", "claude"))
     choice.add_argument("--content-sha256", action="store_true",
                         help="print the value the user writes as approval.approved_sha256")
     args = parser.parse_args(argv)
@@ -273,7 +369,24 @@ def main(argv: list[str] | None = None) -> int:
             print(content_sha256(value))
             return 0
         job = load_job(args.job, args.workspace)
+        if args.require_repo_root:
+            check_repo_root(job, args.require_repo_root)
+            return 0
+        if args.extend_financial:
+            if os.environ.get("RUNPOD_POD_ID") != job["financial"]["owned_pod_id"]:
+                raise JobError("balance extensions require the exact owned Pod identity")
+            if any(getattr(args, name) is None for name in
+                   ("balance_snapshot_utc", "balance_usd", "topup_reference", "authorization", "confirmed_by")):
+                raise JobError("extension requires a measured balance, top-up reference and explicit authorization")
+            path = extend_financial(job, balance_snapshot_utc=args.balance_snapshot_utc,
+                                    balance_usd=args.balance_usd, topup_reference=args.topup_reference,
+                                    authorization=args.authorization, confirmed_by=args.confirmed_by)
+            print(json.dumps({"extension_receipt": str(path), "sha256": read_json(path)["sha256"]}))
+            return 0
         if args.get:
+            if args.get == "financial_mode":
+                print(job.get("financial_mode", "legacy"))
+                return 0
             source = job["financial"] if args.get == "owned_pod_id" else job
             if args.get == "eval_data" and job["version"] == PREP_VERSION:
                 print("true" if job.get("eval_data", False) else "false")
@@ -295,12 +408,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         plan: dict[str, Any] = {"job_sha256": sha256_file(args.job), **job,
                                 "budget": budget_fit(job)}
-        if not plan["budget"]["fits"]:
+        if not plan["budget"]["fits"] and job.get("financial_mode") != "balance_reserve_only":
             print(json.dumps(plan, indent=2), file=sys.stderr)
             raise JobError("job does not fit before the financial/GPU deadline")
         print(json.dumps(plan, indent=2))
         return 0
-    except (JobError, ValueError, KeyError) as exc:
+    except (JobError, OSError, ValueError, KeyError, TypeError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
 

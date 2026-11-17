@@ -123,6 +123,72 @@ def bind_execution(args: Any, plan: dict) -> dict:
         "evaluation_watchdog_seconds": calibration["evaluation_watchdog_seconds"]})
 
 
+def bind_training(args: Any, plan: dict) -> dict:
+    """Bind training evidence without making training depend on an evaluation engine."""
+    if plan.get("local_sequential"):
+        return _write(Path(args.output) / "training-binding.json", {
+            "version": "v17-training-binding-v1", "status": "LOCAL_SMOKE_EXEMPT",
+            "campaign_plan_sha256": plan["sha256"], "production_admitted": False})
+    identity = _identity(args, plan)
+    functional, functional_file = _file_receipt(
+        getattr(args, "functional_receipt", None), getattr(args, "functional_receipt_sha256", None))
+    if (functional.get("version") != VERSION or functional.get("status") != "PASS"
+            or functional.get("local_smoke") is not False
+            or any(functional.get(key) != value for key, value in identity.items())):
+        raise ValueError("v17 training: incomplete or stale BF16 functional receipt")
+    _validate_functional(functional)
+    cost_ref = functional.get("update_cost_receipt", {})
+    cost, cost_file = _file_receipt(Path(cost_ref["path"]) if cost_ref.get("path") else None,
+                                    cost_ref.get("file_sha256"))
+    if (cost.get("sha256") != functional.get("update_cost_sha256") or cost.get("optimizer_steps") != 0
+            or any(cost.get(key) != value for key, value in identity.items())):
+        raise ValueError("v17 training: cost receipt differs from validated functional run")
+    _validate_cost(cost)
+    return _write(Path(args.output) / "training-binding.json", {
+        "version": "v17-training-binding-v1", "status": "BOUND", "production_admitted": True,
+        **identity, "functional_receipt": functional_file, "update_cost_receipt": cost_file,
+        "update_cost_status": cost["status"], "cost_operator_review_required": cost["status"] != "PASS",
+        "unmeasured_timing_strata": cost.get("coverage", {}).get("missing_actual_a1_lengths", [])})
+
+
+def bind_evaluation(args: Any, plan: dict, *, require_engine_validation: bool = True) -> dict:
+    """Keep the original training identity while binding a separately frozen evaluator."""
+    from .v17_artifacts import (ROOT, _ref, evaluation_identity, protected_evaluation,
+                                verify_training_artifacts)
+
+    seal_path = getattr(args, "training_artifact_seal", None)
+    if seal_path is None:
+        raise ValueError("v17 evaluation: --training-artifact-seal required")
+    artifacts = verify_training_artifacts(Path(seal_path))
+    if artifacts["training"]["campaign_plan_sha256"] != plan["sha256"]:
+        raise ValueError("v17 evaluation: training seal belongs to another plan")
+    identity = evaluation_identity(Path(getattr(args, "repo", None) or ROOT), args.code_commit)
+    protected = protected_evaluation(ROOT)
+    if protected != artifacts["protected_evaluation"]:
+        raise ValueError("v17 evaluation: protected evaluation/preregistration contract changed")
+    validation_ref = None
+    if require_engine_validation:
+        validation, validation_ref = _file_receipt(
+            getattr(args, "engine_validation_receipt", None),
+            getattr(args, "engine_validation_receipt_sha256", None))
+        if (validation.get("version") != "v17-eval-engine-validation-v1" or validation.get("status") != "PASS"
+                or validation.get("training_artifact_sha256") != file_sha(Path(seal_path))
+                or validation.get("model_ref_sha256") != artifacts["export"]["model_ref"]["file_sha256"]
+                or validation.get("evaluation_commit") != identity["code_commit"]
+                or validation.get("source_sha256") != identity["source_sha256"]):
+            raise ValueError("v17 evaluation: engine validation is for another model or evaluator")
+        from mmdl.runtime.environment import collect_environment
+        from mmdl.evaluation import engine as evaluation
+        if validation.get("environment_sha256") != digest(evaluation.environment_identity(collect_environment(probe=False))):
+            raise ValueError("v17 evaluation: engine validation environment changed")
+    body = {"version": "v17-evaluation-binding-v1", "status": "BOUND" if require_engine_validation else "PREVALIDATION",
+        "training": artifacts["training"], "evaluation": identity, "training_artifact": _ref(Path(seal_path)),
+        "model_ref": artifacts["export"]["model_ref"], "engine_validation_receipt": validation_ref,
+        "protected_evaluation_sha256": protected["sha256"]}
+    name = "evaluation-binding.json" if require_engine_validation else "evaluation-prevalidation-binding.json"
+    return _write(Path(args.output) / name, body)
+
+
 def _rl_row(item: dict, output: dict, baseline: dict) -> dict:
     from .v17_rows import ROW_SCHEMA, reward_v17
 
@@ -265,7 +331,8 @@ def trained_export_preflight(args: Any, plan: dict) -> dict:
 
     if plan.get("local_sequential"):
         raise ValueError("v17 preflight: local NF4 is not a trained BF16 evaluation export")
-    binding = bind_execution(args, plan)
+    split = getattr(args, "execution_phase", "legacy") == "evaluation"
+    binding = bind_evaluation(args, plan, require_engine_validation=False) if split else bind_execution(args, plan)
     if getattr(args, "allow_model_run", False) is not True:
         raise ValueError("v17 preflight: --allow-model-run required")
     for field in ("export_output", "preflight_output", "hardware", "eval_protocol"):
@@ -281,14 +348,19 @@ def trained_export_preflight(args: Any, plan: dict) -> dict:
     model_ref = Path(args.export_output) / "model_ref.json"
     if model_ref.is_symlink() or not model_ref.is_file():
         raise ValueError("v17 preflight: exported model_ref.json required")
-    binding_file = Path(args.output) / "evaluation-binding.json"
+    if split and (str(model_ref.absolute()) != binding["model_ref"]["path"]
+                  or file_sha(model_ref) != binding["model_ref"]["file_sha256"]):
+        raise ValueError("v17 preflight: export differs from sealed final model")
+    binding_file = Path(args.output) / ("checkpoint-evaluation-binding.json" if split else "evaluation-binding.json")
     _write(binding_file, {"binding": campaign._binding(plan)})
     report = check(model_ref, Path(ready["checkpoint"]), binding_file,
         base, Path(args.eval_protocol), Path(args.hardware), Path(args.preflight_output))
     if report.get("pass") is not True:
         raise ValueError("v17 preflight: trained adapter application failed")
     return _write(Path(args.preflight_output).with_name("trained-export-receipt.json"), {
-        "version": "v17-trained-export-preflight-v1", "status": "PASS", **_identity(args, plan),
+        "version": "v17-trained-export-preflight-v1", "status": "PASS",
+        **(binding["evaluation"] if split else _identity(args, plan)),
+        **({"training": binding["training"]} if split else {}),
         "execution_binding_sha256": binding["sha256"], "export_ready_file_sha256": file_sha(ready_file),
         "model_ref_file_sha256": file_sha(model_ref),
         "preflight_file_sha256": file_sha(Path(args.preflight_output)), "trained_effect_required": True})

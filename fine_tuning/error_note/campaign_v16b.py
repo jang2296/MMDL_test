@@ -399,8 +399,8 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         GuardV16B = GuardV17
     _plan_check(plan)
     if is_v17:
-        from .v17_preflight import bind_execution
-        bind_execution(args, plan)
+        from .v17_preflight import bind_execution, bind_training
+        (bind_training if getattr(args, "execution_phase", "legacy") == "training" else bind_execution)(args, plan)
     for value in plan["inputs"].values():
         checked(value)
     if digest(single.source_manifest()["actual_files"]) != digest(plan["source"]["actual_files"]):
@@ -1027,7 +1027,7 @@ def export_metadata(metadata: dict, plan: dict, checkpoint: Path) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("prepare", "advance", "reload", "require-complete", "export", "calibrate", "preflight"))
+    parser.add_argument("command", choices=("prepare", "advance", "reload", "require-complete", "export", "calibrate", "preflight", "training-artifact-seal"))
     for name in ("data-root", "prep-root", "model-path", "output"):
         parser.add_argument("--" + name, type=Path, required=name == "output")
     parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17"), default="error-note-v16b")
@@ -1043,6 +1043,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", type=Path)
     parser.add_argument("--export-output", type=Path)
     parser.add_argument("--code-commit")
+    parser.add_argument("--execution-phase", choices=("legacy", "training", "evaluation"), default="legacy")
+    parser.add_argument("--repo", type=Path)
+    parser.add_argument("--artifact-output", type=Path)
+    parser.add_argument("--training-artifact-seal", "--training-seal", type=Path)
+    parser.add_argument("--engine-validation-receipt", type=Path)
+    parser.add_argument("--engine-validation-receipt-sha256")
     for name in ("calibration", "functional-receipt", "receipt-output", "preflight-output",
                  "hardware", "eval-protocol", "evaluation-decision"):
         parser.add_argument("--" + name, type=Path)
@@ -1055,10 +1061,19 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.resume_funding_stop and args.command != "advance":
         raise ValueError("v16b campaign: --resume-funding-stop applies to advance only")
+    if args.command == "training-artifact-seal":
+        if (args.version != "error-note-v17" or args.execution_phase != "training"
+                or args.export_output is None or args.evaluation_decision is None):
+            raise ValueError("training-artifact-seal requires v17 training, export and evaluation decision")
+        from .v17_artifacts import create_training_artifacts
+        result = create_training_artifacts(args, read_sealed(args.output / "campaign-plan.json"))
+        print(json.dumps({"status": result["status"], "sha256": result["sha256"]}))
+        return 0
     if args.command in {"require-complete", "export"}:
         if args.version == "error-note-v17":
-            from .v17_preflight import bind_execution
-            bind_execution(args, read_sealed(args.output / "campaign-plan.json"))
+            from .v17_preflight import bind_execution, bind_training
+            bind = bind_training if args.execution_phase == "training" else bind_execution
+            bind(args, read_sealed(args.output / "campaign-plan.json"))
         ready = require_complete(args.output, evaluation_decision=args.evaluation_decision)
         if args.command == "export":
             from fine_tuning.notebook_rl.proof_eval import export_for_eval
@@ -1067,6 +1082,11 @@ def main(argv: list[str] | None = None) -> int:
             export_for_eval(Path(ready["checkpoint"]), args.output / "campaign-plan.json", args.base,
                             args.export_output, args.code_commit)
         print(json.dumps({"status": "COMPLETE", "checkpoint": ready["checkpoint"]}))
+        return 0
+    if args.command == "preflight" and args.execution_phase == "evaluation":
+        from .v17_preflight import trained_export_preflight
+        result = trained_export_preflight(args, read_sealed(args.output / "campaign-plan.json"))
+        print(json.dumps({"status": result["status"]}))
         return 0
     if any(getattr(args, name) is None for name in ("data_root", "prep_root", "model_path")):
         raise ValueError("v16b campaign: --data-root --prep-root --model-path required")

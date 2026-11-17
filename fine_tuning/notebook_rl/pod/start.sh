@@ -7,6 +7,7 @@
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 repo_root=$(cd -- "$here/../../.." && pwd -P)
+cd -- "$repo_root"
 workspace=/workspace
 smoke_timeout=300
 preflight_timeout=600  # = job.PREFLIGHT_ALLOWANCE_SECONDS in the deadline fit
@@ -33,11 +34,13 @@ export PYTHONPATH="$repo_root/src:$repo_root"
 pod() { local module=$1; shift; "$python" -B -m "fine_tuning.notebook_rl.pod.$module" "$@"; }
 job() { pod job "$job_file" --workspace "$workspace" "$@"; }
 # Validation refuses missing/false/stale approval, an approval whose approved_sha256 is not this
-# job's content, bad commit/paths/stage/argv/data pins, and a job that cannot finish before the
-# financial/GPU deadline in job.financial.
+# job's content and bad commit/paths/stage/argv/data pins. Legacy jobs also require the whole
+# technical bound to fit; split jobs report that estimate and stop only at the balance reserve.
 plan=$(job) || exit 2
+job --require-repo-root "$repo_root" || exit 2
+financial_mode=$(job --get financial_mode)
 mapfile -d '' -t financial < <(job --financial-argv)
-((${#financial[@]} == 12)) || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
+[[ $financial_mode == legacy && ${#financial[@]} == 12 || $financial_mode == balance_reserve_only && ${#financial[@]} == 22 ]] || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
 owned_pod_id=$(job --get owned_pod_id)
 commit=$(job --get commit)
 volume_root=$(job --get volume_root)
@@ -53,6 +56,7 @@ fi
 [[ -n ${RUNPOD_POD_ID:-} ]] || { printf '%s\n' 'RunPod only'; exit 2; }
 [[ $owned_pod_id == "$RUNPOD_POD_ID" ]] || { printf '%s\n' 'This Pod is not job.financial.owned_pod_id'; exit 2; }
 [[ ! -e $run_dir && ! -L $run_dir ]] || { printf '%s\n' 'Existing run dir refused; a new run needs a new run_dir'; exit 2; }
+if [[ $financial_mode == balance_reserve_only ]]; then mkdir -p "$(dirname -- "$run_dir")"; fi
 budget_command=("$python" -m fine_tuning.budget "${financial[@]}"
   --max-seconds "$((max_main + smoke_timeout + preflight_timeout))"
   --result-file "$run_dir/budget_result.json" -- bash "$here/start.sh" "${original_arguments[@]}")

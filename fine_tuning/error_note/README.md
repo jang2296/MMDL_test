@@ -524,6 +524,30 @@ BF16 가시성, 출력 감시와 재로딩 증거를 함께 확인한다. NF4 �
 평가 답은 문항당 하나이며 여러 생성 중 선택하지 않는다. 상위 모델·튜터, MMMU/MMMU-Pro 학습은 계속 금지다.
 CompassVerifier-7B는 로컬 다운로드·실행하지 않는다. 보완 판정은 별도 승인된 비양자화 7B 실행에서 V8과 나누어 보고한다.
 
+## v17 학습·평가 분리 (2026-11-17)
+
+새 실행은 `plan`의 `v17-train`과 `v17-eval` stage를 사용한다. params 버전은
+`error-note-plan-params-v17-split-v1`이다. 과거 `v17-calibration`·`v17` stage는 이전 계약으로 유지한다.
+
+- 학습 체인은 평가 속도 측정을 기다리지 않고 준비·BF16 기능 확인·본학습·재로딩·비병합 내보내기·결과 봉인을 수행한다.
+- 평가 체인은 별도 고정 checkout에서 학습 결과 파일을 다시 해시 확인하고, 최종 모델의 graph 경로를 검증한다.
+  `eval_engine_mode=cuda_graph`는 graph 검증 실패 시 평가 시작 전에 eager를 자동 검증한다.
+- 실제 KV 용량으로 동시 수를 정하고, 문항 ID 해시 순서로 이미지를 순차 로딩한다. 완료한 문항은 다시 생성하지 않는다.
+- 예상 비용 부족은 보고만 한다. 회수 예약금 $1.50 보호 watchdog은 작업을 중단하고 `POD_STOP_REQUIRED`를 기록한다.
+  과금되는 Pod의 실제 stop은 운영자가 수행해야 한다. 충전은 명시적인 financial extension 영수증으로 반영한다.
+- graph·BF16 실제 성능은 로컬 CPU 시험으로 인증하지 않는다. 명령·필수 params·증거·후속 GPU 확인은
+  내부 인계 문서 `claudedocs/handoff_v17_train_eval_split_20261117.md`를 따른다.
+
+```bash
+python -m fine_tuning.error_note.plan plan --stage v17-train \
+  --params /private/v17-train-params.json --output /private/v17-train-spec.json
+python -m fine_tuning.error_note.plan plan --stage v17-eval \
+  --params /private/v17-eval-params.json --output /private/v17-eval-spec.json
+```
+
+두 명령은 실행 계획을 작성한다. 실제 실행은 각각의 고정 clone에 속한 pod job과 `start.sh`로 수행한다.
+평가 params의 학습 결과 SHA는 학습 봉인 완료 후 실제 파일에서 계산하며, 미리 임의 값을 넣지 않는다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

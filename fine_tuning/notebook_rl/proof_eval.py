@@ -1302,7 +1302,8 @@ def build_preregistration_v11(subset: Path, rest_subset: Path, all_subset: Path,
 
 
 def build_preregistration_v12(subset: Path, rest_subset: Path, all_subset: Path, b2_predictions: Path,
-                              ft_model_ref: Path, calibration: Path) -> dict:
+                              ft_model_ref: Path, calibration: Path, *, engine_validation: Path | None = None,
+                             training_artifacts: Path | None = None) -> dict:
     """v17 has one final unmerged checkpoint and an immutable measured timeout."""
     from fine_tuning.error_note.v17_eval import CAPACITY_RULE, SLOTS, calibration_timeout, load_calibration
 
@@ -1328,6 +1329,21 @@ def build_preregistration_v12(subset: Path, rest_subset: Path, all_subset: Path,
     value["execution_contract"] = {"slots": SLOTS, "capacity_rule_sha256": digest(CAPACITY_RULE),
                                     "serving_kind": LORA_KIND, "same_start_resume": True,
                                     "downtime_counts": True, "deadline_extension": "append-only-user-receipt"}
+    if (engine_validation is None) != (training_artifacts is None):
+        raise ValueError("proof_eval: split evaluation requires engine validation and training artifacts")
+    if engine_validation is not None:
+        assert training_artifacts is not None
+        from fine_tuning.error_note.v17_eval import split_bindings, split_execution_contract
+
+        validated = split_bindings(engine_validation, training_artifacts, ft_model_ref)
+        if validated != measured:
+            raise ValueError("proof_eval: calibration must be the selected engine validation receipt")
+        value["engine_validation"] = validated
+        value["engine_validation_sha256"] = sha256_file(engine_validation)
+        value["training_artifacts_file_sha256"] = sha256_file(training_artifacts)
+        value["execution_contract"] = split_execution_contract(validated, value["evaluation_subsets"]["all"]["ids"])
+        value["estimated_evaluation_seconds"] = validated["estimated_evaluation_seconds"]
+        value["notes"][1] = "v17 split: one final unmerged 900-item run, validated engine/KV slots and hashed lazy order"
     from fine_tuning.error_note.contract import is_loop
 
     value["reference_finish_strata"] = {row["id"]: {
@@ -1357,7 +1373,8 @@ def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: P
                 fmt: str = "v3", ft_v3_model_ref: Path | None = None, ft_v4_model_ref: Path | None = None,
                 ft_single_model_ref: Path | None = None, all_subset: Path | None = None,
                 half_a_subset: Path | None = None, half_b_subset: Path | None = None,
-                calibration: Path | None = None) -> str:
+                calibration: Path | None = None, engine_validation: Path | None = None,
+                training_artifacts: Path | None = None) -> str:
     """Write-once preregistration plus ``<output>.sha256``; v5-v9 pin a previously exported final model reference."""
     output = Path(output)
     if (fmt == "v5") != (ft_v3_model_ref is not None):
@@ -1370,6 +1387,8 @@ def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: P
         raise ValueError("proof_eval: --format v8/v11 requires --all-subset; the flag is v8/v11-only")
     if any((fmt in ("v9", "v10")) != (path is not None) for path in (half_a_subset, half_b_subset)):
         raise ValueError("proof_eval: --format v9/v10 requires --half-a-subset and --half-b-subset; the flags are v9-only and v10-only")
+    if (engine_validation is not None or training_artifacts is not None) and fmt != "v12":
+        raise ValueError("proof_eval: split receipts require preregistration v12")
     if (fmt == "v12") != (calibration is not None):
         raise ValueError("proof_eval: --format v12 requires --calibration; the flag is v12-only")
     if half_a_subset is not None:
@@ -1380,7 +1399,8 @@ def preregister(output: Path, subset: Path, rest_subset: Path, b2_predictions: P
         assert ft_single_model_ref is not None
         if fmt == "v12":
             assert calibration is not None
-            value = build_preregistration_v12(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref, calibration)
+            value = build_preregistration_v12(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref, calibration,
+                                               engine_validation=engine_validation, training_artifacts=training_artifacts)
         else:
             build_all = build_preregistration_v11 if fmt == "v11" else build_preregistration_v8
             value = build_all(subset, rest_subset, all_subset, b2_predictions, ft_single_model_ref)
@@ -1440,10 +1460,23 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
     if prereg["format"] == FORMAT_V12:
         from fine_tuning.error_note.v17_eval import CAPACITY_RULE, SLOTS, calibration_timeout
 
-        if (prereg.get("execution_contract") != {
+        legacy_execution = {
                 "slots": SLOTS, "capacity_rule_sha256": digest(CAPACITY_RULE), "serving_kind": LORA_KIND,
                 "same_start_resume": True, "downtime_counts": True,
                 "deadline_extension": "append-only-user-receipt"}
+        expected_execution = legacy_execution
+        if "engine_validation" in prereg:
+            from fine_tuning.error_note.v17_eval import split_execution_contract
+
+            validated = prereg["engine_validation"]
+            expected_execution = split_execution_contract(validated, b2_ids)
+            if (validated != prereg.get("calibration")
+                    or validated["model_ref_sha256"] != prereg["arms"][final]["model_ref_sha256"]
+                    or prereg.get("estimated_evaluation_seconds") != validated["estimated_evaluation_seconds"]
+                    or any(not re.fullmatch(r"[0-9a-f]{64}", str(prereg.get(key, "")))
+                           for key in ("engine_validation_sha256", "training_artifacts_file_sha256"))):
+                raise ValueError("proof_eval: split validation/model identity mismatch")
+        if (prereg.get("execution_contract") != expected_execution
                 or prereg.get("evaluation_watchdog_seconds") != calibration_timeout(prereg.get("calibration", {}))
                 or not re.fullmatch(r"[0-9a-f]{64}", str(prereg.get("calibration_sha256", "")))
                 or set(prereg.get("reference_finish_strata", {})) != set(b2_ids)):
@@ -2131,6 +2164,8 @@ def main(argv: list[str] | None = None) -> int:
                           f"v10 = {FORMAT_V10} (v9 for a v15 export with unmerged adapters), "
                           f"v11 = {FORMAT_V11} (v16b unmerged, one full 900-item run)")
     pre.add_argument("--calibration", type=Path, help="v12 only: sealed measured v17 calibration receipt")
+    pre.add_argument("--engine-validation", type=Path)
+    pre.add_argument("--training-artifacts", type=Path)
     pre.add_argument("--ft-v3-model-ref", type=Path, help="required for v5; final NOTE export fixed before evaluation")
     pre.add_argument("--ft-v4-model-ref", type=Path, help="required for v6; final hybrid export fixed before evaluation")
     pre.add_argument("--ft-single-model-ref", type=Path, help="required for v7; final campaign export fixed before evaluation")
@@ -2199,7 +2234,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SUBSET {args.kind} {args.output} count={value['count']} sha256={sha256_file(args.output)}")
     elif args.command == "preregister":
         print(f"PREREGISTERED {args.output} sha256="
-              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref, all_subset=args.all_subset, half_a_subset=args.half_a_subset, half_b_subset=args.half_b_subset, calibration=args.calibration)}")
+              f"{preregister(args.output, args.subset, args.rest_subset, args.b2_predictions, args.format, args.ft_v3_model_ref, args.ft_v4_model_ref, args.ft_single_model_ref, all_subset=args.all_subset, half_a_subset=args.half_a_subset, half_b_subset=args.half_b_subset, calibration=args.calibration, engine_validation=args.engine_validation, training_artifacts=args.training_artifacts)}")
     elif args.command == "ledger-start":
         event = ledger_start(args.prereg, args.arm, args.variant, args.run_id, args.ledger, args.subset,
                              artifact_root=artifact_root())

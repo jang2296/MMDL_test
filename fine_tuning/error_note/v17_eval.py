@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 import copy
 import fcntl
+import hashlib
+import inspect
 import json
 import math
 import os
@@ -18,7 +20,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -145,12 +147,20 @@ def calibration_receipt(probe: dict) -> dict:
 
 def load_calibration(path: Path) -> dict:
     value = checked(read_json(path))
+    if value.get("version") == "v17-eval-engine-validation-v1":
+        from .v17_eval_engine import load_engine_validation
+
+        return load_engine_validation(path)
     if value != calibration_receipt(value.get("probe", {})) or value.get("status") != "CALIBRATED":
         raise ValueError("v17: calibration is incomplete, altered, or has low context coverage")
     return value
 
 
 def calibration_timeout(receipt: dict) -> int:
+    if receipt.get("version") == "v17-eval-engine-validation-v1":
+        from .v17_eval_engine import validate_engine_receipt
+
+        return validate_engine_receipt(receipt)["evaluation_watchdog_seconds"]
     checked(receipt)
     if receipt != calibration_receipt(receipt.get("probe", {})) or receipt.get("status") != "CALIBRATED":
         raise ValueError("v17: measured calibrated timeout required")
@@ -316,7 +326,7 @@ def cpu_resume_finalize(known: argparse.Namespace, cfg: dict, registration: dict
                 "hardware": hw, "ids_sha256": digest(registration["expected_ids"]), "mode": known.mode,
                 "git_commit": evaluation.git_commit(root, known.require_commit),
                 "job_id": known.job_id, "run_role": known.run_role}
-    with pe.registered_variants(slots=SLOTS):
+    with pe.registered_variants(slots=registration.get("slots", SLOTS)):
         evaluation.verify_model(known.model_path, model)
         evaluation.verify_model(known.base_path, base)
     with RunWriter(run_dir, identity, registration["expected_ids"], resume=True) as writer:
@@ -411,6 +421,8 @@ def incremental_manifest(run_dir: Path, *, force: bool = False) -> dict | None:
     paths += sorted((run_dir / "inference_invocations").glob("*.json"))
     paths += [p for p in run_dir.glob("*.json") if p.is_file()]
     paths += [p for p in run_dir.glob("*.yaml") if p.is_file()]
+    if (run_dir / "submission_events.jsonl").is_file():
+        paths.append(run_dir / "submission_events.jsonl")
     assets = set()
     image_records = [read_json(p) for p in samples]
     image_records += [read_json(p)["record"] for p in (run_dir / "final_raw").glob("*.json")]
@@ -441,6 +453,122 @@ def _metrics(llm: Any) -> dict:
     return {key: int(values[name]) for key, name in names.items() if name in values}
 
 
+ORDER_RULE = "sha256('v17-eval-order:' + id)"
+
+
+def submission_order(ids: list[str]) -> list[str]:
+    if len(ids) != len(set(ids)) or any(not isinstance(sid, str) or not sid for sid in ids):
+        raise ValueError("v17: unique nonempty submission IDs required")
+    return sorted(ids, key=lambda sid: (hashlib.sha256(("v17-eval-order:" + sid).encode()).hexdigest(), sid))
+
+
+def split_execution_contract(validation: dict, ids: list[str]) -> dict:
+    from .v17_eval_engine import validate_engine_receipt
+
+    validate_engine_receipt(validation)
+    return {"version": "v17-evaluation-execution-v2", "engine_mode": validation["selected_mode"],
+            "slots": validation["slots"], "capacity_rule": "floor(0.9 * actual_kv_token_capacity / 40960)",
+            "actual_kv_token_capacity": validation["actual_kv_token_capacity"],
+            "submission_order_rule": ORDER_RULE, "submission_order_sha256": digest(submission_order(ids)),
+            "serving_kind": "unmerged-lora", "same_start_resume": True, "downtime_counts": True,
+            "deadline_extension": "append-only-user-receipt",
+            "b2_execution_change": {"baseline": "eager", "selected": validation["selected_mode"],
+                                    "bit_identical_claimed": False}}
+
+
+
+def split_bindings(engine_validation: Path, training_artifacts: Path, model_ref: Path,
+                   *, config: dict | None = None, hardware: dict | None = None,
+                   code_commit: str | None = None) -> dict:
+    from fine_tuning.notebook_rl import proof_eval as pe
+    from .v17_artifacts import evaluation_identity, protected_evaluation, verify_training_artifacts
+    from .v17_eval_engine import load_engine_validation
+
+    validation = load_engine_validation(engine_validation)
+    artifacts = verify_training_artifacts(training_artifacts)
+    if (validation["training_artifact_sha256"] != sha256_file(training_artifacts)
+            or validation["model_ref_sha256"] != sha256_file(model_ref)
+            or artifacts["export"]["model_ref"]["file_sha256"] != sha256_file(model_ref)
+            or artifacts["protected_evaluation"] != protected_evaluation(pe.ROOT)):
+        raise ValueError("v17: final model/training artifacts/protected evaluation binding mismatch")
+    identity = evaluation_identity(pe.ROOT, code_commit or validation["evaluation_commit"])
+    if (validation["evaluation_commit"] != identity["code_commit"]
+            or validation["source_sha256"] != identity["source_sha256"]):
+        raise ValueError("v17: evaluation source/commit differs from final-model validation")
+    if config is not None and validation["config_sha256"] != digest(config):
+        raise ValueError("v17: final-model validation config mismatch")
+    if hardware is not None and validation["hardware_sha256"] != digest(hardware):
+        raise ValueError("v17: final-model validation hardware mismatch")
+    return validation
+
+
+def reorder_request_stream(requests: Any, expected_pending: list[str]) -> list[str]:
+    # The pinned protected engine closes over IDs before loading each image; fail if that contract changes.
+    if (not inspect.isgenerator(requests) or requests.gi_code.co_name != "request_stream"
+            or inspect.getgeneratorstate(requests) != inspect.GEN_CREATED):
+        raise ValueError("v17: unsupported lazy protected-engine request stream")
+    frame = requests.gi_frame
+    pending = frame.f_locals.get("pending") if frame is not None else None
+    if (type(pending) is not list or pending != sorted(expected_pending)
+            or len(pending) != len(set(pending))):
+        raise ValueError("v17: lazy pending IDs differ from immutable unfinished membership")
+    pending[:] = submission_order(pending)
+    return list(pending)
+
+
+def submission_audit(run_dir: Path, registration: dict) -> dict:
+    path = run_dir / "submission_events.jsonl"
+    if not path.exists() and (any((run_dir / "samples").glob("*.json")) or any((run_dir / "final_raw").glob("*.json"))):
+        raise ValueError("v17: persisted answers are missing the durable submission audit")
+    events = [checked(json.loads(line)) for line in path.read_text().splitlines()] if path.exists() else []
+    previous, current, position, accepted, intents = None, None, 0, [], []
+    registration_hash = digest(registration)
+    pending: list[str] = []
+    awaiting = None
+    for event in events:
+        if (event.get("registration_sha256") != registration_hash or event.get("previous") != previous):
+            raise ValueError("v17: submission audit identity/hash chain mismatch")
+        kind = event.get("event")
+        if kind == "BEGIN":
+            completed = event.get("completed_ids", [])
+            pending = event.get("pending_ids", [])
+            if (not set(completed) <= set(registration["expected_ids"])
+                    or len(completed) != len(set(completed))
+                    or pending != submission_order([sid for sid in registration["expected_ids"] if sid not in completed])):
+                raise ValueError("v17: submission audit pending order mismatch")
+            current, position, awaiting = event["invocation_id"], 0, None
+        elif event.get("invocation_id") != current or current is None:
+            raise ValueError("v17: submission event lacks its invocation")
+        elif kind == "INTENT":
+            if awaiting is not None or position >= len(pending) or event.get("id") != pending[position]:
+                raise ValueError("v17: actual submission order differs from planned order")
+            awaiting = event["id"]
+            intents.append(awaiting)
+            position += 1
+        elif kind == "ACCEPTED":
+            if awaiting is None or event.get("id") != awaiting:
+                raise ValueError("v17: accepted submission has no matching durable intent")
+            accepted.append(awaiting)
+            awaiting = None
+        else:
+            raise ValueError("v17: unknown submission event")
+        previous = event["sha256"]
+    return seal({"version": "v17-submission-audit-v1", "events": len(events), "last_event_sha256": previous,
+                 "submission_order_sha256": digest(submission_order(registration["expected_ids"])),
+                 "actual_submission_sha256": digest(accepted), "actual_submitted_ids": accepted,
+                 "submission_intent_sha256": digest(intents), "submission_intent_ids": intents,
+                 "interrupted_intent_id": awaiting})
+
+
+def _submission_event(run_dir: Path, registration: dict, *, audit_state: dict | None = None, **fields: Any) -> None:
+    if audit_state is None:
+        audit_state = {"last_event_sha256": submission_audit(run_dir, registration)["last_event_sha256"]}
+    event = seal({"version": "v17-submission-event-v1", "registration_sha256": digest(registration),
+                  "previous": audit_state["last_event_sha256"], **fields})
+    append_event(run_dir / "submission_events.jsonl", event)
+    audit_state["last_event_sha256"] = event["sha256"]
+
+
 @contextmanager
 def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iterator[Any]:
     """Temporary hooks are scoped to this adapter invocation and always restored."""
@@ -452,6 +580,8 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
     registration_hash = digest(registration)
     records: dict[str, dict] = {}
     state: dict[str, Any] = {}
+    split = registration.get("execution_contract", {}).get("version") == "v17-evaluation-execution-v2"
+    slots = registration.get("slots", SLOTS)
     restores = []
     heartbeat = Heartbeat(run_dir, expected_count=len(registration["expected_ids"]))
     finished = threading.Event()
@@ -517,10 +647,46 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
             incremental_manifest(self.run_dir)
 
     def backend_ready(backend):
-        if backend.batch_size != SLOTS or backend.cfg["execution"].get("scheduling") != "continuous":
-            raise ValueError("v17: actual backend must continuously refill exactly eight slots")
-        capacity = capacity_receipt(backend.llm.llm_engine, backend.vllm_version,
-                                    max_model_len=backend.max_model_len, slots=backend.batch_size)
+        if backend.batch_size != slots or backend.cfg["execution"].get("scheduling") != "continuous":
+            raise ValueError("v17: actual backend must continuously refill its registered slots")
+        if split:
+            from .v17_eval_engine import observe_engine
+
+            observed = observe_engine(backend, registration["execution_contract"]["engine_mode"], slots)
+            if observed != registration["observed_engine"]:
+                raise ValueError("v17: actual engine differs from final-model validation")
+            capacity = observed | {"actual_blocks": backend.llm.llm_engine.engine_core.engine_core.scheduler.kv_cache_config.num_blocks}
+            original_describe, original_stream = backend.describe, backend.generate_stream
+            restores.extend([(backend, "describe", original_describe), (backend, "generate_stream", original_stream)])
+
+            def describe():
+                value = copy.deepcopy(original_describe())
+                value["vllm"].update({"enforce_eager": observed["enforce_eager"],
+                                       "compilation_config": observed["compilation_config"],
+                                       "actual_kv_token_capacity": observed["actual_kv_token_capacity"]})
+                value["v17_actual_engine"] = observed
+                return value
+
+            def stream(requests):
+                writer = state["writer"]
+                pending = reorder_request_stream(
+                    requests, [sid for sid in registration["expected_ids"] if sid not in writer.completed])
+                running = [read_json(path) for path in (run_dir / "inference_invocations").glob("*.json")
+                           if path.name not in existing_invocations and read_json(path).get("status") == "RUNNING"]
+                if len(running) != 1 or running[0].get("attempted_ids") != []:
+                    raise ValueError("v17: submission stream needs its one new untouched inference invocation")
+                state["submission_invocation_id"] = running[0]["id"]
+                state["submission_pending"], state["submission_position"] = pending, 0
+                state["audit"] = {"last_event_sha256": submission_audit(run_dir, registration)["last_event_sha256"]}
+                _submission_event(run_dir, registration, audit_state=state["audit"], event="BEGIN",
+                                  invocation_id=state["submission_invocation_id"],
+                                  completed_ids=sorted(writer.completed), pending_ids=pending)
+                yield from original_stream(requests)
+
+            backend.describe, backend.generate_stream = describe, stream
+        else:
+            capacity = capacity_receipt(backend.llm.llm_engine, backend.vllm_version,
+                                        max_model_len=backend.max_model_len, slots=backend.batch_size)
         exclusive(run_dir / "capacity_invocations" / f"{uuid.uuid4().hex}.json",
                   seal(capacity | {"registration_sha256": registration_hash, "measured_at": utc()}))
         heartbeat.kv_total = capacity["actual_blocks"]
@@ -541,7 +707,17 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
             check_deadline()
             if request_id not in records or records[request_id]["seed"] != sample_seed(3407, request_id):
                 raise ValueError("v17: submitted request is not bound to the original input and seed")
+            if split:
+                position = state["submission_position"]
+                if position >= len(state["submission_pending"]) or request_id != state["submission_pending"][position]:
+                    raise ValueError("v17: actual enqueue differs from sealed pending order")
+                state["submission_position"] += 1
+                _submission_event(run_dir, registration, audit_state=state["audit"], event="INTENT", id=request_id,
+                                  invocation_id=state["submission_invocation_id"])
             original_add(request_id, prompt, params, **kwargs)
+            if split:
+                _submission_event(run_dir, registration, audit_state=state["audit"], event="ACCEPTED", id=request_id,
+                                  invocation_id=state["submission_invocation_id"])
             with heartbeat.lock:
                 heartbeat.active[request_id] = heartbeat.clock()
             exclusive(run_dir / "started_requests" / f"{request_id}-{uuid.uuid4().hex}.json",
@@ -615,12 +791,15 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
                 setattr(owner, name, original)
         if run_dir.is_dir():
             heartbeat.emit(force=True)
+            if split:
+                write_json(run_dir / "submission_audit.json", submission_audit(run_dir, registration))
             incremental_manifest(run_dir, force=True)
 
 
 def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibration_path: Path,
                    preflight: Path, resume: bool = False, funding_deadline: float | None = None,
-                   recovery_reserve_seconds: float = 0) -> int:
+                   recovery_reserve_seconds: float = 0, engine_validation: Path | None = None,
+                   training_artifacts: Path | None = None) -> int:
     invocation_started, started_at, invocation_id = time.monotonic(), utc(), uuid.uuid4().hex
     import yaml
     from fine_tuning.notebook_rl import proof_eval as pe
@@ -641,6 +820,11 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
     parser.add_argument("--resume", action="store_true")
     known = parser.parse_args(argv)
     prereg, prereg_sha = pe.load_preregistration(prereg_path)
+    if (engine_validation is None) != (training_artifacts is None):
+        raise ValueError("v17: split evaluation requires both engine validation and training artifacts")
+    split = engine_validation is not None
+    if split != ("engine_validation" in prereg):
+        raise ValueError("v17: split receipts differ from the original preregistration")
     calibration = load_calibration(calibration_path)
     if (prereg["format"] != pe.FORMAT_V12 or prereg["calibration_sha256"] != sha256_file(calibration_path)
             or prereg["evaluation_watchdog_seconds"] != calibration_timeout(calibration)):
@@ -660,7 +844,19 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         raise ValueError("v17: evaluation requires its one declared final unmerged model and original path")
     cfg = yaml.safe_load(known.protocol.read_text(encoding="utf-8"))
     source_hash = source_sha256()
-    if (calibration["probe"].get("config_sha256") != digest(cfg)
+    if split:
+        assert engine_validation is not None and training_artifacts is not None
+        validation = split_bindings(engine_validation, training_artifacts, known.model_ref,
+                                    config=cfg, hardware=yaml.safe_load(known.hardware.read_text()),
+                                    code_commit=known.require_commit)
+        if (validation != prereg["engine_validation"] or calibration != validation
+                or sha256_file(engine_validation) != prereg["engine_validation_sha256"]
+                or sha256_file(training_artifacts) != prereg["training_artifacts_file_sha256"]):
+            raise ValueError("v17: split validation changed since preregistration")
+        slots = validation["slots"]
+    else:
+        slots = SLOTS
+    if not split and (calibration["probe"].get("config_sha256") != digest(cfg)
             or calibration.get("source_sha256") != source_hash
             or calibration.get("code_commit") != known.require_commit
             or calibration["probe"].get("hardware") != yaml.safe_load(known.hardware.read_text())):
@@ -672,17 +868,17 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
             or cfg["protocol_id"] != pe.FINAL_VARIANT_V8
             or digest(cfg) != prereg["protocol_variants"][pe.FINAL_VARIANT_V8]["config_digest"]):
         raise ValueError("v17: expected IDs/order/P0/B2/seed must match the original registration")
-    if os.environ.get(pe.SLOTS_ENV) not in (None, str(SLOTS)):
-        raise ValueError("v17: slots are fixed at eight; auto and changing slots are forbidden")
+    if os.environ.get(pe.SLOTS_ENV) not in (None, str(slots)):
+        raise ValueError("v17: slots differ from the immutable evaluation registration")
     if os.environ.get(pe.VLLM_INPROCESS_ENV) != "0":
         raise ValueError("v17: unmerged evaluation requires the pinned in-process engine")
     pf = read_json(preflight)
-    if (pf.get("model_ref_sha256") != sha256_file(known.model_ref) or pf.get("protocol_id") != cfg["protocol_id"]
+    if not split and (pf.get("model_ref_sha256") != sha256_file(known.model_ref) or pf.get("protocol_id") != cfg["protocol_id"]
             or pf.get("pass") is not True or pf.get("files", {}).get("pass") is not True
             or pf.get("engine", {}).get("pass") is not True
             or pf.get("engine", {}).get("pf5", {}).get("power") is not True):
         raise ValueError("v17: final adapter HF/vLLM preflight is missing or failed")
-    resolved = {"slots": SLOTS, "slots_source": "v17-fixed", "gpu_name": pe.gpu_info()[0],
+    resolved = {"slots": slots, "slots_source": "v17-kv-validated" if split else "v17-fixed", "gpu_name": pe.gpu_info()[0],
                 "gpu_total_mib": pe.gpu_info()[1]}
     registration = pe.variant_registration(cfg["protocol_id"], resolved) | {
         "version": "v17-evaluation-registration-v1", "preregistration_sha256": prereg_sha,
@@ -690,9 +886,23 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         "model_sha256": declared["model_sha256"], "model_ref_sha256": declared["model_ref_sha256"],
         "model_ref": str(known.model_ref.resolve()), "serving_kind": "unmerged-lora",
         "capacity_rule_sha256": digest(CAPACITY_RULE), "v17_eval_sha256": sha256_file(Path(__file__)),
-        "calibration_environment_sha256": calibration["probe"]["environment_sha256"],
+        "calibration_environment_sha256": (calibration["environment_sha256"] if split else calibration["probe"]["environment_sha256"]),
         "calibration_sha256": sha256_file(calibration_path), "preflight_sha256": sha256_file(preflight)}
+    if split:
+        assert engine_validation is not None and training_artifacts is not None
+        registration.update({"capacity_rule_sha256": digest({"version": "v17-kv-capacity-v2", "slots": slots,
+                                                               "usable_fraction": .90, "max_model_len": 40960}),
+                             "execution_contract": prereg["execution_contract"],
+                             "engine_validation_sha256": sha256_file(engine_validation),
+                             "engine_validation": str(engine_validation.resolve()),
+                             "training_artifacts_file_sha256": sha256_file(training_artifacts),
+                             "training_artifacts": str(training_artifacts.resolve()),
+                             "training_artifacts_path": str(training_artifacts.resolve()),
+                             "observed_engine": validation["observed_engine"],
+                             "evaluation_commit": validation["evaluation_commit"]})
     run_dir = known.artifact_root / "runs" / known.run_id
+    if split:
+        submission_audit(run_dir, registration)
     extensions = [read_json(p) for p in sorted((run_dir / "deadline_extensions").glob("*.json"))]
     now = time.time()
     remaining = deadline_seconds(starts[0], calibration_timeout(calibration), extensions, now=now,
@@ -718,7 +928,12 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         recovery_seconds = time.monotonic() - recovery_started if resume else 0.
         if not cpu_done:
             with evaluation_hooks(run_dir, registration, deadline) as ready:
-                with pe.registered_variants(slots=SLOTS, after_backend=ready, log_stats=True):
+                execution: Any = nullcontext()
+                if split:
+                    from .v17_eval_engine import engine_execution
+
+                    execution = engine_execution(validation["selected_mode"], slots)
+                with execution, pe.registered_variants(slots=slots, after_backend=ready, log_stats=True):
                     cli.main()
         run = pe.load_run(run_dir, prereg)
         if len(run["items"]) != 900:
@@ -731,6 +946,12 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         if not report_path.exists():
             exclusive(report_path, comparison)
         summary = read_json(run_dir / "summary.json")
+        if split:
+            audit = submission_audit(run_dir, registration)
+            write_json(run_dir / "submission_audit.json", audit)
+            summary = summary | {"execution_contract": prereg["execution_contract"],
+                                 "actual_submission_sha256": audit["actual_submission_sha256"],
+                                 "submission_intent_sha256": audit["submission_intent_sha256"]}
         write_json(run_dir / "summary.json", summary | {"reference_finish_strata": comparison})
         write_json(run_dir / "v17_state.json", {"status": "FULL900_VERIFIED", "preregistration_sha256": prereg_sha,
                    "run_id": known.run_id, "generation_repeated_for_completed_ids": False})
@@ -992,6 +1213,8 @@ def main(argv: list[str] | None = None) -> int:
         run = sub.add_parser(name)
         for flag in ("prereg", "ledger", "calibration", "preflight"):
             run.add_argument("--" + flag, type=Path, required=True)
+        run.add_argument("--engine-validation", type=Path)
+        run.add_argument("--training-artifacts", type=Path)
         run.add_argument("--funding-deadline-epoch", type=float)
         run.add_argument("--recovery-reserve-seconds", type=float, default=0)
     cal = sub.add_parser("calibrate")
@@ -1039,7 +1262,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_evaluation(passed, prereg_path=args.prereg, ledger=args.ledger,
                               calibration_path=args.calibration, preflight=args.preflight,
                               resume=args.command == "resume", funding_deadline=args.funding_deadline_epoch,
-                              recovery_reserve_seconds=args.recovery_reserve_seconds)
+                              recovery_reserve_seconds=args.recovery_reserve_seconds,
+                              engine_validation=args.engine_validation, training_artifacts=args.training_artifacts)
     if args.command == "doctor":
         print(json.dumps(doctor_check(read_json(args.input))))
     elif args.command in ("calibrate", "probe"):

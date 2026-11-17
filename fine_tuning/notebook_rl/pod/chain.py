@@ -372,7 +372,8 @@ def verify_log(path: str | Path, spec_sha256: str) -> list[dict]:
     return records
 
 
-def run(spec_path: str | Path, spec_sha256: str, *, grace: float = STOP_GRACE_SECONDS) -> int:
+def run(spec_path: str | Path, spec_sha256: str, *, grace: float = STOP_GRACE_SECONDS,
+        log_name: str = LOG_NAME) -> int:
     raw = Path(spec_path).read_bytes()
     if sha256_bytes(raw) != spec_sha256:
         raise ChainError("spec sha256 differs from --spec-sha256; a changed spec needs a new approval")
@@ -385,13 +386,15 @@ def run(spec_path: str | Path, spec_sha256: str, *, grace: float = STOP_GRACE_SE
         raise ChainError(f"spec was planned for run dir {meta['run_dir']}, not {run_dir}")
     if os.environ.get("MMDL_JOB_STAGE") and meta.get("job_stage", os.environ["MMDL_JOB_STAGE"]) != os.environ["MMDL_JOB_STAGE"]:
         raise ChainError(f"spec was planned for job stage {meta['job_stage']}, not {os.environ['MMDL_JOB_STAGE']}")
-    if (Path(run_dir) / LOG_NAME).exists():
-        raise ChainError(f"{run_dir}/{LOG_NAME} exists; a run directory is never reused")
+    if not NAME.fullmatch(log_name) or log_name in (".", ".."):
+        raise ChainError("chain log name must be a safe basename")
+    if (Path(run_dir) / log_name).exists():
+        raise ChainError(f"{run_dir}/{log_name} exists; a run directory is never reused")
     stop: list[int] = []
     previous = {number: signal.signal(number, lambda signum, _frame: stop.append(signum))
                 for number in (signal.SIGINT, signal.SIGTERM)}
     try:
-        log = ChainLog(Path(run_dir) / LOG_NAME, spec_sha256)
+        log = ChainLog(Path(run_dir) / log_name, spec_sha256)
         log.append("CHAIN_START", spec=str(Path(spec_path).absolute()), spec_sha256=spec_sha256, pid=os.getpid(),
                    steps=[item["name"] for item in spec["steps"]])
         code, failed = 0, None
@@ -481,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     runner = sub.add_parser("run")
     runner.add_argument("--spec", required=True)
     runner.add_argument("--spec-sha256", required=True)
+    runner.add_argument("--log-name", default=LOG_NAME)
     checker = sub.add_parser("verify")
     checker.add_argument("--log", required=True)
     checker.add_argument("--spec-sha256", required=True)
@@ -515,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
                               "total_timeout_seconds": spec["meta"]["total_timeout_seconds"]}))
             return 0
         if args.command == "run":
-            return run(args.spec, args.spec_sha256)
+            return run(args.spec, args.spec_sha256, log_name=args.log_name)
         if args.command == "verify":
             print(json.dumps({"status": "VERIFIED", "records": len(verify_log(args.log, args.spec_sha256))}))
             return 0
