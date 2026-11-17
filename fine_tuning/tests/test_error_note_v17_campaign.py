@@ -286,9 +286,11 @@ class CampaignIntegration(unittest.TestCase):
                     result = prep.read_sealed(args.output / "campaign-state.json")
                     return args, plan, result, calls, engine
                 result = campaign.run_campaign(plan, output=args.output, args=args)
-                self.assertEqual(len(calls), resumed[0][0])
-                self.assertEqual([entry for entry in engine.admissions if entry[0].startswith("train")], resumed[0][1])
+                # [사용자 2026-11-17] a failed gate is recorded only; training resumes after the pending monitor.
                 self.assertEqual(result["signal_gate"]["status"], "FAIL")
+                self.assertGreater(len(calls), resumed[0][0])
+                gate = prep.read_sealed(args.output / "signal-gate.json")
+                self.assertEqual((gate["gate_stops_training"], gate["monitor_degraded"]), (False, False))
                 metadata = json.loads(Path(result["checkpoint"]["path"]).read_text())
                 self.assertEqual(metadata["cursor"]["single"], result["cursor"])
             else:
@@ -381,19 +383,18 @@ class CampaignIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args, _, result, calls, _ = self.run_fixture(Path(tmp), smoke=False, bad_note=True,
                                                        gate_crash="before-evaluate")
-            self.assertEqual(result["status"], "STOPPED")
-            self.assertEqual(result["stop_reasons"], ["SIGNAL_GATE_FAIL"])
-            self.assertEqual([slot for _, slot, _, _ in calls], list(range(6)))
+            self.assertEqual((result["status"], result["stop_reasons"]), ("COMPLETE", []))
+            self.assertEqual(result["signal_gate"]["status"], "FAIL")
+            self.assertGreater(len(calls), 6)
             self.assertTrue((args.output / "signal-gate.json").exists())
 
     def test_crash_during_failed_gate_monitor_keeps_stopped_checkpoint_consistent(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, _, result, calls, _ = self.run_fixture(Path(tmp), smoke=False, bad_note=True,
                                                      gate_crash="during-monitor-fail")
-            self.assertEqual(result["status"], "STOPPED")
-            self.assertEqual(result["stop_reasons"], ["SIGNAL_GATE_FAIL"])
-            self.assertEqual([slot for _, slot, _, _ in calls], list(range(6)))
-            self.assertTrue(result["signal_gate_monitor_pending"])
+            self.assertEqual((result["status"], result["stop_reasons"]), ("COMPLETE", []))
+            self.assertEqual(result["signal_gate"]["status"], "FAIL")
+            self.assertFalse(result["signal_gate_monitor_pending"])
 
     def test_crash_during_passed_gate_monitor_resolves_pending_monitor_before_training(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -409,14 +410,33 @@ class CampaignIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args, plan, result, calls, engine = self.run_fixture(Path(tmp), smoke=False, bad_note=True)
             self.assertEqual(plan["signal_gate"]["due_slot"], 4)
-            self.assertEqual(result["status"], "STOPPED")
-            self.assertEqual(result["stop_reasons"], ["SIGNAL_GATE_FAIL"])
+            # [사용자 2026-11-17] the failed gate is recorded and training continues to completion.
+            self.assertEqual((result["status"], result["stop_reasons"]), ("COMPLETE", []))
             self.assertEqual(result["signal_gate"]["status"], "FAIL")
-            self.assertEqual([slot for _, slot, _, _ in calls], list(range(6)))
             self.assertTrue((args.output / "monitor-signal-gate.json").exists())
-            self.assertTrue((args.output / "signal-gate.json").exists())
+            gate = prep.read_sealed(args.output / "signal-gate.json")
+            self.assertEqual((gate["gate_stops_training"], gate["monitor_degraded"]), (False, False))
+            self.assertTrue(any(version > 4 for pid, _, version in engine.admissions if pid.startswith("train")))
+
+    def test_significant_monitor_drop_at_the_gate_stops_training(self):
+        from fine_tuning.error_note import v17_eval
+        self.assertTrue(campaign.monitor_degraded_v17({"net_change": -23, "p_value": 3.4e-5}))
+        self.assertFalse(campaign.monitor_degraded_v17({"net_change": -3, "p_value": .5}))
+        self.assertFalse(campaign.monitor_degraded_v17({"net_change": 12, "p_value": .0075}))
+        self.assertFalse(campaign.monitor_degraded_v17({}))
+        real = v17_eval.paired_report
+
+        def degraded(reference, candidate):
+            value = real(reference, candidate)
+            return value | {"overall": value["overall"] | {"net_change": -23, "p_value": 3.4e-5}}
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(v17_eval, "paired_report", side_effect=degraded):
+            args, plan, result, calls, engine = self.run_fixture(Path(tmp), smoke=False, bad_note=True)
+            self.assertEqual((result["status"], result["stop_reasons"]), ("STOPPED", ["MONITOR_DEGRADED"]))
+            self.assertTrue(prep.read_sealed(args.output / "signal-gate.json")["monitor_degraded"])
             self.assertFalse((args.output / "export-ready.json").exists())
-            self.assertFalse(any(version > 4 for pid, _, version in engine.admissions if pid.startswith("train")))
+            self.assertFalse(any(version > plan["signal_gate"]["due_slot"] + 1
+                                 for pid, _, version in engine.admissions if pid.startswith("train")))
             envelope = json.loads(Path(result["runtime"]["path"]).read_text())
             self.assertEqual(set(envelope["state"]["requests"]), set(envelope["state"]["closed"]))
 

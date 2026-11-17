@@ -740,9 +740,9 @@ V17_IDENTIFIERS = {
 
 def v17_prompts_sha256() -> str:
     from .v17_data import public_schema
-    from .v17_rows import NOTE_INSTRUCTION_V17, OBS_INSTRUCTION_V17, RESOLVE_INSTRUCTION_V17
+    from .v17_rows import NOTE_INSTRUCTION_V17, OBS_FORMAT_V17, OBS_INSTRUCTION_V17, RESOLVE_INSTRUCTION_V17
 
-    return _digest({"note": NOTE_INSTRUCTION_V17, "obs": OBS_INSTRUCTION_V17,
+    return _digest({"note": NOTE_INSTRUCTION_V17, "obs": OBS_INSTRUCTION_V17, "obs_format": OBS_FORMAT_V17,
                     "resolve": RESOLVE_INSTRUCTION_V17,
                     "observation_scopes": [public_schema(layer) for layer in ("geometry", "graph", "scene", "chart")]})
 

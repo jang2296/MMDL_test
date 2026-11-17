@@ -92,10 +92,37 @@ class V17Rows(unittest.TestCase):
         private = verifier(item, [], repair_catalog_eligible=False)
         receipt = rows.verify_solution_v17(item, tokenizer=TOKENIZER, gold="A", choices=["first", "second"], verifier=private, fact_catalog=CATALOG)
         self.assertEqual(receipt["verified_evidence_count"], 0)
+        # 2026-11-17: reasoning prose is admitted on catalog sources too (verified claims are almost never available);
+        # a bare answer is still refused.
         item["t1"] = output("I think the label clearly supports this answer.\nFinal answer: A")
         private = verifier(item, repair_catalog_eligible=True)
         receipt = rows.verify_solution_v17(item, tokenizer=TOKENIZER, gold="A", choices=["first", "second"], verifier=private)
+        self.assertNotIn("ANSWER_ONLY", receipt["reasons"])
+        item["t1"] = output("A. first")
+        receipt = rows.verify_solution_v17(item, tokenizer=TOKENIZER, gold="A", choices=["first", "second"], verifier=private)
         self.assertIn("ANSWER_ONLY", receipt["reasons"])
+
+    def test_final_answer_comes_from_graded_extraction_or_decorated_final_lines(self):
+        choices = ["first", "second"]
+        def reasons(text, extracted="A"):
+            item = record(text, status="CORRECT")
+            item["t1"]["extracted"] = extracted
+            return rows.verify_solution_v17(item, tokenizer=TOKENIZER, gold="A", choices=choices,
+                                            verifier=verifier(item, []))["reasons"]
+        body = "The segment label shows the first option matches the measured length of the side.\n"
+        self.assertEqual(reasons(body + "✅ **Final Answer: A**"), [])
+        self.assertEqual(reasons(body + "Therefore the correct choice is **A**."), [])
+        self.assertIn("NO_EXPLICIT_FINAL", reasons(body + "Therefore it is unclear.", extracted=None))
+        self.assertIn("MULTIPLE_FINAL_ANSWERS", reasons(body + "Final answer: A\nFinal answer: A"))
+        self.assertIn("MULTIPLE_FINAL_ANSWERS", reasons(body + "Final answer: A\nFinal answer: B"))
+        self.assertIn("FINAL_ANSWER_MISMATCH", reasons(body + "Final answer: B", extracted="A"))
+
+    def test_observation_prompt_forbids_an_empty_claim_list(self):
+        prompt = rows.build_obs_request_v17({"problem_id": "fixture", "layer": "graph", "image_paths": [],
+                                             "image_sha256": []})["prompt"]
+        self.assertIn("1 to 16 objects", prompt)
+        self.assertIn("an empty list is not allowed", prompt)
+        self.assertNotIn("at most 16", prompt)
 
     def test_public_request_ignores_all_private_values(self):
         item = record()

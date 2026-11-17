@@ -903,23 +903,28 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             state["signal_gate"] = copy.deepcopy(signal_gate.state)
             state["signal_gate_monitor_pending"] = True
             state["signal_gate_monitor_version"] = v + 1
-            if gate["status"] in {"FAIL", "INCONCLUSIVE_SIGNAL"}:
-                state.update(status="STOPPED", stop_reasons=["SIGNAL_GATE_" + gate["status"]])
+            # [사용자 2026-11-17] "관문은 기록만, 품질 하락 시만 정지": FAIL/INCONCLUSIVE_SIGNAL is recorded, not a stop.
+            body = {k: val for k, val in state.items() if k != "sha256"}
+            state["sha256"] = digest(body)
+            write_json(state_path, state)
+        if state.get("signal_gate_monitor_pending"):
+            result = monitor("monitor-signal-gate", state["signal_gate_monitor_version"])
+            state["signal_gate_monitor_pending"] = False
+            overall = (result.get("comparison") or {}).get("overall") or {}
+            degraded = monitor_degraded_v17(overall)
+            if degraded:
+                # The external development monitor is significantly below F0 (2026-11-17 run: 146 -> 123, p 3e-5).
+                state.update(status="STOPPED", stop_reasons=["MONITOR_DEGRADED"])
                 cursor["phase"] = "stopped"
                 saved = commit("stopped", envelope)
             else:
                 body = {k: val for k, val in state.items() if k != "sha256"}
                 state["sha256"] = digest(body)
                 write_json(state_path, state)
-        if state.get("signal_gate_monitor_pending"):
-            monitor("monitor-signal-gate", state["signal_gate_monitor_version"])
-            state["signal_gate_monitor_pending"] = False
-            body = {k: val for k, val in state.items() if k != "sha256"}
-            state["sha256"] = digest(body)
-            write_json(state_path, state)
-            seal(output / "signal-gate.json", {"version": "v17-signal-gate-result-v1",
+            seal(output / "signal-gate.json", {"version": "v17-signal-gate-result-v2",
                 "plan_sha256": plan["sha256"], "checkpoint": state["checkpoint"],
-                "gate": signal_gate.state, "length": guard.state})
+                "gate": signal_gate.state, "gate_stops_training": False,
+                "monitor_overall": overall, "monitor_degraded": degraded, "length": guard.state})
         return saved | {"stop_reasons": state.get("stop_reasons", [])}
 
     def save_runtime(v: int, envelope: dict, pending: list) -> dict:
@@ -966,6 +971,13 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             "status": "COMPLETE", "auto_evaluate": False})
     sampler.release()
     return state
+
+
+def monitor_degraded_v17(overall: dict) -> bool:
+    """Quality stop at the signal-gate monitor: fewer correct than F0 on the external development set, paired sign
+    test p < 0.05. A missing comparison is not treated as degradation."""
+    change, p_value = overall.get("net_change"), overall.get("p_value")
+    return isinstance(change, (int, float)) and isinstance(p_value, (int, float)) and change < 0 and p_value < .05
 
 
 def require_complete(output: Path, *, evaluation_decision: Path | None = None,

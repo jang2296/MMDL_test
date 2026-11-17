@@ -31,6 +31,14 @@ _KINDS = {
 
 
 OBS_INSTRUCTION_V17 = "Observe only the image. "
+# 2026-11-17: "at most 16" let the policy answer {"claims": []} (26 of 28 pod OBS outputs), so no observation could be
+# checked or repaired. The list must now name every in-scope item; an empty list stays reward 0.
+OBS_FORMAT_V17 = ("Return one JSON object with exactly claims, a list of 1 to 16 objects containing kind, entity, value, "
+                  "and a unit field as specified by the generic types below. List every item the scope asks for, one "
+                  "object per item; an empty list is not allowed. Answer with only this shape: "
+                  '{"claims": [{"kind": ..., "entity": ..., "value": ..., "unit": ...}, ...]}. '
+                  "Write entities and values observed in the image; no claim IDs. Supported kind order: ")
+_LINE_DECORATION = re.compile(r"^[^\w]+")
 NOTE_INSTRUCTION_V17 = (
     "Inspect your actual solution and image. Return JSON with exactly repairs and lesson. "
     "repairs is [] or one object with exactly claim_id and corrected_value. Correct only a contradicted "
@@ -217,9 +225,7 @@ def build_obs_request_v17(item: dict, *, public_schema: dict | None = None) -> d
     if (set(schema) - {"schema", "layer", "supported_claim_kinds", "scope_instruction", "max_claims", "entity_schema", "sha256"}
             or any(schema.get(key) != expected.get(key) for key in expected)):
         raise ValueError("PUBLIC_SCHEMA_PRIVATE_OR_CHANGED_FIELD")
-    prompt = (OBS_INSTRUCTION_V17 + schema["scope_instruction"] + " Return one JSON object with exactly claims, "
-              "a list of at most 16 objects containing kind, entity, value, and a unit field as specified by the generic types below. "
-              "Write entities and values observed in the image; no claim IDs. Supported kind order: "
+    prompt = (OBS_INSTRUCTION_V17 + schema["scope_instruction"] + " " + OBS_FORMAT_V17
               + ", ".join(schema["supported_claim_kinds"]) + ". Generic entity and value types: "
               + json.dumps(schema["entity_schema"], ensure_ascii=False, sort_keys=True) + ".")
     return {"stage": "OBS", "problem_id": item["problem_id"], "prompt": prompt,
@@ -234,6 +240,22 @@ def _ledger(record: dict, stage: str, output: dict, verifier: dict, claims: list
                   "claims": claims})
 
 
+_FENCE = re.compile(r"\A\s*```(?:json)?[ \t]*\n(?P<body>.*?)\n?[ \t]*```\s*\Z", re.S)
+
+
+def _obs_json(text: str) -> tuple[Any, dict]:
+    """The OBS object, also when wrapped in one ```json fence or written as the bare claims list (2026-11-17 local
+    F0 check: 3 of 6 graph answers were a fenced bare list). Spans stay offsets into the original text."""
+    match = _FENCE.match(text)
+    offset, body = (match.start("body"), match["body"]) if match else (0, text)
+    obj, spans = _json(body)
+    spans = {path: [start + offset, end + offset] for path, (start, end) in spans.items()}
+    if isinstance(obj, list):
+        obj = {"claims": obj}
+        spans = {("claims" + path if path.startswith("[") else path): span for path, span in spans.items()}
+    return obj, spans
+
+
 def audit_observation_v17(record: dict, *, verifier: dict | None, tokenizer: Any) -> dict:
     output = record.get("obs", {})
     source = _verifier(record, verifier)
@@ -242,7 +264,7 @@ def audit_observation_v17(record: dict, *, verifier: dict | None, tokenizer: Any
         reasons.append("OBS_INELIGIBLE:" + str(source.get("obs_reason")))
     text = output.get("text", "")
     try:
-        obj, spans = _json(text)
+        obj, spans = _obs_json(text)
         if not isinstance(obj, dict) or set(obj) != {"claims"} or not isinstance(obj["claims"], list) or len(obj["claims"]) > 16:
             raise ValueError("OBS_SCHEMA")
         for index, claim in enumerate(obj["claims"]):
@@ -576,15 +598,21 @@ def verify_solution_v17(record: dict, *, stage: str = "t1", tokenizer: Any, gold
     finals, remainder = [], []
     for line in text.splitlines():
         clean = line.replace("**", "").replace("__", "")
-        match = bounded._FINAL.fullmatch(clean)
+        # 2026-11-17: a decorated final line ("✅ Final Answer: 4", "- Answer: B") is still the final line.
+        match = bounded._FINAL.fullmatch(_LINE_DECORATION.sub("", clean))
         if match:
             finals.append(match[1])
         else:
             remainder.append(clean)
-    if len(finals) != 1:
-        reasons.append("MULTIPLE_FINAL_ANSWERS" if finals else "NO_EXPLICIT_FINAL")
-    elif not _same_answer(finals[0], gold, choices) or not _same_answer(finals[0], output.get("extracted"), choices):
+    extracted = output.get("extracted")
+    # P0 does not ask for a "Final answer:" line, so the graded extraction (V8, status CORRECT) is the final answer
+    # when the model ends with a boxed/bold/sentence answer; any explicit final lines must all agree with it.
+    if len(finals) > 1:  # repeated final lines stay refused, even when identical
+        reasons.append("MULTIPLE_FINAL_ANSWERS")
+    elif finals and (not _same_answer(finals[-1], gold, choices) or not _same_answer(finals[-1], extracted, choices)):
         reasons.append("FINAL_ANSWER_MISMATCH")
+    elif not finals and (extracted is None or not str(extracted).strip() or not _same_answer(extracted, gold, choices)):
+        reasons.append("NO_EXPLICIT_FINAL")
     for line in remainder:
         if match := bounded._CONCLUSION.fullmatch(line):
             key = bounded._answer_key(match[1], choices)
@@ -610,8 +638,10 @@ def verify_solution_v17(record: dict, *, stage: str = "t1", tokenizer: Any, gold
     words = re.findall(r"[a-z]+", nonfinal.lower())
     answer_words = set(re.findall(r"[a-z]+", " ".join(map(str, (*choices, gold))).lower()))
     content_words = set(words) - answer_words - {"the", "a", "an", "is", "answer", "option", "correct", "therefore", "thus", "conclusion", "final", "it"}
-    supported = bool(effective_catalog or source.get("repair_catalog_eligible", bool(source.get("facts"))) and source.get("facts"))
-    if not evidence and (supported or len(content_words) < 3):
+    # 2026-11-17: requiring a VERIFIED claim on catalog sources rejected ~97% of correct solutions (claims are almost
+    # never verifiable), which disabled A1/PREP_SELF/C. A bare answer is still refused; contradicted facts still
+    # reject the row through PROCESS_CONTRADICTION above.
+    if not evidence and len(content_words) < 3:
         reasons.append("ANSWER_ONLY")
     if stage == "t1" and output.get("prompt") != record.get("p0_text"):
         reasons.append("A1_INPUT_NOT_P0")
