@@ -128,6 +128,16 @@ class V18LossTests(unittest.TestCase):
         self.assertEqual(report["policy_mask_counts"]["FORMAT_ONLY_CERTIFIED"],
                          {"candidate_tokens": 2, "retained_tokens": 1, "negative_tokens": 1})
 
+    def test_ordinary_rows_with_no_mask_reason_keep_the_report_sealable(self):
+        bundle = bundle_with_bytes()
+        plain = row(bundle, 0) | {"pg_mask_reason": None}
+        candidate = localized(row(bundle, 1, advantage=-1.))
+        report = train.backward_v18_block(bundle, [plain, candidate], contract(bundle, [plain, candidate]),
+                                          components={"RL"})
+        self.assertNotIn(None, report["policy_mask_counts"])
+        self.assertIn("FORMAT_ONLY_CERTIFIED", report["policy_mask_counts"])
+        digest(report["policy_mask_counts"])
+
     def test_partial_policy_mask_needs_a_content_and_token_bound_receipt(self):
         bundle = bundle_with_bytes()
         candidate = localized(row(bundle, advantage=-1.))

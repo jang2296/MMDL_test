@@ -526,7 +526,9 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                                 excluded = advantage < 0 and float(difference.mean()) > .3
                                 excluded_n += int(excluded)
                                 if is_v18:
-                                    reason_key = row.get("pg_mask_reason", row.get("reason", kind))
+                                    # ordinary T1 rows carry pg_mask_reason=None; a None key cannot be sealed beside
+                                    # the string keys (v18 pod 2026-11-19 stopped after the first RL update).
+                                    reason_key = row.get("pg_mask_reason") or row.get("reason") or kind
                                     detail = policy_mask_counts[reason_key]
                                     detail["candidate_tokens"] += int(row["loss_mask"].sum())
                                     retained_tokens = int(mask.sum()) if kind in selected and not excluded and advantage else 0

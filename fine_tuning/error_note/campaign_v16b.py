@@ -317,7 +317,7 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
                           pg_excluded=sum(not r["pg"] for r in rewards),
                           pg_excluded_tokens=sum(len(r["t1"]["generation"]["completion_token_ids"])
                                                 for r in selected if not r["reward_receipt"]["pg"]))
-            values["statuses"] = dict(Counter(o.get("status", "UNVERIFIABLE") for o in outputs))
+            values["statuses"] = dict(Counter(o.get("status") or "UNVERIFIABLE" for o in outputs))
             values["length"] = length_distribution_v17(
                 [len(o["generation"]["completion_token_ids"]) for o in outputs])
             values["truncated"] = sum(o["generation"].get("finish_reason") == "length" for o in outputs)
@@ -326,7 +326,7 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
         receipts = [r[receipt_key] for r in selected if receipt_key in r]
         values["accepted"] = sum(r.get("accepted") is True for r in receipts)
         for receipt in receipts:
-            rejected.update(receipt.get("reasons", []))
+            rejected.update(str(reason) for reason in receipt.get("reasons") or [])
         if stage == "NOTE":
             values.update(verified_repairs=sum(r.get("verified_repair_count", 0) for r in receipts),
                           lesson_safe=sum(r.get("lesson_accepted") is True for r in receipts),
@@ -340,7 +340,7 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
         for record in selected:
             ledger = record.get("t1_ledger" if stage == "T1" else "obs_ledger") if stage in {"T1", "OBS"} else None
             if ledger:
-                claims.update(c["verdict"] for c in ledger["claims"])
+                claims.update(str(c["verdict"]) for c in ledger["claims"])  # sealed keys must stay strings
         report["stages"][stage] = values
     report["rejection_reasons_all"], report["claims"] = dict(rejected), dict(claims)
     report["answer_only"] = rejected["ANSWER_ONLY"]
