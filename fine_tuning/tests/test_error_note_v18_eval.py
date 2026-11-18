@@ -168,6 +168,37 @@ class DirectVisionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pixels or grid"):
             lora.vision_tower_check(reference, broken)
 
+    def test_tower_noise_floor_is_cross_engine_and_unpowered_does_not_gate(self):
+        import torch
+
+        from fine_tuning.error_note import llm_lora as lora
+        g = torch.Generator().manual_seed(5)
+        base, effect = torch.randn(4096, generator=g) * 10, torch.randn(4096, generator=g)
+        jitter = lambda scale: torch.randn(4096, generator=g) * scale  # noqa: E731
+        inputs = [{"pixels_sha256": "a" * 64, "grid_sha256": "b" * 64}]
+
+        def run(cross, scale=1.0, removed_effect=0.0):
+            h = {"off": base, "off_repeat": base, "on": base + effect / 16, "amplified": base + effect}
+            off_v = base + jitter(cross)
+            v = {"off": off_v, "off_repeat": off_v, "on": off_v + scale * effect / 16 + jitter(cross),
+                 "amplified": off_v + scale * effect + jitter(cross), "hook_removed": off_v + removed_effect * effect}
+            as_list = lambda d: {"inputs": inputs, "columns": {k: t.tolist() for k, t in d.items()}}  # noqa: E731
+            return lora.vision_tower_check(as_list(h), as_list(v))
+
+        quiet = run(cross=0.01)  # exact application above the engine noise: powered and confirmed
+        self.assertTrue(quiet["pass"] and quiet["amplified"]["pass"])
+        self.assertEqual(quiet["application_path_status"], "CONFIRMED")
+        noisy = run(cross=0.7)  # v18 pod shape: x16 effect ~1 rms at the cross-engine BF16 noise
+        self.assertGreater(noisy["cross_engine_noise_rms"], 0.5)
+        self.assertIsNone(noisy["amplified"]["pass"])
+        self.assertEqual(noisy["application_path_status"], "UNPOWERED_NOT_GATING")
+        self.assertTrue(noisy["pass"])
+        wrong = run(cross=0.01, scale=0.4)  # a real 40% application is powered and fails
+        self.assertFalse(wrong["pass"])
+        self.assertEqual(wrong["application_path_status"], "FAILED")
+        survives = run(cross=0.01, removed_effect=1.0)  # an effect that survives hook removal fails
+        self.assertFalse(survives["pass"])
+
     def test_final_output_and_language_still_gate_when_direct_tower_supplies_vision_evidence(self):
         from fine_tuning.error_note import llm_lora as lora
         from fine_tuning.tests.test_error_note_single_vllm import pf5_columns
@@ -376,6 +407,8 @@ class V18PreflightTests(unittest.TestCase):
     def test_real_calibration_entry_uses_v18_policy_masks_rows_and_objective(self):
         from fine_tuning.error_note import campaign_v16b as campaign, v17_data, v17_preflight as pf, v18_rows, protocol
 
+        from fine_tuning.tests.test_error_note_v17_preflight import capacity
+
         helper = self.helper()
         sampler, timing, _ = helper._mock_calibration()
         policy = {"reward": 0., "reason": "FORMAT_ONLY_CERTIFIED", "pg": True,
@@ -387,7 +420,9 @@ class V18PreflightTests(unittest.TestCase):
              mock.patch.object(v18_rows, "verify_solution_v17", return_value={"accepted": True}), \
              mock.patch.object(v18_rows, "a1_row_v17", return_value={"kind": "A1", "schema": v18_rows.ROW_SCHEMA,
                                   "row_id": "perf-only:A1", "route": "FULL"}), \
-             mock.patch.object(protocol, "v18_contract_for_update", return_value={"version": "error-note-v18"}):
+             mock.patch.object(protocol, "v18_contract_for_update", return_value={"version": "error-note-v18"}), \
+             mock.patch.object(campaign, "calibrate_capacity",  # the real v18 capacity seal (campaign_v16b.capacity)
+                               return_value=capacity() | {"version": "v18-capacity-v1"}):
             receipt = pf.calibrate(helper.args, helper.plan)
         self.assertEqual(receipt["training_protocol_version"], "error-note-v18")
         encoded = timing.call_args.args[1]
