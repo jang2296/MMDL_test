@@ -1,5 +1,16 @@
 # Assignment 1 baseline — 작업 상태
 
+## 2026-11-18 밤 — v18 인계 검토·실행 전 수정 (Claude Code, 포드 미생성)
+
+- Codex v18 구현(`claudedocs/handoff_v18_implementation_20261118.md`) 재검토: v17·v18 관련 312개 재실행 통과, 독립 Opus 검토 + 직접 확인.
+- 실행 전 수정(상위 소스, 모두 회귀 검사 추가·수정 전 실패/수정 후 통과 확인):
+  1. 포드 작업 실행기(`notebook_rl/pod/job.py`, `verify.py`)가 학습 단계에 로컬 묶음(`data`)을 필수로 요구 → v18은 원출처 재구성이라 학습을 시작할 수 없음. 학습 단계 `v18-main` 추가(묶음 없음, 예비 점검에 `data_source_rebuilt` 기록, 평가 격리 검사 유지), `plan.py` v18-train 명세의 job_stage를 `v18-main`으로.
+  2. `v18_rows.py` 관측·노트 판독이 ```json 코드 블록을 거부(v17 로컬 F0 관측 6개 중 3개가 코드 블록) → v17 `_obs_json`(원문 위치 보정) 사용.
+  3. `llm_lora.hf_vision_columns`가 autocast 없이 HF 시각 처리부를 호출 → FP32 Merger·BF16 입력으로 실제 GPU에서 `expected scalar type BFloat16 but found Float`(v17 포드 진단과 같은 오류, 로컬 GPU 재현) → 학습과 같은 BF16 autocast 적용. 평가 엔진 검증과 학습 재개 시점의 시각 직접 검사가 학습 비용 뒤에 멈추는 문제였음.
+  4. `v18_data` 원파일·구간 내려받기가 HTTP 오류만 재시도 → 로컬 빈 캐시 재구성이 8.2GB 수신 후 읽기 TimeoutError 한 번으로 실패(1,400초). 시간 초과·연결 끊김·불완전 수신도 최대 5회 재시도(부분 파일 폐기).
+- 확인만: v17 실제 노트 1,104개 중앙 40토큰·1,024 도달 5개·코드 블록 0 → 노트 상한 유지. 감시 오경보 2.90%(상한 3.73%)는 v17과 같은 수치로 사용자 위험 수용 결정 필요. v18 재생상 T1 모순 1건 → N 공급은 관측 단계 의존(위험).
+- 포드 스크립트 v18판(로컬 묶음 업로드 없음, `MMDL_V18_DATA_CACHE`로 설치와 원출처 내려받기 병행, 작업 단계 `v18-main`, N/C 공급 감시): `/home/jang2/mmdl-artifacts/self-note-single-20261105/v18/pod-scripts/`.
+
 ## 2026-11-18 — v18 구현 및 로컬 확인, Claude Code 인계
 
 - 고정한 15개 출처 원본 캐시에서 본학습 3,000·준비 512·감시 200·효과 128·속도 16개를 공식 prepare 명령으로 재구성하고 해시·순서·tokenizer 기반 검증을 완료했다. 최종 소스 기준 266.32초, 캐시 1,067건 적중, 0바이트 전송. 빈 캐시 전수 다운로드는 미측정이다.
