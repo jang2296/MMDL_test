@@ -51,7 +51,8 @@ def _validate_masks(row: dict, tokenizer: Any) -> None:
     supplied = _list(row["loss_mask"])
     if kind in previous.PG_KINDS:
         reason = row.get("pg_mask_reason", row.get("reason"))
-        if kind == "RL" and reason in LOCALIZED_REASONS:
+        # A localized reason whose spans mapped to no action leaves pg False and an all-False mask: an excluded row.
+        if kind == "RL" and reason in LOCALIZED_REASONS and (row.get("pg") or any(supplied)):
             spans, receipt = row.get("pg_byte_spans", []), row.get("policy_mask_receipt", {})
             expected = _mask(tokenizer, row, spans)
             if (not any(expected) or receipt.get("sha256") != digest({k: v for k, v in receipt.items() if k != "sha256"})

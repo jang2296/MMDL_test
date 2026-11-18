@@ -913,6 +913,10 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                                t1_policy_receipt=policy, format_receipt=policy.get("format_receipt"))
                     row.update({key: policy[key] for key in ("pg_mask_reason", "pg_byte_spans", "policy_mask_receipt")
                                 if key in policy})
+                elif is_v18 and not row["pg"]:
+                    # An unscored v18 observation (abstained, unit mismatch, not stopped) has no policy term; its
+                    # mask must exclude every action (v18 pod 2026-11-19 stopped at the first RL block on one).
+                    row["loss_token_mask"] = [False] * len(out["generation"]["completion_token_ids"])
                 elif reward.get("reason") == "LOOP_CONFIRMED":
                     row["loss_token_mask"] = v17_rows.loop_token_mask_v17(bundle.processor.tokenizer,
                         out["generation"]["completion_token_ids"], out["text"])

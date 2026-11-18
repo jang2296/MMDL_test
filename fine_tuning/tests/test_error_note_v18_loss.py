@@ -128,6 +128,19 @@ class V18LossTests(unittest.TestCase):
         self.assertEqual(report["policy_mask_counts"]["FORMAT_ONLY_CERTIFIED"],
                          {"candidate_tokens": 2, "retained_tokens": 1, "negative_tokens": 1})
 
+    def test_ungraded_policy_rows_are_excluded_with_an_all_false_mask(self):
+        bundle = bundle_with_bytes()
+        obs = row(bundle, 0, kind="OBS") | {"pg": False, "advantage": 0.}
+        obs["loss_mask"] = torch.zeros_like(obs["loss_mask"])
+        empty = localized(row(bundle, 1, advantage=0.))
+        empty.update(pg=False, loss_mask=torch.zeros_like(empty["loss_mask"]))
+        rows = [obs, empty]
+        train.backward_v18_block(bundle, rows, contract(bundle, rows), components={"RL"})
+        bundle.model.zero_grad(set_to_none=True)
+        kept = row(bundle, 0, kind="OBS") | {"pg": False, "advantage": 0.}  # all-True mask on an unscored row
+        with self.assertRaisesRegex(ValueError, "ordinary policy mask"):
+            train.backward_v18_block(bundle, [kept], contract(bundle, [kept]), components={"RL"})
+
     def test_ordinary_rows_with_no_mask_reason_keep_the_report_sealable(self):
         bundle = bundle_with_bytes()
         plain = row(bundle, 0) | {"pg_mask_reason": None}
