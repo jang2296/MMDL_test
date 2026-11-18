@@ -54,6 +54,21 @@ class GuardTests(unittest.TestCase):
             result = equal.update(b, batch(ids[b - 1], tokens=50))
         self.assertNotIn("COLLAPSE_LEN", result["reasons"])
 
+    def test_v18_collapse_is_a_recorded_warning_not_a_stop(self):
+        from fine_tuning.error_note.guard_v16b import GuardV17
+
+        ids = order()
+        stopping, warning = GuardV17(ids, telemetry=False), GuardV17(ids, telemetry=False, collapse_stop=False)
+        for b in range(1, 13):
+            stopped = stopping.update(b, batch(ids[b - 1], tokens=49, f0=100))
+            warned = warning.update(b, batch(ids[b - 1], tokens=49, f0=100))
+        self.assertIn("COLLAPSE_LEN", stopped["reasons"])
+        self.assertEqual(warned["status"], "CONTINUE")
+        self.assertIn("COLLAPSE_LEN_WARNING", warned["warnings"])
+        self.assertEqual(warned["collapse_warning_blocks"], [12])
+        resumed = GuardV17(ids, warning.state, telemetry=False, collapse_stop=False)
+        self.assertEqual(resumed.state["collapse_warning_blocks"], [12])
+
     def test_tail_short_hold_and_order_immediate(self):
         ids = order(8)
         guard = GuardV16B(ids)

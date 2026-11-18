@@ -565,7 +565,8 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
     generated = read_sealed(checked(plan["inputs"]["f0"]))
     prep_rows = [row for batch in plan["prep_batches"] for row in batch]
     probe_rows = _encode(bundle, prep_rows[:1], all_items, image)
-    guard = guard_class(plan["blocks"], state.get("guard"))
+    guard = (guard_class(plan["blocks"], state.get("guard"), collapse_stop=False) if is_v18
+             else guard_class(plan["blocks"], state.get("guard")))
     signal_gate = None
     if is_v17:
         from .guard_v16b import SignalGateV17

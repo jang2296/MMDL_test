@@ -82,7 +82,10 @@ class GuardV16B:
             collapsed = bool(pairs) and statistics.median(p[0] for p in pairs) < 0.5 * statistics.median(p[1] for p in pairs)
             self.state["collapse_windows"] = self.state["collapse_windows"] + 1 if collapsed else 0
             if block >= 12 and self.state["collapse_windows"] >= 2:
-                reasons.append("COLLAPSE_LEN")
+                if getattr(self, "collapse_stop", True):
+                    reasons.append("COLLAPSE_LEN")
+                elif block not in self.state.setdefault("collapse_warning_blocks", []):
+                    self.state["collapse_warning_blocks"].append(block)
         thresholds = {}
         if block >= 36:
             reference, recent = history[:24], history[-12:]
@@ -146,15 +149,23 @@ def short_drift_v17(history: list[dict]) -> dict:
 class GuardV17(GuardV16B):
     version = "error-note-v17-guard-v1"
 
-    def __init__(self, order: list[list[str]], state: dict | None = None, *, telemetry: bool = True):
+    def __init__(self, order: list[list[str]], state: dict | None = None, *, telemetry: bool = True,
+                 collapse_stop: bool = True):
         super().__init__(order, state)
         self.telemetry = telemetry
+        # v18 (user 2026-11-19 KST): COLLAPSE_LEN compares medians with F0 priors that the false-alarm simulation
+        # cannot exercise (it sets tokens = f0_tokens). The first v18 pod run stopped on it at block 66 while
+        # training accuracy rose (50% -> 57-65%) and <32-token answers fell (26% -> 12%); for v18 it is a recorded
+        # warning. Accuracy, truncation, no-final, short-drift, tail and HOLD rules still stop the run.
+        self.collapse_stop = collapse_stop
 
     def update(self, block: int, items: list[dict], *, tail_rate: float | None = None,
                is_hold: bool = False) -> dict:
         receipt = super().update(block, items, tail_rate=tail_rate, is_hold=is_hold)
         receipt["short_drift"] = copy.deepcopy(self.state["short_drift"])
-        receipt["warnings"] = receipt["short_drift"]["warnings"]
+        receipt["warnings"] = receipt["short_drift"]["warnings"] + (
+            ["COLLAPSE_LEN_WARNING"] if self.state.get("collapse_warning_blocks") else [])
+        receipt["collapse_warning_blocks"] = list(self.state.get("collapse_warning_blocks", []))
         if self.telemetry:
             history = self.state["history"]
             receipt["length_summary"] = length_distribution_v17([v for r in history for v in r["lengths"]])
