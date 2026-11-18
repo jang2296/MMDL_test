@@ -118,6 +118,17 @@ class V17Preflight(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "three A/B/C"):
             pf._validate_cost(cost)
 
+    def test_v18_functional_requires_the_v18_capacity_version(self):
+        good = {"optimizer_steps": 0, "production_parents_consumed": 0, "f0_transport": {"pass": True},
+                "coexistence": [{"pass": True}], "training_protocol_version": "error-note-v18",
+                "capacity": capacity() | {"version": "v18-capacity-v1"}}
+        pf._validate_functional(good)
+        for bad in (good | {"capacity": capacity()},  # v18 run with a v17 capacity receipt
+                    {k: v for k, v in good.items() if k != "training_protocol_version"}):  # v17 run, v18 receipt
+            with self.assertRaisesRegex(ValueError, "FULL capacity"):
+                pf._validate_functional(bad)
+        pf._validate_functional({k: v for k, v in good.items() if k != "training_protocol_version"} | {"capacity": capacity()})
+
     def test_stale_plan_and_missing_functional_file_are_rejected_before_gpu(self):
         self._receipts()
         changed = self.identity | {"campaign_plan_sha256": "0" * 64}

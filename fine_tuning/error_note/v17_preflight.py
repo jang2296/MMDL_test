@@ -82,8 +82,10 @@ def _validate_cost(cost: dict) -> None:
 def _validate_functional(functional: dict) -> None:
     capacity = functional.get("capacity", {})
     report = capacity.get("report", {})
+    # campaign_v16b.capacity seals "v18-capacity-v1" under the v18 protocol (v18 pod 2026-11-18 failed here).
+    expected = "v18-capacity-v1" if functional.get("training_protocol_version") == "error-note-v18" else "v17-capacity-v1"
     if (functional.get("optimizer_steps") != 0 or functional.get("production_parents_consumed") != 0
-            or capacity.get("version") != "v17-capacity-v1" or capacity.get("model_parameter_update") is not False
+            or capacity.get("version") != expected or capacity.get("model_parameter_update") is not False
             or report.get("version") != "v17-update-memory-v1" or report.get("optimizer_steps") != 0
             or report.get("fixture_only") is not True or report.get("action_tokens") != 8192
             or report.get("measurement") != "actual_cuda_bf16_shared_backward_only"
