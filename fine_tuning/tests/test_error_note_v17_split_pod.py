@@ -41,6 +41,24 @@ class SplitPodTests(unittest.TestCase):
     def setUp(self):
         self.now = dt.datetime.now(dt.timezone.utc)
 
+    def test_v18_main_binds_no_staged_bundle_and_preflight_records_source_rebuild(self):
+        value = approved_split(self.now, stage="v18-main", repo_root="/root/MMDL_test")
+        job.validate_job(value, now=self.now)
+        data = {"bundle_manifest": "/workspace/b.json", "bundle_manifest_sha256": "b" * 64,
+                "dataset_manifest": "/x/dataset-manifest.json", "dataset_manifest_sha256": "c" * 64, "vault_root": "/x/vault"}
+        with self.assertRaises(job.JobError):  # a staged bundle is not part of a source-rebuilt job
+            job.validate_job(approved_split(self.now, stage="v18-main", repo_root="/root/MMDL_test", data=data), now=self.now)
+        with self.assertRaises(job.JobError):  # other training stages still require their bundle
+            job.validate_job(approved_split(self.now, stage="single-main", repo_root="/root/MMDL_test"), now=self.now)
+        self.assertIn("v18-main", job.TRAINING_STAGES)  # eval isolation still runs for v18-main
+        with tempfile.TemporaryDirectory() as tmp:
+            result = verify.run_checks(repo_root=tmp, commit="a" * 40, volume_root=tmp, run_dir=tmp, data=None,
+                                       min_free_gib=0.001, mount_path=tmp, stage="v18-main")
+        names = {c["name"]: c for c in result["checks"]}
+        self.assertTrue(names["data_source_rebuilt"]["ok"])
+        self.assertNotIn("data_bundle", names)
+        self.assertIn("eval_isolation", names)
+
     def test_insufficient_estimated_funding_is_reported_without_shrinking_technical_bound(self):
         value = approved_split(self.now)
         job.validate_job(value, now=self.now)

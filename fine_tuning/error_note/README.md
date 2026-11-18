@@ -548,6 +548,43 @@ python -m fine_tuning.error_note.plan plan --stage v17-eval \
 두 명령은 실행 계획을 작성한다. 실제 실행은 각각의 고정 clone에 속한 pod job과 `start.sh`로 수행한다.
 평가 params의 학습 결과 SHA는 학습 봉인 완료 후 실제 파일에서 계산하며, 미리 임의 값을 넣지 않는다.
 
+## v18 원출처 재현과 최종 평가
+
+선정 목록은 `v18_recipe.json`과 그 파일이 해시로 참조하는 분할 JSON이다. 본학습 3,000, 준비 후보 512, 감시 200, 효과 비교 128, 속도 확인 16개를 원래 순서로 복원한다. 외부 자료의 고정 revision·원본 위치·해시를 배포하고, 질문·정답·이미지는 실행 환경의 비공개 디렉터리에 복원한다.
+
+```bash
+# 기존 프로젝트 환경에서 지정 Qwen revision의 로컬 tokenizer 경로를 사용한다.
+python -m fine_tuning.error_note.v18_data prepare \
+  --cache-dir "$MMDL_V18_DATA_CACHE" --output "$MMDL_V18_DATA_ROOT" \
+  --tokenizer "$MMDL_MODEL_PATH"
+python -m fine_tuning.error_note.v18_data verify \
+  --output "$MMDL_V18_DATA_ROOT" --tokenizer "$MMDL_MODEL_PATH"
+```
+
+`MMDL_V18_DATA_CACHE`와 `MMDL_V18_DATA_ROOT`에는 저장소 바깥의 절대 경로를 지정한다. 입력을 이미 받은 환경에서는 `prepare --offline`을 사용할 수 있다. 기존 OCR을 재현할 때는 Linux x86_64, CPython 3.12, `dpkg-deb`를 사용한다. 변환용 Pillow와 과거 ChartQA OCR 기록에 쓰였던 Pillow는 별도 경로에 둔다. PTB-XL의 렌더링 환경도 PNG와 픽셀 해시로 확인한다. `validation.json`에서 역할별 수량을, `execution.json`에서 전송량과 시간을 확인한다. `guard-metadata-v18.json`과 `performance-requests.json`은 준비 명령이 생성한다.
+
+포드 설치 담당자는 승인된 설치 스크립트에 `MMDL_V18_DATA_CACHE`를 전달하고 학습 params의 `cache_dir`에 같은 값을 지정한다. `volume.sh`는 uv 설치와 함께 stdlib 기반 `v18_data fetch`를 시작한다. 학습 체인의 `prepare-data`가 해당 캐시로 변환·검증을 완료한다.
+
+```bash
+python -m fine_tuning.error_note.plan plan --stage v18-train \
+  --params "$TRAIN_PARAMS" --output "$TRAIN_SPEC"
+python -m fine_tuning.error_note.plan plan --stage v18-eval \
+  --params "$EVAL_PARAMS" --output "$EVAL_SPEC"
+```
+
+두 params의 버전은 `error-note-plan-params-v18-split-v1`이다. v18-train은 기존 v17-train의 bundle 및 외부 guard 파일 인자를 `cache_dir`로 대체한다. 완료된 학습 결과는 admission·최종 체크포인트·새 프로세스 재로딩·비병합 내보내기와 함께 봉인한다. v18-eval에는 실제 학습 봉인의 경로·SHA, `performance-requests.json`의 경로·SHA, 해당 평가의 사용자 결정문 `evaluation_authorization`을 넣는다. 엔진 검증과 평가도 이 결정·봉인에 묶인다.
+
+`guard-falsealarm-gate`는 본학습 전 고정 감시 규칙의 오경보율을 모의검사한다. 2,000회 검사에서 95% 상한이 2%를 넘으면 기본 실행은 중단된다. 상한 5% 이하에 대해 운영자가 실측 결과를 검토하고 위험을 명시적으로 수용한 경우에만 해당 결정을 `guard_risk_acceptance`에 기록한다. 모의검사의 원래 결과도 영수증에 보존한다.
+
+중단된 900문항 실행은 아래 명령으로 원래 사전등록·문항 seed·완료 원문을 검증한 뒤 이어간다. 첫 줄은 실행 계획 확인용이다. 둘째 줄은 승인된 평가 환경의 기존 `MMDL_RUN_DIR`에서 실행한다. 완료 시 V8 분석과 별도 보완 판정 단계까지 이어간다.
+
+```bash
+python -m fine_tuning.error_note.plan resume-evaluation --params "$EVAL_PARAMS"
+python -m fine_tuning.error_note.plan resume-evaluation --params "$EVAL_PARAMS" --run
+```
+
+`v18_replay_receipt.json`에는 v17 저장 응답 3,000개를 새 규칙으로 재생한 집계가 있다. 새 Qwen 출력에서 노트가 실제로 교정을 만들었는지는 본학습의 고유 부모 수, 수용한 수정 토큰, N 단독 기울기와 저장한 갱신의 연결을 함께 확인한다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

@@ -152,7 +152,7 @@ class SingleVllmSampler:
                  protocol_version: str = "error-note-v16b", preflight_stage: str = "trained"):
         self.protocol_version = protocol_version
         self.preflight_stage = preflight_stage
-        if protocol_version == "error-note-v17":
+        if protocol_version in ("error-note-v17", "error-note-v18"):
             if type(max_num_seqs) is not int or not 1 <= max_num_seqs <= 16:
                 raise ValueError("v17 training concurrency ceiling is sixteen")
             if preflight_stage not in ("f0", "trained"):
@@ -214,7 +214,7 @@ class SingleVllmSampler:
                                                    enable_sleep_mode=bool(sleep), **extra)
         engine._call, engine._synchronized, engine._push_complete, engine._last_loaded_version = 0, True, True, None
         self.engine, self.max_num_seqs, self.sleep = engine, max_num_seqs, bool(sleep)
-        if self.protocol_version == "error-note-v17":
+        if self.protocol_version in ("error-note-v17", "error-note-v18"):
             cache = self._scheduler().kv_cache_config
             if len(cache.kv_cache_groups) != 1:
                 raise RuntimeError("v17 capacity: one measured full-attention KV group required")
@@ -442,7 +442,7 @@ class SingleVllmSampler:
         image_identity = [{"size": list(img.size), "sha256": hashlib.sha256(img.tobytes()).hexdigest()}
                           for img in request["images"]]
         cache_binding = {"messages": request["messages"], "images": image_identity}
-        if getattr(self, "protocol_version", None) == "error-note-v17":
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
             cache_binding.update(image_policy=self.image, processor_revision=str(self.engine.model_dir),
                                  context_limit=CONTEXT_LIMIT)
         key = request["problem_id"] + ":" + digest(cache_binding)
@@ -474,7 +474,7 @@ class SingleVllmSampler:
                 "prompt_tokens": item["input_tokens"], "max_tokens": request["max_tokens"]}
 
     def prepare_request_v17(self, request: dict) -> dict:
-        if getattr(self, "protocol_version", None) != "error-note-v17":
+        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18"):
             raise RuntimeError("v17 preparation requires its explicit protocol")
         single_request_binding(request)
         prepared = self._prepare_request(request)
@@ -513,7 +513,7 @@ class SingleVllmSampler:
         self.versions[state["request"]["policy_version"]]["refcount"] -= 1
 
     def set_preflight_stage_v17(self, stage: str) -> None:
-        if getattr(self, "protocol_version", None) != "error-note-v17" or stage not in ("f0", "trained"):
+        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18") or stage not in ("f0", "trained"):
             raise ValueError("v17 PF5 requires an explicit f0 or trained stage")
         if self.pending:
             raise RuntimeError("v17 PF5 stage changes require a drained engine")
@@ -545,7 +545,7 @@ class SingleVllmSampler:
         if list(prompt.get("prompt_token_ids", collapsed)) != collapsed:
             raise RuntimeError("v17 capacity: native prompt differs from reserved prepared prompt")
         reservation = None
-        if getattr(self, "protocol_version", None) == "error-note-v17":
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
             reservation = self._reservation_v17(prepared)
             if reservation["status"] != "ADMIT":
                 raise RuntimeError("v17 capacity: scheduler must pump existing requests before admission")
@@ -561,7 +561,7 @@ class SingleVllmSampler:
             if live.lora_request is None or live.lora_request.lora_int_id != entry["lora_int_id"]:
                 raise RuntimeError("v16b vLLM: request LoRA differs from the admission version")
         except BaseException:
-            if getattr(self, "protocol_version", None) == "error-note-v17":
+            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
                 core.abort_request([rid])
             raise
         self.pending[rid] = {"request": request, "item": item, "live": live, "admit_step": self.engine_steps,
@@ -574,7 +574,7 @@ class SingleVllmSampler:
         state["original_event"] = original_event
         def record_event(event_type: Any, timestamp: Any = None) -> None:
             if event_type.name == "PREEMPTED":
-                if getattr(self, "protocol_version", None) == "error-note-v17":
+                if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
                     self.preemption_count += 1
                     warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
                 state["preempted"] = True
@@ -600,7 +600,7 @@ class SingleVllmSampler:
             status = getattr(getattr(live, "status", None), "name", "")
             preempted = status == "PREEMPTED" or live.num_computed_tokens < state["last_computed"]
             if preempted:
-                if (getattr(self, "protocol_version", None) == "error-note-v17"
+                if (getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18")
                         and not state["preempted"] and "original_event" not in state):
                     self.preemption_count += 1
                     warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
@@ -616,7 +616,7 @@ class SingleVllmSampler:
             if "original_event" in state:
                 state["live"].record_event = state["original_event"]
             request, item = state["request"], state["item"]
-            if getattr(self, "protocol_version", None) == "error-note-v17":
+            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
                 self.versions[request["policy_version"]]["refcount"] -= 1
             if len(output.outputs) != 1 or list(output.prompt_token_ids) != list(item["prompt_token_ids"]):
                 raise RuntimeError("v16b vLLM: exact prompt and one completion required")
@@ -650,7 +650,7 @@ class SingleVllmSampler:
             for key in ("baseline_receipt", "obs_baseline_receipt"):
                 if key in request:
                     generation[key] = request[key]
-            if getattr(self, "protocol_version", None) != "error-note-v17":
+            if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18"):
                 entry["refcount"] -= 1
             if request["kind"] == "RESOLVE":
                 self.forget_item(request["problem_id"])
@@ -767,11 +767,19 @@ class SingleVllmSampler:
         with _nondeterministic():
             columns, restored = llm_lora.vllm_columns(bundle, self.vision_hooks, self._probe, pairs, self.lora_request,
                                                       lambda factor: self._swap_adapter(bundle, policy, factor))
-        reference = llm_lora.hf_columns(bundle, self.engine, pairs)
-        if getattr(self, "protocol_version", None) == "error-note-v17":
+        reference: Any = llm_lora.hf_columns(bundle, self.engine, pairs)
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
             contract = llm_lora.pf5_contract_v17(bundle, self.preflight_stage)
+            tower = None
+            if self.protocol_version == "error-note-v18" and self.preflight_stage == "trained":
+                from types import SimpleNamespace
+                with _nondeterministic():
+                    vision_reference = llm_lora.hf_vision_columns(bundle, self.engine, pairs)
+                    vision_actual = llm_lora.vllm_vision_columns(
+                        SimpleNamespace(llm=self.engine.llm, vision_hooks=self.vision_hooks), bundle, self.engine, pairs)
+                tower = llm_lora.vision_tower_check(vision_reference, vision_actual)
             report = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
-                                         require_power=contract["require_power"])
+                                         require_power=contract["require_power"], vision_tower=tower)
             report["stage_contract"] = contract
             report["transport_pass"] = report["pass"]
             report["effect_status"] = ("PASS" if report["power"] and report["pass"] else

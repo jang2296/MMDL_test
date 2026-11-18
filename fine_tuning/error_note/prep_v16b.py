@@ -37,7 +37,10 @@ def read_sealed(path: Path) -> dict:
     return value
 
 def data_api(version: str = "error-note-v16b"):
-    if version == "error-note-v17":
+    if version == "error-note-v18":
+        from . import v18_data
+        return v18_data
+    if version in {"error-note-v17", "error-note-v18"}:
         from . import v17_data
         return v17_data
     if version != "error-note-v16b":
@@ -50,11 +53,16 @@ def preflight_items(items: list[dict], *, version: str = "error-note-v16b") -> d
     """Check every native note contract and optional observation shape without loading a model."""
     from .v16b_rows import build_obs_prompt_v16b, observation_eligibility_v16b, problem_contract_v16b
 
-    if version == "error-note-v17":
+    if version in {"error-note-v17", "error-note-v18"}:
         from .v17_rows import problem_contract_v17, observation_eligibility_v17, build_obs_request_v17
         problem_contract_v16b = problem_contract_v17
         observation_eligibility_v16b = observation_eligibility_v17
         build_obs_prompt_v16b = build_obs_request_v17
+        if version == "error-note-v18":
+            from .v18_rows import problem_contract_v17, observation_eligibility_v17, build_obs_request_v17
+            problem_contract_v16b = problem_contract_v17
+            observation_eligibility_v16b = observation_eligibility_v17
+            build_obs_prompt_v16b = build_obs_request_v17
     elif version != "error-note-v16b":
         raise ValueError("unknown data preflight version")
     records = []
@@ -65,9 +73,9 @@ def preflight_items(items: list[dict], *, version: str = "error-note-v16b") -> d
             build_obs_prompt_v16b(item)
         records.append({"problem_id": item["problem_id"], "note_contract_sha256": digest(contract),
                         "observation_eligibility": eligibility})
-        if version == "error-note-v17":
+        if version in {"error-note-v17", "error-note-v18"}:
             records[-1]["repair_supported"] = bool(contract.get("supported"))
-    return {"version": ("v17-data-contract-preflight-v1" if version == "error-note-v17" else "v16b-data-contract-preflight-v1"), "count": len(records), "items": records,
+    return {"version": ("v18-data-contract-preflight-v1" if version == "error-note-v18" else "v17-data-contract-preflight-v1" if version == "error-note-v17" else "v16b-data-contract-preflight-v1"), "count": len(records), "items": records,
             "observation_eligible": sum(row["observation_eligibility"]["eligible"] for row in records),
             "first_solution_count": len(records), "model_loaded": False}
 
@@ -92,7 +100,7 @@ def select(data_root: Path, output: Path, *, local_sequential: bool = False,
         raise ValueError("v16b preparation: the frozen 512/3000 payload is required")
     preflight = seal(output / "data-contract-preflight.json", preflight_items(
         [item for items in splits.values() for item in items], version=version))
-    if version == "error-note-v17" and not local_sequential:
+    if version in {"error-note-v17", "error-note-v18"} and not local_sequential:
         from .guard_v16b import SignalGateV17
         supported = [r["problem_id"] for r in preflight["items"] if r.get("repair_supported")
                      and r["problem_id"] in {item["problem_id"] for item in splits["train"]}]
@@ -103,7 +111,7 @@ def select(data_root: Path, output: Path, *, local_sequential: bool = False,
         splits["prep"] = sorted(splits["prep"], key=lambda x: (
             not bool(x.get("references", {}).get("human_solution")), digest(x["problem_id"])))[:2]
         splits["monitor"] = splits["monitor"][:2]
-    return seal(output / "selection.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "local_sequential": local_sequential,
+    return seal(output / "selection.json", {"version": "v18-preparation-v1" if version == "error-note-v18" else "v17-preparation-v1" if version == "error-note-v17" else VERSION, "local_sequential": local_sequential,
         "data_root": str(data_root.absolute()), "payload_sha256": file_sha(data_root / "payload-receipt.json"),
         "prep_manifest_sha256": file_sha(data_root / "prep-manifest.json"),
         "validation": validation, "data_contract_preflight_sha256": preflight["sha256"], "prep_ids": [x["problem_id"] for x in splits["prep"]],
@@ -129,7 +137,7 @@ def images(item: dict) -> list:
     return result
 
 
-def grader(data_root: Path, split: str):
+def grader(data_root: Path, split: str, *, raw_v8: bool = False):
     from fine_tuning.notebook_rl.verifier import Verifier
     from .single_grading import grade_single
 
@@ -137,6 +145,11 @@ def grader(data_root: Path, split: str):
 
     def grade(item: dict, output: dict) -> tuple[str, Any]:
         actor = verifier.actors[item["problem_id"]]
+        if raw_v8:
+            from fine_tuning.notebook_rl.answers import TURN1_EVAL_CONTRACT
+            result = verifier.grade(actor.problem_id, output["text"], output["finish_reason"], actor.mode,
+                                    answer_contract=TURN1_EVAL_CONTRACT)
+            return result.status, result.extracted
         return grade_single(verifier, actor, actor.problem_id, output["text"], output["finish_reason"],
                             actor.mode, units=True)
     return grade
@@ -165,15 +178,18 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
     from .rl import policy_sha256
     from .v16b_rows import build_obs_prompt_v16b, observation_eligibility_v16b
 
-    if algorithm_version == "error-note-v17":
+    if algorithm_version in {"error-note-v17", "error-note-v18"}:
         from .v17_rows import build_obs_request_v17, observation_eligibility_v17
         observation_eligibility_v16b = observation_eligibility_v17
+        if algorithm_version == "error-note-v18":
+            from .v18_rows import build_obs_request_v17, observation_eligibility_v17
+            observation_eligibility_v16b = observation_eligibility_v17
         def build_obs_prompt_v16b(item):
             return build_obs_request_v17(item)["prompt"]
     elif algorithm_version != "error-note-v16b":
         raise ValueError("unknown collection version")
     if baseline_receipts is not None:
-        if algorithm_version != "error-note-v17" or set(baseline_receipts) != {item["problem_id"] for item in items}:
+        if algorithm_version not in {"error-note-v17", "error-note-v18"} or set(baseline_receipts) != {item["problem_id"] for item in items}:
             raise ValueError("calibration baseline membership must be sealed before collection")
         for receipt in baseline_receipts.values():
             if receipt.get("sha256") != digest({k: v for k, v in receipt.items() if k != "sha256"}):
@@ -247,7 +263,7 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
             raise ValueError("v16b: result has no request ownership ledger")
         append_jsonl(ledger, {"request_id": rid, "status": "STARTED",
                               "request_sha256": request["request_sha256"]})
-        if algorithm_version == "error-note-v17" and hasattr(sampler, "prepare_request_v17"):
+        if algorithm_version in {"error-note-v17", "error-note-v18"} and hasattr(sampler, "prepare_request_v17"):
             prepared = sampler.prepare_request_v17(request)
             while not sampler.can_submit_v17(prepared):
                 if not pending:
@@ -281,8 +297,8 @@ def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image:
 
     data = data_api(version)
     selection = select(data_root, output, local_sequential=local_sequential, version=version)
-    is_v17 = version == "error-note-v17"
-    context = {"version": "v17-preparation-v1" if is_v17 else VERSION,
+    is_v17 = version in {"error-note-v17", "error-note-v18"}
+    context = {"version": "v18-preparation-v1" if version == "error-note-v18" else "v17-preparation-v1" if is_v17 else VERSION,
                "selection_sha256": selection["sha256"],
                "image": image, "cap": 256 if local_sequential else 8192, "initial_policy": "fresh_F0"}
     contract = digest(context)
@@ -293,7 +309,7 @@ def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image:
     kwargs = dict(data_root=data_root, protocol_sha256=contract, cap=context["cap"])
     if is_v17:
         kwargs["algorithm_version"] = version
-    prefix = "v17" if is_v17 else "v16b"
+    prefix = "v18" if version == "error-note-v18" else "v17" if is_v17 else "v16b"
     prep = collect(bundle, sampler, preps, split="prep", out=output / "prep", stage=prefix + "-prep",
                    sampling=EVAL_SAMPLING_V16B, **kwargs)
     monitor = collect(bundle, sampler, monitors, split="monitor", out=output / "monitor-f0",
@@ -307,7 +323,7 @@ def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image:
         if local_sequential:
             effects = effects[:2]
         effect = collect(bundle, sampler, effects, split="effect", out=output / "effect-f0",
-                         stage="v17-effect", sampling=EVAL_SAMPLING_V16B, **kwargs)
+                         stage=prefix + "-effect", sampling=EVAL_SAMPLING_V16B, **kwargs)
         result.update(effect=effect, effect_summary=summary(effect))
     return seal(output / "f0-generations.json", result)
 
@@ -326,37 +342,44 @@ def rows(data_root: Path, output: Path, tokenizer: Any, *, local_sequential: boo
                for row in generated["prep"]]
     if [row["problem_id"] for row in records] != selection["prep_ids"]:
         raise ValueError("v16b: incomplete F0 preparation")
-    if version == "error-note-v17":
+    if version in {"error-note-v17", "error-note-v18"}:
         from .v17_rows import prep_rows_with_receipts_v17
+        if version == "error-note-v18":
+            from .v18_rows import prep_rows_with_receipts_v17
         selected, receipts = prep_rows_with_receipts_v17(records, tokenizer=tokenizer)
-        seal(output / "prep-admission.json", {"version": "v17-prep-admission-v1",
+        seal(output / "prep-admission.json", {"version": "v18-prep-admission-v1" if version == "error-note-v18" else "v17-prep-admission-v1",
              "selection_sha256": selection["sha256"], "receipts": receipts})
     else:
         selected = prep_rows(records, tokenizer=tokenizer)
     if not selected:
         raise ValueError("v16b: preparation has no admissible SFT rows")
     batches = [selected[index:index + 16] for index in range(0, len(selected), 16)]
-    sealed = seal(output / "prep-rows.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "selection_sha256": selection["sha256"],
+    sealed = seal(output / "prep-rows.json", {"version": "v18-preparation-v1" if version == "error-note-v18" else "v17-preparation-v1" if version == "error-note-v17" else VERSION, "selection_sha256": selection["sha256"],
         "f0_generations_sha256": generated["sha256"], "rows": selected, "batches": batches,
         "prep_updates": len(batches), "local_sequential": local_sequential})
     prior = prep_prior_v16b(records)
     scores: dict[str, list[float]] = defaultdict(list)
     for row in generated["obs"]:
         item, out = items[row["problem_id"]], row["output"]
-        if version == "error-note-v17":
+        if version in {"error-note-v17", "error-note-v18"}:
             from .v17_rows import audit_observation_v17
             from .v17_data import private_verifier
+            if version == "error-note-v18":
+                from .v18_rows import audit_observation_v17
+                from .v18_data import private_verifier
             receipt = audit_observation_v17(dict(item, obs=out),
                 verifier=private_verifier(item), tokenizer=tokenizer)
             score = {"score": receipt["reward"]}
         else:
             score = obs_score(item, item["layer"], out["text"], finish_reason=out["finish_reason"])
-        if score.get("score") is not None:
+        if version != "error-note-v18" and score.get("score") is not None:
             scores[item["layer"]].append(score["score"])
-    seal(output / "baseline-init.json", {"version": "v17-preparation-v1" if version == "error-note-v17" else VERSION, "prep_rows_sha256": sealed["sha256"],
+    seal(output / "baseline-init.json", {"version": "v18-preparation-v1" if version == "error-note-v18" else "v17-preparation-v1" if version == "error-note-v17" else VERSION, "prep_rows_sha256": sealed["sha256"],
         "source_rates": prior["source_rates"], "overall": prior["overall"],
         "layer_rates": {layer: sum(values) / len(values) for layer, values in scores.items()},
-        "missing_obs_policy": "first-admission-batch-zero-advantage", "prep_prior": prior})
+        "missing_obs_policy": "binary-task-beta-prior-0.5" if version == "error-note-v18" else "first-admission-batch-zero-advantage",
+        **({"obs_task": "v18-single-fact-observation-v1"} if version == "error-note-v18" else {}),
+        "prep_prior": prior})
     return sealed
 
 
@@ -373,7 +396,7 @@ def eta_report(block_seconds: list[float], *, done: int, total: int) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("select", "generate", "rows"))
-    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17"), default="error-note-v16b")
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18"), default="error-note-v16b")
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model-path", type=Path)

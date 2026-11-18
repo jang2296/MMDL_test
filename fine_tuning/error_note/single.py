@@ -145,6 +145,11 @@ def _protocol_check(protocol: dict) -> None:
     from .protocol import (VERSION_CONTENT_V16, VERSION_V16B, _digest,
                            validate_content_protocol_v16, validate_protocol_v16b)
 
+    if protocol.get("version") == "error-note-v18":
+        from .protocol import validate_protocol_v18
+
+        validate_protocol_v18(protocol)
+        return
     if protocol.get("version") == "error-note-v17":
         from .protocol import validate_protocol_v17
 
@@ -239,7 +244,7 @@ def _single_reward_decision(row: dict, evidence: dict) -> dict:
         record.update(p0_text=row["prompt"], t1=t1)
         bindings = single_note_review_bindings(record, evidence["provenance"])
         if row["status"] != "CORRECT":
-            reason = "T1_UNVERIFIABLE" if row["status"] == UNVERIFIABLE else "T1_NOT_CORRECT"
+            reason: str | None = "T1_UNVERIFIABLE" if row["status"] == UNVERIFIABLE else "T1_NOT_CORRECT"
         else:
             problem = target_problem(row["target"], row["generation"]["completion_token_ids"], t1["finish_reason"],
                                      "CORRECT", min_tokens=SOLUTION_MIN_TOKENS)
@@ -846,7 +851,7 @@ def _run_single_block(bundle: Any, *, actors: dict, items: list[dict], provenanc
             elif row is not None and kind == "A1" and not praised:
                 row, reason = None, "A1_NOT_PRAISED"  # v13: a correct answer under 256 tokens is not copied either
             follows = row is not None and kind == "A2"  # v14: the re-solve passed every v11 A2 check
-            if v14 and follows and len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
+            if v14 and follows and row is not None and len(row["generation"]["completion_token_ids"]) < SINGLE_A2_MIN_TOKENS_V14:
                 row, reason = None, "A2_UNDER_MIN_TOKENS"
             decisions[f"{pid}:{kind}"] = {"accepted": row is not None, "method": "program", "reason": reason}
             if row is not None:
@@ -1004,7 +1009,7 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
     if allow_update is not True:
         raise ValueError("single runtime: parameter updates require explicit caller opt-in")
     slot = cursor["slot"]
-    is_v16b = contract.get("version") in (VERSION_V16B, "error-note-v17")
+    is_v16b = contract.get("version") in (VERSION_V16B, "error-note-v17", "error-note-v18")
     prep_rows: list[str] = []
     if contract.get("version") == VERSION_CONTENT_V16:
         stage_a = slot < contract["stage_a_blocks"]
@@ -1036,20 +1041,34 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
             or set(block_ids) & set(cursor["consumed_problem_ids"])):
         raise ValueError("single runtime: duplicate continuation cursor")
     optimizer.zero_grad(set_to_none=True)
+    note_gradients: dict = {}
+    is_v18 = contract.get("version") == "error-note-v18"
+    if is_v18 and set(row["row_id"] for row in encoded) & set(cursor.get("consumed_row_ids", [])):
+        raise ValueError("v18 runtime: repeated consumed supervised or policy row")
     try:
         if capacity is not None:
             capacity.optimizer = optimizer
         if is_v16b and contract.get("external_hold"):
             stats = {"has_gradient": False, "task_signal": False, "hold": True,
                      "hold_reason": contract["external_hold"]}
+            if is_v18:
+                stats["consumed_row_ids"] = []
         else:
-            stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity)
+            if is_v18:
+                stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity,
+                                              note_gradient_capture=note_gradients)
+            else:
+                stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity)
         step = bool(stats["has_gradient"])
-        if contract.get("version") in (VERSION_CONTENT_V16, VERSION_V16B, "error-note-v17"):
+        if contract.get("version") in (VERSION_CONTENT_V16, VERSION_V16B, "error-note-v17", "error-note-v18"):
             step = step and stats.get("task_signal") is True
         if is_v16b:
             step = step and not bool(stats.get("hold") or stats.get("HOLD"))
             stats["update_gradient_norms"] = {group: None for group in bundle.params}
+        if is_v18:
+            from .train_v18 import note_step_after_v18, note_step_before_v18
+
+            snapshots, alignment = note_step_before_v18(bundle, note_gradients, stats)
         if step:
             for group, parameters in bundle.params.items():
                 norm = torch.nn.utils.clip_grad_norm_(parameters, 1.0, error_if_nonfinite=True)
@@ -1058,12 +1077,17 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
                 if is_v16b:
                     stats["update_gradient_norms"][group] = float(norm.detach())
             optimizer.step()
+        if is_v18:
+            stats["note_update_alignment"] = note_step_after_v18(bundle, note_gradients, snapshots, alignment, step=step)
+            stats["optimizer_step"] = step
         scheduler.step()
     finally:
         optimizer.zero_grad(set_to_none=True)
     consumed = cursor["consumed_problem_ids"] + ([] if prep_rows else block_ids)
     cursor.update(slot=slot + 1, updates=cursor["updates"] + int(step),
                   consumed_problem_ids=consumed, policy_sha256=policy_sha256(bundle))
+    if is_v18:
+        cursor["consumed_row_ids"] = cursor.get("consumed_row_ids", []) + stats["consumed_row_ids"]
     if is_v16b:
         cursor["consumed_prep_rows"] = cursor.get("consumed_prep_rows", []) + prep_rows
         next_rl = max(0, slot + 1 - contract["prep_updates"])
@@ -1100,7 +1124,7 @@ def load_single_continuation(model_path: Path, path: Path, protocol: dict, *, bi
     from .protocol import VERSION_V16B
 
     if protocol["precision"] != "bf16" and not (
-            protocol["version"] in (VERSION_V16B, "error-note-v17")
+            protocol["version"] in (VERSION_V16B, "error-note-v17", "error-note-v18")
             and protocol["training_contract"]["local_smoke"] is True
             and policy_factory is not None):
         raise ValueError("single runtime: NF4 reload requires the bounded v16b smoke and an explicit cache factory")

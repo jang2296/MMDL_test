@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import data_bundle
-from .job import EVAL_STAGES, TRAINING_STAGES, check_repo_root
+from .job import EVAL_STAGES, SOURCE_REBUILT_STAGES, TRAINING_STAGES, check_repo_root
 from .common import (HEX40, QUICK_SPAN, file_digests, quick_digest, read_json, sha256_bytes,
                      sha256_file, utc_now, write_json)
 
@@ -390,6 +390,10 @@ def run_checks(*, repo_root: str | Path, commit: str, volume_root: str | Path,
         state.run("model_files", model)
     if stage in EVAL_STAGES:
         state.run("eval_data", lambda: check_eval_data(volume, context["manifest"].get("eval_data")))
+    elif stage in SOURCE_REBUILT_STAGES:
+        state.checks.append({"name": "data_source_rebuilt", "ok": True,
+                             "detail": "no staged bundle: the chain's prepare-data step rebuilds the data from the "
+                                       "pinned recipe and stops the chain unless every role, order and hash matches"})
     else:
         state.run("data_bundle", bundle)
         if venv_ok:

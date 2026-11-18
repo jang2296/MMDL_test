@@ -551,31 +551,109 @@ def receipt_passes_v17(receipt: dict, manifest_raw: bytes) -> bool:
             and receipt.get("manifest_sha256") == hashlib.sha256(manifest_raw).hexdigest())
 
 
+
+def materialize_guard_inputs_v18(sidecars: Path, output: Path) -> dict:
+    """Stage portable safe metadata, never a historical acceptance decision."""
+    from .audit import digest
+    from .prep_v16b import file_sha, seal
+
+    raw = Path(sidecars).read_bytes()
+    body = json.loads(raw)
+    guard = body["guard"]
+    by_id = body["items"]
+    if isinstance(by_id, list):
+        by_id = {item["problem_id"]: item for item in by_id}
+    ordered = guard.get("items")
+    ids = [item["problem_id"] for item in ordered] if isinstance(ordered, list) else guard["training_order_ids"]
+    if isinstance(ordered, list):
+        by_id = {item["problem_id"]: item for item in ordered}
+    if len(ids) != 3000 or len(set(ids)) != 3000 or not set(ids) <= set(by_id):
+        raise ValueError("v18 guard: exact 3,000 ordered parents required")
+    fields = ("source", "layer", "capability", "capability_type", "f0_prior")
+    items = [{"problem_id": pid, **{k: by_id[pid][k] for k in fields if k in by_id[pid]}} for pid in ids]
+    if any("source" not in item for item in items):
+        raise ValueError("v18 guard: source metadata required")
+    manifest = seal(output / "guard-manifest-v18.json", {"version": "v18-guard-manifest-v1",
+        "order_sha256": digest(ids), "sidecars_sha256": hashlib.sha256(raw).hexdigest(), "items": items})
+    extra = guard.get("extra_priors", {})
+    if "sources" in extra:
+        extra = extra["sources"]
+    # The legacy bootstrap's version identifies its input schema; v18 receipt identifies this new execution.
+    seal(output / "guard-extra-priors-v18.json", {"version": "v17-guard-extra-priors-v1", "sources": extra})
+    return {"version": "v18-guard-inputs-v1", "manifest": str(output / "guard-manifest-v18.json"),
+            "extra_priors": str(output / "guard-extra-priors-v18.json"),
+            "manifest_sha256": file_sha(output / "guard-manifest-v18.json"),
+            "extra_priors_sha256": file_sha(output / "guard-extra-priors-v18.json"),
+            "order_sha256": manifest["order_sha256"]}
+
+
+def falsealarm_receipt_v18(manifest: Path, *, trials: int = 2000, seed: int = 3407,
+                           extra_priors: Path | None = None) -> dict:
+    receipt = falsealarm_receipt_v17(manifest, trials=trials, seed=seed,
+                                    fill_missing=True, extra_priors=extra_priors)
+    return receipt | {"version": "v18-guard-falsealarm-v1", "inherited_acceptance": False}
+
+
+def receipt_passes_v18(receipt: dict, manifest_raw: bytes) -> bool:
+    if receipt.get("version") != "v18-guard-falsealarm-v1" or receipt.get("inherited_acceptance") is not False:
+        return False
+    return receipt_passes_v17(receipt | {"version": "v17-guard-falsealarm-v1"}, manifest_raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--materialize-data-root", type=Path)
+    parser.add_argument("--risk-acceptance", help="Explicit operator decision; measured FAIL is retained")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--trials", type=int, default=2000)
-    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17"), default="error-note-v16b")
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18"), default="error-note-v16b")
     parser.add_argument("--check-receipt", type=Path)
     parser.add_argument("--fill-missing", action="store_true", help="v17 only: stratified fill of missing F0 priors")
     parser.add_argument("--extra-priors", type=Path, help="v17 fill only: same-source F0 responses on other items")
     args = parser.parse_args(argv)
+    if args.materialize_data_root is not None:
+        if args.version != "error-note-v18" or args.output is None or args.manifest is not None:
+            parser.error("materialization requires explicit v18, --output and no --manifest")
+        from .v18_data import validate
+        validate(args.materialize_data_root)
+        inputs = materialize_guard_inputs_v18(args.materialize_data_root / "guard-metadata-v18.json", args.output.parent)
+        args.manifest, args.extra_priors = Path(inputs["manifest"]), Path(inputs["extra_priors"])
+    if args.manifest is None:
+        parser.error("--manifest or --materialize-data-root is required")
+    if args.risk_acceptance is not None and args.version != "error-note-v18":
+        parser.error("risk acceptance applies to a fresh v18 receipt only")
     if args.check_receipt is not None:
         receipt = json.loads(args.check_receipt.read_text())
-        passed = args.version == "error-note-v17" and receipt_passes_v17(receipt, args.manifest.read_bytes())
+        passed = (receipt_passes_v18(receipt, args.manifest.read_bytes()) if args.version == "error-note-v18" else
+                  args.version == "error-note-v17" and receipt_passes_v17(receipt, args.manifest.read_bytes()))
         return 0 if passed else 3
     if args.output is None:
         parser.error("--output is required when generating a receipt")
-    if args.version == "error-note-v17":
+    if args.version == "error-note-v18":
+        receipt = falsealarm_receipt_v18(args.manifest, trials=args.trials, extra_priors=args.extra_priors)
+    elif args.version == "error-note-v17":
         receipt = falsealarm_receipt_v17(args.manifest, trials=args.trials, fill_missing=args.fill_missing,
                                          extra_priors=args.extra_priors)
     else:
         receipt = falsealarm_receipt(args.manifest, trials=args.trials)
+    if args.risk_acceptance is not None:
+        from datetime import datetime, timezone
+        if not args.risk_acceptance.strip():
+            raise ValueError("v18 guard: nonempty operator decision required")
+        if receipt.get("measured_status") == "FAIL":
+            upper = receipt.get("overall_upper95")
+            if not isinstance(upper, (int, float)) or upper > RISK_ACCEPTED_UPPER95_MAX_V17:
+                raise ValueError("v18 guard: operator acceptance requires measured upper95 <= 5%")
+            receipt.update(status="RISK_ACCEPTED", risk_acceptance={"by": "operator",
+                "at_utc": datetime.now(timezone.utc).isoformat(), "reason": args.risk_acceptance.strip(),
+                "consequence": "Fixed thresholds remain active; a guard stop ends training at its save point."})
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(receipt, stream, indent=2, sort_keys=True)
         stream.write("\n")
+    if args.version == "error-note-v18":
+        return 0 if receipt_passes_v18(receipt, args.manifest.read_bytes()) else 3
     return 0 if receipt["status"] in ("PASS", "PASS_SCOPED") else 3
 
 

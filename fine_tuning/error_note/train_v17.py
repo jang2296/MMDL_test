@@ -401,11 +401,18 @@ def _component_gradients(bundle: Any, terms: dict[str, torch.Tensor], accumulate
 
 def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_budget: int = 12000, *,
                        components: Iterable[str] | None = None, capacity: Any = None,
-                       measurement_timings: dict | None = None, measure_component_gradients: bool | None = None) -> dict:
+                       measurement_timings: dict | None = None, measure_component_gradients: bool | None = None,
+                       note_gradient_capture: dict | None = None) -> dict:
     """Accumulate one joint update, sharing identical RL/A1 graphs and clearing all gradients on HOLD."""
     from .train_v4 import _require_single_zero_dropout
 
-    validate_v17_block(bundle, encoded, contract)
+    is_v18 = contract.get("version") == "error-note-v18"
+    if is_v18:
+        from .train_v18 import sft_term_v18, validate_v18_block
+
+        validate_v18_block(bundle, encoded, contract)
+    else:
+        validate_v17_block(bundle, encoded, contract)
     _require_single_zero_dropout(bundle)
     if type(token_budget) is not int or token_budget < 0:
         raise ValueError("v17: nonnegative microbatch token budget required")
@@ -479,6 +486,8 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
     diagnosed_channels: set[str] = set()
     note_parent_gradients: dict[str, dict[str, float]] = {}
     drift_sum, drift_n, clipped, excluded_n, negative_n, masked_n, loop_n = 0., 0, 0, 0, 0, 0, 0
+    policy_mask_counts: dict[str, Counter] = defaultdict(Counter)
+    process_tokens: Counter[str] = Counter()
     try:
         with _restore_state(bundle):
             bundle.model.train()
@@ -516,6 +525,13 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                                     masked_n += n - int(mask.sum())
                                 excluded = advantage < 0 and float(difference.mean()) > .3
                                 excluded_n += int(excluded)
+                                if is_v18:
+                                    reason_key = row.get("pg_mask_reason", row.get("reason", kind))
+                                    detail = policy_mask_counts[reason_key]
+                                    detail["candidate_tokens"] += int(row["loss_mask"].sum())
+                                    retained_tokens = int(mask.sum()) if kind in selected and not excluded and advantage else 0
+                                    detail["retained_tokens"] += retained_tokens
+                                    detail["positive_tokens" if advantage > 0 else "negative_tokens"] += retained_tokens
                                 if kind in selected and not excluded and advantage and bool(mask.any()):
                                     size = int(mask.sum()) if loop else n
                                     coefficient = (1. if kind == "RL" else .25) * advantage * min(1., 2048 / size) / DENOMINATOR
@@ -525,7 +541,11 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                                     loop_n += int(mask.sum()) if loop else 0
                         elif kind in selected:
                             mask = row["loss_mask"].to(both.device)
-                            term = -SFT_WEIGHTS[kind] * both[0][mask].mean() / denominator
+                            if is_v18:
+                                term, verified_tokens = sft_term_v18(row, both[0], contract, denominator)
+                                process_tokens[kind] += verified_tokens
+                            else:
+                                term = -SFT_WEIGHTS[kind] * both[0][mask].mean() / denominator
                             terms[kind].append(term)
                             if kind == "N":
                                 note_terms[row["problem_id"]] = term
@@ -598,6 +618,14 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                  t1_negative_retained_ratio=(negative_n - masked_n) / negative_n if negative_n else 0.,
                  loop_confirmed=stats["loop"]["rows"], loop_tokens_penalized=loop_n,
                  length_nonloop_excluded=sum(r["kind"] == "RL" and r.get("reason") == "LENGTH" for r in encoded))
+    if is_v18:
+        stats["policy_mask_counts"] = {key: dict(value) for key, value in policy_mask_counts.items()}
+        stats["verified_process_tokens"] = dict(process_tokens)
+        if note_gradient_capture is not None:
+            note_gradient_capture.clear()
+            if not stats["hold"]:
+                note_gradient_capture.update({(group, index): value for (kind, group, index), value in gradients.items()
+                                              if kind == "N"})
     stats["sft"] = {kind: {"rows": counts[kind], "tokens": tokens[kind], "weighted_loss": losses[kind],
                            "parent_denominator": denominator} for kind in SFT_KINDS if counts[kind]}
     return stats

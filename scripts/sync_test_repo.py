@@ -23,6 +23,7 @@ AUTHORED_JSON = {
 }
 AUTHORED_JSON_PATHS = {"fine_tuning/error_note/item_order.json", "fine_tuning/error_note/item_order_v2.json",
                        "fine_tuning/error_note/source_baseline_v10.json",
+                       "fine_tuning/error_note/v18_replay_receipt.json",
                        "fine_tuning/notebook_rl/benchmark_inventory_v1.json",
                        *(f"fine_tuning/notebook_rl/pod/plans/{name}.json" for name in (
                            "cost-plan-prefilter-v1", "cost-plan-v1", "params-main-resume", "params-main",
@@ -45,6 +46,26 @@ SECRET = re.compile(rb"(?:hf_|sk-|gh[pousr]_|github_pat_|rpa_|rps_)[A-Za-z0-9_-]
 POOL = "fine_tuning/generated/graph_cs_bridge_split_pool32_v2"
 PROOF = "fine_tuning/runs/recovered_graph_pool32_child_approval_v2/proof"
 HISTORICAL = "fine_tuning/runs/recovered_control1600_final_v1/code/nvw_v18_control/fine_tuning"
+
+
+def _v18_recipe_files(root: Path) -> dict[str, Path]:
+    from fine_tuning.error_note.v18_recipe import load_recipe, load_sidecars
+
+    relative_root = Path("fine_tuning/error_note")
+    path = root / relative_root / "v18_recipe.json"
+    if not path.is_file():
+        return {}
+    recipe = load_recipe(path)
+    metadata = load_sidecars(recipe, path)
+    if recipe["sidecars"]["path"] != "v18_recipe_sidecars.json":
+        raise ValueError("Unapproved v18 recipe sidecar path")
+    names = ["v18_recipe.json", "v18_recipe_sidecars.json"]
+    for document, prefix in ((recipe, "items"), (metadata, "metadata")):
+        for ref in document["item_shards"]:
+            if not re.fullmatch(rf"v18_recipe_{prefix}_[0-9]{{2}}\.json", ref["path"]):
+                raise ValueError("Unapproved v18 recipe shard path")
+            names.append(ref["path"])
+    return {(relative_root / name).as_posix(): path.parent / name for name in names}
 
 
 def selected_files(root: Path) -> dict[str, Path]:
@@ -99,6 +120,7 @@ def selected_files(root: Path) -> dict[str, Path]:
     pairing = "fine_tuning/generated/graph_cs_bridge_development_cohort_v1/pairing.jsonl"
     files[pairing] = root / pairing
     files[".gitignore"] = root / "env/test-repo.gitignore"
+    files.update(_v18_recipe_files(root))
     for name, path in files.items():
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"Unsafe publication path: {name}")

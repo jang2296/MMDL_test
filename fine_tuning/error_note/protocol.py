@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from fine_tuning.modules import BASE_ID, BASE_REVISION
 from fine_tuning.notebook_rl.answers import TRAINING_ANSWER_CONTRACT, TURN1_EVAL_CONTRACT
@@ -237,7 +238,7 @@ SINGLE_ADVANTAGE_VERSION_V13 = "penalty-table-v3"
 SINGLE_ADVANTAGE_V13 = {"accepted_praised": 1.0, "accepted": 0.0, "BARE_WRONG": -1.0, "NO_COMMITTED_ANSWER": -1.0,
                         "LOOP": -1.0, "TRUNCATED_NO_LOOP": -1.0, "REASONED_WRONG": 0.0, "CONTAINED_OPEN": 0.0, "other": 0.0}
 # The pinned Qwen3-VL tokenizer's two single tokens that decode to "Wait" ("Wait", " Wait"); prepare re-checks them.
-SINGLE_SPIRAL_V13 = {"version": "spiral-window-v1", "marker": "Wait", "marker_token_ids": [13824, 14190],
+SINGLE_SPIRAL_V13: dict[str, Any] = {"version": "spiral-window-v1", "marker": "Wait", "marker_token_ids": [13824, 14190],
                      "marker_count": 3, "fallback_start": 1024, "window_tokens": 2048,
                      "penalties": ["LOOP", "TRUNCATED_NO_LOOP"], "logprob": "raw", "row_weight": 1.0}
 SINGLE_PRAISE_V13 = {"version": "praise-v1", "min_tokens": 256, "applies_to": ["PG", "A1"]}
@@ -257,7 +258,7 @@ def spiral_window(token_ids: list[int]) -> list[int]:
 SINGLE_ADVANTAGE_VERSION_V14 = "penalty-table-v4"
 SINGLE_ADVANTAGE_V14 = SINGLE_ADVANTAGE_V13 | {"tail_praised": 1.0}
 # "reasons" are _single_reward_decision reasons: "T1_INELIGIBLE_" + a v4.target_problem code.
-SINGLE_TAIL_PRAISE_V14 = {"version": "tail-praise-v1",
+SINGLE_TAIL_PRAISE_V14: dict[str, Any] = {"version": "tail-praise-v1",
                           "reasons": ["T1_INELIGIBLE_REPETITION", "T1_INELIGIBLE_BLOCK_REPETITION", "T1_INELIGIBLE_LOOP",
                                       "T1_INELIGIBLE_TOO_LONG"],
                           "min_tokens": 256, "marker_token_ids": [13824, 14190], "window_tokens": 1024,
@@ -806,7 +807,7 @@ def validate_protocol_v17(protocol: dict) -> None:
         raise ValueError("v17 protocol: invalid sealed protocol")
 
 
-def v17_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
+def _sealed_contract_for_slot(protocol: dict, global_slot: int, *, phase: str,
                            policy_sha256: str, expected_problem_ids: list[str],
                            expected_obs_problem_ids: list[str] | None = None,
                            note_problem_ids: list[str] | None = None,
@@ -814,7 +815,6 @@ def v17_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
                            baseline_receipts: dict | None = None,
                            reward_values: dict | None = None) -> dict:
     """Keep global slots and the two-policy delayed schedule identical to v16b."""
-    validate_protocol_v17(protocol)
     base = protocol["training_contract"]
     prep = base["prep_updates"]
     if (type(global_slot) is not int or not 0 <= global_slot < base["total_slots"]
@@ -833,3 +833,71 @@ def v17_contract_for_update(protocol: dict, global_slot: int, *, phase: str,
         "baseline_receipts": copy.deepcopy(baseline_receipts or {}),
         "reward_values": copy.deepcopy(reward_values or {}), "protocol_sha256": protocol["sha256"],
     }
+
+def v17_contract_for_update(protocol: dict, global_slot: int, **kwargs) -> dict:
+    validate_protocol_v17(protocol)
+    return _sealed_contract_for_slot(protocol, global_slot, **kwargs)
+
+
+VERSION_V18 = "error-note-v18"
+V18_CONTRACT_HASHES = V17_CONTRACT_HASHES
+V18_IDENTIFIERS = {
+    **V17_IDENTIFIERS,
+    "row_schema": "error-note-v18-row-v1",
+    "claim_schema": "v18-verified-self-quote-v1",
+    "obs_reward": "binary-grounded-fact-v1",
+    "obs_initial_baseline": 0.5,
+    "obs_history_task": "v18-single-fact-observation-v1",
+    "loop_detector": "confirmed-repeated-lines-or-contiguous-run-v18",
+    "loop_token_scope": "repeated-byte-spans-only",
+    "note_location_given_buckets": [3],
+    "note_assignment_modulus": 4,
+    "adapter_strength": 1.0,
+    "eval_concurrency": 9,
+    "training_data": "pinned-source-selection-v18",
+}
+V18_SFT_WEIGHTS = {"PREP_SELF": 1.0, "PREP_HUMAN": 1.0, "A1": 0.09, "C": 0.30, "N": 0.05}
+V18_PROCESS_WEIGHTS = {"A1_verified": 0.18, "A1_span": 0.02, "C_span": 0.05}
+V18_SPECIFICATION_SHA256 = _digest({"version": VERSION_V18, "identifiers": V18_IDENTIFIERS,
+    "sft": V18_SFT_WEIGHTS, "process": V18_PROCESS_WEIGHTS, "parent_spec": V17_SPECIFICATION_SHA256})
+
+
+def plain_protocol_v18(precision: str, *, rl_blocks: int, prep_updates: int, contracts: dict[str, str],
+                       image: dict | None = None, local_smoke: bool = False) -> dict:
+    from .v18_rows import prompts_sha256
+
+    body = plain_protocol_v17(precision, rl_blocks=rl_blocks, prep_updates=prep_updates,
+                              contracts=contracts, image=image, local_smoke=local_smoke)
+    del body["sha256"]
+    common = {"version": VERSION_V18, "specification_sha256": V18_SPECIFICATION_SHA256,
+              "prompts_sha256": prompts_sha256()}
+    c = body["training_contract"]
+    c.update(copy.deepcopy(V18_IDENTIFIERS))
+    c.update(common, sft_weights=dict(V18_SFT_WEIGHTS), process_weights=dict(V18_PROCESS_WEIGHTS),
+             note_gradient_measurement="accepted-N-and-saved-update",
+             signal_window_parents=512)
+    c["baseline"] = c["baseline"] | {"obs_prior": 0.5, "obs_history_kind": c["obs_history_task"]}
+    c["prep"]["self_acceptance"] = "verified-solution-v18"
+    c["signal_gate"]["report_only"] = True
+    c["reward"]["LOOP_CONFIRMED"] = {"reward": 0.0, "pg": True, "scope": c["loop_token_scope"]}
+    c["reward"]["FORMAT_ONLY"] = {"reward": 0.0, "pg": "certified-span-only",
+                                  "empty_span_action": "omit-pg"}
+    body.update(common)
+    return body | {"sha256": _digest(body)}
+
+
+def validate_protocol_v18(protocol: dict) -> None:
+    try:
+        c = protocol["training_contract"]
+        expected = plain_protocol_v18(protocol["precision"], rl_blocks=c["rl_blocks"],
+            prep_updates=c["prep_updates"], contracts=c["hashes"], image=protocol["image"],
+            local_smoke=c["local_smoke"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v18 protocol: invalid sealed protocol") from exc
+    if protocol != expected:
+        raise ValueError("v18 protocol: invalid sealed protocol")
+
+
+def v18_contract_for_update(protocol: dict, global_slot: int, **kwargs) -> dict:
+    validate_protocol_v18(protocol)
+    return _sealed_contract_for_slot(protocol, global_slot, **kwargs)

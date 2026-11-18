@@ -74,6 +74,15 @@ for i in "${!budget_command[@]}"; do [[ ${parent_command[i]:-} == "${budget_comm
 [[ $same == true ]] || { printf '%s\n' 'watchdog argv mismatch' >&2; exit 2; }
 mountpoint -q "$workspace" || { printf '%s\n' 'Require persistent network volume'; exit 2; }
 mkdir "$volume_root"
+# v18 uses the same content-addressed cache as the training plan.
+if [[ -n ${MMDL_V18_DATA_CACHE:-} ]]; then
+  [[ "$MMDL_V18_DATA_CACHE" == /* && "$MMDL_V18_DATA_CACHE" != / ]] || {
+    printf '%s\n' 'MMDL_V18_DATA_CACHE must be an absolute private cache directory' >&2; exit 2;
+  }
+  "$python" -m fine_tuning.error_note.v18_data fetch --cache-dir "$MMDL_V18_DATA_CACHE" &
+  v18_fetch_pid=$!
+  trap 'kill "$v18_fetch_pid" 2>/dev/null || true; wait "$v18_fetch_pid" 2>/dev/null || true' EXIT
+fi
 "$python" -m venv "$venv"
 # MMDL_POD_INSTALLER=uv (2026-11-12): the same exact lock installed by uv (parallel download/unpack; pip took about
 # 10 of the 15 prep minutes). unsafe-best-match makes uv look at both lock indexes for every pin, as pip does.
@@ -84,6 +93,10 @@ if [[ ${MMDL_POD_INSTALLER:-pip} == uv ]] && command -v uv > /dev/null \
 else
   "$venv/bin/python" -m pip install -r "$lock"
   printf '%s\n' 'INSTALLER pip'
+fi
+if [[ -n ${v18_fetch_pid:-} ]]; then
+  wait "$v18_fetch_pid"
+  trap - EXIT
 fi
 "$venv/bin/python" -m pip check
 "$venv/bin/python" -m pip freeze --all > "$volume_root/pip-freeze.txt"

@@ -31,6 +31,7 @@ OUTPUT = 32768
 HISTORICAL_TOKENS = 4_116_922
 DECODE_TOKENS = 32
 MODES = ("cuda_graph", "eager")
+V18_SLOTS = 9
 
 
 def capacity_observation(engine: Any, version: str) -> dict:
@@ -242,7 +243,8 @@ def _raw_decoded(output: Any, token: int, count: int) -> list[float]:
 
 
 def decode_pf5(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict,
-               timing: dict, mode: str, root: Path, vision_exception: str | None = None) -> dict:
+               timing: dict, mode: str, root: Path, vision_exception: str | None = None,
+               vision_tower: dict | None = None) -> dict:
     """Supplement the historical prefill PF5 with real amplified autoregressive decode."""
     from vllm import SamplingParams
     from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
@@ -271,7 +273,7 @@ def decode_pf5(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dic
     swap = lora_preflight.adapter_swap(backend.llm.llm_engine, bundle, backend.lora_request, root)
     columns, restored = llm_lora.vllm_columns(bundle, backend.vision_hooks, probe, pairs, backend.lora_request, swap)
     report = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
-                                  require_power=True, vision_exception=vision_exception)
+                                  require_power=True, vision_exception=vision_exception, vision_tower=vision_tower)
     report["restored"] = llm_lora.check_identity(backend.llm, bundle, restored.lora_int_id, backend.vision_hooks)
     report |= {"graph_replay_deltas": replay_deltas, "generated_decode_tokens_per_probe": DECODE_TOKENS,
                "raw_logprobs": True, "native_allowed_token_ids": True, "diagnostic_only": True}
@@ -458,13 +460,13 @@ DISCOVERY_SECONDS = 1200  # one fresh process: model load, LoRA, compile/graph c
 DISCOVERY_ROUNDS = 3
 
 
-def stable_slots(measure: Any) -> tuple[int, list[dict]]:
+def stable_slots(measure: Any, *, maximum: int | None = None) -> tuple[int, list[dict]]:
     """Largest slot count whose own fresh engine can hold it: start from the one-slot engine's safe count and
     lower it while an engine built at that count (larger graph pool, less KV) reports fewer safe slots."""
     history: list[dict] = []
     capacity = measure(1)
     history.append({"constructed_slots": 1, **capacity})
-    candidate = capacity["safe_slots"]
+    candidate = min(capacity["safe_slots"], maximum) if maximum is not None else capacity["safe_slots"]
     for _ in range(DISCOVERY_ROUNDS):
         if candidate <= 1:
             return 1, history
@@ -515,7 +517,7 @@ def discover_slots(args: Any, mode: str, root: Path, context: dict) -> tuple[int
         return {k: value[k] for k in ("actual_blocks", "block_size", "actual_kv_token_capacity", "usable_tokens",
                                       "reserved_per_request", "safe_slots")}
 
-    return stable_slots(measure)
+    return stable_slots(measure, maximum=V18_SLOTS if context.get("training_protocol_version") == "error-note-v18" else None)
 
 
 def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False,
@@ -546,6 +548,8 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
         bundle.model.to("cuda")
         reference = llm_lora.hf_columns(bundle, prep, pairs)
         decode_reference = llm_lora.hf_columns(bundle, prep, decode_pairs)
+        version = context.get("training_protocol_version", "error-note-v17")
+        tower_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version == "error-note-v18" else None
         bundle.model.to("cpu")
         torch.cuda.empty_cache()
         # Slots come from fresh-process discovery (discover_slots), so this process builds exactly one engine:
@@ -555,16 +559,20 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
             evaluation.verify_model(model_path, context["model_ref"])
             backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(args.base_path))
         observed = observe_engine(backend, mode, slots)
+        if version == "error-note-v18" and (slots != V18_SLOTS or observed["safe_slots"] < V18_SLOTS):
+            raise ValueError("v18 engine: nine safe slots required; changing slot count requires a new admission")
+        tower = (llm_lora.vision_tower_check(tower_reference, llm_lora.vllm_vision_columns(backend, bundle, prep, pairs))
+                 if tower_reference is not None else None)
         report["observed_engine"] = observed
         with diagnostic_timing() as timing:
             pf5 = {"format": "lora-preflight-v1", "model_ref_sha256": sha256_file(args.model_ref),
                    "protocol_id": cfg["protocol_id"], "files": files,
                    "engine": lora_preflight.engine_checks(backend, bundle, prep, pairs, reference,
-                                                          protocol_version="error-note-v17", stage="trained",
+                                                          protocol_version=version, stage="trained", vision_tower=tower,
                                                           vision_exception=getattr(args, "pf5_vision_exception", None))}
             pf5["decode_engine"] = decode_pf5(backend, bundle, prep, decode_pairs, decode_reference,
                                                 timing, mode, root / "amplified-adapters",
-                                                vision_exception=getattr(args, "pf5_vision_exception", None))
+                                                vision_exception=getattr(args, "pf5_vision_exception", None), vision_tower=tower)
             pf5["pass"] = files["pass"] and pf5["engine"]["pass"] and pf5["decode_engine"]["pass"]
             exclusive(root / "pf5.json", pf5)
             report["preflight"] = {"path": str((root / "pf5.json").resolve()),
@@ -627,7 +635,8 @@ def validation_timeout_seconds(max_seconds: float, mode: str = "auto") -> int:
 
 def _isolated_attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False) -> dict:
     """Fresh process per mode releases CUDA graphs, workers and HF models before the next engine."""
-    slots, discovery = 1, []
+    slots = V18_SLOTS if reference_only and context.get("training_protocol_version") == "error-note-v18" else 1
+    discovery: list[dict] = []
     if not reference_only:
         try:
             slots, discovery = discover_slots(args, mode, root.parent / (root.name + "-capacity"), context)
@@ -734,9 +743,39 @@ def validate_engine_receipt(value: dict) -> dict:
     if not re.fullmatch(r"[a-f0-9]{40}", str(value.get("code_commit", ""))):
         raise ValueError("v17 engine: missing evaluation commit binding")
     observed = checked(value["observed_engine"])
+    v18 = value.get("training_protocol_version") == "error-note-v18"
+    if value.get("training_protocol_version", "error-note-v17") not in ("error-note-v17", "error-note-v18"):
+        raise ValueError("v17 engine: unsupported training protocol binding")
+    if v18 and value["slots"] != V18_SLOTS:
+        raise ValueError("v18 engine: nine registered slots required")
     calibration = checked(value["calibration"])
     selected = checked(value["selected_attempt"])
     evidence = checked(selected["preflight_evidence"])
+    if v18:
+        for name in ("historical_pf5", "decode_pf5"):
+            pf5 = evidence[name]
+            tower = pf5.get("vision_tower", {})
+            if ("vision_exception" in pf5 or pf5.get("vision_gate") != "direct_tower"
+                    or tower.get("version") != "v18-direct-vision-pf5-v1" or tower.get("pass") is not True
+                    or tower.get("amplified", {}).get("pass") is not True
+                    or tower.get("hook_removed", {}).get("pass") is not False
+                    or tower.get("real_effect_status") not in ("CONFIRMED", "UNCONFIRMED")
+                    or not tower.get("inputs") or tower.get("coordinates", 0) < 1):
+                raise ValueError("v18 engine: direct vision evidence or hook-removal negative control missing")
+        authorization = checked(value.get("evaluation_authorization", {}))
+        decision = checked(authorization.get("evaluation_decision", {}))
+        identity = {"code_commit": value["code_commit"], "source_sha256": value["source_sha256"]}
+        if (authorization.get("status") != "PASS" or authorization.get("evaluation") != identity
+                or authorization.get("training_artifact", {}).get("file_sha256") != value["training_artifact_sha256"]
+                or decision.get("version") != "v18-evaluation-decision-v1" or decision.get("decision") != "PROCEED"
+                or decision.get("authorized_by") != "user" or decision.get("pre_authorized") is not False
+                or not isinstance(decision.get("authorization"), str) or not decision["authorization"].strip()
+                or decision.get("admission_status") not in ("EVAL_REVIEW_REQUIRED", "EVALUATION_CANDIDATE")
+                or decision.get("training_artifact") != authorization.get("training_artifact")
+                or decision.get("evaluation") != identity
+                or decision.get("model_ref", {}).get("file_sha256") != value["model_ref_sha256"]
+                or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("artifact_verification", {}).get("file_sha256", "")))):
+            raise ValueError("v18 engine: separate user authorization is missing or bound to another model/evaluator")
     actual, long = checked(selected["actual_length_probe"]), checked(selected["long_context_probe"])
     scenario = calibration["scenario"]
     lengths = value["baseline_generated_tokens"]
@@ -765,7 +804,8 @@ def validate_engine_receipt(value: dict) -> dict:
                 or any(row.get("graph_replay_calls", 0) < DECODE_TOKENS - 1 for row in selected["probabilities"])))):
         raise ValueError("v17 engine: final PF5, actual decode or calibrated throughput evidence differs")
     if (observed["engine_mode"] != value["engine_mode"] or observed["slots"] != value["slots"]
-            or observed["safe_slots"] != value["slots"] or observed["actual_kv_token_capacity"] != value["actual_kv_token_capacity"]
+            or (observed["safe_slots"] < value["slots"] if v18 else observed["safe_slots"] != value["slots"])
+            or observed["actual_kv_token_capacity"] != value["actual_kv_token_capacity"]
             or calibration["status"] != "CALIBRATED" or calibration["throughput_source"] != "fixed_b2_quantile_lengths"
             or selected["status"] != "PASS" or selected["observed_engine"] != observed
             or selected["calibration"] != calibration or checked(selected["eager_comparison"])["pass"] is not True
@@ -778,6 +818,13 @@ def validate_engine_receipt(value: dict) -> dict:
 
 def load_engine_validation(path: Path) -> dict:
     value = validate_engine_receipt(read_json(path))
+    if value.get("training_protocol_version") == "error-note-v18":
+        from .v17_artifacts import _check_ref, verify_evaluation_authorization
+        authorization_path = _check_ref(value["artifact_verification"])
+        authorized = verify_evaluation_authorization(authorization_path, Path(value["training_artifact_path"]),
+            {"code_commit": value["code_commit"], "source_sha256": value["source_sha256"]})
+        if authorized != value["evaluation_authorization"]:
+            raise ValueError("v18 engine: original evaluation authorization changed")
     for attempt in value["attempts"]:
         if sha256_file(Path(attempt["path"])) != attempt["sha256"]:
             raise ValueError("v17 engine: validation attempt file changed")
@@ -821,10 +868,15 @@ def validate(args: Any) -> dict:
     if args.model_ref.resolve() != Path(sealed_ref["path"]).resolve() or sha256_file(args.model_ref) != sealed_ref["file_sha256"]:
         raise ValueError("v17 engine: final model differs from training artifact seal")
     plan = read_json(Path(seal_value["campaign_plan"]["path"]))
+    version = plan["protocol"].get("version")
+    if version not in ("error-note-v17", "error-note-v18"):
+        raise ValueError("v17 engine: unsupported sealed training protocol")
+    if version == "error-note-v18" and getattr(args, "pf5_vision_exception", None) is not None:
+        raise ValueError("v18 engine: PF5 vision exception is forbidden")
     if Path(plan["model_path"]).resolve() != args.base_path.resolve():
         raise ValueError("v17 engine: base differs from sealed training plan")
     ref, _ = pe._lora_model_ref(args.model_ref)
-    if ref.get("kind") != pe.LORA_KIND or ref.get("export", {}).get("training_protocol", {}).get("version") != "error-note-v17":
+    if ref.get("kind") != pe.LORA_KIND or ref.get("export", {}).get("training_protocol", {}).get("version") != version:
         raise ValueError("v17 engine: final v17 unmerged model required; F0 is not valid")
     cfg = yaml.safe_load(args.eval_protocol.read_text())
     pinned = yaml.safe_load(pe.VARIANTS[pe.FINAL_VARIANT_V8][0].read_text())
@@ -835,13 +887,21 @@ def validate(args: Any) -> dict:
     source = source_sha256()
     if args.source_hash is not None and source != args.source_hash:
         raise ValueError("v17 engine: evaluation source changed")
+    authorization = None
+    if version == "error-note-v18":
+        from .v17_artifacts import verify_evaluation_authorization
+        if getattr(args, "artifact_verification", None) is None:
+            raise ValueError("v18 engine: --artifact-verification with separate user authorization required")
+        authorization = verify_evaluation_authorization(args.artifact_verification, args.training_seal,
+            {"code_commit": commit, "source_sha256": source})
     requests = _manifest(args.requests, args.requests_sha256)
     lengths = baseline_lengths(args.baseline_raw, args.baseline_raw_sha256)
     environment = collect_environment()
     if environment["torch"]["bf16_probe"]["passed"] is not True:
         raise ValueError("v17 engine: actual BF16 operation required")
     context = {"seal": seal_value, "model_ref": ref, "config": cfg, "hardware": hw, "requests": requests,
-               "lengths": lengths, "quantiles": quantile_lengths(lengths, [row["sample_id"] for row in requests["items"]])}
+               "lengths": lengths, "quantiles": quantile_lengths(lengths, [row["sample_id"] for row in requests["items"]]),
+               "training_protocol_version": version}
     root = args.output.parent / (args.output.stem + "-validation")
     root.mkdir(parents=True, exist_ok=False)
     selected, attempts = select_attempts(lambda mode, path, **kw: _isolated_attempt(args, mode, path, context, **kw), args.mode, root)
@@ -860,10 +920,15 @@ def validate(args: Any) -> dict:
             "diagnostic_only": True,
             "used_for_training_or_answer_selection": False,
             "execution_change": "B2 execution eager to graph, if validated; no bitwise B2 equivalence claim"}
+    if version == "error-note-v18":
+        from .v17_artifacts import _ref
+        body["training_protocol_version"] = version
+        body["artifact_verification"] = _ref(args.artifact_verification)
+        body["evaluation_authorization"] = authorization
     if selected:
         observed, calibration = selected["observed_engine"], selected["calibration"]
         body |= {"selected_attempt": selected, "engine_mode": selected["engine_mode"], "selected_mode": selected["engine_mode"],
-                 "slots": observed["safe_slots"], "safe_slots": observed["safe_slots"], "observed_engine": observed,
+                 "slots": observed["slots"], "safe_slots": observed["slots"], "observed_engine": observed,
                  "actual_kv_token_capacity": observed["actual_kv_token_capacity"], "calibration": calibration,
                  "estimated_evaluation_seconds": calibration["estimated_evaluation_seconds"],
                  "evaluation_watchdog_seconds": calibration["evaluation_watchdog_seconds"],
@@ -890,6 +955,7 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--baseline-raw-sha256", required=True)
     command.add_argument("--code-commit", "--commit", required=True)
     command.add_argument("--source-hash")
+    command.add_argument("--artifact-verification", type=Path)
     command.add_argument("--mode", choices=("auto", *MODES), default="auto")
     command.add_argument("--max-seconds", type=float, default=PROBE_CAP_SECONDS)
     command.add_argument("--long-tail-allowance-seconds", type=float, default=1800.)

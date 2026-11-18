@@ -8,7 +8,9 @@ The preflight checks (PF0-PF5) are plain functions so training (single_vllm) and
 from __future__ import annotations
 
 from contextlib import contextmanager
+import contextlib
 import functools
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -481,6 +483,122 @@ def _fit(dv: torch.Tensor, dh: torch.Tensor) -> dict:
     return entry
 
 
+def _vision_features(tower: Any, pixels: torch.Tensor, grid: torch.Tensor, *, vllm: bool) -> list[float]:
+    """Sample the same pre-Merger tower coordinates, before learned Merger weights can hide an effect."""
+    features, handles = {}, []
+
+    def capture(name, module, args):
+        value = args[0].detach().flatten()
+        indices = torch.linspace(0, value.numel() - 1, min(16384, value.numel()), device=value.device).long()
+        features[name] = value[indices].float().cpu()
+
+    names = ["merger", *(f"deepstack_merger_list.{i}" for i in range(len(tower.deepstack_merger_list)))]
+    try:
+        for name in names:
+            handles.append(tower.get_submodule(name).register_forward_pre_hook(functools.partial(capture, name)))
+        with torch.no_grad():
+            tower(pixels, grid_thw=grid.tolist() if vllm else grid)
+        if set(features) != set(names):
+            raise ValueError("llm_lora: incomplete direct vision feature taps")
+        return torch.cat([features[name] for name in names]).tolist()
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def hf_vision_columns(bundle: Any, prep: Any, pairs: list) -> dict:
+    """One processor supplies byte-identical pixels/grid to both real towers; no generated task data."""
+    tower = bundle.model.get_base_model().get_submodule("model.visual")
+    device = next(bundle.model.parameters()).device
+    result: dict[str, Any] = {"inputs": [], "columns": {key: [] for key in ("off", "off_repeat", "on", "amplified")}}
+    for request, completion in pairs:
+        inputs = prep.model_inputs(request, completion, device)
+        pixels, grid = inputs["pixel_values"].detach().cpu(), inputs["image_grid_thw"].detach().cpu()
+        identity = {key: hashlib.sha256(value.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
+                    for key, value in (("pixels_sha256", pixels), ("grid_sha256", grid))}
+        result["inputs"].append(identity)
+        for key, scale in (("off", 0), ("off_repeat", 0), ("on", 1), ("amplified", AMPLIFY)):
+            # The bundle keeps FP32 Merger masters beside the BF16 tower; without the training autocast the HF
+            # forward fails in the Merger norm on a real GPU (v17 pod diagnostic, 2026-11-18).
+            autocast = (torch.autocast("cuda", dtype=torch.bfloat16) if torch.device(device).type == "cuda"
+                        else contextlib.nullcontext())
+            with scaled_adapters(bundle, V=scale), autocast:
+                result["columns"][key] += _vision_features(tower, pixels.to(device), grid.to(device), vllm=False)
+    return result
+
+
+def vllm_vision_columns(backend: Any, bundle: Any, prep: Any, pairs: list) -> dict:
+    """Run the installed nonmerged hooks on the selected engine's real tower, plus actual hook removal."""
+    hooks = backend.vision_hooks
+    result: dict[str, Any] = {"inputs": [], "columns": {key: [] for key in ("off", "off_repeat", "on", "amplified", "hook_removed")}}
+    state = hooks.on
+    try:
+        for request, completion in pairs:
+            inputs = prep.model_inputs(request, completion, "cpu")
+            pixels, grid = inputs["pixel_values"].detach().cpu(), inputs["image_grid_thw"].detach().cpu()
+            result["inputs"].append({key: hashlib.sha256(value.contiguous().view(torch.uint8).numpy().tobytes()).hexdigest()
+                for key, value in (("pixels_sha256", pixels), ("grid_sha256", grid))})
+            for key, scale in (("off", 0), ("off_repeat", 0), ("on", 1), ("amplified", AMPLIFY), ("hook_removed", AMPLIFY)):
+                hooks.load(vision_lora(bundle, max(1, scale)))
+                hooks.on = scale != 0
+
+                def probe(model):
+                    tower = model.visual
+                    removed = []
+                    try:
+                        if key == "hook_removed":
+                            for name, handle in hooks.handles.items():
+                                module = model.get_submodule(name)
+                                removed.append((module, handle.id, module._forward_hooks.pop(handle.id)))
+                        device = next(tower.parameters()).device
+                        return _vision_features(tower, pixels.to(device), grid.to(device), vllm=True)
+                    finally:
+                        for module, identity, callback in removed:
+                            module._forward_hooks[identity] = callback
+
+                values = backend.llm.apply_model(probe)
+                if len(values) != 1:
+                    raise ValueError("llm_lora: one in-process direct vision result required")
+                result["columns"][key] += values[0]
+    finally:
+        hooks.load(vision_lora(bundle))
+        hooks.on = state
+    return result
+
+
+def vision_tower_check(reference: dict, actual: dict) -> dict:
+    if not reference["inputs"] or reference["inputs"] != actual["inputs"]:
+        raise ValueError("llm_lora: direct vision pixels or grid differ")
+    h, v = ({key: torch.tensor(value, dtype=torch.float64) for key, value in result["columns"].items()}
+            for result in (reference, actual))
+    values = [*h.values(), *v.values()]
+    if not values[0].numel() or any(t.shape != values[0].shape or not bool(torch.isfinite(t).all()) for t in values):
+        raise ValueError("llm_lora: direct vision features must be finite, nonempty and aligned")
+    noise = max(_rms(h["off_repeat"] - h["off"]), _rms(v["off_repeat"] - v["off"]))
+
+    def compare(column):
+        dh, dv = h[column] - h["off"], v[column] - v["off"]
+        fit = _fit(dv, dh)
+        denominator = float(dv.norm() * dh.norm())
+        fit["cosine"] = float(dv @ dh) / denominator if denominator else 0.
+        fit["powered"] = fit["rms_effect"] >= max(MIN_EFFECT, 4 * noise)
+        fit["pass"] = bool(fit["powered"] and SLOPE_RANGE[0] <= fit.get("slope", 0) <= SLOPE_RANGE[1]
+                           and fit.get("correlation", 0) >= MIN_CORRELATION and fit["cosine"] >= MIN_CORRELATION)
+        return fit
+
+    real, amplified = compare("on"), compare("amplified")
+    negative = dict(v)
+    v["amplified"] = v["hook_removed"]
+    removed = compare("amplified")
+    v.update(negative)
+    return {"version": "v18-direct-vision-pf5-v1", "inputs": reference["inputs"], "coordinates": values[0].numel(),
+            "feature_taps": "pre-Merger fixed evenly spaced coordinates, up to 16384 per tap",
+            "noise_rms": noise, "real": real, "amplified": amplified, "hook_removed": removed,
+            "real_effect_status": "CONFIRMED" if real["pass"] else "UNCONFIRMED",
+            "application_path_status": "CONFIRMED" if amplified["pass"] else "UNCONFIRMED",
+            "pass": amplified["pass"] and not removed["pass"]}
+
+
 def pf5_contract_v17(bundle: Any, stage: str) -> dict:
     """F0 has no effect-power requirement; trained adapters must establish application power."""
     if stage not in ("f0", "trained"):
@@ -496,7 +614,8 @@ def pf5_contract_v17(bundle: Any, stage: str) -> dict:
 def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on: list[float], h_llm: list[float],
                 h_off: list[float], va_on: list[float], va_llm: list[float], ha_on: list[float], ha_llm: list[float],
                 cap: float, require_power: bool = True, va_vis: list[float] | None = None,
-                ha_vis: list[float] | None = None, vision_exception: str | None = None) -> dict:
+                ha_vis: list[float] | None = None, vision_exception: str | None = None,
+                vision_tower: dict | None = None) -> dict:
     """PF5 on teacher-forced log-probs. v_*: vLLM (on = LoRA + hooks, llm = LoRA only, off = neither); h_*: HF (on,
     vision scaling 0, all scaling 0); va_* / ha_*: the same with every LoRA B x AMPLIFY (vLLM adapter file and hook
     buffers, HF scaling). A trained adapter's effect can sit at the BF16 cross-engine noise (A100 4B v14: 0.05 rms vs
@@ -515,6 +634,8 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
     components are then measured and reported but not gating (total / LLM and every other check still gate)."""
     if vision_exception is not None and (not isinstance(vision_exception, str) or not vision_exception.strip()):
         raise ValueError("llm_lora: a vision exception needs its recorded authorization text")
+    if vision_tower is not None and vision_exception is not None:
+        raise ValueError("llm_lora: direct vision evidence cannot inherit a vision exception")
     columns = [torch.tensor(x, dtype=torch.float64) for x in (v_on, v_llm, v_off, h_on, h_llm, h_off, va_on, va_llm,
                                                                 ha_on, ha_llm)]
     v1, vl, v0, h1, hl, h0, a1, al, g1, gl = columns
@@ -539,6 +660,8 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
     # power False instead of failing. Agreement (err_on <= cap) and every powered slope/correlation test still apply.
     power = amplified["total"]["rms_effect"] >= MIN_EFFECT
     ok = finite and err_on <= cap and (power or not require_power)
+    if vision_tower is not None:
+        ok = ok and vision_tower.get("pass") is True
     if real["total"]["rms_effect"] >= MIN_EFFECT:
         ok = ok and err_on < err_off
     for key, entry in amplified.items():
@@ -547,9 +670,11 @@ def slope_check(v_on: list[float], v_llm: list[float], v_off: list[float], h_on:
             entry["pass"] = (SLOPE_RANGE[0] <= entry["slope"] <= SLOPE_RANGE[1]
                              and entry["correlation"] >= MIN_CORRELATION)
             entry["gating"] = not ((key == "vision" and "vision_only" in amplified)
-                                   or (vision_exception is not None and key in ("vision", "vision_only")))
+                                   or ((vision_exception is not None or vision_tower is not None)
+                                       and key in ("vision", "vision_only")))
             ok = ok and (entry["pass"] or not entry["gating"])
     return {"tokens": int(v1.numel()), "cap": cap, "amplify": AMPLIFY, "mean_abs_on": err_on,
             "mean_abs_off_vs_on": err_off, "amplified_mean_abs_on": float((a1 - g1).abs().mean()),
             "real": real, "amplified": amplified, "power": bool(power), "pass": bool(ok),
+            **({"vision_tower": vision_tower, "vision_gate": "direct_tower"} if vision_tower is not None else {}),
             **({"vision_exception": vision_exception} if vision_exception is not None else {})}

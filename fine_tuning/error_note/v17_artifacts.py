@@ -11,6 +11,7 @@ from .audit import digest
 from .prep_v16b import file_sha, read_sealed
 
 VERSION = "v17-training-artifacts-v1"
+TRAINING_VERSIONS = ("error-note-v17", "error-note-v18")
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -102,11 +103,14 @@ def create_training_artifacts(args, plan: dict) -> dict:
     from .v17_preflight import _write, bind_training
     from fine_tuning.notebook_rl.checkpoint import read_metadata
 
+    protocol_version = plan["protocol"].get("version")
+    if protocol_version not in TRAINING_VERSIONS:
+        raise ValueError("v17 artifacts: unsupported training protocol")
     binding = bind_training(args, plan)
     if not binding.get("production_admitted"):
         raise ValueError("v17 artifacts: local smoke cannot seal production artifacts")
     output = _safe(Path(args.output))
-    ready = campaign.require_complete(output, evaluation_decision=args.evaluation_decision)
+    ready = campaign.require_complete(output, evaluation_decision=getattr(args, "evaluation_decision", None))
     checkpoint = _safe(Path(ready["checkpoint"]))
     metadata = read_metadata(checkpoint, binding=campaign._binding(plan))
     if metadata["protocol"] != plan["protocol"] or metadata["step"] != plan["total_slots"]:
@@ -119,12 +123,13 @@ def create_training_artifacts(args, plan: dict) -> dict:
             or not isinstance(reload.get("producer_pid"), int) or not isinstance(reload.get("reload_pid"), int)
             or reload["producer_pid"] == reload["reload_pid"]):
         raise ValueError("v17 artifacts: exact fresh-process final reload required")
-    decision = read_sealed(args.evaluation_decision)
     admission_path = output / "evaluation-admission.json"
     admission = read_sealed(admission_path)
-    if (decision.get("decision") != "PROCEED" or decision.get("authorized_by") != "user"
-            or decision.get("plan_sha256") != plan["sha256"] or decision.get("admission_sha256") != admission["sha256"]):
-        raise ValueError("v17 artifacts: evaluation decision differs")
+    if protocol_version == "error-note-v17":
+        decision = read_sealed(args.evaluation_decision)
+        if (decision.get("decision") != "PROCEED" or decision.get("authorized_by") != "user"
+                or decision.get("plan_sha256") != plan["sha256"] or decision.get("admission_sha256") != admission["sha256"]):
+            raise ValueError("v17 artifacts: evaluation decision differs")
     export = _tree(Path(args.export_output))
     model_ref = _safe(Path(args.export_output) / "model_ref.json")
     model = json.loads(model_ref.read_text(encoding="utf-8"))
@@ -132,6 +137,8 @@ def create_training_artifacts(args, plan: dict) -> dict:
             or model.get("dtype") != "bfloat16" or model.get("export", {}).get("binding") != campaign._binding(plan)
             or model.get("export", {}).get("campaign", {}).get("plan_sha256") != plan["sha256"]):
         raise ValueError("v17 artifacts: export is not the bound final unmerged model")
+    if protocol_version == "error-note-v18" and model["export"].get("training_protocol") != plan["protocol"]:
+        raise ValueError("v18 artifacts: exported training protocol differs from sealed plan")
     for record in model["files"]:
         path = _safe(Path(args.export_output) / "model" / record["path"])
         if (not path.is_relative_to(_safe(Path(args.export_output) / "model"))
@@ -149,8 +156,14 @@ def create_training_artifacts(args, plan: dict) -> dict:
         "checkpoint": _tree(checkpoint) | {"metadata": _ref(checkpoint / "metadata.json")},
         "export": export | {"model_ref": _ref(model_ref)}, "reload": _ref(reload_path),
         "functional_receipt": binding["functional_receipt"], "update_cost_receipt": binding["update_cost_receipt"],
-        "evaluation_decision": _ref(args.evaluation_decision), "evaluation_admission": _ref(admission_path),
+        "evaluation_admission": _ref(admission_path),
         "export_ready": _ref(output / "export-ready.json"), "protected_evaluation": protected_evaluation(ROOT)}
+    if protocol_version == "error-note-v18":
+        body.update(training_protocol_version=protocol_version, monitor=_ref(output / "monitor-final.json"),
+                    effect=_ref(output / "effect-final.json"))
+        _v18_admission(body)
+    else:
+        body["evaluation_decision"] = _ref(args.evaluation_decision)
     destination = Path(getattr(args, "artifact_output", None) or output / "training-artifacts.json")
     if any(_safe(destination).is_relative_to(Path(t["root"])) for t in (body["checkpoint"], body["export"])):
         raise ValueError("v17 artifacts: receipt cannot be inside its bound artifact tree")
@@ -161,9 +174,13 @@ def verify_training_artifacts(path: Path) -> dict:
     value = read_sealed(_safe(path))
     if value.get("version") != VERSION or value.get("status") != "SEALED":
         raise ValueError("v17 artifacts: sealed production training artifacts required")
-    for name in ("campaign_plan", "reload", "functional_receipt", "update_cost_receipt", "evaluation_decision",
+    for name in ("campaign_plan", "reload", "functional_receipt", "update_cost_receipt",
                  "evaluation_admission", "export_ready"):
         _check_ref(value[name])
+    if value.get("training_protocol_version") != "error-note-v18":
+        _check_ref(value["evaluation_decision"])
+    elif "evaluation_decision" in value:
+        raise ValueError("v18 artifacts: training seal cannot authorize evaluation")
     for name in ("checkpoint", "export"):
         tree = value[name]
         if _tree(Path(tree["root"])) != {k: tree[k] for k in ("root", "files", "files_sha256")}:
@@ -182,6 +199,14 @@ def verify_training_artifacts(path: Path) -> dict:
         if not source.is_relative_to(_safe(Path(code["root"]))) or file_sha(source) != record["file_sha256"]:
             raise ValueError("v17 artifacts: original training source changed")
     plan = read_sealed(Path(value["campaign_plan"]["path"]))
+    protocol_version = plan["protocol"].get("version")
+    model = json.loads(Path(value["export"]["model_ref"]["path"]).read_text(encoding="utf-8"))
+    if (protocol_version not in TRAINING_VERSIONS
+            or (protocol_version == "error-note-v18" and (
+                value.get("training_protocol_version") != protocol_version
+                or model.get("export", {}).get("training_protocol") != plan["protocol"]))
+            or (protocol_version == "error-note-v17" and value.get("training_protocol_version") not in (None, protocol_version))):
+        raise ValueError("v17 artifacts: training protocol version was relabeled")
     if (plan["sha256"] != value["training"]["campaign_plan_sha256"]
             or plan["source"]["base_commit"] != value["training"]["code_commit"]
             or digest(plan["source"]["actual_files"]) != value["training"]["source_sha256"]
@@ -195,7 +220,62 @@ def verify_training_artifacts(path: Path) -> dict:
                                    capture_output=True, text=True).stdout.strip()
     if observed != plan["source"]["actual_files"] or actual_commit != value["training"]["code_commit"]:
         raise ValueError("v17 artifacts: original training checkout changed")
+    if protocol_version == "error-note-v18":
+        _v18_admission(value)
     return value
+
+
+def _v18_admission(artifacts: dict) -> dict:
+    """A training seal preserves the final admission, including failures, without approving an evaluation."""
+    from .v17_eval import evaluation_gate
+
+    plan = read_sealed(_check_ref(artifacts["campaign_plan"]))
+    admission = read_sealed(_check_ref(artifacts["evaluation_admission"]))
+    monitor = read_sealed(_check_ref(artifacts["monitor"]))
+    effect = read_sealed(_check_ref(artifacts["effect"]))
+    ready = read_sealed(_check_ref(artifacts["export_ready"]))
+    checkpoint = artifacts["checkpoint"]["metadata"]
+    if (plan["protocol"]["version"] != "error-note-v18"
+            or artifacts["training"]["campaign_plan_sha256"] != plan["sha256"]
+            or any(row.get("plan_sha256") != plan["sha256"] or row.get("checkpoint") != checkpoint
+                   for row in (admission, monitor, effect))
+            or ready.get("plan_sha256") != plan["sha256"] or ready.get("metadata_descriptor") != checkpoint
+            or admission.get("monitor_sha256") != monitor["sha256"] or admission.get("effect_sha256") != effect["sha256"]
+            or admission.get("decision") != evaluation_gate(monitor["comparison"], effect["comparison"])):
+        raise ValueError("v18 artifacts: final admission/monitor/effect/checkpoint binding differs")
+    return admission
+
+
+def _v18_evaluation_decision(artifacts: dict, artifact_ref: dict, identity: dict, authorization: str) -> dict:
+    if not isinstance(authorization, str) or not authorization.strip():
+        raise ValueError("v18 evaluation: separate non-empty user authorization required")
+    admission = _v18_admission(artifacts)
+    status = admission["decision"]["status"]
+    if status not in ("EVAL_REVIEW_REQUIRED", "EVALUATION_CANDIDATE"):
+        raise ValueError("v18 evaluation: DEGRADED or incomplete admission cannot be authorized")
+    body = {"version": "v18-evaluation-decision-v1", "decision": "PROCEED", "authorized_by": "user",
+            "pre_authorized": False, "authorization": authorization,
+            "training_artifact": artifact_ref, "plan_sha256": artifacts["training"]["campaign_plan_sha256"],
+            "admission": artifacts["evaluation_admission"], "admission_sha256": admission["sha256"],
+            "admission_status": status, "checkpoint": artifacts["checkpoint"]["metadata"],
+            "model_ref": artifacts["export"]["model_ref"], "evaluation": identity}
+    return body | {"sha256": digest(body)}
+
+
+def verify_evaluation_authorization(path: Path, training_artifacts: Path, identity: dict) -> dict:
+    """Recheck consent against live sealed evidence before engine validation and every final/resumed run."""
+    verified = read_sealed(_safe(path))
+    artifacts = verify_training_artifacts(training_artifacts)
+    ref = _ref(training_artifacts)
+    decision = verified.get("evaluation_decision", {})
+    if (artifacts.get("training_protocol_version") != "error-note-v18"
+            or verified.get("version") != "v17-training-artifact-verification-v1" or verified.get("status") != "PASS"
+            or verified.get("training_artifact") != ref or verified.get("training") != artifacts["training"]
+            or verified.get("evaluation") != identity
+            or verified.get("protected_evaluation_sha256") != artifacts["protected_evaluation"]["sha256"]
+            or decision != _v18_evaluation_decision(artifacts, ref, identity, decision.get("authorization"))):
+        raise ValueError("v18 evaluation: authorization belongs to another artifact, admission or evaluator")
+    return verified
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -205,15 +285,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-protocol", choices=TRAINING_VERSIONS)
+    parser.add_argument("--authorization")
     args = parser.parse_args(argv)
     value = verify_training_artifacts(args.receipt)
+    version = read_sealed(Path(value["campaign_plan"]["path"]))["protocol"]["version"]
+    if args.expected_protocol is not None and version != args.expected_protocol:
+        raise ValueError("v17 artifacts: training seal does not match expected protocol")
     identity = evaluation_identity(args.repo, args.commit)
     if protected_evaluation(args.repo) != value["protected_evaluation"]:
         raise ValueError("v17 artifacts: protected evaluation/preregistration contract changed")
     from .v17_preflight import _write
-    _write(args.output, {"version": "v17-training-artifact-verification-v1", "status": "PASS",
+    body = {"version": "v17-training-artifact-verification-v1", "status": "PASS",
         "training_artifact": _ref(args.receipt), "training": value["training"], "evaluation": identity,
-        "protected_evaluation_sha256": value["protected_evaluation"]["sha256"]})
+        "protected_evaluation_sha256": value["protected_evaluation"]["sha256"]}
+    if version == "error-note-v18":
+        if args.expected_protocol != version:
+            raise ValueError("v18 evaluation: explicit --expected-protocol error-note-v18 required")
+        body["evaluation_decision"] = _v18_evaluation_decision(value, _ref(args.receipt), identity, args.authorization)
+    _write(args.output, body)
     return 0
 
 

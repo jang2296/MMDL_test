@@ -150,7 +150,7 @@ def adapter_swap(engine: Any, bundle: Any, real: Any, root: Path) -> Any:
 
 def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: dict[str, list[float]], *,
                   protocol_version: str | None = None, stage: str = "trained",
-                  vision_exception: str | None = None) -> dict:
+                  vision_exception: str | None = None, vision_tower: dict | None = None) -> dict:
     """pf1-pf3, pf5 and pf2_restored on a VLLMBackend built with kind unmerged-lora (proof_eval.attach_lora ran in its
     __init__); pf5 runs the training sampler's real + amplified probe (llm_lora.vllm_columns / slope_check)."""
     from fine_tuning.notebook_rl.engines import VLLMRolloutEngine
@@ -164,16 +164,18 @@ def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: 
         "pf1": llm_lora.check_scope(llm, hooks, config.text_config.num_hidden_layers, config.vision_config.depth),
         "pf2": llm_lora.check_identity(llm, bundle, LORA_INT_ID, hooks)}
     prep.llm = llm
-    shell = SimpleNamespace(engine=prep)  # SingleVllmSampler._probe reads only self.engine
+    shell: Any = SimpleNamespace(engine=prep)  # SingleVllmSampler._probe reads only self.engine
     probe = functools.partial(SingleVllmSampler._probe, shell)
     with tempfile.TemporaryDirectory(prefix="lora-preflight-amplified-") as tmp:
         columns, restored = llm_lora.vllm_columns(bundle, hooks, probe, pairs, lora,
                                                   adapter_swap(llm.llm_engine, bundle, lora, Path(tmp)))
     report["pf3"] = llm_lora.check_base(llm, bundle, frozen)
-    power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version == "error-note-v17" else None
+    power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version in ("error-note-v17", "error-note-v18") else None
+    if protocol_version == "error-note-v18" and (vision_exception is not None or vision_tower is None):
+        raise ValueError("v18 PF5: direct vision tower evidence required; exception forbidden")
     report["pf5"] = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
                                        require_power=power["require_power"] if power is not None else True,
-                                       vision_exception=vision_exception)
+                                       vision_exception=vision_exception, vision_tower=vision_tower)
     if power is not None:
         report["pf5"]["stage_contract"] = power
         report["pf5"]["effect_status"] = ("PASS" if report["pf5"]["pass"] and report["pf5"]["power"]
@@ -223,8 +225,11 @@ def check(model_ref: Path, checkpoint: Path, binding_file: Path, base: Path, pro
         raise RuntimeError(f"lora_preflight: the evaluation engine is in-process ({pe.VLLM_INPROCESS_ENV}=0)")
     pe._lora_model_ref(model_ref)  # the v10 contract: v15 export, unmerged-lora kind, adapter section and files
     ref, model_path = json.loads(model_ref.read_text(encoding="utf-8")), model_ref.parent / "model"
+    version = ref["export"]["training_protocol"]["version"]
     pid = yaml.safe_load(Path(protocol).read_text(encoding="utf-8"))["protocol_id"]
-    slots = pe.resolve_slots(pid)["slots"]
+    slots = 9 if version == "error-note-v18" else pe.resolve_slots(pid)["slots"]
+    if version == "error-note-v18" and os.environ.get(pe.SLOTS_ENV) not in (None, "9"):
+        raise ValueError("v18 preflight: nine slots required")
     with pe.registered_variants(slots=slots):
         eval_engine.verify_model(model_path, ref)  # every model file hash, as the evaluation checks them
         cfg, hw = contracts.load_configs(protocol, hardware)
@@ -234,10 +239,14 @@ def check(model_ref: Path, checkpoint: Path, binding_file: Path, base: Path, pro
         pairs = probe_pairs(prep, cfg["image"])
         bundle.model.to("cuda")
         reference = llm_lora.hf_columns(bundle, prep, pairs)  # real and amplified HF/PEFT columns
+        vision_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version == "error-note-v18" else None
         bundle.model.to("cpu")  # free the GPU for the evaluation engine (gpu_memory_utilization 0.90)
         torch.cuda.empty_cache()
         backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(base))
-        report["engine"] = engine_checks(backend, bundle, prep, pairs, reference)
+        tower = (llm_lora.vision_tower_check(vision_reference, llm_lora.vllm_vision_columns(backend, bundle, prep, pairs))
+                 if vision_reference is not None else None)
+        report["engine"] = engine_checks(backend, bundle, prep, pairs, reference,
+                                          protocol_version=version, stage="trained", vision_tower=tower)
         report["throughput"] = throughput(backend, prep, slots)  # recorded only; "pass" below ignores it
     report |= {"format": "lora-preflight-v1", "model_ref_sha256": pe.sha256_file(model_ref), "protocol_id": pid,
                "pass": report["files"]["pass"] and report["engine"]["pass"]}

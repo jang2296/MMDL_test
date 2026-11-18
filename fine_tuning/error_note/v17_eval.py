@@ -413,8 +413,17 @@ def evaluation_gate(development: dict, effect: dict | None) -> dict:
 
 def incremental_manifest(run_dir: Path, *, force: bool = False) -> dict | None:
     """Snapshot immutable samples/raw plus resume identity every 32 commits or five minutes."""
+    run_dir = Path(run_dir)
+    (run_dir / "recovery_manifests").mkdir(parents=True, exist_ok=True)
+    # Each caller opens the same inode: thread and recovery-process writers share this lock.
+    with (run_dir / "recovery_manifests/.manifest.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return _incremental_manifest_locked(run_dir, force=force)
+
+
+def _incremental_manifest_locked(run_dir: Path, *, force: bool) -> dict | None:
     previous = sorted((run_dir / "recovery_manifests").glob("*.json"))
-    old = read_json(previous[-1]) if previous else None
+    old = checked(read_json(previous[-1])) if previous else None
     samples = sorted((run_dir / "samples").glob("*.json"))
     if not force and old and len(samples) - old["completed_count"] < 32 and time.time() - old["created_epoch"] < 300:
         return None
@@ -422,8 +431,7 @@ def incremental_manifest(run_dir: Path, *, force: bool = False) -> dict | None:
     paths += sorted((run_dir / "inference_invocations").glob("*.json"))
     paths += [p for p in run_dir.glob("*.json") if p.is_file()]
     paths += [p for p in run_dir.glob("*.yaml") if p.is_file()]
-    if (run_dir / "submission_events.jsonl").is_file():
-        paths.append(run_dir / "submission_events.jsonl")
+    paths += sorted(run_dir.glob("*.jsonl"))
     assets = set()
     image_records = [read_json(p) for p in samples]
     image_records += [read_json(p)["record"] for p in (run_dir / "final_raw").glob("*.json")]
@@ -434,11 +442,36 @@ def incremental_manifest(run_dir: Path, *, force: bool = False) -> dict | None:
                 raise ValueError("v17: inspection image outside owned input assets")
             assets.add(asset)
     paths += sorted(assets)
+    records = []
+    snapshot_dir = run_dir / "recovery_manifests" / ("snapshot-" + uuid.uuid4().hex)
+    for path in sorted(set(paths)):
+        source = str(path.relative_to(run_dir.parents[1]))
+        if path.parent == run_dir:
+            # Mutable receipts/logs become immutable bytes; appenders finish a whole locked line first.
+            with path.open("rb") as stream:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_SH)
+                content = stream.read()
+            if path.suffix == ".jsonl" and content and not content.endswith(b"\n"):
+                content = content[:content.rfind(b"\n") + 1]
+            snapshot_dir.mkdir(exist_ok=True)
+            path = snapshot_dir / path.name
+            with path.open("xb") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        records.append({"path": str(path.relative_to(run_dir.parents[1])), "bytes": path.stat().st_size,
+                        "sha256": sha256_file(path),
+                        **({"source_path": source, "closed_bytes": len(content)} if path.parent == snapshot_dir else {})})
+    if snapshot_dir.is_dir():
+        descriptor = os.open(snapshot_dir, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
     result = seal({"version": "v17-eval-recovery-manifest-v1", "run_id": run_dir.name,
                    "created_epoch": time.time(), "completed_count": len(samples),
                    "previous_sha256": old["sha256"] if old else None,
-                   "files": [{"path": str(p.relative_to(run_dir.parents[1])), "bytes": p.stat().st_size,
-                              "sha256": sha256_file(p)} for p in sorted(set(paths))],
+                   "files": records,
                    "transfer_status": "LOCAL_SNAPSHOT_ONLY_NOT_REMOTE_VERIFIED"})
     exclusive(run_dir / "recovery_manifests" / f"{len(previous):06d}.json", result)
     return result
@@ -467,8 +500,11 @@ def split_execution_contract(validation: dict, ids: list[str]) -> dict:
     from .v17_eval_engine import validate_engine_receipt
 
     validate_engine_receipt(validation)
+    rule = "floor(0.9 * actual_kv_token_capacity / 40960)"
+    if validation.get("training_protocol_version") == "error-note-v18":
+        rule = "min(9, " + rule + ")"
     return {"version": "v17-evaluation-execution-v2", "engine_mode": validation["selected_mode"],
-            "slots": validation["slots"], "capacity_rule": "floor(0.9 * actual_kv_token_capacity / 40960)",
+            "slots": validation["slots"], "capacity_rule": rule,
             "actual_kv_token_capacity": validation["actual_kv_token_capacity"],
             "submission_order_rule": ORDER_RULE, "submission_order_sha256": digest(submission_order(ids)),
             "serving_kind": "unmerged-lora", "same_start_resume": True, "downtime_counts": True,
@@ -487,6 +523,8 @@ def split_bindings(engine_validation: Path, training_artifacts: Path, model_ref:
 
     validation = load_engine_validation(engine_validation)
     artifacts = verify_training_artifacts(training_artifacts)
+    if artifacts.get("training_protocol_version") == "error-note-v18" and validation.get("training_protocol_version") != "error-note-v18":
+        raise ValueError("v18: engine validation cannot reuse a v17 training seal")
     if (validation["training_artifact_sha256"] != sha256_file(training_artifacts)
             or validation["model_ref_sha256"] != sha256_file(model_ref)
             or artifacts["export"]["model_ref"]["file_sha256"] != sha256_file(model_ref)
@@ -845,7 +883,8 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
             or any(e["event"] == "FAIL" and e["run_id"] == known.run_id for e in events)):
         raise ValueError("v17: resume requires the one original, valid ledger START")
     ref, declared = pe._lora_model_ref(known.model_ref)
-    if (ref["export"]["training_protocol"]["version"] != "error-note-v17"
+    version = ref["export"]["training_protocol"]["version"]
+    if (version not in ("error-note-v17", "error-note-v18")
             or ref["export"]["campaign"]["stage"] != "final"
             or any(prereg["arms"][pe.ARM_SINGLE].get(k) != v for k, v in declared.items())
             or known.model_path.resolve() != (known.model_ref.parent / "model").resolve()):
@@ -864,6 +903,9 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         slots = validation["slots"]
     else:
         slots = SLOTS
+    if version == "error-note-v18" and (not split or slots != 9 or prereg.get("training_protocol_version") != version
+                                        or validation.get("training_protocol_version") != version):
+        raise ValueError("v18: final evaluation requires its sealed protocol and nine validated slots")
     if not split and (calibration["probe"].get("config_sha256") != digest(cfg)
             or calibration.get("source_sha256") != source_hash
             or calibration.get("code_commit") != known.require_commit

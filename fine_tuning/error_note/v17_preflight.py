@@ -34,10 +34,11 @@ def _identity(args: Any, plan: dict) -> dict:
         raise ValueError("v17 preflight: exact --code-commit required")
     if (commit != current["base_commit"] or commit != plan["source"]["base_commit"]
             or current["actual_files"] != plan["source"]["actual_files"]
-            or plan["protocol"]["version"] != "error-note-v17"):
+            or plan["protocol"]["version"] not in ("error-note-v17", "error-note-v18")):
         raise ValueError("v17 preflight: code commit, source bytes or protocol changed")
     return {"code_commit": commit, "source_sha256": digest(current["actual_files"]),
-            "campaign_plan_sha256": plan["sha256"], "protocol_sha256": plan["protocol"]["sha256"]}
+            "campaign_plan_sha256": plan["sha256"], "protocol_sha256": plan["protocol"]["sha256"],
+            **({"training_protocol_version": "error-note-v18"} if plan["protocol"]["version"] == "error-note-v18" else {})}
 
 
 def _file_receipt(path: Path | None, expected: str | None) -> tuple[dict, dict]:
@@ -63,6 +64,10 @@ def _validate_cost(cost: dict) -> None:
             or measurement.get("measurement") != "cuda-bf16" or measurement.get("optimizer_steps") != 0
             or not coverage.get("actual_a1_count")):
         raise ValueError("v17 preflight: actual admitted A1 and CUDA cost evidence required")
+    if cost.get("training_protocol_version") == "error-note-v18" and (
+            measurement.get("objective_version") != "error-note-v18"
+            or measurement.get("row_schema") != "error-note-v18-row-v1"):
+        raise ValueError("v18 preflight: measured objective and row schema must be v18")
     for phase in ("A", "B", "C"):
         measured = measurement.get("measurements", {}).get(phase, {})
         samples = measured.get("samples", [])
@@ -162,7 +167,15 @@ def bind_evaluation(args: Any, plan: dict, *, require_engine_validation: bool = 
     artifacts = verify_training_artifacts(Path(seal_path))
     if artifacts["training"]["campaign_plan_sha256"] != plan["sha256"]:
         raise ValueError("v17 evaluation: training seal belongs to another plan")
+    if plan["protocol"]["version"] == "error-note-v18" and artifacts.get("training_protocol_version") != "error-note-v18":
+        raise ValueError("v18 evaluation: v18 training-artifact seal required")
     identity = evaluation_identity(Path(getattr(args, "repo", None) or ROOT), args.code_commit)
+    if plan["protocol"]["version"] == "error-note-v18":
+        from .v17_artifacts import verify_evaluation_authorization
+        authorization_path = getattr(args, "artifact_verification", None)
+        if authorization_path is None:
+            raise ValueError("v18 evaluation: --artifact-verification required")
+        verify_evaluation_authorization(Path(authorization_path), Path(seal_path), identity)
     protected = protected_evaluation(ROOT)
     if protected != artifacts["protected_evaluation"]:
         raise ValueError("v17 evaluation: protected evaluation/preregistration contract changed")
@@ -177,6 +190,11 @@ def bind_evaluation(args: Any, plan: dict, *, require_engine_validation: bool = 
                 or validation.get("evaluation_commit") != identity["code_commit"]
                 or validation.get("source_sha256") != identity["source_sha256"]):
             raise ValueError("v17 evaluation: engine validation is for another model or evaluator")
+        if plan["protocol"]["version"] == "error-note-v18":
+            from .v17_eval_engine import validate_engine_receipt
+            validate_engine_receipt(validation)
+            if validation.get("training_protocol_version") != "error-note-v18" or validation["slots"] != 9:
+                raise ValueError("v18 evaluation: v18 engine evidence and nine slots required")
         from mmdl.runtime.environment import collect_environment
         from mmdl.evaluation import engine as evaluation
         if validation.get("environment_sha256") != digest(evaluation.environment_identity(collect_environment(probe=False))):
@@ -189,13 +207,17 @@ def bind_evaluation(args: Any, plan: dict, *, require_engine_validation: bool = 
     return _write(Path(args.output) / name, body)
 
 
-def _rl_row(item: dict, output: dict, baseline: dict) -> dict:
+def _rl_row(item: dict, output: dict, baseline: dict, *, policy: dict | None = None) -> dict:
     from .v17_rows import ROW_SCHEMA, reward_v17
 
     reward, reason, pg = reward_v17(output["status"], output["finish_reason"], output["text"], output.get("extracted"))
+    if policy is not None:
+        reward, reason, pg = (policy[key] for key in ("reward", "reason", "pg"))
     receipt = {"reward": reward, "reason": reason, "pg": pg}
+    if policy is not None:
+        receipt["policy_receipt"] = policy
     receipt["sha256"] = digest(receipt)
-    return {"schema": ROW_SCHEMA, "row_id": item["problem_id"] + ":RL", "kind": "RL",
+    row = {"schema": ROW_SCHEMA, "row_id": item["problem_id"] + ":RL", "kind": "RL",
         "problem_id": item["problem_id"], "parent_id": item["problem_id"], "source": item["source"],
         "subject": item.get("subject", item["source"]), "layer": item.get("layer"), "block_index": 0,
         "image_paths": item["image_paths"], "image_sha256": item["image_sha256"],
@@ -207,6 +229,11 @@ def _rl_row(item: dict, output: dict, baseline: dict) -> dict:
         "admission_receipt_sha256": receipt["sha256"], "verifier_receipt_sha256": receipt["sha256"],
         "reward_receipt": receipt, "loss_probability_space": "processed-full-vocab-v1",
         "knowledge_status": "ANSWER_REWARD", "complete": True}
+    if policy is not None:
+        row.update(schema="error-note-v18-row-v1", t1_policy_receipt=policy,
+                   format_receipt=policy.get("format_receipt"))
+        row.update({key: policy[key] for key in ("loss_token_mask", "pg_mask_reason", "pg_byte_spans", "policy_mask_receipt")})
+    return row
 
 
 def _coverage(encoded: list[dict]) -> dict:
@@ -225,7 +252,7 @@ def calibrate(args: Any, plan: dict) -> dict:
     """Run actual F0 transport/capacity and A/B/C backward probes on disjoint performance parents."""
     from . import campaign_v16b as campaign
     from . import prep_v16b as prep
-    from . import rl, train_v17, v17_data, v17_rows
+    from . import rl, train_v17, v17_rows
     from .protocol import TRAIN_SAMPLING_V16B, v17_contract_for_update
     from .run_v16 import _setup_execution
     from .v16b_rows import baseline_receipt_v16b
@@ -241,11 +268,18 @@ def calibrate(args: Any, plan: dict) -> dict:
             "campaign_plan_sha256": plan["sha256"], "optimizer_steps": 0,
             "reason": "A local NF4 smoke cannot certify actual BF16 vLLM or maximum FULL capacity."})
     identity = _identity(args, plan)
+    version = plan["protocol"]["version"]
+    is_v18 = version == "error-note-v18"
+    if is_v18:
+        from . import v18_rows as v17_rows
+        from .protocol import v18_contract_for_update as v17_contract_for_update
+        from .train_v18 import calibrate_update_v18
     if (getattr(args, "allow_model_run", False) is not True or args.precision != "bf16"
             or args.engine != "vllm" or plan["protocol"]["precision"] != "bf16"):
         raise ValueError("v17 preflight: explicit model-run authorization and BF16 vLLM required")
-    validation = v17_data.validate(args.data_root)
-    items = v17_data.load_items(args.data_root, "performance")
+    data = campaign.data_api(version)
+    validation = data.validate(args.data_root)
+    items = data.load_items(args.data_root, "performance")
     if not 1 <= len(items) <= 16:
         raise ValueError("v17 preflight: one disjoint performance block of at most sixteen parents required")
     prior = read_sealed(campaign.checked(plan["inputs"]["baseline"]))
@@ -262,9 +296,9 @@ def calibrate(args: Any, plan: dict) -> dict:
         sampler.add_version(bundle, 0)
         sampler.add_version(bundle, 1)
         collected = prep.collect(bundle, sampler, items, data_root=args.data_root, split="performance",
-            out=Path(args.output) / "preflight-generations", stage="v17-bf16-preflight-t1",
+            out=Path(args.output) / "preflight-generations", stage=version.removeprefix("error-note-") + "-bf16-preflight-t1",
             protocol_sha256=plan["protocol"]["sha256"], sampling=TRAIN_SAMPLING_V16B, cap=8192,
-            algorithm_version="error-note-v17", baseline_receipts=baselines)
+            algorithm_version=version, baseline_receipts=baselines)
         if len(collected) != len(items) or sampler.has_unfinished_requests():
             raise ValueError("v17 preflight: performance collection did not drain completely")
         lookup = {item["problem_id"]: item for item in items}
@@ -277,11 +311,16 @@ def calibrate(args: Any, plan: dict) -> dict:
                 raise ValueError("v17 preflight: actual generation lost its pre-admission baseline")
             view = item | {"t1": candidate, "p0_text": prep.p0(item), "block_index": 0}
             source = v17_rows.problem_contract_v17(item)
+            policy = (v17_rows.t1_policy_receipt_v18(view, tokenizer=bundle.processor.tokenizer,
+                gold=item["evaluation"]["gold"], choices=item["evaluation"].get("choices", []),
+                verifier=source["verifier"], fact_catalog=source["fact_catalog"], rules=source["rules"]) if is_v18 else None)
+            if policy is not None:
+                view["t1_policy_receipt"] = policy
             receipt = v17_rows.verify_solution_v17(view, tokenizer=bundle.processor.tokenizer,
                 gold=item["evaluation"]["gold"], choices=item["evaluation"].get("choices", []),
                 verifier=source["verifier"], fact_catalog=source["fact_catalog"], rules=source["rules"])
             admissions.append(receipt)
-            rows.append(_rl_row(item, candidate, baseline))
+            rows.append(_rl_row(item, candidate, baseline, policy=policy))
             admitted = v17_rows.a1_row_v17(view, tokenizer=bundle.processor.tokenizer, receipt=receipt)
             if admitted is not None:
                 rows.append(admitted)
@@ -291,7 +330,8 @@ def calibrate(args: Any, plan: dict) -> dict:
             policy_sha256=rl.policy_sha256(bundle), expected_problem_ids=[i["problem_id"] for i in items],
             baseline_receipts={f"RL:{pid}": value for pid, value in baselines.items()},
             reward_values={f"RL:{r['problem_id']}": {"reward": r["reward"], "pg": r["pg"]} for r in rows if r["kind"] == "RL"})
-        measurement = train_v17.calibrate_update_v17(bundle, encoded, contract,
+        calibrator = calibrate_update_v18 if is_v18 else train_v17.calibrate_update_v17
+        measurement = calibrator(bundle, encoded, contract,
             token_budget=args.token_budget) if coverage["actual_a1_count"] else None
         status = "PASS" if measurement is not None and not coverage["missing_actual_a1_lengths"] and coverage["actual_full_rows"] else "CALIBRATION_LOW_COVERAGE"
         transport = sampler.preflight_report

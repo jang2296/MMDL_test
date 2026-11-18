@@ -364,8 +364,12 @@ def _split_resume_evidence(validation_path: Path, run_dir: Path, *, archive_root
     try:
         validation = read_json(validation_path)
         expected: dict[str, str] = {}
-        for ref in [*validation["attempts"],
-                    {"path": validation["preflight_report"], "sha256": validation["preflight_file_sha256"]}]:
+        refs = [*validation["attempts"],
+                {"path": validation["preflight_report"], "sha256": validation["preflight_file_sha256"]}]
+        if validation.get("training_protocol_version") == "error-note-v18":
+            ref = validation["artifact_verification"]
+            refs.append({"path": ref["path"], "sha256": ref["file_sha256"]})
+        for ref in refs:
             original = ref["path"]
             if not Path(original).is_absolute() or ".." in Path(original).parts:
                 raise ValueError("engine evidence requires its original absolute path")

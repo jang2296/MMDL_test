@@ -39,7 +39,11 @@ from .common import HEX40, HEX64, parse_utc, read_json, sha256_bytes, sha256_fil
 VERSION = "pod-job-v1"
 PREP_VERSION = "pod-prep-v1"
 TRAINING_STAGES = ("bf16-smoke-throughput", "pilot-300", "main", "note-300", "note-3417", "note-v2",
-                   "note-v3-collect", "note-v3-resolve", "note-v3-train", "single-pilot", "single-main")
+                   "note-v3-collect", "note-v3-resolve", "note-v3-train", "single-pilot", "single-main",
+                   "v18-main")
+# v18-main: the chain's first step (v18_data prepare) rebuilds and verifies the data from pinned original sources,
+# so the job binds no locally staged bundle (`data`); eval isolation still applies.
+SOURCE_REBUILT_STAGES = ("v18-main",)
 EVAL_STAGES = ("eval-f0", "eval-ft", "eval-course")
 STAGES = TRAINING_STAGES + EVAL_STAGES
 ENVIRONMENTS = ("experiments", "vllm", "proof")  # proof = vllm lock + bitsandbytes 0.48.2 (training imports it even under BF16)
@@ -173,7 +177,8 @@ def validate_job(job: Any, workspace: str = "/workspace",
     if not isinstance(job, dict):
         raise JobError("job must be a JSON object")
     prep = job.get("version") == PREP_VERSION
-    required = PREP_KEYS if prep else KEYS - {"data"} if job.get("stage") in EVAL_STAGES else KEYS
+    required = (PREP_KEYS if prep else KEYS - {"data"}
+                if job.get("stage") in EVAL_STAGES + SOURCE_REBUILT_STAGES else KEYS)
     optional = OPTIONAL_KEYS | (PREP_OPTIONAL_KEYS if prep else set())
     if not required <= set(job) or set(job) - required - optional:
         raise JobError(f"job keys must be {sorted(required)} plus optional "
@@ -189,7 +194,7 @@ def validate_job(job: Any, workspace: str = "/workspace",
     if mode not in ("legacy", "balance_reserve_only"):
         raise JobError("unknown financial_mode")
     if mode == "balance_reserve_only":
-        if prep or job.get("stage") not in ("single-main", "eval-course"):
+        if prep or job.get("stage") not in ("single-main", "v18-main", "eval-course"):
             raise JobError("reserve-only mode is for split training/evaluation jobs")
         if "repo_root" not in job:
             raise JobError("split jobs require repo_root")
@@ -215,7 +220,7 @@ def validate_job(job: Any, workspace: str = "/workspace",
             raise JobError(f"max_main_seconds must be an int in 1..{MAX_MAIN_SECONDS}")
         if _number(job["min_free_gib"], "min_free_gib") <= 0:
             raise JobError("min_free_gib must be positive")
-        if job["stage"] in TRAINING_STAGES:
+        if job["stage"] in TRAINING_STAGES and job["stage"] not in SOURCE_REBUILT_STAGES:
             _data(job["data"], workspace)
     _approval(job, now)
     return job

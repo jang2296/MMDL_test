@@ -55,7 +55,7 @@ class ParsedNote:
 
 def sample_seed(problem_id: str, stage: str, master_seed: int = MASTER_SEED) -> int:
     # stage "t1" is the MMMU rule of CLAUDE.md §7.2; stage "note" hashes the same string with ":note" appended.
-    if stage.startswith(("v16b-", "v17-")):
+    if stage.startswith(("v16b-", "v17-", "v18-")):
         key = f"{master_seed}:{problem_id}:{stage}"
     elif stage == "t1":
         key = f"{master_seed}:{problem_id}"

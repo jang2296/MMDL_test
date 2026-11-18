@@ -19,6 +19,8 @@ from .prep_v16b import (collect, eta_report, file_sha, grader, images, make_requ
 
 CAMPAIGN_V16B = "single-campaign-v16b"
 CAMPAIGN_V17 = "single-campaign-v17"
+CAMPAIGN_V18 = "single-campaign-v18"
+MODERN_VERSIONS = {"error-note-v17", "error-note-v18"}
 # single_vllm.submit raises above this measured prompt capacity bound; NOTE admission skips instead.
 NOTE_PROMPT_BOUND = 16384
 
@@ -57,17 +59,21 @@ def _binding(plan: dict) -> dict:
 def _plan_check(plan: dict) -> None:
     from .protocol import validate_protocol_v16b
 
-    is_v17 = plan["protocol"].get("version") == "error-note-v17"
+    is_v17 = plan["protocol"].get("version") in MODERN_VERSIONS
     if is_v17:
         from .protocol import validate_protocol_v17
-        validate_protocol_v17(plan["protocol"])
+        if plan["protocol"]["version"] == "error-note-v18":
+            from .protocol import validate_protocol_v18
+            validate_protocol_v18(plan["protocol"])
+        else:
+            validate_protocol_v17(plan["protocol"])
     else:
         validate_protocol_v16b(plan["protocol"])
     cfg = plan["protocol"]["training_contract"]
     smoke = cfg["local_smoke"]
     ids = [pid for block in plan["blocks"] for pid in block]
     expected = [item["problem_id"] for item in plan["items"]]
-    if (plan.get("version") != (CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B)
+    if (plan.get("version") != (CAMPAIGN_V18 if plan["protocol"]["version"] == "error-note-v18" else CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B)
             or plan.get("sha256") != digest({k: v for k, v in plan.items() if k != "sha256"})
             or ids != expected or len(ids) != len(set(ids)) or len(ids) != cfg["rl_items"]
             or len(plan["blocks"]) != cfg["rl_blocks"]
@@ -88,10 +94,13 @@ def prepare(args: argparse.Namespace) -> dict:
     from .protocol import SINGLE_IMAGE_V14, SMOKE_IMAGE_V16B, plain_protocol_v16b
     from .prep_v16b import select
 
-    is_v17 = version == "error-note-v17"
+    is_v17 = version in MODERN_VERSIONS
     if is_v17:
         from .protocol import plain_protocol_v17
         plain_protocol_v16b = plain_protocol_v17
+        if version == "error-note-v18":
+            from .protocol import plain_protocol_v18
+            plain_protocol_v16b = plain_protocol_v18
     args.output.mkdir(parents=True, exist_ok=True)
     path = args.output / "campaign-plan.json"
     if path.exists():
@@ -147,7 +156,7 @@ def prepare(args: argparse.Namespace) -> dict:
     protocol = plain_protocol_v16b(args.precision, rl_blocks=len(blocks), prep_updates=prep["prep_updates"],
         contracts=contracts, image=SMOKE_IMAGE_V16B if args.local_sequential else SINGLE_IMAGE_V14,
         local_smoke=args.local_sequential)
-    body = {"version": CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B, "protocol": protocol, "source": source, "inputs": inputs,
+    body = {"version": CAMPAIGN_V18 if version == "error-note-v18" else CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B, "protocol": protocol, "source": source, "inputs": inputs,
         "data_root": str(args.data_root.absolute()), "prep_root": str(args.prep_root.absolute()),
         "model_path": str(args.model_path.absolute()), "nf4_cache": str(args.nf4_cache.absolute()) if args.nf4_cache else None,
         "local_sequential": args.local_sequential, "items": items, "blocks": blocks, "block_size": size,
@@ -184,9 +193,12 @@ def _factory(args: argparse.Namespace):
 def load_f0(args: argparse.Namespace, *, image: dict) -> tuple[Any, dict]:
     from .protocol import ARM, V16B_CONTRACT_HASHES, plain_protocol_v16b
 
-    if getattr(args, "version", "error-note-v16b") == "error-note-v17":
+    if getattr(args, "version", "error-note-v16b") in MODERN_VERSIONS:
         from .protocol import plain_protocol_v17
         plain_protocol_v16b = plain_protocol_v17
+        if args.version == "error-note-v18":
+            from .protocol import plain_protocol_v18
+            plain_protocol_v16b = plain_protocol_v18
     cfg = plain_protocol_v16b(args.precision, rl_blocks=4 if args.local_sequential else 188,
         prep_updates=1 if args.local_sequential else 0,
         contracts={name: "0" * 64 for name in V16B_CONTRACT_HASHES}, image=image,
@@ -205,9 +217,12 @@ def calibrate_capacity(bundle: Any, args: argparse.Namespace, protocol: dict) ->
     from fine_tuning.notebook_rl.prompts import user_message
     load_items = data_api(protocol["version"]).load_items
     from .train_v16b import measure_update_memory_v16b
-    if protocol["version"] == "error-note-v17":
+    if protocol["version"] in MODERN_VERSIONS:
         from .train_v17 import measure_update_memory_v17
         measure_update_memory_v16b = measure_update_memory_v17
+        if protocol["version"] == "error-note-v18":
+            from .train_v18 import measure_update_memory_v18
+            measure_update_memory_v16b = measure_update_memory_v18
 
     items = [item for split in ("train", "prep", "monitor") for item in load_items(args.data_root, split)]
     image_count = max(len(item["image_paths"]) for item in items)
@@ -227,7 +242,7 @@ def calibrate_capacity(bundle: Any, args: argparse.Namespace, protocol: dict) ->
         "max_prompt_tokens": 24576 - 8192, "dataset_sha256": file_sha(args.data_root / "payload-receipt.json")}
     report = measure_update_memory_v16b(bundle, row, shape_bounds=shape_bounds,
                                       max_target_tokens=8192, max_input_tokens=shape_bounds["max_prompt_tokens"])
-    return seal(args.output / "capacity.json", {"version": "v17-capacity-v1" if protocol["version"] == "error-note-v17" else "v16b-capacity-v1", "report": report,
+    return seal(args.output / "capacity.json", {"version": "v18-capacity-v1" if protocol["version"] == "error-note-v18" else "v17-capacity-v1" if protocol["version"] == "error-note-v17" else "v16b-capacity-v1", "report": report,
         "image_count": image_count, "synthetic_image_size": [1792, 2240], "shape_bounds": shape_bounds,
         "synthetic_bound": True, "model_parameter_update": False, "source_sha256": digest(single.source_manifest()["actual_files"])})
 
@@ -257,10 +272,10 @@ def make_sampler(bundle: Any, args: argparse.Namespace, protocol: dict, *, image
         bundle.model.to("cpu")
         torch.cuda.empty_cache()
         try:
-            v17_options = ({"protocol_version": "error-note-v17",
-                "preflight_stage": getattr(args, "_preflight_stage", "f0")} if protocol["version"] == "error-note-v17" else {})
+            v17_options = ({"protocol_version": protocol["version"],
+                "preflight_stage": getattr(args, "_preflight_stage", "f0")} if protocol["version"] in MODERN_VERSIONS else {})
             sampler = SingleVllmSampler(args.model_path, kv_cache_gib=receipt["report"]["kv_cache_gib"],
-                max_num_seqs=16 if protocol["version"] == "error-note-v17" else 32,
+                max_num_seqs=16 if protocol["version"] in MODERN_VERSIONS else 32,
                 gpu_memory_utilization=args.gpu_memory_utilization, sleep=False,
                 eos_token_ids=eos if isinstance(eos, list) else [eos], image=image,
                 lora=True, sampling=sampling, version_registry=True, **v17_options)
@@ -334,7 +349,9 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
     report["training_signal"] = {key: stats.get(key) for key in (
         "t1_negative_candidate_tokens", "t1_negative_retained_tokens", "t1_negative_retained_ratio",
         "loop_confirmed", "loop_tokens_penalized", "length_nonloop_excluded",
-        "n_content_gradient_finite_nonzero", "note_gradient_retained", "verified_repair_parent_ids")}
+        "n_content_gradient_finite_nonzero", "note_gradient_retained", "verified_repair_parent_ids",
+        "consumed_row_ids", "note_parent_gradient_norms", "component_gradient_norms",
+        "note_update_alignment", "policy_mask_counts")}
     if items is not None:
         keys = ("expected_problem_ids", "expected_obs_problem_ids", "note_problem_ids", "resolve_problem_ids")
         sources = sorted({str(items[pid]["source"]) for ids in memberships.values() for pid in ids})
@@ -346,6 +363,63 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
             del detail["training_signal"]  # Joint gradients cannot be attributed by dividing source counts.
             report["sources"][source] = detail
     return report
+
+
+
+def v18_supply_report(records: dict[str, dict], ordered_items: list[dict], update_results: list[dict],
+                      consumed_row_ids: list[str]) -> dict:
+    """Fixed parent cohorts; joint update alignment is reported without source attribution."""
+    consumed = set(consumed_row_ids)
+    measured: set[str] = set()
+    nonzero: set[str] = set()
+    linked: set[str] = set()
+    alignments = []
+    for result in update_results:
+        stats = result["result"]["stats"]
+        norms = stats.get("note_parent_gradient_norms") or {}
+        measured.update(norms)
+        nonzero.update(pid for pid, groups in norms.items() if any(v > 0 for v in groups.values()))
+        if result["result"].get("optimizer_steps", 0):
+            linked.update(stats.get("verified_repair_parent_ids") or [])
+        if stats.get("note_update_alignment") is not None:
+            alignments.append({"global_slot": result["global_slot"], "measurement": stats["note_update_alignment"]})
+
+    def metrics(items: list[dict]) -> dict:
+        total: dict[str, Any] = {"parents": len(items), "t1_completed": 0, "supported_parents": 0, "claimed_parents": 0,
+                 "contradicted_parents": 0, "note_generated": 0, "verified_repair_parents": 0,
+                 "n_accepted": 0, "n_gradient_measured": 0, "n_gradient_nonzero": 0,
+                 "n_saved_update_linked": 0, "c_accepted": 0, "c_repair_used_and_consumed": 0,
+                 "note_conditions": {"self_found": 0, "location_given": 0}}
+        for item in items:
+            pid, record = item["problem_id"], records.get(item["problem_id"], {})
+            claims = [claim for key in ("t1_ledger", "obs_ledger") for claim in (record.get(key) or {}).get("claims", [])]
+            note, resolve = record.get("note_receipt") or {}, record.get("resolve_receipt") or {}
+            condition = note.get("note_condition") or (record.get("note_request_receipt") or {}).get("note_condition")
+            total["t1_completed"] += int("t1" in record)
+            total["supported_parents"] += int(bool((item.get("v18_private_verifier") or item.get("v17_private_verifier") or {}).get("repair_catalog_eligible")))
+            total["claimed_parents"] += int(bool(claims))
+            total["contradicted_parents"] += int(any(c.get("verdict") == "CONTRADICTED" for c in claims))
+            total["note_generated"] += int("note" in record)
+            total["verified_repair_parents"] += int(note.get("verified_repair_count", 0) > 0)
+            total["n_accepted"] += int(note.get("n_accepted", note.get("accepted")) is True)
+            total["n_gradient_measured"] += int(pid in measured)
+            total["n_gradient_nonzero"] += int(pid in nonzero)
+            total["n_saved_update_linked"] += int(pid in linked and pid + ":N" in consumed)
+            total["c_accepted"] += int(resolve.get("accepted") is True)
+            total["c_repair_used_and_consumed"] += int(bool(resolve.get("corrected_use_byte_spans")) and pid + ":C" in consumed)
+            if condition in total["note_conditions"]:
+                total["note_conditions"][condition] += 1
+        return total
+
+    cohorts = []
+    for start in range(0, len(ordered_items), 512):
+        members = ordered_items[start:start + 512]
+        sources = sorted({item["source"] for item in members})
+        cohorts.append({"start_position": start, "end_position_exclusive": start + len(members),
+            "counts": metrics(members), "sources": {source: metrics([i for i in members if i["source"] == source]) for source in sources}})
+    return {"cohorts": cohorts, "overall": metrics(ordered_items), "joint_note_update_alignment": alignments,
+            "gradient_attribution": "Parent norms and consumed N rows are counted; joint alignment is not divided by source.",
+            "effect_measured": False}
 
 
 def _checkpoint_path(state: dict) -> Path:
@@ -380,10 +454,12 @@ def _rollback(output: Path, slot: int, *, committed_checkpoint: Path | None = No
 def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_only: bool = False) -> dict:
     from fine_tuning.notebook_rl import checkpoint
     algorithm_version = plan["protocol"]["version"]
-    is_v17 = algorithm_version == "error-note-v17"
+    is_v17 = algorithm_version in MODERN_VERSIONS
+    is_v18 = algorithm_version == "error-note-v18"
     data = data_api(algorithm_version)
     load_items, validate = data.load_items, data.validate
     from .guard_v16b import GuardV16B
+    guard_class = GuardV16B
     from .protocol import ARM, EVAL_SAMPLING_V16B, TRAIN_SAMPLING_V16B, v16b_contract_for_update
     from .rl import policy_sha256
     from .run_v16 import _setup_execution, _state_equal
@@ -396,7 +472,11 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         from .protocol import v17_contract_for_update
         from .guard_v16b import GuardV17
         v16b_contract_for_update = v17_contract_for_update
-        GuardV16B = GuardV17
+        guard_class = GuardV17
+        if is_v18:
+            from . import v18_rows as v17_rows
+            from .protocol import v18_contract_for_update
+            v16b_contract_for_update = v18_contract_for_update
     _plan_check(plan)
     if is_v17:
         from .v17_preflight import bind_execution, bind_training
@@ -485,7 +565,7 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
     generated = read_sealed(checked(plan["inputs"]["f0"]))
     prep_rows = [row for batch in plan["prep_batches"] for row in batch]
     probe_rows = _encode(bundle, prep_rows[:1], all_items, image)
-    guard = GuardV16B(plan["blocks"], state.get("guard"))
+    guard = guard_class(plan["blocks"], state.get("guard"))
     signal_gate = None
     if is_v17:
         from .guard_v16b import SignalGateV17
@@ -621,7 +701,7 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         try:
             options = {"algorithm_version": algorithm_version} if is_v17 else {}
             records = collect(bundle, sampler, targets, data_root=args.data_root, split=split, out=output / label,
-                stage=("v17-" if is_v17 else "v16b-") + ("monitor" if split == "monitor" else "effect"),
+                stage=("v18-" if is_v18 else "v17-" if is_v17 else "v16b-") + ("monitor" if split == "monitor" else "effect"),
                 protocol_sha256=protocol["sha256"], sampling=EVAL_SAMPLING_V16B,
                 cap=cfg["max_tokens"]["monitor"], version=version, **options)
         finally:
@@ -662,6 +742,7 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         return state
     sampler.release_idle_versions()
     grade = grader(args.data_root, "train")
+    grade_v8 = grader(args.data_root, "train", raw_v8=True) if is_v18 else None
     contracts: dict[str, dict] = {}
     for item in plan["items"]:
         contracts[item["problem_id"]] = (v17_rows.problem_contract_v17(item) if is_v17
@@ -694,6 +775,8 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                         record["note_skip"] = {"reason": "NO_VERIFIED_ERROR"}
                         return None
                     prompt = note_request["prompt"]
+                    if is_v18:
+                        record["note_request_receipt"] = {key: value for key, value in note_request.items() if key != "prompt"}
                 else:
                     prompt = row_tools.build_note_prompt_v16b(view, fact_catalog=source["fact_catalog"],
                         rules=source["rules"], gold=item["evaluation"]["gold"])
@@ -712,7 +795,7 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             prompt = row_tools.build_resolve_prompt_v16b(p0(item), receipt["lesson"])
         else:
             prompt = p0(item)
-        request = make_request(item, prompt, ("v17-" if is_v17 else "v16b-") + kind.lower(),
+        request = make_request(item, prompt, ("v18-" if is_v18 else "v17-" if is_v17 else "v16b-") + kind.lower(),
             cap=cfg["max_tokens"][kind.lower()], sampling=TRAIN_SAMPLING_V16B, version=version,
             protocol_sha256=protocol["sha256"],
             policy_sha256=sampler.live_registry()[str(version)]["policy_sha256"], engine_step=sampler.engine_steps)
@@ -730,16 +813,28 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         if kind in {"T1", "RESOLVE"}:
             status, extracted = grade(item, out)
             out.update(status=status, extracted=extracted)
+            if grade_v8 is not None:
+                raw_status, raw_extracted = grade_v8(item, out)
+                out.update(v8_status=raw_status, v8_extracted=raw_extracted)
         if is_v17:
             source = contracts[item["problem_id"]]
             view = record_view(item, record)
             kwargs = {"verifier": source["verifier"], "tokenizer": bundle.processor.tokenizer,
                       "fact_catalog": source["fact_catalog"], "rules": source["rules"]}
             if kind == "T1":
-                reward, reason, pg = v17_rows.reward_v17(out["status"], out["finish_reason"], out["text"], out["extracted"])
+                if is_v18:
+                    policy_receipt = v17_rows.t1_policy_receipt_v18(view, gold=item["evaluation"]["gold"],
+                        choices=item["evaluation"]["choices"], **kwargs)
+                    record["t1_policy_receipt"] = policy_receipt
+                    view["t1_policy_receipt"] = policy_receipt
+                    reward, reason, pg = (policy_receipt[key] for key in ("reward", "reason", "pg"))
+                else:
+                    reward, reason, pg = v17_rows.reward_v17(out["status"], out["finish_reason"], out["text"], out["extracted"])
                 if not out["generation"]["completion_token_ids"]:
                     reward, reason, pg = 0.0, "EMPTY_RESPONSE", False
                 receipt = {"reward": reward, "pg": pg, "reason": reason, "output_sha256": digest(out)}
+                if is_v18:
+                    receipt["policy_receipt"] = policy_receipt
                 receipt["sha256"] = digest(receipt)
                 ledger = v17_rows.audit_t1_v17(view, **kwargs)
                 admission = v17_rows.verify_solution_v17(view, gold=item["evaluation"]["gold"],
@@ -812,7 +907,13 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                     loss_probability_space="processed-full-vocab-v1",
                     loss_token_mask=[True] * len(out["generation"]["completion_token_ids"]),
                     verified_content_token_mask=[], knowledge_status="ANSWER_REWARD" if kind == "T1" else "BOUNDED_OBSERVATION")
-                if reward.get("reason") == "LOOP_CONFIRMED":
+                if is_v18 and kind == "T1":
+                    policy = record["t1_policy_receipt"]
+                    row.update(loss_token_mask=policy["loss_token_mask"],
+                               t1_policy_receipt=policy, format_receipt=policy.get("format_receipt"))
+                    row.update({key: policy[key] for key in ("pg_mask_reason", "pg_byte_spans", "policy_mask_receipt")
+                                if key in policy})
+                elif reward.get("reason") == "LOOP_CONFIRMED":
                     row["loss_token_mask"] = v17_rows.loop_token_mask_v17(bundle.processor.tokenizer,
                         out["generation"]["completion_token_ids"], out["text"])
                 if kind == "T1":
@@ -838,6 +939,9 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         return [row] if row is not None else []
 
     def baseline(item: dict, kind: str, history: list[dict], cutoff: int) -> dict:
+        if is_v18 and kind == "OBS":
+            from .v16b_runtime import observation_baseline_v18
+            return observation_baseline_v18(item["layer"], history, history_cutoff=cutoff, prior=prior)
         return (row_tools.baseline_receipt_v16b(item, history, prior=prior, history_cutoff=cutoff) if kind == "T1" else
                 row_tools.obs_baseline_v16b(item["layer"], history, history_cutoff=cutoff, prior=prior))
 
@@ -931,6 +1035,11 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         if sampler.has_unfinished_requests() or envelope["state"]["pending"] != pending:
             raise ValueError("campaign: runtime drain/preserved output manifest differs")
         saved = commit("stopped" if state["status"] == "STOPPED" else "rl", envelope)
+        if is_v18:
+            updates = [read_sealed(path) for path in sorted((output / "update-results").glob("slot-*.json"))]
+            seal(output / "supply-reports" / f"slot-{v}.json", {"version": "v18-fixed-cohort-supply-v1",
+                "plan_sha256": plan["sha256"], "checkpoint": saved,
+                "report": v18_supply_report(runtime.records, plan["items"], updates, cursor["consumed_row_ids"])})
         return finish_signal_gate(v, envelope, saved) if is_v17 else saved
 
     callbacks = RuntimeCallbacks(make_request=request, complete=complete, rows=build_rows, baseline=baseline,
@@ -962,6 +1071,10 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                 "plan_sha256": plan["sha256"], "checkpoint": state["checkpoint"],
                 "monitor_sha256": final_monitor["sha256"], "effect_sha256": final_effect["sha256"],
                 "decision": evaluation_gate(final_monitor["comparison"], final_effect["comparison"])})
+        if is_v18:
+            closure = runtime.terminal_closure(cursor.get("consumed_row_ids", []))
+            seal(output / "terminal-closure.json", {"version": "v18-terminal-closure-v1",
+                "plan_sha256": plan["sha256"], "checkpoint": state["checkpoint"], **closure})
         state["status"] = "COMPLETE"
         body = {k: v for k, v in state.items() if k != "sha256"}
         state = body | {"sha256": digest(body)}
@@ -992,6 +1105,12 @@ def require_complete(output: Path, *, evaluation_decision: Path | None = None,
             or final.get("checkpoint") != state["checkpoint"] or state["cursor"]["slot"] != plan["total_slots"]
             or state["cursor"].get("phase") != "final"):
         raise ValueError("v16b campaign: final monitor/checkpoint binding changed")
+    if plan["protocol"]["version"] == "error-note-v18":
+        closure = read_sealed(output / "terminal-closure.json")
+        if (closure.get("plan_sha256") != plan["sha256"] or closure.get("checkpoint") != state["checkpoint"]
+                or closure.get("status") != "DRAINED_AND_SETTLED" or closure.get("pending_requests") != 0
+                or closure.get("unconsumed_rows") != 0):
+            raise ValueError("v18 campaign: terminal closure does not bind the final checkpoint")
     if check_evaluation and plan["protocol"]["version"] == "error-note-v17" and not plan["local_sequential"]:
         admission = read_sealed(output / "evaluation-admission.json")
         if admission["plan_sha256"] != plan["sha256"] or admission["checkpoint"] != state["checkpoint"]:
@@ -1042,7 +1161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("command", choices=("prepare", "advance", "reload", "require-complete", "export", "calibrate", "preflight", "training-artifact-seal"))
     for name in ("data-root", "prep-root", "model-path", "output"):
         parser.add_argument("--" + name, type=Path, required=name == "output")
-    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17"), default="error-note-v16b")
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18"), default="error-note-v16b")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="bf16")
     parser.add_argument("--engine", choices=("hf", "vllm"), default="vllm")
     parser.add_argument("--local-sequential", action="store_true")
@@ -1059,6 +1178,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--artifact-output", type=Path)
     parser.add_argument("--training-artifact-seal", "--training-seal", type=Path)
+    parser.add_argument("--artifact-verification", type=Path)
     parser.add_argument("--engine-validation-receipt", type=Path)
     parser.add_argument("--engine-validation-receipt-sha256")
     for name in ("calibration", "functional-receipt", "receipt-output", "preflight-output",
@@ -1074,15 +1194,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.resume_funding_stop and args.command != "advance":
         raise ValueError("v16b campaign: --resume-funding-stop applies to advance only")
     if args.command == "training-artifact-seal":
-        if (args.version != "error-note-v17" or args.execution_phase != "training"
-                or args.export_output is None or args.evaluation_decision is None):
+        if (args.version not in MODERN_VERSIONS or args.execution_phase != "training"
+                or args.export_output is None or (args.version == "error-note-v17" and args.evaluation_decision is None)):
             raise ValueError("training-artifact-seal requires v17 training, export and evaluation decision")
         from .v17_artifacts import create_training_artifacts
         result = create_training_artifacts(args, read_sealed(args.output / "campaign-plan.json"))
         print(json.dumps({"status": result["status"], "sha256": result["sha256"]}))
         return 0
     if args.command in {"require-complete", "export"}:
-        if args.version == "error-note-v17":
+        if args.version in MODERN_VERSIONS:
             from .v17_preflight import bind_execution, bind_training
             bind = bind_training if args.execution_phase == "training" else bind_execution
             bind(args, read_sealed(args.output / "campaign-plan.json"))
@@ -1105,12 +1225,12 @@ def main(argv: list[str] | None = None) -> int:
     with single._runtime_lock(args.output, ".v16b-campaign.lock"):
         plan = prepare(args)
         if args.command == "calibrate":
-            if args.version != "error-note-v17":
+            if args.version not in MODERN_VERSIONS:
                 raise ValueError("calibrate requires explicit v17")
             from .v17_preflight import calibrate
             result = calibrate(args, plan)
         elif args.command == "preflight":
-            if args.version != "error-note-v17":
+            if args.version not in MODERN_VERSIONS:
                 raise ValueError("preflight requires explicit v17")
             from .v17_preflight import trained_export_preflight
             result = trained_export_preflight(args, plan)

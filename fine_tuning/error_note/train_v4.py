@@ -267,6 +267,10 @@ def encode_single_row(processor: Any, model_config: Any, row: dict, images: list
     is the module constant IMAGE."""
     from .content_v16 import ROW_SCHEMA
 
+    if row.get("schema") == "error-note-v18-row-v1":
+        from .train_v18 import encode_v18_row
+
+        return encode_v18_row(processor, model_config, row, images, image=image or IMAGE)
     if row.get("schema") == "error-note-v17-row-v1":
         from .train_v17 import encode_v17_row
 
@@ -600,7 +604,8 @@ def _require_single_zero_dropout(bundle: PolicyBundle) -> None:
 
 def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: dict, token_budget: int = 0,
                           components: Iterable[str] = ("PG", "KL", "A1", "A2", "B", KIND_HUMAN), *,
-                          capacity: Any = None, force_full_kl: bool = False, capture: Any = None) -> dict:
+                          capacity: Any = None, force_full_kl: bool = False, capture: Any = None,
+                          note_gradient_capture: dict | None = None) -> dict:
     """One frozen-policy block, fixed B*C PG/raw KL and per-kind row-mean SFT; no optimizer or scheduler.
 
     v10: PG = -(reward - b(source)) * sum(logprobs) / (B * 256) on every non-excluded RL row, and A2 rows each carry
@@ -615,6 +620,12 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     mass (no row cap); the LR schedule and the A2 minimum are fixed by the contract."""
     from .protocol import VERSION_CONTENT_V16, VERSION_V16B
 
+    if contract.get("version") == "error-note-v18":
+        from .train_v18 import backward_v18_block
+
+        selected_v18 = tuple(components) if set(components) <= {"PG", "RL", "OBS", "KL", "A1", "C", "N", "PREP_SELF", "PREP_HUMAN"} else None
+        return backward_v18_block(bundle, encoded, contract, token_budget, components=selected_v18,
+                                  capacity=capacity, note_gradient_capture=note_gradient_capture)
     if contract.get("version") == "error-note-v17":
         from .train_v17 import backward_v17_block
 

@@ -72,7 +72,7 @@ PARAMS_VERSION_V2 = "error-note-plan-params-v2"
 PARAMS_VERSION_V3 = "error-note-plan-params-v3"
 V3_STAGES = ("note-v3-collect", "note-v3-resolve", "note-v3-train")
 SINGLE_STAGES = ("single-pilot", "single-main", "single-direct")
-STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES, "content-v16", "v16b", "v17-calibration", "v17", "v17-train", "v17-eval")
+STAGES = ("note-300", "note-3417", "note-v2", *V3_STAGES, *SINGLE_STAGES, "content-v16", "v16b", "v17-calibration", "v17", "v17-train", "v17-eval", "v18-train", "v18-eval")
 ARMS = ("note", "solution")
 TIMEOUT_KINDS = ("collect", "train", "reload", "export")
 PATH_KEYS = ("python", "repo_root", "build_root", "model_path", "out_root")
@@ -123,7 +123,7 @@ def _check(stage: str, params: Any) -> dict[str, Any]:
         raise ValueError(f"stage must be one of {STAGES}")
     if not isinstance(params, dict):
         raise ValueError("params must be a JSON object")
-    if stage in ("v17-train", "v17-eval"):
+    if stage in ("v17-train", "v17-eval", "v18-train", "v18-eval"):
         return _check_v17_split(stage, params)
     if stage in ("v17-calibration", "v17"):
         return _check_v17(params, calibration=stage == "v17-calibration")
@@ -980,6 +980,7 @@ def _plan_v17(p: dict[str, Any], *, calibration: bool) -> dict[str, Any]:
                             f"{out}/recovery", "--name", "v17-final", p["run_dir"]]},
         "steps": prefix + selected}
 
+PARAMS_VERSION_V18_SPLIT = "error-note-plan-params-v18-split-v1"
 PARAMS_VERSION_V17_SPLIT = "error-note-plan-params-v17-split-v1"
 V17_SPLIT_COMMON_PATHS = ("python", "repo_root", "model_path", "out_root", "run_dir")
 V17_TRAIN_PATHS = ("data_root", "bundle_manifest_path", "bundle_archive_path",
@@ -994,16 +995,26 @@ V17_SPLIT_FUNDING_KEYS = {"balance_usd", "balance_observed_at", "first_bill_at",
 
 
 def _check_v17_split(stage: str, p: dict[str, Any]) -> dict[str, Any]:
-    training = stage == "v17-train"
-    paths = V17_TRAIN_PATHS if training else V17_EVAL_PATHS
-    hashed = V17_TRAIN_HASHED if training else V17_EVAL_HASHED
+    v18 = stage in ("v18-train", "v18-eval")
+    training = stage.endswith("-train")
+    paths: tuple[str, ...] = V17_TRAIN_PATHS if training else V17_EVAL_PATHS
+    hashed: tuple[str, ...] = V17_TRAIN_HASHED if training else V17_EVAL_HASHED
     extras = ({"training_estimate_seconds", "training_estimate_basis"} if training else
               {"long_tail_allowance_seconds", "long_tail_basis", "eval_engine_mode"})
+    if v18 and training:
+        paths = ("data_root", "cache_dir", "functional_receipt_path")
+        hashed = ()
+    if v18 and not training:
+        extras = extras | {"evaluation_authorization"}
     keys = {"version", "commit", "timeouts", "hourly_usd", "gpu_type", "funding",
             *V17_SPLIT_COMMON_PATHS, *paths, *(name + "_sha256" for name in hashed), *extras}
-    optional = set() if training else {"pf5_vision_exception"}
-    if not keys <= set(p) <= keys | optional or p.get("version") != PARAMS_VERSION_V17_SPLIT:
+    optional = {"guard_risk_acceptance"} if v18 and training else (set() if training or v18 else {"pf5_vision_exception"})
+    if v18 and not training and (not isinstance(p.get("evaluation_authorization"), str) or not p["evaluation_authorization"].strip()):
+        raise ValueError("v18 evaluation plan requires the operator's actual evaluation decision")
+    if not keys <= set(p) <= keys | optional or p.get("version") != (PARAMS_VERSION_V18_SPLIT if v18 else PARAMS_VERSION_V17_SPLIT):
         raise ValueError("v17 split plan: exact versioned stage parameters required")
+    if "guard_risk_acceptance" in p and (not isinstance(p["guard_risk_acceptance"], str) or not p["guard_risk_acceptance"].strip()):
+        raise ValueError("guard risk acceptance requires an explicit reason")
     if "pf5_vision_exception" in p and (not isinstance(p["pf5_vision_exception"], str)
                                          or not p["pf5_vision_exception"].strip()):
         raise ValueError("v17 split plan: pf5_vision_exception must be the recorded authorization text")
@@ -1067,6 +1078,11 @@ def _check_v17_split(stage: str, p: dict[str, Any]) -> dict[str, Any]:
 
 def _split_meta(stage: str, p: dict[str, Any], estimate: float | None) -> dict[str, Any]:
     from .protocol import VERSION_V17, V17_IDENTIFIERS, V17_SPECIFICATION_SHA256
+    if stage.startswith("v18-"):
+        from .protocol import VERSION_V18, V18_IDENTIFIERS, V18_SPECIFICATION_SHA256
+        version, contract, specification = VERSION_V18, V18_IDENTIFIERS, V18_SPECIFICATION_SHA256
+    else:
+        version, contract, specification = VERSION_V17, V17_IDENTIFIERS, V17_SPECIFICATION_SHA256
     funding = dict(p["funding"])
     estimated_cost = None if estimate is None else (
         (estimate + funding["recovery_seconds"]) * (p["hourly_usd"] + funding["storage_usd_per_hour"]) / 3600)
@@ -1074,11 +1090,12 @@ def _split_meta(stage: str, p: dict[str, Any], estimate: float | None) -> dict[s
                 "estimated_cost_usd": estimated_cost, "estimated_cost_stops_execution": False,
                 "initial_snapshot_decision": ("PENDING_ENGINE_VALIDATION" if estimated_cost is None else
                     "RECHARGE_REQUESTED" if funding["balance_usd"] < estimated_cost + 1.5 else "CONTINUE")}
-    return {"stage": stage, "job_stage": "single-main" if stage == "v17-train" else "eval-course",
+    job_stage = ("v18-main" if stage == "v18-train" else "single-main") if stage.endswith("-train") else "eval-course"
+    return {"stage": stage, "job_stage": job_stage,
             "params_sha256": sha256_bytes(json.dumps(p, sort_keys=True, separators=(",", ":")).encode()),
             "generator": "fine_tuning.error_note.plan", "repo_root": p["repo_root"], "code_commit": p["commit"],
-            "protocol_version": VERSION_V17, "protocol_contract": deepcopy(V17_IDENTIFIERS),
-            "specification_sha256": V17_SPECIFICATION_SHA256, "total_timeout_seconds": None,
+            "protocol_version": version, "protocol_contract": deepcopy(contract),
+            "specification_sha256": specification, "total_timeout_seconds": None,
             "training_elapsed_cutoff": None, "evaluation_watchdog_seconds": None,
             "financial_mode": "balance_reserve_only", "funding": funding, "gpu_type": p["gpu_type"],
             "cloud_execution": False, "guard_stop_auto_evaluate": False}
@@ -1099,11 +1116,14 @@ def _split_prefix(stage: str, p: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _plan_v17_train(p: dict[str, Any]) -> dict[str, Any]:
-    from .protocol import VERSION_V17
+    from .protocol import VERSION_V17, VERSION_V18
+    v18 = p["version"] == PARAMS_VERSION_V18_SPLIT
+    stage = "v18-train" if v18 else "v17-train"
+    version = VERSION_V18 if v18 else VERSION_V17
     py, out = p["python"], p["out_root"]
     prep, campaign, exported = f"{out}/prep", f"{out}/campaign", f"{out}/export-final"
     decision, artifact = f"{out}/evaluation-decision.json", f"{out}/training-artifacts.json"
-    steps = _split_prefix("v17-train", p)
+    steps = _split_prefix(stage, p)
 
     def add(name: str, argv: list[str], files: list[str], kind: str | None = "cpu") -> None:
         item: dict[str, Any] = {"name": name, "argv": argv, "expect_files": files}
@@ -1111,16 +1131,28 @@ def _plan_v17_train(p: dict[str, Any]) -> dict[str, Any]:
             item["timeout_seconds"] = p["timeouts"][kind]
         steps.append(item)
 
-    for name in V17_TRAIN_HASHED:
-        add("pin-" + name.replace("_", "-"), [py, "-m", CHAIN, "pin", "--file", p[name + "_path"],
-            "--sha256", p[name + "_sha256"]], [])
-    add("verify-data", [py, "-m", "fine_tuning.notebook_rl.pod.data_bundle", "verify",
-        "--manifest", p["bundle_manifest_path"], "--manifest-sha256", p["bundle_manifest_sha256"]], [])
-    add("guard-falsealarm-gate", [py, "-m", "fine_tuning.error_note.guard_v16b", "--version", VERSION_V17,
-        "--manifest", p["guard_manifest_path"], "--check-receipt", p["guard_falsealarm_path"]], [])
+    if v18:
+        recipe = f"{p['repo_root']}/fine_tuning/error_note/v18_recipe.json"
+        add("prepare-data", [py, "-m", "fine_tuning.error_note.v18_data", "prepare",
+            "--recipe", recipe, "--cache-dir", p["cache_dir"], "--output", p["data_root"],
+            "--tokenizer", p["model_path"]],
+            [f"{p['data_root']}/validation.json"], None)
+        guard = f"{out}/guard/guard-falsealarm.json"
+        add("guard-falsealarm-gate", [py, "-m", "fine_tuning.error_note.guard_v16b", "--version", version,
+            "--materialize-data-root", p["data_root"], "--output", guard,
+            *(["--risk-acceptance", p["guard_risk_acceptance"]] if p.get("guard_risk_acceptance") else [])],
+            [guard])
+    else:
+        for name in V17_TRAIN_HASHED:
+            add("pin-" + name.replace("_", "-"), [py, "-m", CHAIN, "pin", "--file", p[name + "_path"],
+                "--sha256", p[name + "_sha256"]], [])
+        add("verify-data", [py, "-m", "fine_tuning.notebook_rl.pod.data_bundle", "verify",
+            "--manifest", p["bundle_manifest_path"], "--manifest-sha256", p["bundle_manifest_sha256"]], [])
+        add("guard-falsealarm-gate", [py, "-m", "fine_tuning.error_note.guard_v16b", "--version", VERSION_V17,
+            "--manifest", p["guard_manifest_path"], "--check-receipt", p["guard_falsealarm_path"]], [])
     for command in ("select", "generate", "rows"):
         argv = [py, "-m", "fine_tuning.error_note.prep_v16b", command, "--data-root", p["data_root"],
-                "--output", prep, "--version", VERSION_V17]
+                "--output", prep, "--version", version]
         if command != "select":
             argv += ["--model-path", p["model_path"]]
         if command == "generate":
@@ -1129,7 +1161,7 @@ def _plan_v17_train(p: dict[str, Any]) -> dict[str, Any]:
     cmd = [py, "-m", "fine_tuning.error_note.campaign_v16b"]
     common = ["--data-root", p["data_root"], "--prep-root", prep, "--model-path", p["model_path"],
               "--output", campaign, "--precision", "bf16", "--engine", "vllm",
-              "--version", VERSION_V17, "--code-commit", p["commit"], "--execution-phase", "training"]
+              "--version", version, "--code-commit", p["commit"], "--execution-phase", "training"]
     add("campaign-prepare", [*cmd, "prepare", *common], [f"{campaign}/campaign-plan.json"])
     add("bf16-functional-calibration", [*cmd, "calibrate", *common, "--allow-model-run",
         "--receipt-output", p["functional_receipt_path"]], [p["functional_receipt_path"]], "calibrate")
@@ -1141,42 +1173,46 @@ def _plan_v17_train(p: dict[str, Any]) -> dict[str, Any]:
                 "--functional-receipt-sha256", "V17_FUNCTIONAL_SHA", *extra]
 
     add("campaign-advance", bound("advance", "--allow-model-run", "--allow-update", "--allow-save"), [], None)
-    add("evaluation-decision", [py, "-m", "fine_tuning.error_note.v17_eval", "decide",
-        "--campaign-output", campaign, "--authorization", V17_STANDING_EVALUATION_AUTHORIZATION,
-        "--output", decision], [decision])
-    add("require-complete", bound("require-complete", "--evaluation-decision", decision),
-        [f"{campaign}/export-ready.json"])
+    decision_args = [] if v18 else ["--evaluation-decision", decision]
+    if not v18:
+        add("evaluation-decision", [py, "-m", "fine_tuning.error_note.v17_eval", "decide",
+            "--campaign-output", campaign, "--authorization", V17_STANDING_EVALUATION_AUTHORIZATION,
+            "--output", decision], [decision])
+    add("require-complete", bound("require-complete", *decision_args), [f"{campaign}/export-ready.json"])
     reload = f"{out}/reload-final.json"
     add("reload", [py, "-m", CHAIN, "capture", "--output", reload, "--",
         *bound("reload", "--allow-model-run")], [reload], "reload")
     add("export", bound("export", "--base", p["model_path"], "--export-output", exported,
-        "--evaluation-decision", decision), [f"{exported}/model_ref.json"], "export")
+        *decision_args), [f"{exported}/model_ref.json"], "export")
     add("training-artifact-seal", bound("training-artifact-seal", "--export-output", exported,
-        "--evaluation-decision", decision, "--artifact-output", artifact), [artifact])
-    meta = _split_meta("v17-train", p, p["training_estimate_seconds"])
+        *decision_args, "--artifact-output", artifact), [artifact])
+    meta = _split_meta(stage, p, p["training_estimate_seconds"])
     meta |= {"training_estimate_seconds": p["training_estimate_seconds"],
              "training_estimate_basis": p["training_estimate_basis"], "initial_policy": "fresh_F0",
              "training_counts": {"main": 3000, "prep_candidates": 512, "development": 200},
              "training_artifacts_path": artifact,
              "after_run_closed": [py, "-m", "fine_tuning.notebook_rl.pod.collect", "pack", "--out-dir",
-                                   f"{out}/recovery", "--name", "v17-train-final", p["run_dir"]]}
+                                   f"{out}/recovery", "--name", f"{stage}-final", p["run_dir"]]}
     return {"version": SPEC_VERSION, "meta": meta, "steps": steps}
 
 
 def _plan_v17_eval(p: dict[str, Any]) -> dict[str, Any]:
+    v18 = p["version"] == PARAMS_VERSION_V18_SPLIT
+    stage = "v18-eval" if v18 else "v17-eval"
+    run_id = "v18-ft-single" if v18 else "v17-ft-single"
     py, out = p["python"], p["out_root"]
     verified, validation = f"{out}/training-artifacts-verified.json", f"{out}/engine-validation.json"
-    steps = _split_prefix("v17-eval", p)
+    steps = _split_prefix(stage, p)
     for name in V17_EVAL_HASHED:
         steps.append(_step("pin-" + name.replace("_", "-"), [py, "-m", CHAIN, "pin",
             "--file", p[name + "_path"], "--sha256", p[name + "_sha256"]], [], "cpu", p["timeouts"]))
     steps += [
         _step("verify-training-artifacts", [py, "-m", "fine_tuning.error_note.v17_artifacts", "verify",
             "--receipt", p["training_artifacts_path"], "--repo", p["repo_root"], "--commit", p["commit"],
-            "--output", verified], [verified], "cpu", p["timeouts"]),
+            "--output", verified, *(["--expected-protocol", "error-note-v18", "--authorization", p["evaluation_authorization"]] if v18 else [])], [verified], "cpu", p["timeouts"]),
         _step("eval-engine-validation", ["/usr/bin/env", "VLLM_ENABLE_V1_MULTIPROCESSING=0",
             py, "-m", "fine_tuning.error_note.v17_eval_engine", "validate", "--training-seal",
-            p["training_artifacts_path"], "--model-ref", f"{p['export_root']}/model_ref.json",
+            p["training_artifacts_path"], *(["--artifact-verification", verified] if v18 else []), "--model-ref", f"{p['export_root']}/model_ref.json",
             "--base-path", p["model_path"], "--requests", p["performance_requests_path"],
             "--requests-sha256", p["performance_requests_sha256"], "--hardware", p["hardware_path"],
             "--eval-protocol", f"{p['repo_root']}/fine_tuning/notebook_rl/eval_configs/mmmu_val_v8_b2_seed3407.yaml",
@@ -1192,10 +1228,10 @@ def _plan_v17_eval(p: dict[str, Any]) -> dict[str, Any]:
             "finalize-evaluation", "--params-json", json.dumps(p, sort_keys=True, separators=(",", ":")),
             "--engine-validation", validation, "--output-dir", f"{out}/continuation", "--run"],
          "expect_files": [f"{out}/continuation/continuation-seal.json",
-                          f"{out}/eval-artifacts/runs/v17-ft-single/summary.json",
+                          f"{out}/eval-artifacts/runs/{run_id}/summary.json",
                           f"{out}/proof/compass/dual-summary.json"]},
     ]
-    meta = _split_meta("v17-eval", p, None)
+    meta = _split_meta(stage, p, None)
     meta |= {"engine_selection": "cuda_graph_then_eager_before_preregistration",
              "engine_validation_path": validation, "continuation_sealed_after_validation": True}
     return {"version": SPEC_VERSION, "meta": meta, "steps": steps}
@@ -1208,7 +1244,16 @@ def _evaluation_continuation(p: dict[str, Any], validation_path: Path) -> dict[s
     checked = load_engine_validation(validation_path)
     watchdog, slots = checked["evaluation_watchdog_seconds"], checked["slots"]
     py, out, exported = p["python"], p["out_root"], p["export_root"]
-    proof, artifact, run_id = f"{out}/proof", f"{out}/eval-artifacts", "v17-ft-single"
+    v18 = p["version"] == PARAMS_VERSION_V18_SPLIT
+    stage = "v18-eval" if v18 else "v17-eval"
+    if v18 and (checked.get("evaluation_authorization", {}).get("evaluation_decision", {}).get("authorization")
+                != p["evaluation_authorization"] or checked.get("artifact_verification", {}).get("path")
+                != f"{out}/training-artifacts-verified.json"
+                or checked.get("training_artifact_path") != p["training_artifacts_path"]):
+        raise ValueError("v18 engine validation belongs to another evaluation authorization or training artifact")
+    if v18 and slots != 9:
+        raise ValueError("v18 evaluation requires measured capacity for exactly nine slots")
+    proof, artifact, run_id = f"{out}/proof", f"{out}/eval-artifacts", "v18-ft-single" if v18 else "v17-ft-single"
     prereg, ledger, run = f"{proof}/prereg.json", f"{proof}/ledger.jsonl", f"{artifact}/runs/{run_id}"
     model_ref = f"{exported}/model_ref.json"
     binding = ["--calibration", str(validation_path), "--engine-validation", str(validation_path),
@@ -1224,7 +1269,7 @@ def _evaluation_continuation(p: dict[str, Any], validation_path: Path) -> dict[s
         add("subset-" + kind, [py, "-m", PROOF, "make-subset", "--kind", kind,
             "--output", f"{proof}/{kind}.json", "--b2-predictions", p["b2_predictions_path"]],
             [f"{proof}/{kind}.json"])
-    add("preregister-v17", [py, "-m", PROOF, "preregister", "--format", "v12", "--output", prereg,
+    add("preregister-v18" if v18 else "preregister-v17", [py, "-m", PROOF, "preregister", "--format", "v12", "--output", prereg,
         "--subset", f"{proof}/wrong.json", "--rest-subset", f"{proof}/rest.json", "--all-subset",
         f"{proof}/all.json", "--b2-predictions", p["b2_predictions_path"], "--ft-single-model-ref", model_ref,
         *binding], [prereg])
@@ -1247,7 +1292,7 @@ def _evaluation_continuation(p: dict[str, Any], validation_path: Path) -> dict[s
     add("compass-separate", [py, p["cv_script_path"], "--python", py, "--predictions",
         f"{run}/predictions.jsonl", "--b2-predictions", p["b2_predictions_path"], "--output",
         f"{proof}/compass"], [f"{proof}/compass/dual-summary.json"], "compass")
-    meta = _split_meta("v17-eval", p, checked["estimated_evaluation_seconds"])
+    meta = _split_meta(stage, p, checked["estimated_evaluation_seconds"])
     meta |= {"continuation": True, "evaluation_watchdog_seconds": watchdog,
              "estimated_evaluation_seconds": checked["estimated_evaluation_seconds"],
              "eval_engine_mode": checked["selected_mode"], "eval_concurrency": slots,
@@ -1255,7 +1300,7 @@ def _evaluation_continuation(p: dict[str, Any], validation_path: Path) -> dict[s
              "training_artifacts_sha256": p["training_artifacts_sha256"],
              "request_order": "sha256(v17-eval-order:<sample_id>)",
              "after_run_closed": [py, "-m", "fine_tuning.notebook_rl.pod.collect", "pack", "--out-dir",
-                                   f"{out}/recovery", "--name", "v17-eval-final", p["run_dir"]]}
+                                   f"{out}/recovery", "--name", f"{stage}-final", p["run_dir"]]}
     return {"version": SPEC_VERSION, "meta": meta, "steps": steps}
 
 
@@ -1264,14 +1309,17 @@ def finalize_evaluation(params: dict[str, Any], validation_path: Path, output_di
     from fine_tuning.notebook_rl.pod.common import sha256_file, write_json
     from fine_tuning.notebook_rl.pod.chain import check_spec, run
     from .v17_artifacts import verify_training_artifacts
-    p = _check_v17_split("v17-eval", params)
+    stage = "v18-eval" if params.get("version") == PARAMS_VERSION_V18_SPLIT else "v17-eval"
+    p = _check_v17_split(stage, params)
     if output_dir != Path(p["out_root"]) / "continuation":
         raise ValueError("v17 evaluation continuation must be recovered inside out_root/continuation")
     if validation_path != Path(p["out_root"]) / "engine-validation.json":
         raise ValueError("v17 evaluation continuation requires this job's engine validation")
     if sha256_file(p["training_artifacts_path"]) != p["training_artifacts_sha256"]:
         raise ValueError("v17 evaluation continuation: training artifact receipt changed")
-    verify_training_artifacts(Path(p["training_artifacts_path"]))
+    artifacts = verify_training_artifacts(Path(p["training_artifacts_path"]))
+    if stage == "v18-eval" and artifacts.get("training_protocol_version") != "error-note-v18":
+        raise ValueError("v18 evaluation requires a v18 training seal")
     spec = check_spec(_evaluation_continuation(p, validation_path))
     output_dir.mkdir(parents=True, exist_ok=True)
     spec_path, seal_path = output_dir / "spec.json", output_dir / "continuation-seal.json"
@@ -1290,10 +1338,50 @@ def finalize_evaluation(params: dict[str, Any], validation_path: Path, output_di
         result["returncode"] = run(spec_path, result["spec_sha256"], log_name="eval_continuation_log.jsonl")
     return result
 
+def _resume_steps(spec: dict) -> dict:
+    from fine_tuning.notebook_rl.pod.chain import check_spec
+
+    steps = list(spec["steps"])
+    first = next(i for i, step in enumerate(steps) if step["name"] == "evaluate-900")
+    resume = deepcopy(steps[first:])
+    argv = resume[0]["argv"]
+    module = argv.index("fine_tuning.error_note.v17_eval")
+    if argv[module + 1] != "run" or spec["meta"]["stage"] != "v18-eval":
+        raise ValueError("expected v18 sealed evaluation run")
+    argv[module + 1] = "resume"
+    return check_spec({**spec, "steps": resume})
+
+
+def resume_evaluation(params: dict, *, execute: bool = False) -> dict:
+    """Resume the registered run using the exact original commands and a separate attempt log."""
+    import uuid
+    from fine_tuning.notebook_rl.pod.chain import run
+
+    _check_v17_split("v18-eval", params)
+    root = Path(params["out_root"])
+    directory = root / "continuation"
+    if not all((directory / name).is_file() for name in ("spec.json", "continuation-seal.json")):
+        raise ValueError("registered evaluation continuation is missing")
+    original = finalize_evaluation(params, root / "engine-validation.json", directory)
+    spec = _resume_steps(json.loads(Path(original["spec"]).read_text()))
+    if not (root / "proof" / "ledger.jsonl").is_file():
+        raise ValueError("original evaluation ledger is required")
+    result = {"original_spec_sha256": original["spec_sha256"], "first_step": "resume",
+              "downstream_steps": [s["name"] for s in spec["steps"][1:]], "execute": execute}
+    if execute:
+        attempt = uuid.uuid4().hex
+        path = directory / f"resume-{attempt}.json"
+        raw = (json.dumps(spec, sort_keys=True, indent=2) + "\n").encode()
+        with path.open("xb") as stream:
+            stream.write(raw)
+        result["returncode"] = run(path, sha256_bytes(raw), log_name=f"eval-resume-{attempt}.jsonl")
+    return result
+
+
 def plan(stage: str, params: dict[str, Any]) -> dict[str, Any]:
     p = _check(stage, params)
-    if stage in ("v17-train", "v17-eval"):
-        return _plan_v17_train(p) if stage == "v17-train" else _plan_v17_eval(p)
+    if stage in ("v17-train", "v17-eval", "v18-train", "v18-eval"):
+        return _plan_v17_train(p) if stage.endswith("-train") else _plan_v17_eval(p)
     if stage in ("v17-calibration", "v17"):
         return _plan_v17(p, calibration=stage == "v17-calibration")
     if stage == "v16b":
@@ -1401,12 +1489,19 @@ def main(argv: list[str] | None = None) -> int:
     finalizer.add_argument("--engine-validation", type=Path, required=True)
     finalizer.add_argument("--output-dir", type=Path, required=True)
     finalizer.add_argument("--run", action="store_true")
+    resumer = sub.add_parser("resume-evaluation", help="resume an already registered v18 evaluation")
+    resumer.add_argument("--params", type=Path, required=True)
+    resumer.add_argument("--run", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "verify-source":
             receipt = verify_source_v17(args.repo_root, args.commit, args.output)
             print(receipt["sha256"])
             return 0
+        if args.command == "resume-evaluation":
+            result = resume_evaluation(json.loads(args.params.read_text()), execute=args.run)
+            print(json.dumps(result, sort_keys=True))
+            return result.get("returncode", 0)
         if args.command == "finalize-evaluation":
             result = finalize_evaluation(json.loads(args.params_json), args.engine_validation,
                                          args.output_dir, execute=args.run)

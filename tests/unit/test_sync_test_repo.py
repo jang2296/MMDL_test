@@ -1,10 +1,15 @@
 """Publication guards only; no GitHub/GPU writes."""
+import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.sync_test_repo import PINNED_RESOURCES, POOL, PROOF, fingerprint, selected_files, sync
+from fine_tuning.error_note.v18_recipe import DEFAULT_RECIPE, digest
+from scripts.sync_test_repo import (
+    PINNED_RESOURCES, POOL, PROOF, _v18_recipe_files, fingerprint, selected_files, sync,
+)
 
 
 class TestRepoSyncTests(unittest.TestCase):
@@ -64,6 +69,30 @@ class TestRepoSyncTests(unittest.TestCase):
             payload.write_text('{"question":"benchmark payload"}')
             with self.assertRaisesRegex(ValueError, "Benchmark payload"):
                 selected_files(root)
+
+    def test_v18_recipe_selects_only_bound_metadata_and_rejects_private_fields(self):
+        canonical_root = DEFAULT_RECIPE.parents[2]
+        selected = _v18_recipe_files(canonical_root)
+        self.assertEqual(len(selected), 18)
+        self.assertIn("fine_tuning/error_note/v18_recipe.json", selected)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, source in selected.items():
+                destination = root / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            extra = root / "fine_tuning/error_note/v18_recipe_unapproved.json"
+            extra.write_text('{"gold":"private source answer"}')
+            self.assertNotIn(extra.relative_to(root).as_posix(), _v18_recipe_files(root))
+            path = root / "fine_tuning/error_note/v18_recipe.json"
+            original = json.loads(path.read_text())
+            for key in ("question", "gold", "raw_response", "image_base64"):
+                payload = dict(original, **{key: "private source payload"})
+                payload.pop("content_sha256")
+                payload["content_sha256"] = digest(payload)
+                path.write_text(json.dumps(payload))
+                with self.subTest(key=key), self.assertRaisesRegex(ValueError, "PRIVATE_PAYLOAD"):
+                    _v18_recipe_files(root)
 
     def test_wrong_remote_dirty_checkout_and_extra_files_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
