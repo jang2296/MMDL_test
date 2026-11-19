@@ -365,10 +365,18 @@ def _verify_training_artifacts(path: Path) -> dict:
     code_identity = plan["source"]
     if value.get("hotfix_resumes"):
         from types import SimpleNamespace
-        from . import single
         from .v18b_hotfix import execution_source, lineage
         output = Path(value["campaign_plan"]["path"]).parent
-        execution = execution_source(SimpleNamespace(output=output, repo=Path(code["root"]).parent), plan, single.source_manifest())
+        # Bind the lineage to the sealed training checkout, not to the evaluator's own source: evaluation may run a
+        # newer commit (v18b pod 2026-11-20 stopped here: eval 89d64fd vs. last authorized training commit 6dbc649).
+        training_root = Path(code["root"])
+        training_source = {
+            "base_commit": subprocess.run(["git", "rev-parse", "HEAD"], cwd=training_root, check=True,
+                                          capture_output=True, text=True).stdout.strip(),
+            "actual_files": {p.relative_to(training_root).as_posix(): file_sha(_safe(p))
+                             for p in sorted(training_root.rglob("*.py"))
+                             if not {"tests", "runs", "generated", "__pycache__"}.intersection(p.relative_to(training_root).parts)}}
+        execution = execution_source(SimpleNamespace(output=output, repo=training_root.parent), plan, training_source)
         if any(value.get(key) != item for key, item in execution.items()) or model.get("code_commit") != execution["execution_code_commit"]:
             raise ValueError("v18b artifacts: final execution source lineage changed")
         code_identity = lineage(output, plan)[-1]["new_source"]
