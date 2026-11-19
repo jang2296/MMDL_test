@@ -777,10 +777,16 @@ def validate_engine_receipt(value: dict) -> dict:
         for name in ("historical_pf5", "decode_pf5"):
             pf5 = evidence[name]
             tower = pf5.get("vision_tower", {})
+            # Mirror llm_lora.vision_tower_check: an amplified x16 effect below 4x the cross-engine noise is recorded as
+            # UNPOWERED_NOT_GATING (pass None) and does not gate; a powered mismatch, or an effect that survives hook
+            # removal (hook_removed pass True), still fails. The v18b pod (2026-11-20) stopped here on a final model
+            # whose x16 tower effect had correlation 0.886 / slope 0.82 and a zero hook-removed effect.
+            amplified, removed = tower.get("amplified", {}), tower.get("hook_removed", {})
             if ("vision_exception" in pf5 or pf5.get("vision_gate") != "direct_tower"
                     or tower.get("version") != "v18-direct-vision-pf5-v1" or tower.get("pass") is not True
-                    or tower.get("amplified", {}).get("pass") is not True
-                    or tower.get("hook_removed", {}).get("pass") is not False
+                    or "pass" not in amplified or amplified["pass"] is False
+                    or "pass" not in removed or removed["pass"] is True
+                    or tower.get("application_path_status") != ("CONFIRMED" if amplified["pass"] else "UNPOWERED_NOT_GATING")
                     or tower.get("real_effect_status") not in ("CONFIRMED", "UNCONFIRMED")
                     or not tower.get("inputs") or tower.get("coordinates", 0) < 1):
                 raise ValueError("v18 engine: direct vision evidence or hook-removal negative control missing")

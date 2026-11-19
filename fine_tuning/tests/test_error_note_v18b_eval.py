@@ -33,7 +33,7 @@ def v18b_receipt(root):
     for key in ("actual_length_probe", "long_context_probe", "quantiles"):
         del selected[key]
     tower = {"version": "v18-direct-vision-pf5-v1", "pass": True, "amplified": {"pass": True},
-             "hook_removed": {"pass": False}, "real_effect_status": "UNCONFIRMED",
+             "hook_removed": {"pass": False}, "real_effect_status": "UNCONFIRMED", "application_path_status": "CONFIRMED",
              "coordinates": 100, "inputs": [{"pixels_sha256": "a" * 64}]}
     evidence = selected["preflight_evidence"]
     for key in ("historical_pf5", "decode_pf5"):
@@ -103,6 +103,17 @@ class EngineChecks(unittest.TestCase):
             value = v18b_receipt(Path(directory))
             self.assertEqual(engine.validate_engine_receipt(value), value)
             self.assertIsNone(value["estimated_evaluation_seconds"])
+            # producer contract (llm_lora.vision_tower_check): an unpowered x16 effect is recorded, not gating
+            unpowered = copy.deepcopy(value)
+            ev = unpowered["selected_attempt"]["preflight_evidence"]
+            for key in ("historical_pf5", "decode_pf5"):
+                ev[key]["vision_tower"].update(amplified={"pass": None}, hook_removed={"pass": None},
+                                               application_path_status="UNPOWERED_NOT_GATING")
+            unpowered["selected_attempt"]["preflight_evidence"] = engine.seal({k: v for k, v in ev.items() if k != "sha256"})
+            try:
+                engine.validate_engine_receipt(unpowered)
+            except ValueError as error:
+                self.assertNotIn("direct vision evidence", str(error))
             for change in ("vision", "language", "authorization", "forced", "billing"):
                 bad = copy.deepcopy(value)
                 selected = bad["selected_attempt"]
