@@ -716,6 +716,13 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
         # In memory only: the next regular commit persists READY; a crash before it keeps the STOPPED checkpoint.
         cursor["phase"] = "rl" if cursor["slot"] >= cfg["prep_updates"] else "prep"
         state = dict(state, status="READY", stop_reasons=[], cursor=cursor)
+    if (is_v18b and execution_lineage and state["status"] == "STOPPED" and state.get("stop_reasons") == ["TRUNC_UP"]
+            and cursor["slot"] < plan["total_slots"] and not _stop_markers(output)):
+        # v18b operator fix (user 2026-11-19 KST): TRUNC_UP is a recorded warning (GuardV17.trunc_stop), so a campaign
+        # stopped only on it continues from its stopped boundary under an explicit hotfix authorization.
+        # In memory only: the next regular commit persists READY; a crash before it keeps the STOPPED checkpoint.
+        cursor["phase"] = "rl" if cursor["slot"] >= cfg["prep_updates"] else "prep"
+        state = dict(state, status="READY", stop_reasons=[], cursor=cursor)
     partial_pending = partial_evaluation_state(plan, state, output) if is_v18b else None
     if state["status"] in {"STOPPED", "WATCHDOG_STOP", "PREP_LENGTH_STOP", "COMPLETE"} and partial_pending is None:
         if state["status"] == "COMPLETE":

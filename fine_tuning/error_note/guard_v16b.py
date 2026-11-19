@@ -100,7 +100,11 @@ class GuardV16B:
                            if self.version == "error-note-v17-guard-v1" else max(2 * ref, ref + 4 * math.sqrt(ref)))
                 thresholds[field] = {"ref": ref, "minimum": minimum}
                 if sum(r[field] for r in recent) >= thresholds[field]["minimum"]:
-                    reasons.append(rule)
+                    if rule == "TRUNC_UP" and not getattr(self, "trunc_stop", True):
+                        if block not in self.state.setdefault("trunc_warning_blocks", []):
+                            self.state["trunc_warning_blocks"].append(block)
+                    else:
+                        reasons.append(rule)
         if self.version == "error-note-v17-guard-v1":
             trend = short_drift_v17(history)
             if trend["status"] == "STOP_REQUESTED":
@@ -158,14 +162,27 @@ class GuardV17(GuardV16B):
         # training accuracy rose (50% -> 57-65%) and <32-token answers fell (26% -> 12%); for v18 it is a recorded
         # warning. Accuracy, truncation, no-final, short-drift, tail and HOLD rules still stop the run.
         self.collapse_stop = collapse_stop
+        # v18b (user 2026-11-19 KST): the second v18b pod run stopped on TRUNC_UP at RL block 49 (8 length-capped first
+        # solutions in the last 12 blocks, 11 of 14 in one source, hf-ssmr) while accuracy rules stayed quiet and the
+        # external monitor held (138 -> 140 of 200). Where COLLAPSE_LEN is a warning, TRUNC_UP is a recorded warning
+        # too; accuracy, no-final, short-drift, tail and HOLD rules still stop the run.
+        self.trunc_stop = collapse_stop
+        if not self.trunc_stop and "TRUNC_UP" in self.state.get("reasons", []):
+            # A stop saved before the demotion is the warning it now is; the stopped checkpoint files keep the record.
+            self.state["reasons"] = [reason for reason in self.state["reasons"] if reason != "TRUNC_UP"]
+            blocks = self.state.setdefault("trunc_warning_blocks", [])
+            if len(self.state["history"]) not in blocks:
+                blocks.append(len(self.state["history"]))
 
     def update(self, block: int, items: list[dict], *, tail_rate: float | None = None,
                is_hold: bool = False) -> dict:
         receipt = super().update(block, items, tail_rate=tail_rate, is_hold=is_hold)
         receipt["short_drift"] = copy.deepcopy(self.state["short_drift"])
         receipt["warnings"] = receipt["short_drift"]["warnings"] + (
-            ["COLLAPSE_LEN_WARNING"] if self.state.get("collapse_warning_blocks") else [])
+            ["COLLAPSE_LEN_WARNING"] if self.state.get("collapse_warning_blocks") else []) + (
+            ["TRUNC_UP_WARNING"] if self.state.get("trunc_warning_blocks") else [])
         receipt["collapse_warning_blocks"] = list(self.state.get("collapse_warning_blocks", []))
+        receipt["trunc_warning_blocks"] = list(self.state.get("trunc_warning_blocks", []))
         if self.telemetry:
             history = self.state["history"]
             receipt["length_summary"] = length_distribution_v17([v for r in history for v in r["lengths"]])

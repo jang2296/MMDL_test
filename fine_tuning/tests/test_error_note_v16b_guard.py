@@ -85,6 +85,29 @@ class GuardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GuardV16B(ids).update(2, batch(ids[0]))
 
+    def test_v18b_trunc_up_is_a_warning_and_a_saved_stop_resumes(self):
+        from fine_tuning.error_note.guard_v16b import GuardV17
+        ids = order()
+        def run(guard):
+            for b in range(1, 37):
+                # capped answers appear only in the recent 12-block window, as in the stopped v18b pod run
+                result = guard.update(b, batch(ids[b - 1], cap=2 if b > 24 else 0))
+            return result
+        stopped_guard = GuardV17(ids, telemetry=False)
+        stopped = run(stopped_guard)
+        self.assertIn("TRUNC_UP", stopped["reasons"])
+        warned = run(GuardV17(ids, telemetry=False, collapse_stop=False))
+        self.assertEqual((warned["status"], warned["reasons"]), ("CONTINUE", []))
+        self.assertIn("TRUNC_UP_WARNING", warned["warnings"])
+        self.assertEqual(warned["trunc_warning_blocks"], [36])
+        # a state saved with the stop continues as a warning once the rule is demoted
+        resumed = GuardV17(ids, stopped_guard.state, telemetry=False, collapse_stop=False)
+        self.assertEqual(resumed.state["reasons"], [])
+        self.assertEqual(resumed.state["trunc_warning_blocks"], [36])
+        following = resumed.update(37, batch(ids[36], cap=2))
+        self.assertEqual(following["status"], "CONTINUE")
+        self.assertEqual(stopped_guard.state["reasons"], ["TRUNC_UP"])
+
     def test_count_zero_reference_is_literal_plan_not_tuned(self):
         ids = order()
         guard = GuardV16B(ids)
