@@ -51,6 +51,32 @@ def _validate_masks(row: dict, tokenizer: Any) -> None:
     supplied = _list(row["loss_mask"])
     if kind in previous.PG_KINDS:
         reason = row.get("pg_mask_reason", row.get("reason"))
+        if kind == "RL" and reason == "VERIFIED_PROCESS_ERROR_FINAL_ONLY":
+            policy, receipt = row.get("t1_policy_receipt", {}), row.get("policy_mask_receipt", {})
+            ledger = policy.get("t1_claim_ledger", {})
+            spans = row.get("pg_byte_spans", [])
+            expected = _mask(tokenizer, row, spans)
+            errors = [claim for claim in ledger.get("claims", []) if claim.get("verdict") == "CONTRADICTED" and claim.get("assertion") == "ASSERTED"]
+            if (any(value.get("sha256") != digest({k: v for k, v in value.items() if k != "sha256"}) for value in (policy, receipt, ledger))
+                    or (row.get("pg") and row.get("advantage", 0) <= 0) or (not row.get("pg") and row.get("advantage") != 0)
+                    or not errors or ledger.get("problem_id") != row["problem_id"]
+                    or ledger.get("generation_sha256") != digest(row["generation"])
+                    or ledger.get("image_sha256") != row.get("image_sha256", [])
+                    or receipt.get("claim_ledger_sha256") != ledger.get("sha256")
+                    or receipt.get("mask_reason") != reason or receipt.get("byte_spans") != spans
+                    or receipt.get("target_sha256") != hashlib.sha256(target.encode()).hexdigest()
+                    or receipt.get("token_mask") != expected or supplied != expected
+                    or receipt.get("contradiction_byte_spans") != [span for error in errors for span in error["original_byte_spans"]]
+                    or any(a < end and start < b for start, end in spans for error in errors for a, b in error["original_byte_spans"])):
+                raise ValueError("v18b: positive policy mask lacks verified contradiction binding")
+            import re
+            finals = [[len(target[:match.start()].encode()), len(target[:match.end()].encode())]
+                      for match in re.finditer(r"(?im)^\s*(?:final\s+answer|answer)\s*:\s*[^\n]+$", target)]
+            if spans and (len(finals) != 1 or spans != finals):
+                raise ValueError("v18b: positive policy mask is not a unique final answer")
+            if row.get("pg") is not any(expected):
+                raise ValueError("v18b: positive policy mask/hold mismatch")
+            return
         # A localized reason whose spans mapped to no action leaves pg False and an all-False mask: an excluded row.
         if kind == "RL" and reason in LOCALIZED_REASONS and (row.get("pg") or any(supplied)):
             spans, receipt = row.get("pg_byte_spans", []), row.get("policy_mask_receipt", {})
@@ -81,6 +107,22 @@ def _validate_masks(row: dict, tokenizer: Any) -> None:
             raise ValueError("v18: ordinary policy mask must retain all sampled actions or exclude an ungraded row")
         return
     if kind == "N":
+        evidence = row.get("n_source_evidence")
+        if evidence is not None:
+            generation = row["generation"]
+            prefix = row["input_ids"][:-row["target_len"]].tolist()
+            if (row["training_prompt_sha256"] != row.get("generation_prompt_sha256")
+                    or generation.get("prompt_token_ids") != prefix
+                    or generation.get("input_sha256") != row.get("input_sha256")):
+                raise ValueError("v18b: note training context differs from the generated note")
+            expected_evidence = {"schema": "v18b-n-source-evidence-v1", "row_id": row["row_id"],
+                "problem_id": row["problem_id"], "target_sha256": hashlib.sha256(target.encode()).hexdigest(),
+                "generation_sha256": digest(row["generation"]), "receipt_sha256": row["verification_receipt"]["sha256"],
+                "byte_spans": row["verified_byte_spans"], "token_ids": actions, "token_mask": supplied,
+                "supervised_tokens": sum(supplied), "note_condition": row["verification_receipt"].get("note_condition"),
+                "provided_location_count": row["verification_receipt"].get("provided_location_count", 0)}
+            if evidence != expected_evidence | {"sha256": digest(expected_evidence)}:
+                raise ValueError("v18b: note source evidence changed")
         if supplied != _mask(tokenizer, row, row.get("verified_byte_spans", [])):
             raise ValueError("v18: note mask differs from verified sampled bytes")
         return
@@ -129,12 +171,14 @@ def encode_v18_row(processor: Any, model_config: Any, row: dict, images: list, *
 
 
 def validate_v18_block(bundle: Any, encoded: list[dict], contract: dict) -> None:
-    if (contract.get("version") != "error-note-v18" or contract.get("row_schema") != ROW_SCHEMA
+    if (contract.get("version") not in {"error-note-v18", "error-note-v18b"} or contract.get("row_schema") != ROW_SCHEMA
             or contract.get("sft_weights") != SFT_WEIGHTS or contract.get("process_weights") != PROCESS_WEIGHTS
             or any(row.get("schema") != ROW_SCHEMA for row in encoded)):
         raise ValueError("v18: sealed row schema and source-specific loss weights required")
     previous.validate_v17_block(bundle, [_legacy_row(row) for row in encoded], contract | {"version": "error-note-v17"})
     for row in encoded:
+        if contract.get("version") == "error-note-v18b" and row["kind"] == "N" and not row.get("n_source_evidence"):
+            raise ValueError("v18b: N row requires source-to-token evidence")
         mask = row.get("loss_mask")
         if (not isinstance(mask, torch.Tensor) or mask.dtype != torch.bool
                 or mask.shape != (row["target_len"],)):
@@ -178,6 +222,8 @@ def note_step_before_v18(bundle: Any, note_gradients: dict, stats: dict) -> tupl
         note_sq += float(note.double().square().sum())
     report = {"optimizer_step": False, "gradient_measured": bool(note_gradients),
               "parent_ids": stats.get("verified_repair_parent_ids", []),
+              "row_ids": [row["row_id"] for row in stats.get("n_parent_evidence", []) if row.get("note_gradient_retained")],
+              "n_parent_evidence": stats.get("n_parent_evidence", []),
               "norms": stats.get("note_gradient_norms", {}), "signed_n_gradient_norm": math.sqrt(note_sq),
               "combined_gradient_norm_on_note_parameters": math.sqrt(total_sq),
               "combined_gradient_dot": dot if note_gradients else None,

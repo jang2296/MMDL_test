@@ -406,7 +406,7 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
     """Accumulate one joint update, sharing identical RL/A1 graphs and clearing all gradients on HOLD."""
     from .train_v4 import _require_single_zero_dropout
 
-    is_v18 = contract.get("version") == "error-note-v18"
+    is_v18 = contract.get("version") in ("error-note-v18", "error-note-v18b")
     if is_v18:
         from .train_v18 import sft_term_v18, validate_v18_block
 
@@ -485,6 +485,7 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
     gradients: dict[tuple, torch.Tensor] = {}
     diagnosed_channels: set[str] = set()
     note_parent_gradients: dict[str, dict[str, float]] = {}
+    note_row_gradients: dict[str, dict[str, float]] = {}
     drift_sum, drift_n, clipped, excluded_n, negative_n, masked_n, loop_n = 0., 0, 0, 0, 0, 0, 0
     policy_mask_counts: dict[str, Counter] = defaultdict(Counter)
     process_tokens: Counter[str] = Counter()
@@ -550,7 +551,7 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                                 term = -SFT_WEIGHTS[kind] * both[0][mask].mean() / denominator
                             terms[kind].append(term)
                             if kind == "N":
-                                note_terms[row["problem_id"]] = term
+                                note_terms[row["row_id"]] = term
                             tokens[kind] += int(mask.sum())
                             stats["task_signal"] = True
                         if "KL" in selected and (kind == "RL" or prep):
@@ -567,9 +568,12 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
                     diagnosed = {kind: value for kind, value in combined.items() if diagnose_all and kind != "N"}
                     diagnosed_channels.update(diagnosed)
                     _component_gradients(bundle, diagnosed, gradients)
-                    for parent_id, term in note_terms.items():
+                    for row_id, term in note_terms.items():
                         diagnosed_channels.add("N")
-                        note_parent_gradients[parent_id] = _component_gradients(bundle, {"N": term}, gradients)["N"]
+                        measured = _component_gradients(bundle, {"N": term}, gradients)["N"]
+                        note_row_gradients[row_id] = measured
+                        parent_id = next(row["problem_id"] for row in rows if row["row_id"] == row_id)
+                        note_parent_gradients[parent_id] = measured
                     torch.stack(list(combined.values())).sum().backward()
                     elapsed = _measurement_clock(device, measurement_timings) - started
                     if measurement_timings is not None:
@@ -606,6 +610,23 @@ def backward_v17_block(bundle: Any, encoded: list[dict], contract: dict, token_b
     stats["note_gradient_norms"] = component_norms.get("N", {})
     retained = not stats["hold"] and any(v > 0 for v in stats["note_gradient_norms"].values())
     stats["note_parent_gradient_norms"] = note_parent_gradients
+    stats["note_row_gradient_norms"] = note_row_gradients
+    stats["n_parent_evidence"] = []
+    for row in encoded:
+        if row["kind"] != "N" or "N" not in selected:
+            continue
+        norms = note_row_gradients.get(row["row_id"], {})
+        measured = bool(norms) and all(math.isfinite(value) for value in norms.values()) and any(value > 0 for value in norms.values())
+        evidence = row.get("n_source_evidence", {})
+        receipt = row.get("verification_receipt", {})
+        stats["n_parent_evidence"].append({"problem_id": row["problem_id"], "row_id": row["row_id"],
+            "supervised_tokens": int(row["loss_mask"].sum()), "gradient_finite_nonzero": measured,
+            "note_gradient_retained": measured and not stats["hold"], "gradient_norms": norms,
+            "source_evidence_sha256": evidence.get("sha256"), "target_sha256": hashlib.sha256(row["target"].encode()).hexdigest(),
+            "generation_sha256": digest(row["generation"]), "receipt_sha256": receipt.get("sha256"),
+            "byte_spans": row.get("verified_byte_spans", []), "token_mask_sha256": digest(row["loss_mask"].tolist()),
+            "note_condition": receipt.get("note_condition"), "actual_hint_exposed": receipt.get("provided_location_count", 0) > 0,
+            "claim_stages": [repair.get("stage") for repair in receipt.get("repairs", []) if repair.get("accepted")]})
     notes = [r for r in encoded if r["kind"] == "N" and "N" in selected
              and any(value > 0 for value in note_parent_gradients.get(r["problem_id"], {}).values())]
     stats.update(note_gradient_retained=retained, n_content_gradient_finite_nonzero=retained,
@@ -639,7 +660,8 @@ MEMORY_PROBE_PROMPT = 4000
 
 def measure_update_memory_v17(bundle: Any, encoded_row: dict, *, shape_bounds: dict,
                               max_target_tokens: int = MEMORY_PROBE_ACTIONS,
-                              max_input_tokens: int = MEMORY_PROBE_PROMPT) -> dict:
+                              max_input_tokens: int = MEMORY_PROBE_PROMPT,
+                              live_engine: bool = False) -> dict:
     """Measure the shared RL+A1+64-position KL graph on a bounded BF16 FULL capacity fixture."""
     from fine_tuning.notebook_rl.checkpoint import capture_rng, restore_rng
     from fine_tuning.notebook_rl.policy import assert_base_unchanged
@@ -702,7 +724,7 @@ def measure_update_memory_v17(bundle: Any, encoded_row: dict, *, shape_bounds: d
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             baseline = memory(bundle)
-            if baseline["reserved"] > 10.5 * 2**30:
+            if not live_engine and baseline["reserved"] > 10.5 * 2**30:
                 raise CapacityHold("v17 memory: HF residency exceeds the fixed 10.5 GiB assumption")
             torch.cuda.reset_peak_memory_stats(device)
             timings: dict[str, float] = {}
@@ -723,10 +745,17 @@ def measure_update_memory_v17(bundle: Any, encoded_row: dict, *, shape_bounds: d
             if not baseline["reserved"] <= peak_reserved <= baseline["total"]:
                 raise CapacityHold("v17 memory: invalid measured allocator peak")
             extra = peak_reserved - baseline["reserved"]
-            try:
-                kv = kv_budget_v16b(extra / 2**30)
-            except RuntimeError as error:
-                raise CapacityHold(f"v17 memory: X={extra / 2**30:.6f} GiB; {error}") from error
+            after = memory(bundle)
+            if live_engine:
+                # The engine already owns its KV pool; measure remaining physical headroom in that live process.
+                if after["free"] < 2 * 2**30:
+                    raise CapacityHold("v18b memory: live maximum-shape backward leaves less than 2 GiB headroom")
+                kv = None
+            else:
+                try:
+                    kv = kv_budget_v16b(extra / 2**30)
+                except RuntimeError as error:
+                    raise CapacityHold(f"v17 memory: X={extra / 2**30:.6f} GiB; {error}") from error
             report = {"version": "v17-update-memory-v1", "measurement": "actual_cuda_bf16_shared_backward_only",
                       "fixture_only": True, "optimizer_steps": 0, "rows": 1, "shared_t1_a1_pairs": 1,
                       "shape_bounds": dict(shape_bounds), "shape_bounds_sha256": digest(shape_bounds),
@@ -737,6 +766,8 @@ def measure_update_memory_v17(bundle: Any, encoded_row: dict, *, shape_bounds: d
                       "extra_reserved_bytes": extra, "extra_reserved_gib": extra / 2**30, "x_gib": extra / 2**30,
                       "resident_moment_reservation_bytes": sum(p.numel() * p.element_size() for p in reservation),
                       "kv_cache_gib": kv,
+                      **({"live_engine": True, "post_backward_memory": after,
+                          "minimum_free_bytes": 2 * 2**30} if live_engine else {}),
                       "scope": "one FULL capacity fixture; actual solution quality and packed shapes unmeasured"}
             return report | {"sha256": digest(report)}
     finally:

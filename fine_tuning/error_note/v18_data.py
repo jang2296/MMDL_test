@@ -303,7 +303,8 @@ def data_files(root: Path) -> dict[str, str]:
 
 
 def validate(root: Path, *, tokenizer=None, verify_legacy_inputs: bool = False,
-             recipe: dict | None = None, sidecars: dict | None = None) -> dict:
+             recipe: dict | None = None, sidecars: dict | None = None,
+             additional_files: dict[str, str] | None = None) -> dict:
     from .v17_data import capability_manifest, identity_components
     from .v18_recipe import expected_digests, load_recipe, load_sidecars, portable_payload
 
@@ -317,6 +318,11 @@ def validate(root: Path, *, tokenizer=None, verify_legacy_inputs: bool = False,
     if receipt.get("recipe_content_sha256") != recipe.get("content_sha256"):
         raise ValueError("V18_RECIPE_BINDING_CHANGED")
     expected = set(receipt["files"]) | {"payload-receipt.json", "validation.json", "execution.json"}
+    for relative, sha in (additional_files or {}).items():
+        path = _safe_path(root, relative)
+        if path.is_symlink() or file_sha(path) != sha:
+            raise ValueError("V18_ADDITIONAL_PAYLOAD_CHANGED")
+        expected.add(relative)
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
     if actual - expected:
         raise ValueError("V18_UNBOUND_PAYLOAD_FILES")

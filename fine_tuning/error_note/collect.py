@@ -862,10 +862,17 @@ def single_request_binding(request: dict) -> dict:
     if not isinstance(request, dict):
         raise ValueError("SINGLE: a complete request dictionary is required")
     pid = request.get("problem_id", request.get("item"))
+    cap = MAX_NEW_TOKENS
+    if request.get("evaluation_monitor"):
+        if (request["evaluation_monitor"] is not True or request.get("protocol_version") != "error-note-v18b"
+                or request.get("stage") not in ("v18b-b2-monitor", "v18b-b2-reasoning-monitor")
+                or request.get("block_id") != request["stage"] or request.get("sampling") != SINGLE_SAMPLING):
+            raise ValueError("only a v18b held-out B2 monitor can use the evaluation output limit")
+        cap = 32768
     if (not isinstance(pid, str) or not pid or any(not isinstance(request.get(k), str) or not request[k]
             for k in ("request_id", "stage")) or type(request.get("seed")) is not int
             or not 0 <= request["seed"] < 2**31 or type(request.get("max_tokens")) is not int
-            or not 1 <= request["max_tokens"] <= MAX_NEW_TOKENS
+            or not 1 <= request["max_tokens"] <= cap
             or not isinstance(request.get("messages"), list) or not isinstance(request.get("images"), list)):
         raise ValueError("SINGLE: complete request identity, messages, images, seed and token cap required")
     if "item" in request and request["item"] != pid:

@@ -120,6 +120,48 @@ class ResumeTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "hash"):
                 restored.restore_drain_state(path)
 
+    def test_truncated_json_and_utf8_tails_are_archived_raw_across_two_restores(self):
+        for suffix in (b'{"status": "START', b'{"text": "' + bytes([0xe2, 0x82])):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                original, sampler, _ = self.saved(directory)
+                sampler.add_version(None, 1)
+                original.submit_for_version(1)
+                journal = root / "requests.jsonl"
+                with journal.open("ab") as stream:
+                    stream.write(suffix)
+                checkpoint = root / "drain-state.json"
+                first, _, *_ = self.scheduler(directory, restore=True)
+                first.restore_drain_state(checkpoint)
+                self.assertTrue((root / "rolled-back/after-1/requests.jsonl").read_bytes().endswith(suffix))
+                second, fresh, *_ = self.scheduler(directory, restore=True, seed_offset=100)
+                second.restore_drain_state(checkpoint)
+                fresh.add_version(None, 1)
+                with self.assertRaisesRegex(RuntimeError, "seed"):
+                    second.submit_for_version(1)
+
+    def test_newline_terminated_corruption_and_sealed_prefix_corruption_still_fail(self):
+        for suffix in (b'not-json' + bytes([10]), b'{"text":"' + bytes([0xff]) + b'"}' + bytes([10])):
+            with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as directory:
+                self.saved(directory)
+                root = Path(directory)
+                journal = root / "requests.jsonl"
+                with journal.open("ab") as stream:
+                    stream.write(suffix)
+                before = journal.read_bytes()
+                restored, *_ = self.scheduler(directory, restore=True)
+                with self.assertRaises((json.JSONDecodeError, UnicodeDecodeError)):
+                    restored.restore_drain_state(root / "drain-state.json")
+                self.assertEqual(journal.read_bytes(), before)
+        with tempfile.TemporaryDirectory() as directory:
+            self.saved(directory)
+            root = Path(directory)
+            journal = root / "requests.jsonl"
+            journal.write_bytes(b"x" + journal.read_bytes()[1:])
+            restored, *_ = self.scheduler(directory, restore=True)
+            with self.assertRaisesRegex(RuntimeError, "journal changed"):
+                restored.restore_drain_state(root / "drain-state.json")
+
 
 if __name__ == "__main__":
     unittest.main()

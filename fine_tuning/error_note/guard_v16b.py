@@ -251,6 +251,99 @@ class SignalGateV17:
         return copy.deepcopy(self.state)
 
 
+
+class SignalGateV18B:
+    """Delayed per-parent N evidence; counts become saved only at a checkpoint boundary."""
+
+    def __init__(self, order: list[list[str]], supported_parent_ids: list[str], state: dict | None = None,
+                 *, local_smoke: bool = False):
+        ids = [pid for block in order for pid in block]
+        if (len(ids) != len(set(ids)) or not set(supported_parent_ids) <= set(ids)
+                or len(supported_parent_ids) != len(set(supported_parent_ids))):
+            raise ValueError("V18B_SIGNAL_PARENT_BINDING")
+        self.positions = {pid: slot for slot, block in enumerate(order) for pid in block}
+        self.supported = [pid for pid in ids if pid in set(supported_parent_ids)]
+        self.parents = self.supported[:32]
+        self.due_slot = max((self.positions[pid] for pid in self.parents), default=0) + 3
+        if len(self.parents) < 32 and not local_smoke:
+            raise ValueError("SIGNAL_COVERAGE_INSUFFICIENT")
+        binding = hashlib.sha256(json.dumps([order, self.supported, local_smoke], sort_keys=True).encode()).hexdigest()
+        self.state = copy.deepcopy(state) if state is not None else {
+            "version": "v18b-signal-gate-v1", "binding_sha256": binding,
+            "parents": self.parents, "pending_rows": {}, "saved_rows": {}, "checkpoint_ids": [],
+            "local_smoke": local_smoke, "status": "WARMUP"}
+        if self.state.get("version") != "v18b-signal-gate-v1" or self.state.get("binding_sha256") != binding:
+            raise ValueError("V18B_SIGNAL_RESUME_BINDING")
+
+    def consume(self, stats: dict) -> None:
+        if (stats.get("optimizer_step") is not True or stats.get("hold") or stats.get("HOLD")
+                or stats.get("n_content_gradient_finite_nonzero") is not True
+                or stats.get("note_gradient_retained") is not True):
+            return
+        # Batch totals cannot certify an individual parent's supervision or retained gradient.
+        for row in stats.get("n_parent_evidence", []):
+            pid = row.get("problem_id")
+            if pid not in self.supported:
+                continue
+            if (row.get("row_id") != pid + ":N" or type(row.get("supervised_tokens")) is not int
+                    or row["supervised_tokens"] <= 0 or row.get("gradient_finite_nonzero") is not True
+                    or row.get("note_gradient_retained") is not True):
+                raise ValueError("V18B_SIGNAL_INVALID_PARENT_EVIDENCE")
+            rid = row["row_id"]
+            previous = self.state["pending_rows"].get(rid) or self.state["saved_rows"].get(rid)
+            if previous is not None:
+                if {k: v for k, v in previous.items() if k != "checkpoint_id"} != row:
+                    raise ValueError("V18B_SIGNAL_ROW_EVIDENCE_CHANGED")
+            else:
+                self.state["pending_rows"][rid] = copy.deepcopy(row)
+
+    def mark_checkpoint(self, checkpoint_id: str) -> None:
+        if not isinstance(checkpoint_id, str) or not checkpoint_id:
+            raise ValueError("V18B_SIGNAL_CHECKPOINT_REQUIRED")
+        for rid, row in self.state["pending_rows"].items():
+            self.state["saved_rows"][rid] = row | {"checkpoint_id": checkpoint_id}
+        self.state["pending_rows"] = {}
+        if checkpoint_id not in self.state["checkpoint_ids"]:
+            self.state["checkpoint_ids"].append(checkpoint_id)
+
+    def evaluate(self, slot: int, closed_parent_ids: list[str], opportunity_parent_ids: list[str] | dict,
+                 *, contract_failure_reproduced: bool = False) -> dict:
+        if type(slot) is not int or slot < 0 or type(contract_failure_reproduced) is not bool:
+            raise ValueError("V18B_SIGNAL_SLOT_OR_CONTRACT_FAILURE")
+        stages = opportunity_parent_ids if isinstance(opportunity_parent_ids, dict) else {"UNKNOWN": opportunity_parent_ids}
+        if not set(stages) <= {"T1", "OBS", "UNKNOWN"}:
+            raise ValueError("V18B_SIGNAL_OPPORTUNITY_STAGE")
+        opportunities = set().union(*(set(pids) for pids in stages.values()))
+        if not opportunities <= set(self.supported):
+            raise ValueError("V18B_SIGNAL_UNSUPPORTED_OPPORTUNITY")
+        closed = set(closed_parent_ids)
+        mature = {pid for pid in opportunities if pid in closed and slot >= self.positions[pid] + 3}
+        fixed = set(self.parents)
+        fixed_mature = {pid for pid in fixed if pid in closed and slot >= self.positions[pid] + 3}
+        saved = self.state["saved_rows"]
+        linked = {row["problem_id"] for row in saved.values()}
+        fixed_rows = [row for row in saved.values() if row["problem_id"] in fixed]
+        if self.state["local_smoke"]:
+            status = "LOCAL_SMOKE_UNVERIFIED"
+        elif fixed_mature == fixed:
+            status = ("INCONCLUSIVE_SIGNAL" if not mature & fixed else "PASS" if len(linked & fixed) >= 3 else "FAIL")
+        else:
+            status = "WARMUP"
+        self.state.update(status=status,
+            opportunity_parent_ids=sorted(opportunities), mature_opportunity_parent_ids=sorted(mature),
+            opportunity_stages={stage: {"observed": len(set(pids)), "mature": len(set(pids) & mature)}
+                                for stage, pids in stages.items()},
+            verified_repair_parent_ids=sorted(linked & fixed),
+            verified_content_tokens=sum(row["supervised_tokens"] for row in fixed_rows),
+            content_gradient_linked=bool(fixed_rows),
+            early_zero_diagnostic=len(mature) >= 8 and not linked & mature,
+            fixed32_zero=status == "FAIL" and not linked & fixed,
+            stop_requested=bool(status == "FAIL" and not linked & fixed and contract_failure_reproduced),
+            contract_failure_reproduced=contract_failure_reproduced,
+            pending_parent_ids=sorted({r["problem_id"] for r in self.state["pending_rows"].values()}))
+        return copy.deepcopy(self.state)
+
+
 def funding_decision(balance_usd: float, hourly_usd: float, now: float,
                      requested_at: float | None = None) -> dict:
     """Caller polls actual balance every ten minutes; recharge never authorizes a new run."""
@@ -611,6 +704,29 @@ def receipt_passes_v18(receipt: dict, manifest_raw: bytes) -> bool:
     return receipt_passes_v17(receipt | {"version": "v17-guard-falsealarm-v1"}, manifest_raw)
 
 
+
+def falsealarm_receipt_v18b(manifest: Path, *, trials: int = 2000, seed: int = 3407,
+                            extra_priors: Path | None = None) -> dict:
+    legacy = falsealarm_receipt_v17(manifest, trials=trials, seed=seed,
+                                    fill_missing=True, extra_priors=extra_priors)
+    return legacy | {"version": "v18b-guard-falsealarm-v1", "inherited_acceptance": False,
+        "legacy_unmeasured_rules": legacy.get("unmeasured_rules", []),
+        "unmeasured_rules": sorted(set(legacy.get("unmeasured_rules", [])) |
+            {"COLLAPSE_LEN", "MONITOR_DEGRADED", "B2_SHORT_DRIFT", "N_SUPPLY"}),
+        "external_b2_actions": {"MONITOR_DEGRADED": "STOP_REQUESTED", "B2_SHORT_DRIFT": "WARNING"},
+        "new_rule_calibration": "UNMEASURED_SINGLE_F0; source-paired independent F0 repeats unavailable",
+        "scope": "LEGACY_TRAINING_RULES_ONLY; new monitor and supply thresholds are not calibrated"}
+
+
+def receipt_passes_v18b(receipt: dict, manifest_raw: bytes) -> bool:
+    if (receipt.get("version") != "v18b-guard-falsealarm-v1" or receipt.get("inherited_acceptance") is not False
+            or receipt.get("new_rule_calibration") != "UNMEASURED_SINGLE_F0; source-paired independent F0 repeats unavailable"
+            or not {"COLLAPSE_LEN", "B2_SHORT_DRIFT", "N_SUPPLY"} <= set(receipt.get("unmeasured_rules", []))):
+        return False
+    return receipt_passes_v17(receipt | {"version": "v17-guard-falsealarm-v1",
+        "unmeasured_rules": receipt.get("legacy_unmeasured_rules", [])}, manifest_raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path)
@@ -618,30 +734,35 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--risk-acceptance", help="Explicit operator decision; measured FAIL is retained")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--trials", type=int, default=2000)
-    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18"), default="error-note-v16b")
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"), default="error-note-v16b")
     parser.add_argument("--check-receipt", type=Path)
     parser.add_argument("--fill-missing", action="store_true", help="v17 only: stratified fill of missing F0 priors")
     parser.add_argument("--extra-priors", type=Path, help="v17 fill only: same-source F0 responses on other items")
     args = parser.parse_args(argv)
     if args.materialize_data_root is not None:
-        if args.version != "error-note-v18" or args.output is None or args.manifest is not None:
+        if args.version not in {"error-note-v18", "error-note-v18b"} or args.output is None or args.manifest is not None:
             parser.error("materialization requires explicit v18, --output and no --manifest")
         from .v18_data import validate
+        if args.version == "error-note-v18b":
+            from .v18b_data import validate
         validate(args.materialize_data_root)
         inputs = materialize_guard_inputs_v18(args.materialize_data_root / "guard-metadata-v18.json", args.output.parent)
         args.manifest, args.extra_priors = Path(inputs["manifest"]), Path(inputs["extra_priors"])
     if args.manifest is None:
         parser.error("--manifest or --materialize-data-root is required")
-    if args.risk_acceptance is not None and args.version != "error-note-v18":
+    if args.risk_acceptance is not None and args.version not in {"error-note-v18", "error-note-v18b"}:
         parser.error("risk acceptance applies to a fresh v18 receipt only")
     if args.check_receipt is not None:
         receipt = json.loads(args.check_receipt.read_text())
-        passed = (receipt_passes_v18(receipt, args.manifest.read_bytes()) if args.version == "error-note-v18" else
+        passed = (receipt_passes_v18b(receipt, args.manifest.read_bytes()) if args.version == "error-note-v18b" else
+                  receipt_passes_v18(receipt, args.manifest.read_bytes()) if args.version == "error-note-v18" else
                   args.version == "error-note-v17" and receipt_passes_v17(receipt, args.manifest.read_bytes()))
         return 0 if passed else 3
     if args.output is None:
         parser.error("--output is required when generating a receipt")
-    if args.version == "error-note-v18":
+    if args.version == "error-note-v18b":
+        receipt = falsealarm_receipt_v18b(args.manifest, trials=args.trials, extra_priors=args.extra_priors)
+    elif args.version == "error-note-v18":
         receipt = falsealarm_receipt_v18(args.manifest, trials=args.trials, extra_priors=args.extra_priors)
     elif args.version == "error-note-v17":
         receipt = falsealarm_receipt_v17(args.manifest, trials=args.trials, fill_missing=args.fill_missing,
@@ -663,6 +784,8 @@ def main(argv: list[str] | None = None) -> int:
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(receipt, stream, indent=2, sort_keys=True)
         stream.write("\n")
+    if args.version == "error-note-v18b":
+        return 0 if receipt_passes_v18b(receipt, args.manifest.read_bytes()) else 3
     if args.version == "error-note-v18":
         return 0 if receipt_passes_v18(receipt, args.manifest.read_bytes()) else 3
     return 0 if receipt["status"] in ("PASS", "PASS_SCOPED") else 3

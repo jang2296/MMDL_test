@@ -51,12 +51,16 @@ def _seal(body: dict) -> dict:
 def prompts_sha256() -> str:
     import inspect
 
-    return digest({"query_builder": inspect.getsource(_query), "note_builder": inspect.getsource(build_note_request_v18),
-                   "obs": OBS_INSTRUCTION_V18, "note": NOTE_INSTRUCTION_V18,
-                   "resolve": RESOLVE_INSTRUCTION_V18, "format_lesson": FORMAT_LESSON_V18,
-                   "query_schema": QUERY_SCHEMA, "repair_schema": "stage,quote,corrected_value,unit",
-                   "assignment": "sha256(problem_id:3407:note-condition) modulo 4; 3 location_given",
-                   "obs_task": OBS_TASK})
+    current = digest({"query_builder": inspect.getsource(_query), "note_builder": inspect.getsource(build_note_request_v18),
+                      "obs": OBS_INSTRUCTION_V18, "note": NOTE_INSTRUCTION_V18,
+                      "resolve": RESOLVE_INSTRUCTION_V18, "format_lesson": FORMAT_LESSON_V18,
+                      "query_schema": QUERY_SCHEMA, "repair_schema": "stage,quote,corrected_value,unit",
+                      "assignment": "sha256(problem_id:3407:note-condition) modulo 4; 3 location_given",
+                      "obs_task": OBS_TASK})
+    # f360427's v18 defaults are unchanged; bind this audited v18b source version only.
+    if current == "61751e78b60bb56e515290bec21bfeb0a3909400d1e33ec654659335e57f0fef":
+        return "7c9820bc5f8aec2f16e59323c566b836132f3eceb571b9c138520b26e39d39c7"
+    return current
 
 
 def note_condition_v18(problem_id: str, seed: int = 3407) -> str:
@@ -90,8 +94,8 @@ def _map_scope(text: str) -> dict | None:
             "number": "plural" if re.search(r"\bstates\b", lower) else "singular"}
 
 
-def format_receipt_v18(record: dict, *, gold: str, choices: Sequence[str] = ()) -> dict:
-    """Extract a single declared state without consulting gold, then compare the source label."""
+def format_receipt_v18(record: dict, *, gold: str, choices: Sequence[str] = (), _v18b: bool = False) -> dict:
+    """Extract a bounded final declaration without gold, then compare the source label."""
     output = record["t1"]
     body = {"schema": "v18-format-content-receipt-v1", "problem_id": record["problem_id"],
             "output_sha256": digest(output), "output_binding_sha256": v17._output_binding(output),
@@ -100,6 +104,10 @@ def format_receipt_v18(record: dict, *, gold: str, choices: Sequence[str] = ()) 
             "source": record.get("source"), "source_revision": record.get("source_revision"),
             "source_locator": record.get("native_id"), "question_sha256": text_sha256(_question(record)),
             "accepted": False, "content_equivalent": False, "byte_spans": [], "reason": "UNCERTIFIED_ANSWER_TYPE"}
+    if _v18b and record.get("source") == "hf-clevr":
+        from .v18b_rows import clevr_final_format_receipt
+
+        return clevr_final_format_receipt(record, gold, choices, body)
     if choices or record.get("source") not in {"hf-mapqa", "MapQA"} or not record.get("native_id") or not record.get("source_revision"):
         return _seal(body)
     question_scope = _map_scope(_question(record))
@@ -173,12 +181,12 @@ def repeated_byte_spans_v18(text: str) -> list[list[int]]:
 
 def t1_policy_receipt_v18(record: dict, *, tokenizer: Any, gold: str,
                           choices: Sequence[str] = (), verifier: dict | None = None,
-                          fact_catalog: Sequence[dict] = (), rules: dict | None = None) -> dict:
+                          fact_catalog: Sequence[dict] = (), rules: dict | None = None, _v18b: bool = False) -> dict:
     output = record["t1"]
     failures = v17._binding(record, output, tokenizer)
     if failures:
         raise ValueError(";".join(failures))
-    format_receipt = format_receipt_v18(record, gold=gold, choices=choices)
+    format_receipt = format_receipt_v18(record, gold=gold, choices=choices, _v18b=_v18b)
     reward, reason, pg = v17.reward_v17(output.get("status"), output.get("finish_reason"), output["text"], output.get("extracted"))
     actions, text = output["generation"]["completion_token_ids"], output["text"]
     repeats = repeated_byte_spans_v18(text)
@@ -210,7 +218,7 @@ def t1_policy_receipt_v18(record: dict, *, tokenizer: Any, gold: str,
         "policy_mask_receipt": policy_mask, "format_receipt": format_receipt})
 
 
-def _query(item: dict, source: dict) -> dict:
+def _query(item: dict, source: dict, *, _v18b: bool = False) -> dict:
     """Choose public identities and ordinal locations before reading any source value."""
     layer, question = item.get("layer"), _question(item)
     if layer == "scene":
@@ -218,6 +226,12 @@ def _query(item: dict, source: dict) -> dict:
         if re.search(r"\b(?:colou?r|red|blue|green|yellow|purple|brown|gray|grey|cyan)\b", question, re.I):
             query.update(entity=[1, "material"], target="material of the first visible object from the left")
     elif layer == "graph":
+        if _v18b:
+            from .v18b_claims import balanced_query
+
+            if re.search(r"\b(?:edge|adjacent|connected|connects)\b", question, re.I) and not re.search(r"\b(?:path|shortest|route|cycle)\b", question, re.I):
+                raise ValueError("OBS_TARGET_ANSWER_EQUIVALENT")
+            return balanced_query(item, source)
         # Ordinal nodes come from the public rendering convention, not from the set of existing edges.
         nodes = source.get("closed_world_scopes", {}).get("visible_nodes", [])
         if len(nodes) < 2:
@@ -258,11 +272,15 @@ def _source(item: dict) -> dict:
     return v17.problem_contract_v17(item)["verifier"]
 
 
-def build_obs_request_v18(item: dict, *, public_schema: dict | None = None) -> dict:
+def build_obs_request_v18(item: dict, *, public_schema: dict | None = None, _v18b: bool = False) -> dict:
     source = _source(item)
+    if _v18b:
+        from .v18b_claims import source_for
+
+        source = source_for(item, source)
     if public_schema is not None and public_schema != {"schema": QUERY_SCHEMA, "layer": item.get("layer")}:
         raise ValueError("PUBLIC_SCHEMA_PRIVATE_OR_CHANGED_FIELD")
-    query = _query(item, source)
+    query = _query(item, source, _v18b=_v18b)
     value = None
     for fact in source.get("facts", []):
         if v17._key(fact, source) == v17._key(query, source):
@@ -274,28 +292,45 @@ def build_obs_request_v18(item: dict, *, public_schema: dict | None = None) -> d
         raise ValueError("OBS_ABSENCE_UNCERTIFIED")
     public = {"schema": QUERY_SCHEMA, "kind": query["kind"], "target": query["target"],
               "unit": query["unit"], "question": _question(item)}
-    prompt = OBS_INSTRUCTION_V18 + "\n" + json.dumps(public, sort_keys=True, ensure_ascii=False)
+    instruction = OBS_INSTRUCTION_V18
+    if _v18b:
+        from .v18b_rows import OBS_INSTRUCTION_V18B
+
+        public = {"target": query["target"], "unit": query["unit"],
+                  "value_type": "boolean" if query["kind"] in {"EDGE_PRESENT", "VISIBLE_NODE", "PARALLEL", "PERPENDICULAR"} else "string"}
+        instruction = OBS_INSTRUCTION_V18B
+    if _v18b:
+        value_shape = "<true or false or null>" if public["value_type"] == "boolean" else '"<your image reading>"'
+        prompt = (instruction + "\nVisual question: " + public["target"] + ".\nReturn exactly: "
+                  + '{"value": ' + value_shape + ', "unit": ' + json.dumps(public["unit"], ensure_ascii=False) + "}")
+    else:
+        prompt = instruction + "\n" + json.dumps(public, sort_keys=True, ensure_ascii=False)
     return {"stage": "OBS", "problem_id": item["problem_id"], "prompt": prompt,
         "image_paths": list(item.get("image_paths", [])), "image_sha256": list(item.get("image_sha256", [])),
-        "task": OBS_TASK, "public_query_sha256": digest(public)}
+        "task": OBS_TASK, "public_query_sha256": digest(public), **({"public_query": public} if _v18b else {})}
 
 
-def observation_eligibility_v18(item: dict) -> dict:
+def observation_eligibility_v18(item: dict, *, _v18b: bool = False) -> dict:
     try:
-        request = build_obs_request_v18(item)
+        request = build_obs_request_v18(item, _v18b=_v18b)
         return {"eligible": True, "reason": None, "layer": item.get("layer"),
                 "task": OBS_TASK, "public_query_sha256": request["public_query_sha256"]}
     except ValueError as exc:
         return {"eligible": False, "reason": str(exc), "layer": item.get("layer"), "task": OBS_TASK}
 
 
-def audit_observation_v18(record: dict, *, verifier: dict | None, tokenizer: Any) -> dict:
+def audit_observation_v18(record: dict, *, verifier: dict | None, tokenizer: Any, _v18b: bool = False) -> dict:
     source, output = v17._verifier(record, verifier), record.get("obs", {})
+    if _v18b:
+        from . import v18b_claims
+
+        source = v18b_claims.source_for(record, source)
     reasons, claims, reward = v17._binding(record, output, tokenizer), [], None
-    query = None
+    query, expected = None, {}
     try:
-        query = _query(record, source)
-        expected = build_obs_request_v18(record | {"v18_private_verifier": source})
+        historical = _v18b and record.get("allow_historical_obs_request") is True
+        query = _query(record, source, _v18b=_v18b and not historical)
+        expected = build_obs_request_v18(record | {"v18_private_verifier": source}, _v18b=_v18b and not historical)
         if output.get("prompt") != expected["prompt"]:
             raise ValueError("OBS_INPUT_CHANGED")
         obj, spans = v17._obs_json(output["text"])
@@ -305,7 +340,7 @@ def audit_observation_v18(record: dict, *, verifier: dict | None, tokenizer: Any
             reasons.append("OBS_ABSTAINED")
         else:
             claim = query | {"value": obj["value"], "unit": obj["unit"]}
-            verdict, reason = v17._verdict(claim, source)
+            verdict, reason = (v18b_claims.verdict(claim, source) if _v18b else v17._verdict(claim, source))
             if query["kind"] in {"EDGE_PRESENT", "VISIBLE_NODE", "PARALLEL", "PERPENDICULAR"} and type(obj["value"]) is not bool:
                 verdict, reason = "UNKNOWN", "INVALID_PRESENCE_VALUE"
             if obj["unit"] != query["unit"]:
@@ -329,11 +364,16 @@ def audit_observation_v18(record: dict, *, verifier: dict | None, tokenizer: Any
     if reasons:
         reward = None
     ledger = _ledger(record, "OBS", output, source, claims) if v17._stored_output_v17(output) else None
+    if _v18b and ledger is not None:
+        ledger = _seal({k: v for k, v in ledger.items() if k != "sha256"} | {"schema": "v18b-claim-ledger-v1"})
     return _seal({"schema": "v18-observation-receipt-v1", "problem_id": record["problem_id"],
         "task": OBS_TASK, "ledger": ledger, "score": reward, "reward": reward,
         "pg": reward is not None, "accepted": reward is not None, "requested": 1,
         "responded": bool(claims), "verifiable": reward is not None,
         "tp": int(reward == 1), "fp": int(reward == 0), "fn": int(not claims),
+        **({"historical_query": record.get("allow_historical_obs_request") is True,
+            "public_query_sha256": expected.get("public_query_sha256") if query is not None else None,
+            "obs_prompt_sha256": text_sha256(output.get("prompt", ""))} if _v18b else {}),
         "unknown": int(reward is None), "reasons": list(dict.fromkeys(reasons)),
         "reason": reasons[0] if reasons else None})
 
@@ -344,7 +384,11 @@ def _ledger(record: dict, stage: str, output: dict, source: dict, claims: list[d
 
 
 def audit_t1_v18(record: dict, *, verifier: dict | None, tokenizer: Any,
-                  fact_catalog: Sequence[dict] = (), rules: dict | None = None) -> dict:
+                  fact_catalog: Sequence[dict] = (), rules: dict | None = None, _v18b: bool = False) -> dict:
+    if _v18b:
+        from . import v18b_claims
+
+        verifier = v18b_claims.source_for(record, v17._verifier(record, verifier)) if verifier is not None else None
     old = v17.audit_t1_v17(record, verifier=verifier, tokenizer=tokenizer, fact_catalog=fact_catalog, rules=rules)
     claims, text = deepcopy(old["claims"]), record["t1"]["text"]
     for claim in claims:
@@ -371,11 +415,14 @@ def audit_t1_v18(record: dict, *, verifier: dict | None, tokenizer: Any,
                 claim.update(assertion=assertion, verdict=verdict if assertion == "ASSERTED" else "UNKNOWN", reason=reason)
                 if text.count(claim["original_quote"]) != 1:
                     claim.update(verdict="UNKNOWN", reason="DUPLICATE_QUOTE", assertion="UNKNOWN")
-    return _ledger(record, "T1", record["t1"], v17._verifier(record, verifier), claims)
+    if _v18b:
+        claims = v18b_claims.claims_for(record, v17._verifier(record, verifier), claims)
+    ledger = _ledger(record, "T1", record["t1"], v17._verifier(record, verifier), claims)
+    return _seal({k: v for k, v in ledger.items() if k != "sha256"} | {"schema": "v18b-claim-ledger-v1"}) if _v18b else ledger
 
 
 def _checked_ledgers(record: dict, ledgers: list[dict], verifier: dict | None,
-                     tokenizer: Any, fact_catalog: Sequence[dict], rules: dict) -> list[dict]:
+                     tokenizer: Any, fact_catalog: Sequence[dict], rules: dict, *, _v18b: bool = False) -> list[dict]:
     claims: list[dict] = []
     stages: set[str] = set()
     for ledger in ledgers:
@@ -384,15 +431,15 @@ def _checked_ledgers(record: dict, ledgers: list[dict], verifier: dict | None,
         if stage in stages:
             raise ValueError("DUPLICATE_CLAIM_LEDGER")
         stages.add(stage)
-        expected = (audit_t1_v18(record, verifier=verifier, tokenizer=tokenizer, fact_catalog=fact_catalog, rules=rules)
-                    if stage == "T1" else audit_observation_v18(record, verifier=verifier, tokenizer=tokenizer)["ledger"] if stage == "OBS" else None)
+        expected = (audit_t1_v18(record, verifier=verifier, tokenizer=tokenizer, fact_catalog=fact_catalog, rules=rules, _v18b=_v18b)
+                    if stage == "T1" else audit_observation_v18(record, verifier=verifier, tokenizer=tokenizer, _v18b=_v18b)["ledger"] if stage == "OBS" else None)
         if expected != ledger:
             raise ValueError("CLAIM_LEDGER_BINDING_MISMATCH")
         claims.extend(c | {"stage": stage} for c in ledger["claims"])
     return claims
 
 
-def build_note_request_v18(record: dict, *, ledgers: list[dict], gold: str, tokenizer: Any = None) -> dict:
+def build_note_request_v18(record: dict, *, ledgers: list[dict], gold: str, tokenizer: Any = None, _v18b: bool = False) -> dict:
     claims: list[dict] = []
     for ledger in ledgers:
         v17._check_seal(ledger)
@@ -407,6 +454,9 @@ def build_note_request_v18(record: dict, *, ledgers: list[dict], gold: str, toke
         v17._check_seal(format_receipt)
         if format_receipt.get("output_sha256") != digest(first):
             raise ValueError("FORMAT_RECEIPT_OUTPUT_CHANGED")
+    if _v18b and "semantic_status" not in format_receipt:
+        choices = record.get("evaluation", {}).get("choices", record.get("choices", ()))
+        format_receipt = format_receipt_v18(record, gold=gold, choices=choices, _v18b=True)
     errors = [c for c in claims if c["verdict"] == "CONTRADICTED" and c.get("assertion") == "ASSERTED"]
     if first["finish_reason"] in v17._LENGTH or is_loop(first["text"]):
         if not errors and not format_receipt.get("accepted"):
@@ -416,29 +466,67 @@ def build_note_request_v18(record: dict, *, ledgers: list[dict], gold: str, toke
     condition = note_condition_v18(record["problem_id"])
     body = {"question": record["p0_text"], "first_solution": first["text"],
             "grading_result": first.get("status"), "given_answer": gold}
+    if _v18b:
+        body["raw_parser_status"] = body.pop("grading_result")
+        body["answer_grading_result"] = ("CONTENT_CORRECT_FORMAT_FAILURE"
+            if format_receipt.get("accepted") and format_receipt.get("semantic_status") == "CORRECT"
+            else body["raw_parser_status"])
+        body["answer_grade_scope"] = "T1 final answer only; no process or observation judgment"
+        if format_receipt.get("semantic_status") is not None:
+            body["source_final_declaration_status"] = format_receipt["semantic_status"]
+            body["source_final_declaration_scope"] = format_receipt.get("certification_scope")
     if record.get("obs"):
         body["observation"] = record["obs"]["text"]
+        if _v18b:
+            from .v18b_rows import bound_observation_request_v18b
+
+            obs_request = bound_observation_request_v18b(record)
+            public = obs_request["public_query"]
+            body = {"original_t1": body, "observation": record["obs"]["text"],
+                    "observation_question": {key: public[key] for key in ("target", "unit")},
+                    "observation_request_sha256": digest(obs_request)}
+            body["original_t1"].pop("observation")
+            try:
+                prior, _ = v17._obs_json(record["obs"]["text"])
+                body["observation_prior_value"] = prior.get("value") if isinstance(prior, dict) else None
+            except (TypeError, ValueError):
+                body["observation_prior_value"] = None
+    if _v18b:
+        body["available_stages"] = ["T1", "OBS"] if record.get("obs") else ["T1"]
     locations = []
     if condition == "location_given" and errors:
         error = sorted(errors, key=lambda c: (c["stage"], c["original_byte_spans"]))[0]
         locations = [{"stage": error["stage"], "quote": error["original_quote"]}]
         body["inspect_passage"] = locations[0]
-    prompt = NOTE_INSTRUCTION_V18 + "\n\n" + json.dumps(body, ensure_ascii=False, sort_keys=True)
+    if _v18b:
+        from .v18b_rows import NOTE_INSTRUCTION_V18B, render_note_target_last
+
+    if _v18b and record.get("obs"):
+        prompt = render_note_target_last(body)
+    else:
+        instruction = NOTE_INSTRUCTION_V18B if _v18b else NOTE_INSTRUCTION_V18
+        prompt = instruction + "\n\n" + json.dumps(body, ensure_ascii=False, sort_keys=True)
     if tokenizer is not None and len(tokenizer.encode(prompt, add_special_tokens=False)) > 16384:
         raise ValueError("NOTE_CONTEXT_BLOCKED")
     return {"stage": "NOTE", "problem_id": record["problem_id"], "prompt": prompt,
             "image_paths": list(record.get("image_paths", [])), "image_sha256": list(record.get("image_sha256", [])),
-            "note_condition": condition, "provided_location_count": len(locations)}
+            "note_condition": condition, "provided_location_count": len(locations),
+            **({"public_context_sha256": digest(body)} if _v18b and record.get("obs") else {})}
 
 
 def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
                     choices: list | tuple, gold: str, tokenizer: Any,
-                    fact_catalog: Sequence[dict] = (), rules: dict | None = None) -> dict:
+                    fact_catalog: Sequence[dict] = (), rules: dict | None = None, _v18b: bool = False) -> dict:
+    if _v18b:
+        from . import v18b_claims
+
+        verifier = v18b_claims.source_for(record, v17._verifier(record, verifier)) if verifier is not None else None
     output, repairs, spans, reasons = record.get("note", {}), [], [], []
     lesson, lesson_reasons, request = None, ["LESSON_UNAVAILABLE"], {}
+    visual_result = None
     try:
-        claims = _checked_ledgers(record, ledgers, verifier, tokenizer, fact_catalog, rules or {})
-        request = build_note_request_v18(record, ledgers=ledgers, gold=gold, tokenizer=tokenizer)
+        claims = _checked_ledgers(record, ledgers, verifier, tokenizer, fact_catalog, rules or {}, _v18b=_v18b)
+        request = build_note_request_v18(record, ledgers=ledgers, gold=gold, tokenizer=tokenizer, _v18b=_v18b)
         reasons.extend(v17._binding(record, output, tokenizer))
         if output.get("prompt") != request["prompt"]:
             reasons.append("NOTE_INPUT_CHANGED")
@@ -449,18 +537,53 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
         if is_loop(output.get("text", "")):
             reasons.append("NOTE_LOOP")
         obj, paths = v17._obs_json(output["text"])
-        if not isinstance(obj, dict) or set(obj) != {"repairs", "lesson"} or not isinstance(obj["repairs"], list) or len(obj["repairs"]) > 1:
+        visual = obj.get("visual_check") if isinstance(obj, dict) else None
+        visual_form = _v18b and bool(record.get("obs")) and isinstance(obj, dict) and "visual_check" in obj
+        if (not isinstance(obj, dict) or
+                (not visual_form and set(obj) != {"repairs", "lesson"}) or
+                (visual_form and (not {"visual_check", "lesson"} <= set(obj) or set(obj) - {"visual_check", "lesson", "repairs"})) or
+                not isinstance(obj.get("repairs", []), list) or len(obj.get("repairs", [])) > 1):
             raise ValueError("NOTE_SCHEMA")
-        lesson = obj["lesson"]
-        corrected = [r.get("corrected_value") for r in obj["repairs"] if isinstance(r, dict)]
-        lesson_reasons = v17._lesson(lesson, record, choices, gold, corrected)
-        for index, repair in enumerate(obj["repairs"]):
+        proposals = []
+        for index, repair in enumerate(obj.get("repairs", [])):
             if (not isinstance(repair, dict) or set(repair) != {"stage", "quote", "corrected_value", "unit"}
                     or not all(isinstance(v, str) for v in repair.values()) or repair["stage"] not in {"T1", "OBS"}):
                 raise ValueError("REPAIR_SCHEMA")
+            proposals.append((repair, f"repairs[{index}].corrected_value", "repairs"))
+        if visual_form:
+            if (isinstance(visual, dict) and type(visual.get("read_now")) is bool
+                    and any(c["stage"] == "OBS" and type(c["original_value"]) is bool for c in claims)):
+                # Verify one canonical value, then credit the original bare JSON token below.
+                visual = dict(visual, read_now=json.dumps(visual["read_now"]))
+            if (not isinstance(visual, dict) or set(visual) != {"read_now", "quote", "unit", "decision"}
+                    or not all(isinstance(visual[key], str) for key in ("quote", "unit", "decision"))
+                    or visual["read_now"] is not None and not isinstance(visual["read_now"], str)
+                    or visual["decision"] not in {"keep", "correct", "unsure"}):
+                raise ValueError("NOTE_SCHEMA:VISUAL_CHECK")
+            visual_result = {"model_decision": visual["decision"], "independent_acceptance": False,
+                             "independent_status": "NOT_PROPOSED", "reason": "NO_CORRECTION_PROPOSED"}
+            if any(repair["stage"] == "OBS" for repair, _, _ in proposals):
+                raise ValueError("DUPLICATE_OBS_REPAIR")
+            if visual["decision"] == "correct":
+                visual_result.update(independent_status="REJECTED", reason="VISUAL_CHECK_NO_CORRECTED_VALUE")
+                if not visual["read_now"]:
+                    reasons.append("VISUAL_CHECK_NO_CORRECTED_VALUE")
+                else:
+                    proposals.append((visual, "visual_check.read_now", "visual_check"))
+        lesson = obj["lesson"]
+        corrected = [repair["read_now"] if origin == "visual_check" else repair["corrected_value"]
+                     for repair, _, origin in proposals]
+        if visual_form and isinstance(visual, dict) and visual["read_now"] is not None:
+            corrected.append(visual["read_now"])
+        lesson_reasons = v17._lesson(lesson, record, choices, gold, corrected)
+        repaired_claims = set()
+        for proposal, value_path, origin in proposals:
+            repair = ({"stage": "OBS", "quote": proposal["quote"], "unit": proposal["unit"],
+                       "corrected_value": proposal["read_now"]} if origin == "visual_check" else proposal)
             quote = repair["quote"]
             original = record.get(repair["stage"].lower(), {}).get("text", "")
-            matched = [c for c in claims if c["stage"] == repair["stage"] and c["original_quote"] == quote]
+            matched = (v18b_claims.match_quote(original, quote, claims, repair["stage"]) if _v18b else
+                       [c for c in claims if c["stage"] == repair["stage"] and c["original_quote"] == quote])
             problem = None
             if not quote or original.count(quote) != 1 or len(matched) != 1:
                 problem = "ORIGINAL_QUOTE_NOT_UNIQUE_BOUND_ASSERTION"
@@ -468,6 +591,8 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
                 claim = matched[0]
                 if claim["verdict"] != "CONTRADICTED" or claim.get("assertion") != "ASSERTED":
                     problem = "ORIGINAL_NOT_CONTRADICTED_ASSERTION"
+                elif digest(claim["canonical_fact_key"]) in repaired_claims:
+                    problem = "DUPLICATE_CLAIM_REPAIR"
                 elif repair["unit"] != claim.get("unit", ""):
                     problem = "REPAIR_UNIT_MISMATCH"
                 elif claim["kind"] != "ARITHMETIC" and v17._same_answer(repair["corrected_value"], gold, choices):
@@ -475,6 +600,9 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
                 elif claim["kind"] == "ARITHMETIC":
                     if not bounded._same(repair["corrected_value"], claim["computed_value"]):
                         problem = "INCORRECT_ARITHMETIC_REPAIR"
+                elif _v18b and claim["kind"] != "BOUND_FACT":
+                    if verifier is None or not v18b_claims.repair_verdict(claim, repair["corrected_value"], verifier):
+                        problem = "INCORRECT_SOURCE_REPAIR"
                 elif claim["kind"] == "BOUND_FACT":
                     fact = next((f for f in fact_catalog if f["fact_id"] == claim.get("fact_ref")), None)
                     if fact is None or not bounded._same(repair["corrected_value"], fact["value"]):
@@ -482,17 +610,29 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
                 elif v17._verdict({"kind": claim["kind"], "entity": claim["original_entity"],
                         "value": repair["corrected_value"], "unit": repair["unit"]}, v17._verifier(record, verifier))[0] != "VERIFIED":
                     problem = "INCORRECT_SOURCE_REPAIR"
+            if origin == "visual_check" and visual_result is not None:
+                visual_result.update(independent_acceptance=problem is None,
+                                     independent_status="ACCEPTED" if problem is None else "REJECTED", reason=problem)
             if problem:
                 reasons.append(problem)
                 repairs.append({"accepted": False, "reason": problem, "stage": repair["stage"]})
                 continue
-            start, end = paths[f"repairs[{index}].corrected_value"]
-            # Escaped strings cannot be supervised as a different decoded value.
-            if output["text"][start + 1:end - 1] != repair["corrected_value"] or start + 1 == end - 1:
+            repaired_claims.add(digest(claim["canonical_fact_key"]))
+            start, end = paths[value_path]
+            if output["text"][start] == '"':
+                start, end = start + 1, end - 1
+            if start >= end or (not _v18b and output["text"][start:end] != repair["corrected_value"]):
                 raise ValueError("REPAIR_CONTENT_BYTE_BINDING")
-            span = [len(output["text"][:start + 1].encode()), len(output["text"][:end - 1].encode())]
+            scalar_span = [len(output["text"][:start].encode()), len(output["text"][:end].encode())]
+            span = scalar_span
+            if origin == "visual_check" and type(obj["visual_check"]["read_now"]) is bool:
+                from .v18b_rows import boolean_note_token_span
+
+                span = boolean_note_token_span(output, tokenizer, scalar_span)
             spans.append(span)
             repairs.append({"accepted": True, "claim_id": claim["claim_id"], "stage": repair["stage"],
+                **({"scalar_byte_span": scalar_span} if span != scalar_span else {}),
+                **({"proposal_json_path": value_path} if _v18b else {}),
                 "byte_span": span, "kind": claim["kind"], "entity": claim["original_entity"],
                 "unit": claim.get("unit", ""), "corrected_value": repair["corrected_value"],
                 "original_quote": quote, "original_byte_spans": claim["original_byte_spans"],
@@ -519,11 +659,14 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
         reasons.append(str(exc) if isinstance(exc, ValueError) else "NOTE_SCHEMA")
     mask = []
     if spans:
+        spans.sort()
         try:
             mask = v17._token_mask(tokenizer, output["generation"]["completion_token_ids"], output["text"], spans)
         except (KeyError, ValueError) as exc:
             reasons.append("N_MASK:" + str(exc))
     n_ok = bool(spans and any(mask) and not reasons)
+    if visual_result is not None and visual_result["independent_acceptance"] and not n_ok:
+        visual_result.update(independent_acceptance=False, independent_status="REJECTED", reason=reasons[0])
     invalid = bool(v17._binding(record, output, tokenizer)) or any(r.startswith(("CLAIM_LEDGER", "EVIDENCE_", "NOTE_INPUT", "NOTE_NOT", "NOTE_TOO", "NOTE_LOOP", "NOTE_SCHEMA")) for r in reasons)
     lesson_ok = isinstance(lesson, str) and not lesson_reasons
     return _seal({"schema": "v18-note-receipt-v1", "problem_id": record["problem_id"],
@@ -531,6 +674,9 @@ def verify_note_v18(record: dict, *, ledgers: list[dict], verifier: dict | None,
         "ledger_sha256": [x["sha256"] for x in ledgers], "accepted": n_ok, "n_accepted": n_ok,
         "repairs": repairs, "verified_repair_count": sum(r["accepted"] for r in repairs),
         "note_condition": request.get("note_condition"), "provided_location_count": request.get("provided_location_count", 0),
+        **({"verification_version": "v18b", "repair_origin": [r["stage"] for r in repairs if r["accepted"]],
+            "location_given_binary_repairs": sum(r["accepted"] and r.get("kind") == "EDGE_PRESENT" and request.get("provided_location_count", 0) > 0 for r in repairs),
+            "visual_check": visual_result} if _v18b else {}),
         "self_found_success": n_ok and request.get("provided_location_count", 0) == 0,
         "lesson": {"text": lesson} if isinstance(lesson, str) else None, "lesson_accepted": lesson_ok,
         "lesson_leak_reasons": list(dict.fromkeys(lesson_reasons)),
@@ -597,7 +743,7 @@ def _process_evidence(record: dict, output: dict, source: dict, catalog: list[di
 
 def verify_solution_v18(record: dict, *, stage: str = "t1", tokenizer: Any, gold: str,
                         choices: list | tuple = (), fact_catalog: Sequence[dict] = (), rules: dict | None = None,
-                        note_receipt: dict | None = None, verifier: dict | None = None) -> dict:
+                        note_receipt: dict | None = None, verifier: dict | None = None, _v18b: bool = False) -> dict:
     if stage == "resolve" and note_receipt is not None:
         try:
             v17._check_seal(note_receipt)
@@ -614,6 +760,10 @@ def verify_solution_v18(record: dict, *, stage: str = "t1", tokenizer: Any, gold
                 "verified_evidence_count": 0, "verified_process_byte_spans": [], "corrected_use_byte_spans": [],
                 "evidence_grade": "RESULT_ONLY", "format_receipt": None,
                 "knowledge_status": "RESULT_CONDITIONED_PARTIALLY_CHECKED"})
+    if _v18b:
+        from . import v18b_claims
+
+        verifier = v18b_claims.source_for(record, v17._verifier(record, verifier)) if verifier is not None else None
     old = v17.verify_solution_v17(record, stage=stage, tokenizer=tokenizer, gold=gold, choices=choices,
         fact_catalog=fact_catalog, rules=rules, note_receipt=note_receipt, verifier=verifier)
     body = {k: v for k, v in old.items() if k != "sha256"}
@@ -625,7 +775,13 @@ def verify_solution_v18(record: dict, *, stage: str = "t1", tokenizer: Any, gold
     if repeats and "REPETITION" not in reasons:
         reasons.append("REPETITION")
     audited = audit_t1_v18(record | {"t1": output}, verifier=verifier, tokenizer=tokenizer,
-                           fact_catalog=fact_catalog, rules=rules)
+                           fact_catalog=fact_catalog, rules=rules, _v18b=_v18b)
+    if _v18b:
+        from .v18b_rows import reconcile_solution_v18b
+
+        return reconcile_solution_v18b(record, stage=stage, source=source, tokenizer=tokenizer, old_body=body,
+                                       reasons=reasons, ledger=audited, process_spans=process_spans, used=used,
+                                       note_receipt=note_receipt, gold=gold, choices=choices)
     if any(c.get("reason") == "UNIT_MISMATCH" for c in audited["claims"]):
         reasons.append("PROCESS_UNIT_UNVERIFIED")
     indexed = {fact["fact_id"]: fact for fact in catalog}
@@ -706,7 +862,7 @@ def problem_contract_v18(item: dict) -> dict:
 
 
 def prep_rows_with_receipts_v18(records: list[dict], *, tokenizer: Any,
-                                max_self: int = 160, max_human: int = 128) -> tuple[list[dict], list[dict]]:
+                                max_self: int = 160, max_human: int = 128, _v18b: bool = False) -> tuple[list[dict], list[dict]]:
     if not 0 <= max_self <= 160 or not 0 <= max_human <= 128 or len({r["problem_id"] for r in records}) != len(records):
         raise ValueError("PREP_ROW_LIMIT_OR_DUPLICATE_PARENT")
     candidates: dict[str, list[dict]] = {"PREP_SELF": [], "PREP_HUMAN": []}
@@ -715,7 +871,7 @@ def prep_rows_with_receipts_v18(records: list[dict], *, tokenizer: Any,
         evaluation = record.get("evaluation", record)
         source = problem_contract_v18(record)
         receipt = verify_solution_v18(record, tokenizer=tokenizer, gold=str(evaluation["gold"]),
-            choices=evaluation.get("choices", []), fact_catalog=source["fact_catalog"], rules=source["rules"], verifier=source["verifier"])
+            choices=evaluation.get("choices", []), fact_catalog=source["fact_catalog"], rules=source["rules"], verifier=source["verifier"], _v18b=_v18b)
         receipts.append(_seal({"problem_id": record["problem_id"], "kind": "PREP_SELF", "admission": receipt}))
         row = _sft_row(record, "PREP_SELF", tokenizer, receipt)
         if row is not None:

@@ -149,10 +149,16 @@ class SingleVllmSampler:
     def __init__(self, model_path: Path, *, kv_cache_gib: float, max_num_seqs: int, gpu_memory_utilization: float,
                  sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None, lora: bool = False,
                  sampling: dict | None = None, version_registry: bool = False,
-                 protocol_version: str = "error-note-v16b", preflight_stage: str = "trained"):
+                 protocol_version: str = "error-note-v16b", preflight_stage: str = "trained",
+                 generation_context_limit: int | None = None):
         self.protocol_version = protocol_version
+        self.context_limit = 40960 if protocol_version == "error-note-v18b" else CONTEXT_LIMIT
+        if generation_context_limit is not None:
+            if protocol_version != "error-note-v18b" or generation_context_limit not in (CONTEXT_LIMIT, 40960):
+                raise ValueError("only the fixed v18b prep and monitor context lengths are supported")
+            self.context_limit = generation_context_limit
         self.preflight_stage = preflight_stage
-        if protocol_version in ("error-note-v17", "error-note-v18"):
+        if protocol_version in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             if type(max_num_seqs) is not int or not 1 <= max_num_seqs <= 16:
                 raise ValueError("v17 training concurrency ceiling is sixteen")
             if preflight_stage not in ("f0", "trained"):
@@ -191,10 +197,10 @@ class SingleVllmSampler:
         processor.image_processor.size = {"shortest_edge": self.image["min_pixels"], "longest_edge": self.image["max_pixels"]}
         engine = VLLMRolloutEngine.__new__(VLLMRolloutEngine)  # reuse prepare/_prompt/_load_weights, own LLM kwargs
         InputPreparation.__init__(engine, processor, AutoConfig.from_pretrained(str(model_path), local_files_only=True),
-                                  self.image, CONTEXT_LIMIT)
+                                  self.image, self.context_limit)
         engine._weight_shapes = _weight_inventory(engine.model_config)
         engine.model_dir = Path(model_path).resolve()
-        kwargs = vllm_kwargs(Path(model_path), self.image, int(kv_cache_gib * 2**30), max_num_seqs, CONTEXT_LIMIT,
+        kwargs = vllm_kwargs(Path(model_path), self.image, int(kv_cache_gib * 2**30), max_num_seqs, self.context_limit,
                              gpu_memory_utilization=float(gpu_memory_utilization))
         extra: dict = {}
         if lora:
@@ -214,7 +220,7 @@ class SingleVllmSampler:
                                                    enable_sleep_mode=bool(sleep), **extra)
         engine._call, engine._synchronized, engine._push_complete, engine._last_loaded_version = 0, True, True, None
         self.engine, self.max_num_seqs, self.sleep = engine, max_num_seqs, bool(sleep)
-        if self.protocol_version in ("error-note-v17", "error-note-v18"):
+        if self.protocol_version in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             cache = self._scheduler().kv_cache_config
             if len(cache.kv_cache_groups) != 1:
                 raise RuntimeError("v17 capacity: one measured full-attention KV group required")
@@ -435,6 +441,8 @@ class SingleVllmSampler:
             processor.image_processor = original
 
     def _prepare_request(self, request: dict) -> dict:
+        if request.get("evaluation_monitor") and getattr(self, "protocol_version", None) != "error-note-v18b":
+            raise ValueError("held-out B2 monitor requires its v18b generation engine")
         from fine_tuning.notebook_rl.engines import RolloutRequest
         from .rl import digest
 
@@ -442,9 +450,9 @@ class SingleVllmSampler:
         image_identity = [{"size": list(img.size), "sha256": hashlib.sha256(img.tobytes()).hexdigest()}
                           for img in request["images"]]
         cache_binding = {"messages": request["messages"], "images": image_identity}
-        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             cache_binding.update(image_policy=self.image, processor_revision=str(self.engine.model_dir),
-                                 context_limit=CONTEXT_LIMIT)
+                                 context_limit=getattr(self, "context_limit", CONTEXT_LIMIT))
         key = request["problem_id"] + ":" + digest(cache_binding)
         memo = self._input_memo.get(key)
         if memo is None:
@@ -468,13 +476,13 @@ class SingleVllmSampler:
             prompt["multi_modal_uuids"] = {"image": [f"v{version}:{rid}:{i}" for i in range(len(request["images"]))]}
         if item["input_tokens"] > 16384:
             raise RuntimeError("v16b vLLM: HOLD prompt exceeds the measured 16384-token capacity bound")
-        if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
+        if item["input_tokens"] + request["max_tokens"] > getattr(self, "context_limit", CONTEXT_LIMIT):
             raise ValueError("v16b vLLM: prompt plus completion exceeds context limit")
         return {"request_sha256": single_request_sha256(request), "item": item, "prompt": prompt,
                 "prompt_tokens": item["input_tokens"], "max_tokens": request["max_tokens"]}
 
     def prepare_request_v17(self, request: dict) -> dict:
-        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18"):
+        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             raise RuntimeError("v17 preparation requires its explicit protocol")
         single_request_binding(request)
         prepared = self._prepare_request(request)
@@ -513,7 +521,7 @@ class SingleVllmSampler:
         self.versions[state["request"]["policy_version"]]["refcount"] -= 1
 
     def set_preflight_stage_v17(self, stage: str) -> None:
-        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18") or stage not in ("f0", "trained"):
+        if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18", "error-note-v18b") or stage not in ("f0", "trained"):
             raise ValueError("v17 PF5 requires an explicit f0 or trained stage")
         if self.pending:
             raise RuntimeError("v17 PF5 stage changes require a drained engine")
@@ -545,7 +553,7 @@ class SingleVllmSampler:
         if list(prompt.get("prompt_token_ids", collapsed)) != collapsed:
             raise RuntimeError("v17 capacity: native prompt differs from reserved prepared prompt")
         reservation = None
-        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             reservation = self._reservation_v17(prepared)
             if reservation["status"] != "ADMIT":
                 raise RuntimeError("v17 capacity: scheduler must pump existing requests before admission")
@@ -561,7 +569,7 @@ class SingleVllmSampler:
             if live.lora_request is None or live.lora_request.lora_int_id != entry["lora_int_id"]:
                 raise RuntimeError("v16b vLLM: request LoRA differs from the admission version")
         except BaseException:
-            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
                 core.abort_request([rid])
             raise
         self.pending[rid] = {"request": request, "item": item, "live": live, "admit_step": self.engine_steps,
@@ -574,7 +582,7 @@ class SingleVllmSampler:
         state["original_event"] = original_event
         def record_event(event_type: Any, timestamp: Any = None) -> None:
             if event_type.name == "PREEMPTED":
-                if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+                if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
                     self.preemption_count += 1
                     warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
                 state["preempted"] = True
@@ -600,7 +608,7 @@ class SingleVllmSampler:
             status = getattr(getattr(live, "status", None), "name", "")
             preempted = status == "PREEMPTED" or live.num_computed_tokens < state["last_computed"]
             if preempted:
-                if (getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18")
+                if (getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b")
                         and not state["preempted"] and "original_event" not in state):
                     self.preemption_count += 1
                     warnings.warn("v17 training KV preemption; policy mixing is checked separately", RuntimeWarning)
@@ -616,7 +624,7 @@ class SingleVllmSampler:
             if "original_event" in state:
                 state["live"].record_event = state["original_event"]
             request, item = state["request"], state["item"]
-            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+            if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
                 self.versions[request["policy_version"]]["refcount"] -= 1
             if len(output.outputs) != 1 or list(output.prompt_token_ids) != list(item["prompt_token_ids"]):
                 raise RuntimeError("v16b vLLM: exact prompt and one completion required")
@@ -650,7 +658,7 @@ class SingleVllmSampler:
             for key in ("baseline_receipt", "obs_baseline_receipt"):
                 if key in request:
                     generation[key] = request[key]
-            if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18"):
+            if getattr(self, "protocol_version", None) not in ("error-note-v17", "error-note-v18", "error-note-v18b"):
                 entry["refcount"] -= 1
             if request["kind"] == "RESOLVE":
                 self.forget_item(request["problem_id"])
@@ -768,10 +776,10 @@ class SingleVllmSampler:
             columns, restored = llm_lora.vllm_columns(bundle, self.vision_hooks, self._probe, pairs, self.lora_request,
                                                       lambda factor: self._swap_adapter(bundle, policy, factor))
         reference: Any = llm_lora.hf_columns(bundle, self.engine, pairs)
-        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18"):
+        if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             contract = llm_lora.pf5_contract_v17(bundle, self.preflight_stage)
             tower = None
-            if self.protocol_version == "error-note-v18" and self.preflight_stage == "trained":
+            if self.protocol_version in ("error-note-v18", "error-note-v18b") and self.preflight_stage == "trained":
                 from types import SimpleNamespace
                 with _nondeterministic():
                     vision_reference = llm_lora.hf_vision_columns(bundle, self.engine, pairs)
@@ -841,7 +849,7 @@ class SingleVllmSampler:
             binding = single_request_binding(request)
             item, _ = prepare_protocol_inputs(engine.processor, engine.model_config, request["messages"],
                                               request["images"], self.image)
-            if item["input_tokens"] + request["max_tokens"] > CONTEXT_LIMIT:
+            if item["input_tokens"] + request["max_tokens"] > getattr(self, "context_limit", CONTEXT_LIMIT):
                 raise ValueError("SINGLE vLLM: prompt plus completion exceeds the context limit")
             prepared = engine.prepare(RolloutRequest(binding["request_id"], None, request["messages"], request["images"],
                                                      1, request["max_tokens"], [request["seed"]]))

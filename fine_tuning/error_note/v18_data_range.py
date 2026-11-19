@@ -28,14 +28,8 @@ def _retryable(error: BaseException, attempt: int) -> bool:
 
 
 def _request(request, meter):
-    for retry in range(ATTEMPTS):
-        meter["requests"] += 1
-        try:
-            return urllib.request.urlopen(request, timeout=45)
-        except TRANSIENT as error:
-            if not _retryable(error, retry):
-                raise
-            time.sleep(2 ** retry)
+    meter["requests"] += 1
+    return urllib.request.urlopen(request, timeout=45)
 
 
 def _range(spec: dict, start: int, length: int, meter: dict) -> bytes:
@@ -103,9 +97,16 @@ def _locate(spec, meter):
     url = spec["url"]
     with _directory_lock:
         if url not in _directories:
-            with _request(urllib.request.Request(url, method="HEAD"), meter) as response:
-                headers = {"url": url, "archive_bytes": int(response.headers["Content-Length"]),
-                           "etag": response.headers["ETag"]}
+            for attempt in range(ATTEMPTS):
+                try:
+                    with _request(urllib.request.Request(url, method="HEAD"), meter) as response:
+                        headers = {"url": url, "archive_bytes": int(response.headers["Content-Length"]),
+                                   "etag": response.headers["ETag"]}
+                    break
+                except TRANSIENT as error:
+                    if not _retryable(error, attempt):
+                        raise
+                    time.sleep(2 ** attempt)
             if not headers["etag"]:
                 raise ValueError("missing remote ZIP identity")
             reader = _ArchiveReader(headers, meter)

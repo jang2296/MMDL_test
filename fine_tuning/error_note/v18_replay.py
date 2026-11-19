@@ -14,7 +14,7 @@ from .audit import digest
 from .prep_v16b import file_sha, grader, p0, seal
 
 
-def read_archive(path: Path) -> tuple[dict, dict[str, dict]]:
+def read_archive(path: Path, *, allow_partial: bool = False) -> tuple[dict, dict[str, dict]]:
     """Read only JSON members; never extract an archive or follow its links."""
     plan, records = None, {}
 
@@ -68,20 +68,36 @@ def read_archive(path: Path) -> tuple[dict, dict[str, dict]]:
     if plan.get("sha256") != digest({k: v for k, v in plan.items() if k != "sha256"}):
         raise ValueError("v18 replay: original plan seal changed")
     ids = [item["problem_id"] for item in plan["items"]]
-    if len(ids) != len(set(ids)) or set(ids) != set(records):
+    expected = set(ids[:len(records)]) if allow_partial else set(ids)
+    if len(ids) != len(set(ids)) or expected != set(records):
         raise ValueError("v18 replay: native records do not match the frozen campaign")
     return plan, records
 
 
 def replay_parent(item: dict, native: dict, *, tokenizer: Any,
                   grade: Callable[[dict, dict], tuple[str, Any]],
-                  grade_v8: Callable[[dict, dict], tuple[str, Any]] | None = None) -> tuple[dict, list[dict]]:
+                  grade_v8: Callable[[dict, dict], tuple[str, Any]] | None = None,
+                  version: str = "v18") -> tuple[dict, list[dict]]:
     """Use the same v18 policy, verifier, admission and sampled-token row builders as campaign."""
-    from . import v18_rows as rows
+    if version not in {"v18", "v18b"}:
+        raise ValueError("Unknown replay version")
+    if version == "v18b":
+        from . import v18b_rows
+        rows: Any = v18b_rows
+    else:
+        from . import v18_rows
+        rows = v18_rows
 
+    native_sha256 = digest(native)
     outputs = {key: deepcopy(native[key]) for key in ("t1", "obs", "note", "resolve") if key in native}
     record = deepcopy(item)
     record.update(p0_text=p0(item), subject=item.get("subject", item["source"]), t1=outputs["t1"])
+    if version == "v18b" and "obs" in outputs:
+        record["obs"] = outputs["obs"]
+        try:
+            record = rows.bind_historical_observation_v18b(record)
+        except ValueError:
+            pass  # Legacy v17 OBS remains ungraded under the new input contract.
     contract = rows.problem_contract_v17(item)
     kwargs = {"verifier": contract["verifier"], "tokenizer": tokenizer,
               "fact_catalog": contract["fact_catalog"], "rules": contract["rules"]}
@@ -147,18 +163,24 @@ def replay_parent(item: dict, native: dict, *, tokenizer: Any,
                                          "native_output_retained": True}
     result["row_counts"] = dict(Counter(row["kind"] for row in admitted))
     # Regrading is local metadata. Never rewrite the sampled text, token IDs, prompt or archived receipts.
-    result["native_archive_unchanged"] = True
+    result["native_archive_unchanged"] = digest(native) == native_sha256
+    if not result["native_archive_unchanged"]:
+        raise ValueError("Replay altered original native records")
+    result["replay_version"] = version
     result["generated_answers"] = 0
     result["gpu_updates"] = 0
     return result, admitted
 
 
 def replay(archive: Path, data_root: Path, tokenizer: Any, *, output: Path,
-           limit: int | None = None, parent_ids: list[str] | None = None) -> dict:
-    source_files = ("v18_replay.py", "v18_rows.py", "v17_rows.py", "v16b_rows.py", "single_grading.py", "prep_v16b.py")
+           limit: int | None = None, parent_ids: list[str] | None = None, version: str = "v18",
+           allow_partial: bool = False) -> dict:
+    source_files: tuple[str, ...] = ("v18_replay.py", "v18_rows.py", "v17_rows.py", "v16b_rows.py", "single_grading.py", "prep_v16b.py")
+    if version == "v18b":
+        source_files += ("v18b_rows.py", "v18b_claims.py")
     source_before = {name: file_sha(Path(__file__).with_name(name)) for name in source_files}
-    plan, native = read_archive(archive)
-    ids = [item["problem_id"] for item in plan["items"]]
+    plan, native = read_archive(archive, allow_partial=allow_partial)
+    ids = [item["problem_id"] for item in plan["items"] if item["problem_id"] in native]
     if parent_ids is not None:
         if len(parent_ids) != len(set(parent_ids)) or not set(parent_ids) <= set(ids):
             raise ValueError("v18 replay: requested IDs must belong to the original campaign")
@@ -183,7 +205,7 @@ def replay(archive: Path, data_root: Path, tokenizer: Any, *, output: Path,
     details = []
     for pid in ids:
         item = dict(by_id[pid], block_index=next(i for i, block in enumerate(plan["blocks"]) if pid in block))
-        result, rows = replay_parent(item, native[pid], tokenizer=tokenizer, grade=grade, grade_v8=grade_v8)
+        result, rows = replay_parent(item, native[pid], tokenizer=tokenizer, grade=grade, grade_v8=grade_v8, version=version)
         details.append(result)
         for key in ("ALL", item["source"] + ":" + item["evaluation"]["answer_type"]):
             counts[key].update(parents=1, supported=int(result["supported"]), A1=0, N=0, C=0,
@@ -213,7 +235,9 @@ def replay(archive: Path, data_root: Path, tokenizer: Any, *, output: Path,
                                 for name in ("actor_inputs.jsonl", "verifier_private.jsonl", "manifest.yaml")},
         "counts": {k: dict(v) for k, v in sorted(counts.items())},
         "rejections_by_stage": {k: dict(v) for k, v in rejections.items()},
-        "selected_parent_ids": ids, "full_campaign": len(ids) == len(native),
+        "selected_parent_ids": ids, "full_campaign": len(ids) == len(plan["items"]),
+        "replay_version": version, "available_native_records": len(native), "planned_parents": len(plan["items"]),
+        "consumption_status": "NOT_INFERRED_FROM_GENERATION",
         "records_sha256": digest(details), "human_verified": False, "generated_answers": 0,
         "gpu_updates": 0, "effect_measured": False,
         "note_replay_limit": "v17 note prompts are retained; v18 binding rejection is reported, not repaired"})
@@ -227,11 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--parent-id", action="append")
+    parser.add_argument("--version", choices=("v18", "v18b"), default="v18")
+    parser.add_argument("--allow-partial", action="store_true")
     args = parser.parse_args(argv)
     from transformers import AutoTokenizer
     tokenizer = AutoTokenizer.from_pretrained(str(args.tokenizer_path), local_files_only=True)
     result = replay(args.archive, args.data_root, tokenizer, output=args.output,
-                    limit=args.limit, parent_ids=args.parent_id)
+                    limit=args.limit, parent_ids=args.parent_id, version=args.version, allow_partial=args.allow_partial)
     print(json.dumps({"sha256": result["sha256"], "full_campaign": result["full_campaign"], "counts": result["counts"].get("ALL", {})}))
     return 0
 

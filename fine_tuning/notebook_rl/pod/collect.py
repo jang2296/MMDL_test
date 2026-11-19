@@ -293,10 +293,21 @@ def _split_resume_inputs(prereg: dict, registered: dict, model_ref: Path, calibr
         sealed = (verify_training_artifacts(training_seal) if verify_training
                   else v17_eval.checked(read_json(training_seal)))
         validation = read_json(calibration)
-        ids = prereg["evaluation_subsets"]["all"]["ids"]
-        contract = v17_eval.split_execution_contract(validation, ids)
+        ids = prereg["evaluation_subsets"][registered.get("subset", "all")]["ids"]
+        all_ids = sorted(prereg["b2_reference"]["wrong_ids"] + prereg["b2_reference"]["right_ids"]) if "execution_settings" in prereg else ids
+        contract = v17_eval.split_execution_contract(validation, all_ids)
+        if validation.get("training_protocol_version") == "error-note-v18b":
+            from fine_tuning.error_note.v18b_eval import partitions
+            settings = prereg["execution_settings"]
+            pieces = partitions(all_ids, settings)
+            index = registered.get("partition_index")
+            if (registered.get("execution_settings") != settings or validation.get("execution_settings") != settings
+                    or type(index) is not int or not 0 <= index < len(pieces)
+                    or registered.get("subset") != list(pieces)[index]
+                    or ids != pieces[registered["subset"]]):
+                raise ValueError("v18b first-billing settings or fixed partition changed")
         seal_sha, engine_sha, model_sha = (sha256_file(training_seal), sha256_file(calibration), sha256_file(model_ref))
-        if (sealed.get("version") != VERSION or sealed.get("status") != "SEALED"
+        if (sealed.get("version") != VERSION or sealed.get("status") not in ("SEALED", "PARTIAL_EVALUATION_CANDIDATE")
                 or validation != prereg["engine_validation"] or sha256_file(preflight) != engine_sha
                 or any(owner.get("engine_validation_sha256") != engine_sha for owner in (prereg, registered))
                 or any(owner.get("training_artifacts_file_sha256") != seal_sha for owner in (prereg, registered))
@@ -349,8 +360,13 @@ def _split_resume_audit(run_dir: Path, registration: dict, *, refresh: bool) -> 
             if (final["invocation_id"], final["record"]["id"]) not in accepted_pairs:
                 raise ValueError("FINAL_RAW lacks its accepted submission event")
         backend_path = run_dir / "backend.json"
-        if backend_path.exists() and read_json(backend_path).get("v17_actual_engine") != registration["observed_engine"]:
-            raise ValueError("actual backend differs from selected engine")
+        if backend_path.exists():
+            actual = read_json(backend_path).get("v17_actual_engine", {})
+            expected = registration["observed_engine"]
+            def execution(value):
+                return {key: item for key, item in value.items() if key not in v17_eval.ENGINE_CAPACITY_KEYS}
+            if actual != expected and (execution(actual) != execution(expected) or actual.get("safe_slots", 0) < registration["slots"]):
+                raise ValueError("actual backend differs from selected engine")
         if refresh:
             write_json(run_dir / "submission_audit.json", audit)
         return audit
@@ -366,7 +382,7 @@ def _split_resume_evidence(validation_path: Path, run_dir: Path, *, archive_root
         expected: dict[str, str] = {}
         refs = [*validation["attempts"],
                 {"path": validation["preflight_report"], "sha256": validation["preflight_file_sha256"]}]
-        if validation.get("training_protocol_version") == "error-note-v18":
+        if validation.get("training_protocol_version") in ("error-note-v18", "error-note-v18b"):
             ref = validation["artifact_verification"]
             refs.append({"path": ref["path"], "sha256": ref["file_sha256"]})
         for ref in refs:
@@ -529,7 +545,7 @@ def pack_eval_resume(run_dir: Path, prereg: Path, ledger: Path, model_ref: Path,
                 "resolved_eval_config.yaml", "resolved_hardware_config.yaml")
     if any(not (run_dir / file).is_file() for file in required):
         raise CollectError("v17 resume archive lacks run/backend/config/environment identity")
-    if manifest["expected_ids"] != registration["evaluation_subsets"]["all"]["ids"]:
+    if manifest["expected_ids"] != registration["evaluation_subsets"][starts[0].get("subset", "all")]["ids"]:
         raise CollectError("v17 resume archive expected IDs mismatch")
     # A live writer owns this same nonblocking lock; packing it is refused.
     with RunWriter(run_dir, manifest["identity"], manifest["expected_ids"], resume=True) as writer:
@@ -654,7 +670,7 @@ def verify_eval_resume_tree(root: Path, manifest: dict) -> dict:
             or starts[0]["preregistration_sha256"] != prereg_sha
             or registered.get("preregistration_sha256") != prereg_sha
             or registered.get("serving_kind") != pe.LORA_KIND or (not split and registered.get("slots") != 8)
-            or run["expected_ids"] != prereg["evaluation_subsets"]["all"]["ids"]
+            or run["expected_ids"] != prereg["evaluation_subsets"][starts[0].get("subset", "all")]["ids"]
             or sha256_file(inputs / "model_ref.json") != registered["model_ref_sha256"]
             or sha256_file(inputs / "calibration.json") != registered["calibration_sha256"]
             or sha256_file(inputs / "preflight.json") != registered["preflight_sha256"]):

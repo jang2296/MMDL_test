@@ -283,14 +283,17 @@ def _single_versions() -> tuple[str, ...]:
                              getattr(protocol, "VERSION_SINGLE_V15", None),
                              getattr(protocol, "VERSION_CONTENT_V16", None),
                              getattr(protocol, "VERSION_V16B", None), getattr(protocol, "VERSION_V17", None),
-                             getattr(protocol, "VERSION_V18", None)) if v)
+                             getattr(protocol, "VERSION_V18", None), getattr(protocol, "VERSION_V18B", None)) if v)
 
 
 def _lora_protocol(protocol: dict) -> bool:
     """A v15 protocol: its policy is applied unmerged (training rollouts and evaluation)."""
     from fine_tuning.error_note.protocol import ROLLOUT_ADAPTER_V15
 
-    if protocol.get("version") == "error-note-v18":
+    if protocol.get("version") == "error-note-v18b":
+        from fine_tuning.error_note.protocol import validate_protocol_v18b
+        validate_protocol_v18b(protocol)
+    elif protocol.get("version") == "error-note-v18":
         from fine_tuning.error_note.protocol import validate_protocol_v18
 
         validate_protocol_v18(protocol)
@@ -327,7 +330,7 @@ def _binding_file(path: Path) -> tuple[dict, dict | None]:
     """(binding, plan): a binding JSON, a launch.json holding 'binding', or a single campaign's sealed
     campaign-plan.json, whose checkpoint binding is single_campaign._binding(plan) (plan returned, else None)."""
     loaded = json.loads(Path(path).read_text(encoding="utf-8"))
-    if isinstance(loaded, dict) and loaded.get("protocol", {}).get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18"):
+    if isinstance(loaded, dict) and loaded.get("protocol", {}).get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"):
         from fine_tuning.error_note import campaign_v16b
 
         campaign_v16b._plan_check(loaded)
@@ -360,7 +363,7 @@ def _single_stage(slot: int, consumed: int, last: int, *, content_v16: bool = Fa
 def _single_campaign_export(metadata: dict, plan: dict | None, checkpoint: Path) -> dict:
     """The pilot, final or stopped checkpoint of the one campaign whose sealed plan binds it. A stopped one must
     be the campaign's newest committed checkpoint (campaign-state.json beside it), so no earlier one is picked."""
-    if metadata["protocol"].get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18"):
+    if metadata["protocol"].get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"):
         from fine_tuning.error_note.campaign_v16b import export_metadata
 
         if plan is None:
@@ -457,7 +460,10 @@ def _single_model_ref(path: Path, *, lora: bool = False) -> tuple[dict, dict]:
     protocol, campaign, binding = (export.get(key, {}) for key in ("training_protocol", "campaign", "binding"))
     if protocol.get("version") not in _single_versions():
         raise ValueError("proof_eval: v7 evaluation requires an error-note-single-response export")
-    if protocol.get("version") == "error-note-v18":
+    if protocol.get("version") == "error-note-v18b":
+        from fine_tuning.error_note.protocol import validate_protocol_v18b
+        validate_protocol_v18b(protocol)
+    elif protocol.get("version") == "error-note-v18":
         from fine_tuning.error_note.protocol import validate_protocol_v18
 
         validate_protocol_v18(protocol)
@@ -477,14 +483,23 @@ def _single_model_ref(path: Path, *, lora: bool = False) -> tuple[dict, dict]:
     if lora and (ref.get("llm_lora") != lora_section()
                  or not set(lora_section()["files"]) <= {row.get("path") for row in ref.get("files", [])}):
         raise ValueError("proof_eval: v10 evaluation requires the unmerged-LoRA section and adapter files")
+    partial = protocol.get("version") == "error-note-v18b" and campaign.get("stage") == "partial"
+    if partial:
+        from fine_tuning.error_note.v17_artifacts import _partial_selection
+        _partial_selection({"evaluation_selection": campaign.get("evaluation_selection"), "checkpoint": {
+            "metadata": {"file_sha256": export.get("checkpoint_files", {}).get("metadata.json")}}}, ref)
+    stage = campaign.get("stage")
+    if partial:
+        # A cutoff may save the last update before the campaign records terminal closure.
+        stage = _single_stage(campaign.get("slot"), 0, protocol["training_contract"]["total_slots"], v16b=True)
     if (ref.get("kind") != (LORA_KIND if lora else "merged") or ref.get("dtype") != "bfloat16" or not ref.get("files")
             or ref.get("base") != {"id": MODEL_ID, "revision": MODEL_REVISION}
             or ref.get("processor_revision") != MODEL_REVISION or export.get("arm") != ARM
-            or export.get("step") != campaign.get("slot") or campaign.get("stage") not in ("final", "stopped")
+            or export.get("step") != campaign.get("slot") or stage not in ("final", "stopped")
             or type(campaign.get("slot")) is not int
-            or campaign["stage"] != _single_stage(campaign["slot"], 0, protocol["training_contract"]["total_slots"],
+            or stage != _single_stage(campaign["slot"], 0, protocol["training_contract"]["total_slots"],
                 content_v16=protocol.get("version") == "error-note-content-v16",
-                v16b=protocol.get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18"))
+                v16b=protocol.get("version") in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"))
             or ref.get("train_config_sha256") != digest(protocol)
             or binding.get("protocol_sha256") != protocol["sha256"]
             or binding.get("prompts_sha256") != protocol["prompts_sha256"]
@@ -857,7 +872,7 @@ def run_eval(argv: list[str]) -> int:
     known, _ = pre.parse_known_args(argv)
     if known.model_ref is not None and known.model_ref.is_file():
         model_ref = json.loads(known.model_ref.read_text(encoding="utf-8"))
-        if model_ref.get("export", {}).get("training_protocol", {}).get("version") in ("error-note-v17", "error-note-v18"):
+        if model_ref.get("export", {}).get("training_protocol", {}).get("version") in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             raise ValueError("proof_eval: v17 requires fine_tuning.error_note.v17_eval run/resume")
     protocol = known.protocol if known.protocol.is_absolute() else ROOT / known.protocol
     pid = yaml.safe_load(protocol.read_text(encoding="utf-8")).get("protocol_id")
@@ -1208,13 +1223,15 @@ def _single_definition(ref: dict) -> str:
     protocol, campaign = ref["export"]["training_protocol"], ref["export"]["campaign"]
     contract = protocol["training_contract"]
     schedule = f", LR schedule over {contract['schedule_steps']} steps" if "schedule_steps" in contract else ""
-    if protocol["version"] in ("error-note-v16b", "error-note-v17", "error-note-v18"):
+    if protocol["version"] in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"):
         label = protocol["version"].removeprefix("error-note-")
+        preparation = ("; preparation-only checkpoint, 0/3000 main-training parents" if
+                       campaign.get("evaluation_selection", {}).get("preparation_only") is True else "")
         return (f"single BF16 checkpoint of {label} self-note RL + verified self-generated SFT: "
                 f"{contract['prep_updates']} preparation updates, {contract['rl_blocks']} planned RL blocks, "
                 f"one first solve and at most one lesson-only retry per parent; continuous fixed schedule; "
                 f"{campaign['stage']} at update {campaign['slot']} ({campaign['updates']} optimizer updates); "
-                "fixed before one full MMMU evaluation")
+                "fixed before one full MMMU evaluation" + preparation)
     if protocol["version"] == "error-note-content-v16":
         return (f"single BF16 checkpoint of verified content SFT (policy-gradient weight 0), {protocol['version']}: "
                 f"{campaign['stage']} at block {campaign['slot']} of {contract['total_slots']}, "
@@ -1319,8 +1336,8 @@ def build_preregistration_v12(subset: Path, rest_subset: Path, all_subset: Path,
     measured = load_calibration(calibration)
     ref, _ = _lora_model_ref(ft_model_ref)
     version = ref["export"]["training_protocol"]["version"]
-    if (version not in ("error-note-v17", "error-note-v18")
-            or ref["export"]["campaign"]["stage"] != "final"):
+    if (version not in ("error-note-v17", "error-note-v18", "error-note-v18b")
+            or ref["export"]["campaign"]["stage"] not in (("final", "partial") if version == "error-note-v18b" else ("final",))):
         raise ValueError("proof_eval: v12 requires the planned final v17 unmerged export")
     value = build_preregistration_v8(subset, rest_subset, all_subset, b2_predictions, ft_model_ref,
                                      model_ref=_lora_model_ref)
@@ -1354,11 +1371,25 @@ def build_preregistration_v12(subset: Path, rest_subset: Path, all_subset: Path,
         value["execution_contract"] = split_execution_contract(validated, value["evaluation_subsets"]["all"]["ids"])
         value["estimated_evaluation_seconds"] = validated["estimated_evaluation_seconds"]
         value["notes"][1] = "v17 split: one final unmerged 900-item run, validated engine/KV slots and hashed lazy order"
-    if version == "error-note-v18":
+    if version in ("error-note-v18", "error-note-v18b"):
         if (engine_validation is None or measured.get("training_protocol_version") != version or measured["slots"] != 9):
             raise ValueError("proof_eval: v18 requires its sealed engine validation with nine slots")
         value["training_protocol_version"] = version
         value["notes"][1] = "v18: one final unmerged 900-item run, nine validated slots, same START and remaining IDs on resume"
+    if version == "error-note-v18b":
+        from fine_tuning.error_note.v18b_eval import partitions, PARTITION_RULE
+        settings = measured["execution_settings"]
+        value["execution_settings"] = settings
+        value["training_selection"] = ref["export"]["campaign"].get("evaluation_selection")
+        pieces = partitions(value["evaluation_subsets"]["all"]["ids"], settings)
+        if settings["evaluation_strategy"] == "two_pod":
+            value["evaluation_subsets"] = {tag: {"ids": ids, "count": len(ids), "rule": PARTITION_RULE}
+                                             for tag, ids in pieces.items()}
+            value["runs"] = [{"arm": ARM_SINGLE, "variant": FINAL_VARIANT_V8, "subset": tag, "role": "statistical"}
+                             for tag in pieces]
+            value["mmmu_val_budget"]["runs"] = 2
+            value["mmmu_val_budget"]["unique_items"] = 900
+        value["notes"][1] = "v18b: one fixed checkpoint; disjoint fixed partitions only when explicitly authorized; live throughput"
     from fine_tuning.error_note.contract import is_loop
 
     value["reference_finish_strata"] = {row["id"]: {
@@ -1449,7 +1480,12 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
         variant = FINAL_VARIANT.get(prereg["format"], GATE_62_VARIANT)
         subsets = prereg["evaluation_subsets"]
         b2_ids = sorted(prereg["b2_reference"]["wrong_ids"] + prereg["b2_reference"]["right_ids"])
-        expected_ids = ({"all": (b2_ids, 900)} if prereg["format"] in (FORMAT_V8, FORMAT_V11, FORMAT_V12) else
+        v18b = prereg.get("training_protocol_version") == "error-note-v18b"
+        if v18b:
+            from fine_tuning.error_note.v18b_eval import partitions
+            pieces = partitions(b2_ids, prereg["execution_settings"])
+        expected_ids = ({tag: (ids, len(ids)) for tag, ids in pieces.items()} if v18b else
+                        {"all": (b2_ids, 900)} if prereg["format"] in (FORMAT_V8, FORMAT_V11, FORMAT_V12) else
                         dict(zip(HALVES, ((ids, 450) for ids in _halves(b2_ids)))) if prereg["format"] in TWO_STAGE else
                         {"wrong": (prereg["b2_reference"]["wrong_ids"], 342), "rest": (prereg["b2_reference"]["right_ids"], 558)})
         if prereg["format"] in (FORMAT_V11, FORMAT_V12) and ("screen_gate" in prereg or prereg.get("supplementary_scoring", {}).get("separate_from_v8") is not True):
@@ -1491,10 +1527,12 @@ def load_preregistration(path: Path) -> tuple[dict, str]:
                     or any(not re.fullmatch(r"[0-9a-f]{64}", str(prereg.get(key, "")))
                            for key in ("engine_validation_sha256", "training_artifacts_file_sha256"))):
                 raise ValueError("proof_eval: split validation/model identity mismatch")
-        if prereg.get("training_protocol_version") == "error-note-v18" and (
-                "engine_validation" not in prereg or validated.get("training_protocol_version") != "error-note-v18"
+        if prereg.get("training_protocol_version") in ("error-note-v18", "error-note-v18b") and (
+                "engine_validation" not in prereg or validated.get("training_protocol_version") != prereg["training_protocol_version"]
                 or validated["slots"] != 9):
             raise ValueError("proof_eval: v18 registration requires its own protocol and nine slots")
+        if prereg.get("training_protocol_version") == "error-note-v18b" and prereg.get("execution_settings") != validated.get("execution_settings"):
+            raise ValueError("proof_eval: v18b execution settings changed")
         if (prereg.get("execution_contract") != expected_execution
                 or prereg.get("evaluation_watchdog_seconds") != calibration_timeout(prereg.get("calibration", {}))
                 or not re.fullmatch(r"[0-9a-f]{64}", str(prereg.get("calibration_sha256", "")))
@@ -1864,7 +1902,8 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
             full_900[arm] = {"items": subsets["all"]["n"], "seeds": cells,
                              "mean_correct": _mean(c["correct"] for c in cells.values())}
     v9 = prereg["format"] in TWO_STAGE
-    first, second = HALVES if v9 else ("wrong", "rest")  # the two disjoint shards of one 900-item evaluation
+    partitioned = prereg.get("training_protocol_version") == "error-note-v18b" and set(subsets) == set(HALVES)
+    first, second = HALVES if v9 or partitioned else ("wrong", "rest")  # the two disjoint shards of one 900-item evaluation
     for arm in arms if "all" not in subsets else ():
         total = subsets[first]["n"] + subsets[second]["n"]
         wrong = subsets[first]["arms"].get(arm, {"seeds": {}})["seeds"]
@@ -1885,9 +1924,11 @@ def analyze(prereg_path: Path, run_paths: list[Path], ft_model_refs: dict[str, P
             rows = [json.loads(line) for line in (Path(run["run_dir"]) / "predictions.jsonl").read_text().splitlines()]
             candidate = {r["id"]: r for r in rows}
             # Frozen loop flags, not candidate behavior, define the historical strata.
-            strata[key[0]] = paired_report(reference, candidate)
+            strata[key[0]] = paired_report({sid: reference[sid] for sid in candidate}, candidate)
     return {
         **({"reference_finish_strata": strata} if strata else {}),
+        **({"training_selection": prereg.get("training_selection"), "execution_settings": prereg["execution_settings"]}
+           if prereg.get("training_protocol_version") == "error-note-v18b" else {}),
         "format": "notebook-rl-proof-report-v2", "preregistration_sha256": prereg_sha,
         **({"preregistration_format": prereg["format"]} if final is not None else {}),
         "single_answer_rule": prereg["single_answer_rule"],

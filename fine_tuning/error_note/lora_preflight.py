@@ -170,8 +170,8 @@ def engine_checks(backend: Any, bundle: Any, prep: Any, pairs: list, reference: 
         columns, restored = llm_lora.vllm_columns(bundle, hooks, probe, pairs, lora,
                                                   adapter_swap(llm.llm_engine, bundle, lora, Path(tmp)))
     report["pf3"] = llm_lora.check_base(llm, bundle, frozen)
-    power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version in ("error-note-v17", "error-note-v18") else None
-    if protocol_version == "error-note-v18" and (vision_exception is not None or vision_tower is None):
+    power = llm_lora.pf5_contract_v17(bundle, stage) if protocol_version in ("error-note-v17", "error-note-v18", "error-note-v18b") else None
+    if protocol_version in ("error-note-v18", "error-note-v18b") and (vision_exception is not None or vision_tower is None):
         raise ValueError("v18 PF5: direct vision tower evidence required; exception forbidden")
     report["pf5"] = llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
                                        require_power=power["require_power"] if power is not None else True,
@@ -227,8 +227,8 @@ def check(model_ref: Path, checkpoint: Path, binding_file: Path, base: Path, pro
     ref, model_path = json.loads(model_ref.read_text(encoding="utf-8")), model_ref.parent / "model"
     version = ref["export"]["training_protocol"]["version"]
     pid = yaml.safe_load(Path(protocol).read_text(encoding="utf-8"))["protocol_id"]
-    slots = 9 if version == "error-note-v18" else pe.resolve_slots(pid)["slots"]
-    if version == "error-note-v18" and os.environ.get(pe.SLOTS_ENV) not in (None, "9"):
+    slots = 9 if version in ("error-note-v18", "error-note-v18b") else pe.resolve_slots(pid)["slots"]
+    if version in ("error-note-v18", "error-note-v18b") and os.environ.get(pe.SLOTS_ENV) not in (None, "9"):
         raise ValueError("v18 preflight: nine slots required")
     with pe.registered_variants(slots=slots):
         eval_engine.verify_model(model_path, ref)  # every model file hash, as the evaluation checks them
@@ -239,7 +239,7 @@ def check(model_ref: Path, checkpoint: Path, binding_file: Path, base: Path, pro
         pairs = probe_pairs(prep, cfg["image"])
         bundle.model.to("cuda")
         reference = llm_lora.hf_columns(bundle, prep, pairs)  # real and amplified HF/PEFT columns
-        vision_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version == "error-note-v18" else None
+        vision_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version in ("error-note-v18", "error-note-v18b") else None
         bundle.model.to("cpu")  # free the GPU for the evaluation engine (gpu_memory_utilization 0.90)
         torch.cuda.empty_cache()
         backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(base))

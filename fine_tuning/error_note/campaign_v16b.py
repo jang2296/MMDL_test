@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import statistics
 import time
 from typing import Any
 
@@ -20,7 +21,10 @@ from .prep_v16b import (collect, eta_report, file_sha, grader, images, make_requ
 CAMPAIGN_V16B = "single-campaign-v16b"
 CAMPAIGN_V17 = "single-campaign-v17"
 CAMPAIGN_V18 = "single-campaign-v18"
-MODERN_VERSIONS = {"error-note-v17", "error-note-v18"}
+CAMPAIGN_V18B = "single-campaign-v18b"
+MODERN_VERSIONS = {"error-note-v17", "error-note-v18", "error-note-v18b"}
+CAMPAIGN_VERSIONS = {"error-note-v18b": CAMPAIGN_V18B, "error-note-v18": CAMPAIGN_V18,
+                     "error-note-v17": CAMPAIGN_V17, "error-note-v16b": CAMPAIGN_V16B}
 # single_vllm.submit raises above this measured prompt capacity bound; NOTE admission skips instead.
 NOTE_PROMPT_BOUND = 16384
 
@@ -40,11 +44,13 @@ def _stop_markers(output: Path) -> list[str]:
 
 
 def descriptor(path: Path) -> dict:
-    return {"path": str(path.absolute()), "file_sha256": file_sha(path)}
+    from .v18b_recovery import original_recovery_path, resolve_recovery_path
+    return {"path": str(original_recovery_path(path.absolute())), "file_sha256": file_sha(resolve_recovery_path(path))}
 
 
 def checked(record: dict) -> Path:
-    path = Path(record["path"])
+    from .v18b_recovery import resolve_recovery_path
+    path = resolve_recovery_path(record["path"])
     if path.is_symlink() or file_sha(path) != record["file_sha256"]:
         raise ValueError("v16b campaign: changed bound artifact")
     return path
@@ -62,7 +68,10 @@ def _plan_check(plan: dict) -> None:
     is_v17 = plan["protocol"].get("version") in MODERN_VERSIONS
     if is_v17:
         from .protocol import validate_protocol_v17
-        if plan["protocol"]["version"] == "error-note-v18":
+        if plan["protocol"]["version"] == "error-note-v18b":
+            from .protocol import validate_protocol_v18b
+            validate_protocol_v18b(plan["protocol"])
+        elif plan["protocol"]["version"] == "error-note-v18":
             from .protocol import validate_protocol_v18
             validate_protocol_v18(plan["protocol"])
         else:
@@ -71,9 +80,24 @@ def _plan_check(plan: dict) -> None:
         validate_protocol_v16b(plan["protocol"])
     cfg = plan["protocol"]["training_contract"]
     smoke = cfg["local_smoke"]
+    if plan["protocol"]["version"] == "error-note-v18b":
+        from .v18b_execution import validate_settings
+        if plan.get("execution_settings") is not None:
+            validate_settings(plan["execution_settings"])
+        elif not smoke:
+            raise ValueError("v18b production needs immutable execution decisions")
+        recovery = plan.get("recovery")
+        if not smoke and isinstance(recovery, dict) and recovery.get("transfer_command") is None:
+            raise ValueError("v18b production requires a verified off-pod receiver argv")
+        if (not isinstance(recovery, dict) or recovery.get("every_main_slots") != 16
+                or not isinstance(recovery.get("destination"), str) or not Path(recovery["destination"]).is_absolute()
+                or recovery.get("transfer_command") is not None and (not isinstance(recovery["transfer_command"], list)
+                    or not recovery["transfer_command"] or any(not isinstance(part, str) or not part
+                                                               for part in recovery["transfer_command"]))):
+            raise ValueError("v18b campaign needs an immutable boundary-copy contract")
     ids = [pid for block in plan["blocks"] for pid in block]
     expected = [item["problem_id"] for item in plan["items"]]
-    if (plan.get("version") != (CAMPAIGN_V18 if plan["protocol"]["version"] == "error-note-v18" else CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B)
+    if (plan.get("version") != CAMPAIGN_VERSIONS.get(plan["protocol"]["version"])
             or plan.get("sha256") != digest({k: v for k, v in plan.items() if k != "sha256"})
             or ids != expected or len(ids) != len(set(ids)) or len(ids) != cfg["rl_items"]
             or len(plan["blocks"]) != cfg["rl_blocks"]
@@ -89,6 +113,16 @@ def _plan_check(plan: dict) -> None:
 
 def prepare(args: argparse.Namespace) -> dict:
     version = getattr(args, "version", "error-note-v16b")
+    from .v18b_recovery import original_recovery_path
+    from .v18b_execution import read_settings
+    settings_path = getattr(args, "execution_settings", None)
+    settings = read_settings(settings_path) if settings_path is not None else None
+    backup_destination = getattr(args, "backup_destination", None)
+    transfer = getattr(args, "backup_transfer_command", None)
+    transfer = json.loads(transfer) if isinstance(transfer, str) else transfer
+    if transfer is not None and (not isinstance(transfer, list) or not transfer
+                                or any(not isinstance(part, str) or not part for part in transfer)):
+        raise ValueError("v18b recovery: transfer command must be a nonempty JSON argv list")
     data = data_api(version)
     load_items, validate = data.load_items, data.validate
     from .protocol import SINGLE_IMAGE_V14, SMOKE_IMAGE_V16B, plain_protocol_v16b
@@ -98,7 +132,9 @@ def prepare(args: argparse.Namespace) -> dict:
     if is_v17:
         from .protocol import plain_protocol_v17
         plain_protocol_v16b = plain_protocol_v17
-        if version == "error-note-v18":
+        if version == "error-note-v18b":
+            from .protocol import plain_protocol_v18b as plain_protocol_v16b
+        elif version == "error-note-v18":
             from .protocol import plain_protocol_v18
             plain_protocol_v16b = plain_protocol_v18
     args.output.mkdir(parents=True, exist_ok=True)
@@ -106,14 +142,22 @@ def prepare(args: argparse.Namespace) -> dict:
     if path.exists():
         plan = read_sealed(path)
         _plan_check(plan)
-        if (plan["data_root"] != str(args.data_root.absolute())
-                or plan["prep_root"] != str(args.prep_root.absolute())
-                or plan["model_path"] != str(args.model_path.absolute())
+        if (plan["data_root"] != str(original_recovery_path(args.data_root.absolute()))
+                or plan["prep_root"] != str(original_recovery_path(args.prep_root.absolute()))
+                or plan["model_path"] != str(original_recovery_path(args.model_path.absolute()))
                 or plan["protocol"]["version"] != version
                 or plan["local_sequential"] != args.local_sequential
                 or plan["protocol"]["precision"] != args.precision or plan["capacity"]["engine"] != args.engine):
             raise ValueError("v16b campaign: immutable execution arguments changed")
+        if version == "error-note-v18b" and (
+                settings is not None and settings != plan.get("execution_settings")
+                or backup_destination is not None and str(original_recovery_path(backup_destination.absolute()))
+                    != plan.get("recovery", {}).get("destination")
+                or transfer is not None and transfer != plan.get("recovery", {}).get("transfer_command")):
+            raise ValueError("v18b campaign: immutable execution decisions or backup contract changed")
         return plan
+    if version == "error-note-v18b" and not args.local_sequential and (settings is None or backup_destination is None or transfer is None):
+        raise ValueError("v18b production requires --execution-settings, --backup-destination and verified off-pod --backup-transfer-command")
     validate(args.data_root)
     selection = select(args.data_root, args.prep_root, local_sequential=args.local_sequential, version=version)
     prep = read_sealed(args.prep_root / "prep-rows.json")
@@ -126,10 +170,25 @@ def prepare(args: argparse.Namespace) -> dict:
         raise ValueError("v16b campaign: preparation was not sealed under this data selection")
     source = single.source_manifest()
     items = load_items(args.data_root, "train")
+    if version == "error-note-v18b":
+        from .v18b_rows import bind_graph_observation_targets_v18b
+        items = bind_graph_observation_targets_v18b(items)
     preflight = seal(args.output / "data-contract-preflight.json",
         preflight_items(items, version=version) if is_v17 else preflight_items(items))
     observation_eligibility = {row["problem_id"]: row["observation_eligibility"] for row in preflight["items"]}
-    if args.local_sequential:
+    if args.local_sequential and version == "error-note-v18b":
+        # Fixed before inference. Archived diagnostic parents are disjoint from the live smoke.
+        diagnostic_suffixes = (":00c977656045ae4d", ":7b15b6cffe093171", ":362321e203f6d8f3", ":786c3412cf22e7f0")
+        targets = []
+        for layer, count in (("graph", 6), ("scene", 2)):
+            matching = [i["problem_id"] for i in items if i.get("layer") == layer
+                        and not i["problem_id"].endswith(diagnostic_suffixes)
+                        and observation_eligibility[i["problem_id"]]["eligible"]]
+            if len(matching) < count:
+                raise ValueError(f"v18b smoke requires {count} eligible {layer} parents")
+            targets.extend(matching[:count])
+        items = [i for i in items if i["problem_id"] in targets]
+    elif args.local_sequential:
         selected = []
         repair = {r["problem_id"] for r in preflight["items"] if r.get("repair_supported")}
         for layer in (("geometry", "graph", "scene", "chart") if is_v17 else ("geometry", "graph", "scene")):
@@ -156,7 +215,7 @@ def prepare(args: argparse.Namespace) -> dict:
     protocol = plain_protocol_v16b(args.precision, rl_blocks=len(blocks), prep_updates=prep["prep_updates"],
         contracts=contracts, image=SMOKE_IMAGE_V16B if args.local_sequential else SINGLE_IMAGE_V14,
         local_smoke=args.local_sequential)
-    body = {"version": CAMPAIGN_V18 if version == "error-note-v18" else CAMPAIGN_V17 if is_v17 else CAMPAIGN_V16B, "protocol": protocol, "source": source, "inputs": inputs,
+    body = {"version": CAMPAIGN_VERSIONS[version], "protocol": protocol, "source": source, "inputs": inputs,
         "data_root": str(args.data_root.absolute()), "prep_root": str(args.prep_root.absolute()),
         "model_path": str(args.model_path.absolute()), "nf4_cache": str(args.nf4_cache.absolute()) if args.nf4_cache else None,
         "local_sequential": args.local_sequential, "items": items, "blocks": blocks, "block_size": size,
@@ -165,11 +224,18 @@ def prepare(args: argparse.Namespace) -> dict:
         "time_cut": None, "capacity": {"engine": args.engine, "max_num_seqs": 1 if args.local_sequential else 16 if is_v17 else 32,
             "kv_cache_gib": args.kv_cache_gib, "gpu_memory_utilization": args.gpu_memory_utilization,
             "token_budget": args.token_budget}, "auto_evaluate": False}
+    if version == "error-note-v18b":
+        backup_destination = backup_destination or args.output.parent / ("recovery-copies-" + args.output.name)
+        body.update(execution_settings=settings, recovery={
+            "destination": str(backup_destination.absolute()), "transfer_command": transfer, "every_main_slots": 16})
+        if settings_path is not None:
+            inputs["execution_settings"] = descriptor(settings_path)
     if is_v17:
-        from .guard_v16b import SignalGateV17
+        from .guard_v16b import SignalGateV17, SignalGateV18B
         eligible = {r["problem_id"] for r in preflight["items"] if r["repair_supported"]}
         supported = [item["problem_id"] for item in items if item["problem_id"] in eligible]
-        gate = SignalGateV17(blocks, supported, local_smoke=args.local_sequential)
+        gate = (SignalGateV18B if version == "error-note-v18b" else SignalGateV17)(
+            blocks, supported, local_smoke=args.local_sequential)
         body["signal_gate"] = {"supported_parent_ids": supported, "parents": gate.parents, "due_slot": gate.due_slot}
     plan = body | {"sha256": digest(body)}
     _plan_check(plan)
@@ -196,7 +262,9 @@ def load_f0(args: argparse.Namespace, *, image: dict) -> tuple[Any, dict]:
     if getattr(args, "version", "error-note-v16b") in MODERN_VERSIONS:
         from .protocol import plain_protocol_v17
         plain_protocol_v16b = plain_protocol_v17
-        if args.version == "error-note-v18":
+        if args.version == "error-note-v18b":
+            from .protocol import plain_protocol_v18b as plain_protocol_v16b
+        elif args.version == "error-note-v18":
             from .protocol import plain_protocol_v18
             plain_protocol_v16b = plain_protocol_v18
     cfg = plain_protocol_v16b(args.precision, rl_blocks=4 if args.local_sequential else 188,
@@ -209,7 +277,7 @@ def load_f0(args: argparse.Namespace, *, image: dict) -> tuple[Any, dict]:
     return bundle, cfg
 
 
-def calibrate_capacity(bundle: Any, args: argparse.Namespace, protocol: dict) -> dict:
+def calibrate_capacity(bundle: Any, args: argparse.Namespace, protocol: dict, *, live_engine: bool = False) -> dict:
     """Backpropagate a worst-context synthetic specimen without taking an optimizer step."""
     import torch
     from PIL import Image
@@ -240,9 +308,14 @@ def calibrate_capacity(bundle: Any, args: argparse.Namespace, protocol: dict) ->
     shape_bounds: dict[str, Any] = {"max_images": image_count,
         "max_vision_patches": int(inputs["image_grid_thw"].prod(dim=1).sum().item()),
         "max_prompt_tokens": 24576 - 8192, "dataset_sha256": file_sha(args.data_root / "payload-receipt.json")}
+    is_v18b = protocol["version"] == "error-note-v18b"
+    if is_v18b != live_engine:
+        raise ValueError("v18b maximum-shape capacity must be measured with the actual resident engine")
     report = measure_update_memory_v16b(bundle, row, shape_bounds=shape_bounds,
-                                      max_target_tokens=8192, max_input_tokens=shape_bounds["max_prompt_tokens"])
-    return seal(args.output / "capacity.json", {"version": "v18-capacity-v1" if protocol["version"] == "error-note-v18" else "v17-capacity-v1" if protocol["version"] == "error-note-v17" else "v16b-capacity-v1", "report": report,
+                                      max_target_tokens=8192, max_input_tokens=shape_bounds["max_prompt_tokens"],
+                                      **({"live_engine": True} if live_engine else {}))
+    path = args.output / (f"capacity-live-{os.getpid()}.json" if live_engine else "capacity.json")
+    return seal(path, {"version": protocol["version"].removeprefix("error-note-") + "-capacity-v1", "report": report,
         "image_count": image_count, "synthetic_image_size": [1792, 2240], "shape_bounds": shape_bounds,
         "synthetic_bound": True, "model_parameter_update": False, "source_sha256": digest(single.source_manifest()["actual_files"])})
 
@@ -260,10 +333,14 @@ def make_sampler(bundle: Any, args: argparse.Namespace, protocol: dict, *, image
     if bundle is None:
         raise ValueError("v16b capacity: the HF policy must be measured before engine creation")
     receipt_path = args.output / "capacity.json"
-    receipt = read_sealed(receipt_path) if receipt_path.exists() else calibrate_capacity(bundle, args, protocol)
-    if (receipt["source_sha256"] != digest(single.source_manifest()["actual_files"])
-            or receipt["shape_bounds"]["dataset_sha256"] != file_sha(args.data_root / "payload-receipt.json")):
-        raise ValueError("v16b capacity: stale source/data measurement")
+    if protocol["version"] == "error-note-v18b":
+        kv_cache_gib = args.kv_cache_gib
+    else:
+        receipt = read_sealed(receipt_path) if receipt_path.exists() else calibrate_capacity(bundle, args, protocol)
+        if (receipt["source_sha256"] != digest(single.source_manifest()["actual_files"])
+                or receipt["shape_bounds"]["dataset_sha256"] != file_sha(args.data_root / "payload-receipt.json")):
+            raise ValueError("v16b capacity: stale source/data measurement")
+        kv_cache_gib = receipt["report"]["kv_cache_gib"]
     eos = GenerationConfig.from_pretrained(str(args.model_path), local_files_only=True).eos_token_id
     optimizer = getattr(args, "_optimizer", None)
     parked = (park_adam_moments(bundle, optimizer, args._scheduler, protocol, args._slot)
@@ -274,7 +351,9 @@ def make_sampler(bundle: Any, args: argparse.Namespace, protocol: dict, *, image
         try:
             v17_options = ({"protocol_version": protocol["version"],
                 "preflight_stage": getattr(args, "_preflight_stage", "f0")} if protocol["version"] in MODERN_VERSIONS else {})
-            sampler = SingleVllmSampler(args.model_path, kv_cache_gib=receipt["report"]["kv_cache_gib"],
+            if protocol["version"] == "error-note-v18b" and getattr(args, "_f0_legacy_generation", False):
+                v17_options["generation_context_limit"] = 24576
+            sampler = SingleVllmSampler(args.model_path, kv_cache_gib=kv_cache_gib,
                 max_num_seqs=16 if protocol["version"] in MODERN_VERSIONS else 32,
                 gpu_memory_utilization=args.gpu_memory_utilization, sleep=False,
                 eos_token_ids=eos if isinstance(eos, list) else [eos], image=image,
@@ -352,6 +431,8 @@ def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict],
         "n_content_gradient_finite_nonzero", "note_gradient_retained", "verified_repair_parent_ids",
         "consumed_row_ids", "note_parent_gradient_norms", "component_gradient_norms",
         "note_update_alignment", "policy_mask_counts")}
+    if "n_parent_evidence" in stats:
+        report["training_signal"]["n_parent_evidence"] = stats["n_parent_evidence"]
     if items is not None:
         keys = ("expected_problem_ids", "expected_obs_problem_ids", "note_problem_ids", "resolve_problem_ids")
         sources = sorted({str(items[pid]["source"]) for ids in memberships.values() for pid in ids})
@@ -452,14 +533,31 @@ def _rollback(output: Path, slot: int, *, committed_checkpoint: Path | None = No
 
 
 def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_only: bool = False) -> dict:
+    from .v18b_recovery import RecoveryCopyHook, recovery_paths, resolve_recovery_path
+    with recovery_paths(output):
+        config = plan.get("recovery")
+        hook = (RecoveryCopyHook(output, resolve_recovery_path(config["destination"]),
+                transfer_command=config["transfer_command"]) if config is not None and not reload_only else None)
+        try:
+            return _run_campaign(plan, output=output, args=args, reload_only=reload_only, recovery_hook=hook)
+        finally:
+            if hook is not None:
+                hook.close()
+
+
+def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_only: bool = False,
+                  recovery_hook=None) -> dict:
     from fine_tuning.notebook_rl import checkpoint
     algorithm_version = plan["protocol"]["version"]
+    is_v18b = algorithm_version == "error-note-v18b"
+    execution_settings = plan.get("execution_settings")
+    args.monitor_stop_action = (execution_settings or {}).get("monitor_stop_action", "stop")
     is_v17 = algorithm_version in MODERN_VERSIONS
-    is_v18 = algorithm_version == "error-note-v18"
+    is_v18 = is_v18b or algorithm_version == "error-note-v18"
     data = data_api(algorithm_version)
     load_items, validate = data.load_items, data.validate
     from .guard_v16b import GuardV16B
-    guard_class = GuardV16B
+    guard_class: Any = GuardV16B
     from .protocol import ARM, EVAL_SAMPLING_V16B, TRAIN_SAMPLING_V16B, v16b_contract_for_update
     from .rl import policy_sha256
     from .run_v16 import _setup_execution, _state_equal
@@ -468,15 +566,21 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
     from . import v16b_rows as row_tools
 
     if is_v17:
-        from . import v17_rows
+        from . import v17_rows as rows_v17
+        v17_rows: Any = rows_v17
         from .protocol import v17_contract_for_update
         from .guard_v16b import GuardV17
         v16b_contract_for_update = v17_contract_for_update
         guard_class = GuardV17
         if is_v18:
-            from . import v18_rows as v17_rows
+            from . import v18_rows as rows_v18
+            v17_rows = rows_v18
             from .protocol import v18_contract_for_update
             v16b_contract_for_update = v18_contract_for_update
+        if is_v18b:
+            from . import v18b_rows as rows_v18b
+            v17_rows = rows_v18b
+            from .protocol import v18b_contract_for_update as v16b_contract_for_update
     _plan_check(plan)
     if is_v17:
         from .v17_preflight import bind_execution, bind_training
@@ -491,13 +595,18 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
     _setup_execution(MASTER_SEED)
     protocol, image = plan["protocol"], plan["protocol"]["image"]
     cfg = protocol["training_contract"]
-    all_items = {item["problem_id"]: item for split in (("prep", "train", "monitor", "effect") if is_v17 else ("prep", "train", "monitor"))
+    all_items = {item["problem_id"]: item for split in (("prep", "train", "monitor", "effect", "reasoning_monitor") if is_v18b else ("prep", "train", "monitor", "effect") if is_v17 else ("prep", "train", "monitor"))
                  for item in load_items(args.data_root, split)}
     state_path = output / "campaign-state.json"
+    selected_state_path = output / "evaluation-checkpoint-state.json"
+    if reload_only and selected_state_path.exists():
+        state_path = selected_state_path
     loaded_state = read_sealed(state_path) if state_path.exists() else None
     if loaded_state is not None and loaded_state["plan_sha256"] != plan["sha256"]:
         raise ValueError("v16b campaign: stale state belongs to another plan")
-    sampler = None
+    sampler: Any = None
+    optimizer: Any
+    scheduler: Any
     factory = _factory(args)
     if loaded_state is None:
         _rollback(output, -1)
@@ -521,9 +630,10 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             _checkpoint_path(state), protocol, binding=_binding(plan), device="cuda:0", policy_factory=factory)
         if cursor != state["cursor"]:
             raise ValueError("v16b campaign: checkpoint cursor differs from durable state")
-        _rollback(output, cursor["slot"], committed_checkpoint=_checkpoint_path(state),
-            committed_probe=checked(state["probe"]["json"]).parent,
-            committed_runtime=checked(state["runtime"]) if state.get("runtime") is not None else None)
+        if not reload_only:
+            _rollback(output, cursor["slot"], committed_checkpoint=_checkpoint_path(state),
+                committed_probe=checked(state["probe"]["json"]).parent,
+                committed_runtime=checked(state["runtime"]) if state.get("runtime") is not None else None)
     if reload_only:
         import torch
         path = _checkpoint_path(state)
@@ -553,7 +663,8 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         # In memory only: the next regular commit persists READY; a crash before it keeps the STOPPED checkpoint.
         cursor["phase"] = "rl" if cursor["slot"] >= cfg["prep_updates"] else "prep"
         state = dict(state, status="READY", stop_reasons=[], cursor=cursor)
-    if state["status"] in {"STOPPED", "WATCHDOG_STOP", "PREP_LENGTH_STOP", "COMPLETE"}:
+    partial_pending = partial_evaluation_state(plan, state, output) if is_v18b else None
+    if state["status"] in {"STOPPED", "WATCHDOG_STOP", "PREP_LENGTH_STOP", "COMPLETE"} and partial_pending is None:
         if state["status"] == "COMPLETE":
             require_complete(output, check_evaluation=False)
         return state
@@ -561,16 +672,25 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         args._optimizer, args._scheduler, args._slot = optimizer, scheduler, cursor["slot"]
         args._preflight_stage = "f0" if cursor["slot"] == 0 else "trained"
         sampler = make_sampler(bundle, args, protocol, image=image, sampling=TRAIN_SAMPLING_V16B)
+    live_capacity = None
+    if is_v18b and not args.local_sequential:
+        from .v17_preflight import live_training_preflight
+        try:
+            live = live_training_preflight(args, plan, bundle, sampler,
+                capacity=lambda: calibrate_capacity(bundle, args, protocol, live_engine=True))
+            live_capacity = live["capacity"]
+        finally:
+            sampler.release_idle_versions()
     prior = read_sealed(checked(plan["inputs"]["baseline"]))
     generated = read_sealed(checked(plan["inputs"]["f0"]))
     prep_rows = [row for batch in plan["prep_batches"] for row in batch]
     probe_rows = _encode(bundle, prep_rows[:1], all_items, image)
     guard = (guard_class(plan["blocks"], state.get("guard"), collapse_stop=False) if is_v18
              else guard_class(plan["blocks"], state.get("guard")))
-    signal_gate = None
+    signal_gate: Any = None
     if is_v17:
-        from .guard_v16b import SignalGateV17
-        signal_gate = SignalGateV17(plan["blocks"], plan["signal_gate"]["supported_parent_ids"],
+        from .guard_v16b import SignalGateV17, SignalGateV18B
+        signal_gate = (SignalGateV18B if is_v18b else SignalGateV17)(plan["blocks"], plan["signal_gate"]["supported_parent_ids"],
             state.get("signal_gate"), local_smoke=args.local_sequential)
     runtime = None
 
@@ -607,7 +727,14 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         write_json(state_path, state)
         if label == "prep-end":
             write_json(output / "prep-checkpoint.json", state["checkpoint"])
+        if recovery_hook is not None:
+            recovery_hook.poll()
+            if label == "prep-end":
+                recovery_hook.checkpoint(state, force=True)
         keep = {path.resolve()}
+        normal = state.get("v18b_normal_state")
+        if normal is not None:
+            keep.add(checked(normal["checkpoint"]).parent.resolve())
         prep_marker = output / "prep-checkpoint.json"
         if prep_marker.exists():
             keep.add(checked(json.loads(prep_marker.read_text())).parent.resolve())
@@ -621,7 +748,10 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         if contract["global_slot"] != slot:
             raise ValueError("v16b campaign: update slot differs from immutable LR schedule")
         if not args.local_sequential:
-            contract["memory_shape_bounds"] = read_sealed(output / "capacity.json")["shape_bounds"]
+            capacity = live_capacity if is_v18b else read_sealed(output / "capacity.json")
+            if capacity is None:
+                raise ValueError("v18b campaign: live memory-shape receipt is missing")
+            contract["memory_shape_bounds"] = capacity["shape_bounds"]
         import torch
         cuda_initialized = torch.cuda.is_initialized()
         if cuda_initialized:
@@ -652,7 +782,9 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
                 "version": "v17-stage-signal-report-v1", "plan_sha256": plan["sha256"],
                 "global_slot": slot, "report": v17_stage_report(runtime.records, contract, rows, result["stats"], all_items)})
         seal(output / "update-results" / f"slot-{slot}.json", {
-            "version": "v17-update-result-v1" if is_v17 else "v16b-update-result-v1", "plan_sha256": plan["sha256"],
+            "version": "v18b-update-result-v1" if is_v18b else "v17-update-result-v1" if is_v17 else "v16b-update-result-v1",
+            **({"producer_pid": os.getpid(), "timing_scope": "encode_backward_optimizer"} if is_v18b else {}),
+            "plan_sha256": plan["sha256"],
             "transaction_sha256": transaction["sha256"], "phase": contract["phase"], "global_slot": slot,
             "result": result, "row_counts": {kind: sum(row["kind"] == kind for row in rows)
                                             for kind in sorted({row["kind"] for row in rows})},
@@ -698,13 +830,20 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
     def monitor(label: str, version: int, split: str = "monitor") -> dict:
         sampler.release_idle_versions()
         saved_rng = checkpoint.capture_rng()
-        targets = monitors if split == "monitor" else [all_items[row["problem_id"]] for row in generated["effect"]]
+        targets = monitors if split == "monitor" else [all_items[row["problem_id"]] for row in generated[split]]
+        if is_v18b and plan.get("execution_settings"):
+            from .v18b_execution import remaining
+            settings = plan["execution_settings"]
+            if remaining(settings, reserve_seconds=settings["post_eval_reserve_seconds"]) <= 0:
+                raise TimeoutError("V18B_MONITOR_DEADLINE")
         try:
             options = {"algorithm_version": algorithm_version} if is_v17 else {}
             records = collect(bundle, sampler, targets, data_root=args.data_root, split=split, out=output / label,
-                stage=("v18-" if is_v18 else "v17-" if is_v17 else "v16b-") + ("monitor" if split == "monitor" else "effect"),
+                stage=("v18b-b2-" + split.replace("_", "-")) if is_v18b and split in {"monitor", "reasoning_monitor"}
+                    else ("v18-" if is_v18 else "v17-" if is_v17 else "v16b-") + ("monitor" if split == "monitor" else "effect"),
                 protocol_sha256=protocol["sha256"], sampling=EVAL_SAMPLING_V16B,
-                cap=cfg["max_tokens"]["monitor"], version=version, **options)
+                cap=(256 if args.local_sequential else 32768) if is_v18b and split in {"monitor", "reasoning_monitor"}
+                    else cfg["max_tokens"]["monitor"], version=version, **options)
         finally:
             checkpoint.restore_rng(saved_rng)
             # collect() registers `version`; the signal-gate monitor uses the next policy version, which run_v16b
@@ -728,13 +867,69 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             body["f0_length_distribution"] = length_distribution_v17(
                 [len(r["output"]["generation"]["completion_token_ids"]) for r in generated[split]])
         return seal(output / (label + ".json"), body)
+    def finish_partial() -> dict | None:
+        nonlocal state, bundle, optimizer, scheduler, cursor, sampler
+        selected = partial_evaluation_state(plan, state, output) if is_v18b else None
+        if selected is None:
+            return None
+        selected_path = output / "evaluation-checkpoint-state.json"
+        if selected_path.exists() and read_sealed(selected_path) != selected:
+            raise ValueError("v18b partial selection changed after publication")
+        single._sealed(selected_path, selected)
+        if selected["checkpoint"] != state["checkpoint"]:
+            sampler.release()
+            # Reuse the allocated frozen base; load the selected adapters/moments/RNG into it.
+            existing = bundle
+            optimizer, scheduler = None, None
+            args._optimizer, args._scheduler = None, None
+            bundle, optimizer, scheduler, cursor = single.load_single_continuation(args.model_path,
+                _checkpoint_path(selected), protocol, binding=_binding(plan), device="cuda:0",
+                policy_factory=lambda *unused: existing)
+            args._optimizer, args._scheduler, args._slot = optimizer, scheduler, cursor["slot"]
+            args._preflight_stage = "trained"
+            sampler = make_sampler(bundle, args, protocol, image=image, sampling=TRAIN_SAMPLING_V16B)
+        state = selected
+        def selected_monitor(label: str, split: str = "monitor") -> dict:
+            path = output / (label + ".json")
+            record = read_sealed(path) if path.exists() else monitor(label, state["cursor"]["policy_version"], split=split)
+            if record.get("checkpoint") != state["checkpoint"] or record.get("plan_sha256") != plan["sha256"]:
+                raise ValueError("v18b partial monitor belongs to another checkpoint")
+            return record
+        final_monitor = selected_monitor("monitor-final")
+        selected_monitor("reasoning-monitor-final", "reasoning_monitor")
+        effect = selected_monitor("effect-final", "effect")
+        from .v17_eval import evaluation_gate
+        seal(output / "evaluation-admission.json", {"version": "v17-evaluation-admission-v1",
+            "plan_sha256": plan["sha256"], "checkpoint": state["checkpoint"],
+            "monitor_sha256": final_monitor["sha256"], "effect_sha256": effect["sha256"],
+            "decision": evaluation_gate(final_monitor["comparison"], effect["comparison"]),
+            "evaluation_selection": state["evaluation_selection"]})
+        require_complete(output, check_evaluation=False)
+        sampler.release()
+        return state
+
+    if partial_pending is not None:
+        selected = finish_partial()
+        if selected is None:
+            raise ValueError("v18b preauthorized partial boundary disappeared")
+        return selected
     post_path = output / "monitor-post-prep.json"
     post = read_sealed(post_path) if post_path.exists() else monitor("monitor-post-prep", 0)
     prep_checkpoint = json.loads((output / "prep-checkpoint.json").read_text())
     if post.get("plan_sha256") != plan["sha256"] or post.get("checkpoint") != prep_checkpoint:
         raise ValueError("v16b campaign: post-preparation monitor binding changed")
+    if is_v18b:
+        reasoning_post_path = output / "reasoning-monitor-post-prep.json"
+        reasoning_post = (read_sealed(reasoning_post_path) if reasoning_post_path.exists() else
+                          monitor("reasoning-monitor-post-prep", 0, split="reasoning_monitor"))
+        if reasoning_post.get("checkpoint") != prep_checkpoint or reasoning_post.get("plan_sha256") != plan["sha256"]:
+            raise ValueError("V18B_REASONING_POST_PREP_BINDING")
+        if "v18b_normal_state" not in state:
+            state["v18b_normal_checkpoint"] = copy.deepcopy(state["checkpoint"])
+            state["v18b_normal_state"] = {key: copy.deepcopy(state[key]) for key in
+                ("cursor", "checkpoint", "runtime", "probe", "guard")}
     before, after = generated["monitor_summary"]["median_tokens"], post["summary"]["median_tokens"]
-    if before is None or after is None or after < .5 * before:
+    if before is None or after is None or (not is_v18b and after < .5 * before):
         state["status"] = "PREP_LENGTH_STOP"
         state["stop_reasons"] = ["PREP_LENGTH_COLLAPSE"]
         cursor["phase"] = "stopped"
@@ -936,12 +1131,12 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         kwargs = {"tokenizer": bundle.processor.tokenizer, "fact_catalog": source["fact_catalog"],
             "rules": source["rules"], "choices": item["evaluation"]["choices"], "gold": item["evaluation"]["gold"]}
         if kind == "NOTE":
-            row = row_tools.note_row(view, **kwargs)
+            legacy_row = row_tools.note_row(view, **kwargs)
         else:
-            row, receipt = row_tools.c_row_with_receipt(view, **kwargs)
+            legacy_row, receipt = row_tools.c_row_with_receipt(view, **kwargs)
             if "resolve_receipt" in record and receipt != record["resolve_receipt"]:
                 raise ValueError("RESOLVE_RECEIPT_MISMATCH")
-        return [row] if row is not None else []
+        return [legacy_row] if legacy_row is not None else []
 
     def baseline(item: dict, kind: str, history: list[dict], cutoff: int) -> dict:
         if is_v18 and kind == "OBS":
@@ -986,7 +1181,24 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             write_json(output / "guard.json", report | {"tail_flags": {
                 "resolved": len(resolved), "unresolved": len(flags) - len(resolved)}})
         reasons.extend(_stop_markers(output))
-        if v == 3:
+        if recovery_hook is not None:
+            recovery_hook.poll()
+        if is_v18b and execution_settings is not None:
+            from .v18b_execution import _epoch, remaining
+            cutoff = execution_settings["training_cutoff_seconds"]
+            if cutoff is not None and time.time() >= _epoch(execution_settings["first_billed_at"]) + cutoff:
+                reasons.append("TRAINING_CUTOFF")
+            if remaining(execution_settings, reserve_seconds=execution_settings["post_eval_reserve_seconds"]) <= 0:
+                reasons.append("RUN_DEADLINE")
+        if is_v18b:
+            eta = eta_v18b(state["block_seconds"], done=v + 1, total=len(plan["blocks"]) + 3)
+            eta.update(pending_requests=len(set(runtime.requests) - set(runtime.closed)),
+                       delayed_closed_outputs=len(runtime.pending_descriptors()))
+            projection_path = output / "mmmu-projection-block-16.json"
+            if projection_path.exists():
+                eta["evaluation_projection"] = read_sealed(projection_path)
+            write_json(output / "eta.json", eta)
+        elif v == 3:
             write_json(output / "eta.json", eta_report(state["block_seconds"][:4], done=4, total=len(plan["blocks"]) + 3))
         if reasons:
             state.update(status="STOPPED", stop_reasons=sorted(set(reasons)))
@@ -996,6 +1208,75 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         return reasons
 
     def finish_signal_gate(v: int, envelope: dict, saved: dict) -> dict:
+        if is_v18b:
+            from .v18b_monitor import monitor_comparison, monitor_stop_decision, project_mmmu_lengths, supply_report
+            supported = signal_gate.supported
+            closed = [pid for pid in supported if runtime._closed_stage(signal_gate.positions[pid], "NOTE")
+                      and runtime._closed_stage(signal_gate.positions[pid], "RESOLVE")]
+            stage_opportunities = {stage: [pid for pid in supported if any(c.get("verdict") == "CONTRADICTED"
+                for c in (runtime.records.get(pid, {}).get(field) or {}).get("claims", []))]
+                for stage, field in (("T1", "t1_ledger"), ("OBS", "obs_ledger"))}
+            gate = signal_gate.evaluate(v, closed, stage_opportunities)
+            state["signal_gate"] = copy.deepcopy(signal_gate.state)
+            gate_path = output / "signal-reports" / f"v18b-gate-slot-{v}.json"
+            seal(gate_path, {"version": "v18b-signal-gate-result-v1", "slot": v,
+                "plan_sha256": plan["sha256"], "checkpoint": state["checkpoint"], "gate": gate,
+                "gate_stops_training": gate["stop_requested"]})
+            write_json(output / "signal-gate.json", {"version": "v18b-signal-gate-index-v1",
+                "latest": descriptor(gate_path)})
+            for pid in closed:
+                runtime.records[pid]["closed"] = True
+            updates = [read_sealed(path) for path in sorted((output / "update-results").glob("slot-*.json"))]
+            seal(output / "supply-reports" / f"v18b-slot-{v}.json", {"version": "v18b-supply-v1",
+                "plan_sha256": plan["sha256"], "checkpoint": saved,
+                "report": supply_report(runtime.records, plan["items"], updates, cursor["consumed_row_ids"], slot=v, block_size=plan["block_size"])})
+            done = min(v + 1, len(plan["blocks"]))
+            if done in (8, 16) and str(done) not in state.get("v18b_monitor_blocks", []):
+                normal = monitor(f"monitor-block-{done}", v + 1)
+                reasoning = monitor(f"reasoning-monitor-block-{done}", v + 1, split="reasoning_monitor")
+                f0_records = generated["monitor"] + generated["reasoning_monitor"]
+                current_records = normal["records"] + reasoning["records"]
+                panel_items = monitors + [all_items[r["problem_id"]] for r in generated["reasoning_monitor"]]
+                comparison = monitor_comparison(f0_records, post["records"] + reasoning_post["records"],
+                    current_records, panel_items)
+                comparison.update(omitted_ceiling_generation_n=len(selection.get("excluded_ceiling_monitor_ids", [])),
+                    frozen_monitor_inventory_n=len(selection.get("frozen_role_ids", {}).get("monitor", [])))
+                seal(output / f"b2-monitor-block-{done}.json", comparison | {
+                    "plan_sha256": plan["sha256"], "checkpoint": saved})
+                state.setdefault("v18b_monitor_blocks", []).append(str(done))
+                if done == 16:
+                    settings = plan.get("execution_settings")
+                    from .v18b_execution import _epoch
+                    elapsed = max(0., time.time() - _epoch(settings["first_billed_at"])) if settings else 0.
+                    remaining_slots = max(0, len(plan["blocks"]) + 3 - (v + 1))
+                    recent_seconds = statistics.mean(state["block_seconds"][-16:]) if state["block_seconds"] else 0.
+                    projection = project_mmmu_lengths(f0_records, current_records, panel_items,
+                        reference_mmmu_tokens=4120000, throughput_tokens_per_second=177.,
+                        hourly_usd=settings["billing"][0]["usd_per_hour"] if settings else 1.42,
+                        elapsed_seconds=elapsed, remaining_train_seconds=recent_seconds * remaining_slots,
+                        post_eval_seconds=settings["post_eval_reserve_seconds"] if settings else 1200,
+                        evaluation_pods=2 if settings and settings["evaluation_strategy"] == "two_pod" else 1,
+                        second_pod_overhead_seconds=2700,
+                        second_pod_hourly_usd=settings["billing"][1]["usd_per_hour"] if settings and len(settings["billing"]) == 2 else None,
+                        time_limit_seconds=settings["total_timeout_seconds"] if settings else 14 * 3600)
+                    projection.update(throughput_basis="V17_HISTORICAL_177TOKENS_PER_SECOND_UNMEASURED_ON_CURRENT_MODEL",
+                        reference_tokens_basis="B2_HISTORICAL_APPROX_4_12M_PLANNING_ONLY")
+                    seal(output / "mmmu-projection-block-16.json", projection)
+                decision = monitor_stop_decision(comparison, args.monitor_stop_action, saved,
+                    state.get("v18b_normal_checkpoint"))
+                if comparison["status"] == "STOP_REQUESTED":
+                    state["v18b_monitor_decision"] = decision
+                    state.update(status="STOPPED", stop_reasons=["MONITOR_STOP"] + comparison["reasons"])
+                    cursor["phase"] = "stopped"
+                    saved = commit("stopped", envelope)
+                else:
+                    state["v18b_normal_checkpoint"] = copy.deepcopy(saved)
+                    state["v18b_normal_state"] = {key: copy.deepcopy(state[key]) for key in
+                        ("cursor", "checkpoint", "runtime", "probe", "guard")}
+            body = {key: value for key, value in state.items() if key != "sha256"}
+            state["sha256"] = digest(body)
+            write_json(state_path, state)
+            return saved | {"stop_reasons": state.get("stop_reasons", [])}
         if signal_gate is None or v < signal_gate.due_slot or signal_gate.state["local_smoke"]:
             return saved
         if signal_gate.state["status"] == "WARMUP":
@@ -1045,12 +1326,17 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
             seal(output / "supply-reports" / f"slot-{v}.json", {"version": "v18-fixed-cohort-supply-v1",
                 "plan_sha256": plan["sha256"], "checkpoint": saved,
                 "report": v18_supply_report(runtime.records, plan["items"], updates, cursor["consumed_row_ids"])})
-        return finish_signal_gate(v, envelope, saved) if is_v17 else saved
+        result = finish_signal_gate(v, envelope, saved) if is_v17 else saved
+        if recovery_hook is not None and ((v + 1) % 16 == 0 or state["status"] == "STOPPED" or cursor["phase"] == "final"
+                or args.local_sequential and getattr(args, "checkpoint_after_main_blocks", None) == v + 1):
+            recovery_hook.checkpoint(state, force=True)
+        return result
 
     callbacks = RuntimeCallbacks(make_request=request, complete=complete, rows=build_rows, baseline=baseline,
                                 update=rl_update, checkpoint=save_runtime, guard=check_guard,
         **({"checkpoint_due": lambda v: signal_gate is not None and signal_gate.state["status"] == "WARMUP"
-            and v >= signal_gate.due_slot} if is_v17 else {}))
+            and v >= signal_gate.due_slot or is_v18b and (v + 1 in (8, 16) or
+            args.local_sequential and getattr(args, "checkpoint_after_main_blocks", None) == v + 1)} if is_v17 else {}))
     if state["runtime"] is None and (output / "runtime").exists():
         destination = output / "rolled-back" / f"runtime-{time.time_ns()}"
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1063,12 +1349,21 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         if is_v17:
             saved = finish_signal_gate(runtime.version - 1, json.loads(checked(state["runtime"]).read_text()), state["checkpoint"])
             if saved.get("stop_reasons"):
+                selected = finish_partial() if is_v18b else None
+                if selected is not None:
+                    return selected
                 sampler.release()
                 return state
     result = run_v16b(bundle, optimizer, scheduler, sampler, plan, out=output / "runtime", protocol=cfg,
         items=plan["items"], callbacks=callbacks, runtime=runtime, local_sequential=args.local_sequential)
+    if result["status"] != "COMPLETE" and is_v18b:
+        selected = finish_partial()
+        if selected is not None:
+            return selected
     if result["status"] == "COMPLETE":
         final_monitor = monitor("monitor-final", result["version"])
+        if is_v18b:
+            monitor("reasoning-monitor-final", result["version"], split="reasoning_monitor")
         if is_v17:
             from .v17_eval import evaluation_gate
             final_effect = monitor("effect-final", result["version"], split="effect")
@@ -1087,8 +1382,20 @@ def run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_o
         seal(output / "export-ready.json", {"version": plan["version"], "plan_sha256": plan["sha256"],
             "checkpoint": str(_checkpoint_path(state)), "metadata_descriptor": state["checkpoint"],
             "status": "COMPLETE", "auto_evaluate": False})
+        if recovery_hook is not None:
+            recovery_hook.checkpoint(state, force=True)
     sampler.release()
     return state
+
+
+def eta_v18b(block_seconds: list[float], *, done: int, total: int) -> dict:
+    report = eta_report(block_seconds[-16:], done=done, total=total)
+    return report | {"version": "v18b-eta-v1", "recent_slots": min(16, len(block_seconds)),
+        "elapsed_main_seconds": sum(block_seconds), "estimate_scope": "remaining main and delayed settlement slots",
+        "timing_basis": "guard-to-guard wall time; prior checkpoint and monitor costs already included",
+        "current_boundary_accounting": "current boundary save/monitor enters next slot timing",
+        "separate_checkpoint_or_monitor_charge_seconds": 0, "evaluation_added_to_training_seconds": False,
+        "initial_estimate": done < 16}
 
 
 def monitor_degraded_v17(overall: dict) -> bool:
@@ -1098,19 +1405,85 @@ def monitor_degraded_v17(overall: dict) -> bool:
     return isinstance(change, (int, float)) and isinstance(p_value, (int, float)) and change < 0 and p_value < .05
 
 
+def partial_evaluation_state(plan: dict, state: dict, output: Path) -> dict | None:
+    """Select a previously authorized durable boundary without relabeling interrupted training complete."""
+    if plan["protocol"]["version"] != "error-note-v18b" or state["status"] != "STOPPED":
+        return None
+    settings, reasons = plan.get("execution_settings") or {}, state.get("stop_reasons", [])
+    if "RUN_DEADLINE" in reasons or any(reason in reasons for reason in ("STOP_REQUESTED", "WATCHDOG_STOP")):
+        return None
+    if "MONITOR_STOP" in reasons and settings.get("monitor_stop_action") == "evaluate_checkpoint":
+        chosen, reason = state.get("v18b_normal_state"), "MONITOR_STOP"
+    elif "TRAINING_CUTOFF" in reasons and settings.get("evaluation_strategy") == "training_cutoff":
+        chosen, reason = state, "TRAINING_CUTOFF"
+    else:
+        return None
+    if chosen is None:
+        return None
+    cursor = chosen["cursor"]
+    consumed = cursor.get("consumed_problem_ids", [])
+    expected = [pid for block in plan["blocks"] for pid in block]
+    preparation_only = (not consumed and reason == "MONITOR_STOP" and cursor.get("slot") == len(plan["prep_batches"])
+                        and cursor.get("policy_version") == 0 and cursor.get("updates", 0) > 0)
+    all_parents_cutoff = (len(consumed) == len(expected) and reason == "TRAINING_CUTOFF"
+        and type(cursor.get("slot")) is int
+        and len(plan["prep_batches"]) + len(plan["blocks"]) <= cursor["slot"] <= plan["total_slots"])
+    if (not 0 <= len(consumed) < len(expected) and not all_parents_cutoff or not consumed and not preparation_only
+            or len(set(consumed)) != len(consumed) or consumed != expected[:len(consumed)]):
+        return None
+    if preparation_only:
+        marker = output / "prep-checkpoint.json"
+        if not marker.exists() or json.loads(marker.read_text()) != chosen["checkpoint"]:
+            raise ValueError("v18b preparation-only evaluation does not bind the completed prep checkpoint")
+    metadata = json.loads(checked(chosen["checkpoint"]).read_text())
+    transaction = read_sealed(output / "transactions" / ("slot-{}.json".format(cursor["slot"] - 1)))
+    if (metadata.get("cursor", {}).get("single") != cursor or metadata.get("step") != cursor["slot"]
+            or preparation_only and transaction.get("contract", {}).get("phase") != "prep"
+            or transaction["sha256"] != cursor.get("last_transaction_sha256")
+            or metadata.get("protocol") != plan["protocol"] or transaction.get("plan_sha256") != plan["sha256"]
+            or not preparation_only and chosen.get("runtime") is None):
+        raise ValueError("v18b partial selection has no valid checkpoint/update/runtime trace")
+    if chosen.get("runtime") is not None:
+        checked(chosen["runtime"])
+    selection = {"reason": reason, "authorized_action": "evaluate_checkpoint",
+        "source_checkpoint_sha256": chosen["checkpoint"]["file_sha256"],
+        "consumed_items": len(consumed), "total_items": len(expected), "preparation_only": preparation_only}
+    body = {key: value for key, value in state.items() if key != "sha256"}
+    body.update({key: copy.deepcopy(chosen[key]) for key in ("cursor", "checkpoint", "runtime", "probe", "guard")})
+    body.update(status="PARTIAL_EVALUATION_CANDIDATE", evaluation_selection=selection,
+                stopped_training_state_sha256=state["sha256"], stopped_training_checkpoint=state["checkpoint"])
+    return body | {"sha256": digest(body)}
+
+
+def evaluation_state(output: Path) -> dict:
+    selected = output / "evaluation-checkpoint-state.json"
+    return read_sealed(selected if selected.exists() else output / "campaign-state.json")
+
+
 def require_complete(output: Path, *, evaluation_decision: Path | None = None,
                      check_evaluation: bool = True) -> dict:
-    state = read_sealed(output / "campaign-state.json")
-    if state["status"] != "COMPLETE" or state.get("stop_reasons"):
+    state = evaluation_state(output)
+    partial = state["status"] == "PARTIAL_EVALUATION_CANDIDATE"
+    if not partial and (state["status"] != "COMPLETE" or state.get("stop_reasons")):
         raise ValueError("v16b campaign: stopped/watchdog checkpoint requires an explicit evaluation decision")
     plan = read_sealed(output / "campaign-plan.json")
     _plan_check(plan)
+    if partial:
+        original = read_sealed(output / "campaign-state.json")
+        expected = partial_evaluation_state(plan, original, output)
+        if expected != state:
+            raise ValueError("v18b partial selection changed or lacks preauthorized stopping policy")
+        effect = read_sealed(output / "effect-final.json")
+        admission = read_sealed(output / "evaluation-admission.json")
+        if any(record.get("checkpoint") != state["checkpoint"] or record.get("plan_sha256") != plan["sha256"]
+                for record in (effect, admission)) or admission.get("evaluation_selection") != state["evaluation_selection"]:
+            raise ValueError("v18b partial monitor/effect/admission binding changed")
     final = read_sealed(output / "monitor-final.json")
     if (state["plan_sha256"] != plan["sha256"] or final.get("plan_sha256") != plan["sha256"]
-            or final.get("checkpoint") != state["checkpoint"] or state["cursor"]["slot"] != plan["total_slots"]
-            or state["cursor"].get("phase") != "final"):
+            or final.get("checkpoint") != state["checkpoint"]
+            or not partial and (state["cursor"]["slot"] != plan["total_slots"] or state["cursor"].get("phase") != "final")):
         raise ValueError("v16b campaign: final monitor/checkpoint binding changed")
-    if plan["protocol"]["version"] == "error-note-v18":
+    if not partial and plan["protocol"]["version"] in ("error-note-v18", "error-note-v18b"):
         closure = read_sealed(output / "terminal-closure.json")
         if (closure.get("plan_sha256") != plan["sha256"] or closure.get("checkpoint") != state["checkpoint"]
                 or closure.get("status") != "DRAINED_AND_SETTLED" or closure.get("pending_requests") != 0
@@ -1135,7 +1508,8 @@ def require_complete(output: Path, *, evaluation_decision: Path | None = None,
             raise ValueError("v17 evaluation admission is incomplete")
     ready = seal(output / "export-ready.json", {"version": plan["version"], "plan_sha256": plan["sha256"],
         "checkpoint": str(_checkpoint_path(state)), "metadata_descriptor": state["checkpoint"],
-        "status": "COMPLETE", "auto_evaluate": False})
+        "status": state["status"], "auto_evaluate": False,
+        **({"evaluation_selection": state["evaluation_selection"]} if partial else {})})
     checked(ready["metadata_descriptor"])
     return ready
 
@@ -1145,18 +1519,24 @@ def export_metadata(metadata: dict, plan: dict, checkpoint: Path) -> dict:
     if plan["local_sequential"]:
         raise ValueError("v16b campaign: local NF4 smoke cannot be exported for benchmark evaluation")
     cursor = metadata.get("cursor", {}).get("single", {})
-    state = read_sealed(checkpoint.parent / "campaign-state.json")
+    state = evaluation_state(checkpoint.parent)
+    partial = state["status"] == "PARTIAL_EVALUATION_CANDIDATE"
+    if partial:
+        expected = partial_evaluation_state(plan, read_sealed(checkpoint.parent / "campaign-state.json"), checkpoint.parent)
+        if state != expected:
+            raise ValueError("v18b export selection was not authorized")
     if (state.get("plan_sha256") != plan["sha256"] or state.get("cursor") != cursor
             or state.get("pending") is not None or metadata.get("step") != cursor.get("slot")
             or state.get("checkpoint") != descriptor(checkpoint / "metadata.json")):
         raise ValueError("v16b campaign: export requires the latest committed checkpoint")
-    if (metadata.get("protocol") != plan["protocol"] or cursor.get("phase") not in {"final", "stopped"}
+    if (metadata.get("protocol") != plan["protocol"] or cursor.get("phase") not in ({"final", "stopped", "rl"} if partial else {"final", "stopped"})
             or not 0 < cursor.get("slot", 0) <= plan["total_slots"]):
         raise ValueError("v16b campaign: export requires a committed final/stopped checkpoint")
     if cursor["phase"] == "final" and cursor["slot"] != plan["total_slots"]:
         raise ValueError("v16b campaign: incomplete final checkpoint")
     return {"version": plan["version"], "plan_sha256": plan["sha256"], "slot": cursor["slot"],
-        "updates": cursor["updates"], "total_slots": plan["total_slots"], "stage": cursor["phase"],
+        "updates": cursor["updates"], "total_slots": plan["total_slots"], "stage": "partial" if partial else cursor["phase"],
+        **({"evaluation_selection": state["evaluation_selection"]} if partial else {}),
         "checkpoint": descriptor(checkpoint / "metadata.json"), "prep_updates": len(plan["prep_batches"]),
         "rl_blocks": len(plan["blocks"]), "finish_updates": 3, "local_sequential": plan["local_sequential"]}
 
@@ -1166,7 +1546,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("command", choices=("prepare", "advance", "reload", "require-complete", "export", "calibrate", "preflight", "training-artifact-seal"))
     for name in ("data-root", "prep-root", "model-path", "output"):
         parser.add_argument("--" + name, type=Path, required=name == "output")
-    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18"), default="error-note-v16b")
+    parser.add_argument("--version", choices=("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"), default="error-note-v16b")
     parser.add_argument("--precision", choices=("nf4", "bf16"), default="bf16")
     parser.add_argument("--engine", choices=("hf", "vllm"), default="vllm")
     parser.add_argument("--local-sequential", action="store_true")
@@ -1179,6 +1559,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", type=Path)
     parser.add_argument("--export-output", type=Path)
     parser.add_argument("--code-commit")
+    parser.add_argument("--execution-settings", type=Path)
+    parser.add_argument("--backup-destination", type=Path)
+    parser.add_argument("--backup-transfer-command", help="JSON argv; {archive}/{receipt}/{slot}/{bundle_sha256} placeholders")
+    parser.add_argument("--checkpoint-after-main-blocks", type=int, help="bounded local crash-recovery smoke only")
     parser.add_argument("--execution-phase", choices=("legacy", "training", "evaluation"), default="legacy")
     parser.add_argument("--repo", type=Path)
     parser.add_argument("--artifact-output", type=Path)
@@ -1195,7 +1579,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .v18b_recovery import recovery_paths
     args = build_parser().parse_args(argv)
+    with recovery_paths(args.output):
+        return _main(args)
+
+
+def _main(args: argparse.Namespace) -> int:
+    if args.checkpoint_after_main_blocks is not None and (not args.local_sequential
+            or args.checkpoint_after_main_blocks != 2):
+        raise ValueError("only the local two-block crash-recovery checkpoint is supported")
     if args.resume_funding_stop and args.command != "advance":
         raise ValueError("v16b campaign: --resume-funding-stop applies to advance only")
     if args.command == "training-artifact-seal":
@@ -1218,7 +1611,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("v16b export: --base --export-output --code-commit required")
             export_for_eval(Path(ready["checkpoint"]), args.output / "campaign-plan.json", args.base,
                             args.export_output, args.code_commit)
-        print(json.dumps({"status": "COMPLETE", "checkpoint": ready["checkpoint"]}))
+        print(json.dumps({"status": ready.get("status", "COMPLETE"), "checkpoint": ready["checkpoint"]}))
         return 0
     if args.command == "preflight" and args.execution_phase == "evaluation":
         from .v17_preflight import trained_export_preflight
@@ -1243,7 +1636,7 @@ def main(argv: list[str] | None = None) -> int:
             result = {"status": "PREPARED"} if args.command == "prepare" else run_campaign(
                 plan, output=args.output, args=args, reload_only=args.command == "reload")
     print(json.dumps({"status": result["status"], "cursor": result.get("cursor")}))
-    return 0 if result["status"] in {"PREPARED", "COMPLETE", "RELOADED", "PASS"} else 2
+    return 0 if result["status"] in {"PREPARED", "COMPLETE", "PARTIAL_EVALUATION_CANDIDATE", "RELOADED", "PASS"} else 2
 
 
 if __name__ == "__main__":

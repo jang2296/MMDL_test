@@ -901,3 +901,49 @@ def validate_protocol_v18(protocol: dict) -> None:
 def v18_contract_for_update(protocol: dict, global_slot: int, **kwargs) -> dict:
     validate_protocol_v18(protocol)
     return _sealed_contract_for_slot(protocol, global_slot, **kwargs)
+
+
+VERSION_V18B = "error-note-v18b"
+V18B_IDENTIFIERS = {
+    **V18_IDENTIFIERS,
+    "claim_schema": "v18b-single-grounded-correction",
+    "observation_selection": "seeded-balanced-edge-label",
+    "note_context": "public-observation-question-unit-and-actual-response",
+    "external_monitor_blocks": [8, 16],
+    "checkpoint_copy_interval": 16,
+}
+V18B_SPECIFICATION_SHA256 = _digest({"version": VERSION_V18B,
+    "identifiers": V18B_IDENTIFIERS, "parent_spec": V18_SPECIFICATION_SHA256})
+
+
+def plain_protocol_v18b(precision: str, *, rl_blocks: int, prep_updates: int, contracts: dict[str, str],
+                        image: dict | None = None, local_smoke: bool = False) -> dict:
+    from .v18b_rows import prompts_sha256
+
+    body = plain_protocol_v18(precision, rl_blocks=rl_blocks, prep_updates=prep_updates,
+                              contracts=contracts, image=image, local_smoke=local_smoke)
+    del body["sha256"]
+    identity = {"version": VERSION_V18B, "specification_sha256": V18B_SPECIFICATION_SHA256,
+                "prompts_sha256": prompts_sha256()}
+    body.update(identity)
+    body["training_contract"].update(copy.deepcopy(V18B_IDENTIFIERS), **identity)
+    if not local_smoke:
+        body["training_contract"]["max_tokens"]["monitor"] = 32768
+    return body | {"sha256": _digest(body)}
+
+
+def validate_protocol_v18b(protocol: dict) -> None:
+    try:
+        c = protocol["training_contract"]
+        expected = plain_protocol_v18b(protocol["precision"], rl_blocks=c["rl_blocks"],
+            prep_updates=c["prep_updates"], contracts=c["hashes"], image=protocol["image"],
+            local_smoke=c["local_smoke"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("v18b: invalid sealed protocol") from exc
+    if protocol != expected:
+        raise ValueError("v18b: invalid sealed protocol")
+
+
+def v18b_contract_for_update(protocol: dict, global_slot: int, **kwargs) -> dict:
+    validate_protocol_v18b(protocol)
+    return _sealed_contract_for_slot(protocol, global_slot, **kwargs)

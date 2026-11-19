@@ -233,8 +233,9 @@ class V16bScheduler:
                  callbacks: RuntimeCallbacks, restore: bool = False):
         self.sampler, self.plan, self.protocol = sampler, plan, protocol
         self.grade, self.verify, self.callbacks = grade, verify, callbacks
-        self.v18 = protocol.get("version") == "error-note-v18"
-        self.v17 = protocol.get("version") in {"error-note-v17", "error-note-v18"}
+        self.v18b = protocol.get("version") == "error-note-v18b"
+        self.v18 = protocol.get("version") in {"error-note-v18", "error-note-v18b"}
+        self.v17 = protocol.get("version") in {"error-note-v17", "error-note-v18", "error-note-v18b"}
         self._submitting = False
         self.admission_wait_seconds = 0.0
         self._heartbeat_at = 0.0
@@ -571,8 +572,10 @@ class V16bScheduler:
                         tails.append(archived_journal.read_bytes())
         tails.append(data[size:])
         for tail in tails:
-            for line in tail.decode().splitlines():
-                event = json.loads(line)
+            # Only newline-terminated records are durable; keep an interrupted UTF-8/JSON suffix as raw audit bytes.
+            complete = tail[:tail.rfind(b"\n") + 1]
+            for line in complete.splitlines():
+                event = json.loads(line.decode("utf-8"))
                 if event["status"] == "STARTED":
                     rid = event["request_id"]
                     pin = _pin(event)
@@ -666,7 +669,8 @@ def run_v16b(bundle: Any, optimizer: Any, scheduler_lr: Any, sampler: Any, plan:
             stop.append("STOP_REQUESTED")
         if (Path(out) / "WATCHDOG_STOP").exists():
             stop.append("WATCHDOG_STOP")
-        checkpoint = (bool(stop) or (protocol.get("prep_updates", 0) + runtime.version) % 8 == 0 or v == runtime.last_update
+        checkpoint_slot = runtime.version if runtime.v18b else protocol.get("prep_updates", 0) + runtime.version
+        checkpoint = (bool(stop) or checkpoint_slot % 8 == 0 or v == runtime.last_update
                       or (runtime.v17 and (bool(stats.get("checkpoint_required")) or
                           (callbacks.checkpoint_due is not None and callbacks.checkpoint_due(v)))))
         checkpoint_seconds = drain_generation_seconds = 0.0

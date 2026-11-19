@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+from contextlib import nullcontext
 import json
+import math
 from pathlib import Path
 import subprocess
 
@@ -11,12 +13,14 @@ from .audit import digest
 from .prep_v16b import file_sha, read_sealed
 
 VERSION = "v17-training-artifacts-v1"
-TRAINING_VERSIONS = ("error-note-v17", "error-note-v18")
+TRAINING_VERSIONS = ("error-note-v17", "error-note-v18", "error-note-v18b")
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def _safe(path: Path) -> Path:
-    path = Path(path).absolute()
+    from .v18b_recovery import resolve_recovery_path
+
+    path = resolve_recovery_path(Path(path).absolute())
     if ".." in path.parts or any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError("v17 artifacts: symlink or path escape refused")
     return path
@@ -30,10 +34,25 @@ def _ref(path: Path) -> dict:
 
 
 def _check_ref(ref: dict) -> Path:
-    path = _safe(Path(ref["path"]))
-    if _ref(path) != ref:
+    original = Path(ref["path"])
+    if not original.is_absolute() or str(original) != ref["path"] or ".." in original.parts:
+        raise ValueError("v17 artifacts: canonical absolute reference required")
+    path = _safe(original)
+    if set(ref) != {"path", "file_sha256"} or _ref(path)["file_sha256"] != ref["file_sha256"]:
         raise ValueError("v17 artifacts: bound file bytes changed")
     return path
+
+
+def _same_ref(left: object, right: object) -> bool:
+    return isinstance(left, dict) and isinstance(right, dict) and _check_ref(left) == _check_ref(right)
+
+
+def _artifact_paths(value: dict):
+    if value.get("training_protocol_version") != "error-note-v18b":
+        return nullcontext()
+    from .v18b_recovery import recovery_paths
+
+    return recovery_paths(_safe(Path(value["campaign_plan"]["path"])).parent)
 
 
 def _files(root: Path) -> list[dict]:
@@ -98,6 +117,96 @@ def evaluation_identity(repo: Path, commit: str) -> dict:
     return {"code_commit": commit, "source_sha256": digest(single.source_manifest()["actual_files"])}
 
 
+def _v18b_training_evidence(output: Path, plan: dict, step: int, selection: dict | None = None) -> tuple[dict, dict]:
+    from .v17_preflight import _validate_live_capacity
+
+    identity = {"code_commit": plan["source"]["base_commit"], "source_sha256": digest(plan["source"]["actual_files"]),
+                "campaign_plan_sha256": plan["sha256"], "protocol_sha256": plan["protocol"]["sha256"],
+                "training_protocol_version": "error-note-v18b"}
+    preparation_only = bool(selection and selection.get("preparation_only") is True)
+    evidence_end = step
+    stopped_timing: dict = {}
+    if preparation_only:
+        stopped_path, selected_path = output / "campaign-state.json", output / "evaluation-checkpoint-state.json"
+        stopped, selected = read_sealed(stopped_path), read_sealed(selected_path)
+        prep_marker = output / "prep-checkpoint.json"
+        if (selection is None or selection.get("reason") != "MONITOR_STOP" or selection.get("consumed_items") != 0
+                or selection.get("authorized_action") != "evaluate_checkpoint" or step != len(plan["prep_batches"])
+                or plan.get("execution_settings", {}).get("monitor_stop_action") != "evaluate_checkpoint"
+                or stopped.get("plan_sha256") != plan["sha256"] or stopped.get("status") != "STOPPED"
+                or "MONITOR_STOP" not in stopped.get("stop_reasons", [])
+                or selected.get("plan_sha256") != plan["sha256"]
+                or selected.get("status") != "PARTIAL_EVALUATION_CANDIDATE" or selected.get("evaluation_selection") != selection
+                or selected.get("stopped_training_state_sha256") != stopped["sha256"]
+                or not _same_ref(selected.get("stopped_training_checkpoint"), stopped.get("checkpoint"))
+                or selected.get("cursor", {}).get("slot") != step
+                or selected.get("cursor", {}).get("consumed_problem_ids") != []
+                or not _same_ref(json.loads(prep_marker.read_text()), selected.get("checkpoint"))
+                or selected.get("checkpoint", {}).get("file_sha256") != selection.get("source_checkpoint_sha256")):
+            raise ValueError("v18b artifacts: preparation-only checkpoint lacks its stopped-run timing provenance")
+        evidence_end = stopped.get("cursor", {}).get("slot")
+        if type(evidence_end) is not int or not step < evidence_end <= plan["total_slots"]:
+            raise ValueError("v18b artifacts: preparation-only selection needs a later stopped production run")
+        stopped_timing = {"campaign_state": _ref(stopped_path), "evaluation_selection_state": _ref(selected_path),
+                          "preparation_checkpoint": _ref(prep_marker), "included_in_selected_checkpoint": False}
+    updates = []
+    for path in (output / "update-results").glob("slot-*.json"):
+        filename_slot = int(path.stem.removeprefix("slot-"))
+        if filename_slot >= evidence_end:
+            continue
+        row = read_sealed(_safe(path))
+        slot = row.get("global_slot")
+        if type(slot) is not int or slot < 0 or slot != filename_slot:
+            raise ValueError("v18b artifacts: invalid production slot")
+        if (row.get("version") != "v18b-update-result-v1" or row.get("plan_sha256") != plan["sha256"]
+                or type(row.get("producer_pid")) is not int or row["producer_pid"] < 1
+                or row.get("timing_scope") != "encode_backward_optimizer"
+                or type(row.get("result", {}).get("optimizer_steps")) is not int
+                or type(row.get("wall_seconds")) not in (int, float)
+                or not math.isfinite(row["wall_seconds"]) or row["wall_seconds"] <= 0):
+            raise ValueError("v18b artifacts: actual production update timing required")
+        transaction_path = output / "transactions" / f"slot-{slot}.json"
+        transaction = read_sealed(_safe(transaction_path))
+        if (row.get("transaction_sha256") != transaction["sha256"]
+                or transaction.get("plan_sha256") != plan["sha256"] or transaction.get("slot") != slot):
+            raise ValueError("v18b artifacts: timing is not bound to its actual transaction")
+        updates.append((slot, path, row, transaction_path))
+    updates.sort()
+    if [row[0] for row in updates] != list(range(evidence_end)):
+        raise ValueError("v18b artifacts: selected checkpoint lacks its exact production slot history")
+    main = [row for row in updates if row[2].get("phase") == "rl" and row[2].get("result", {}).get("optimizer_steps", 0) > 0]
+    if not main:
+        raise ValueError("v18b artifacts: no measured actual main optimizer update")
+    if preparation_only and any(row[2].get("phase") != "prep" for row in updates[:step]):
+        raise ValueError("v18b artifacts: a preparation-only checkpoint contains a main update")
+    preflights = []
+    for pid in sorted({row[2]["producer_pid"] for row in updates}):
+        path = output / "training-bindings" / f"live-{pid}.json"
+        value = read_sealed(_safe(path))
+        if (any(value.get(key) != item for key, item in identity.items())
+                or value.get("version") != "v18b-live-training-preflight-v1" or value.get("status") != "BOUND"
+                or value.get("production_admitted") is not True or value.get("producer_pid") != pid
+                or value.get("maximum_shape_measurements") != 1 or value.get("optimizer_steps") != 0
+                or value.get("production_parents_consumed") != 0
+                or value.get("actual_abc_status") != "NOT_RUN_USE_PRODUCTION_SLOT_TIMINGS"
+                or value.get("f0_transport", {}).get("pass") is not True or not value.get("coexistence")
+                or any(row.get("pass") is not True for row in value["coexistence"])):
+            raise ValueError("v18b artifacts: actual producer admission differs")
+        _validate_live_capacity(value["capacity"], plan)
+        preflights.append(_ref(path))
+    first = main[0]
+    evidence: dict = {
+        "live_training_preflights": preflights, "actual_update_results": [_ref(row[1]) for row in updates],
+        "first_main_update": _ref(first[1]), "first_main_transaction": _ref(first[3]),
+        "actual_update_timing_scope": "encode_backward_optimizer"}
+    if preparation_only:
+        stopped_timing.update(first_main_update=evidence.pop("first_main_update"),
+                              first_main_transaction=evidence.pop("first_main_transaction"),
+                              actual_update_results=[_ref(row[1]) for row in updates[step:]])
+        evidence.update(actual_update_results=[_ref(row[1]) for row in updates[:step]], stopped_run_timing=stopped_timing)
+    return identity | {"production_admitted": True}, evidence
+
+
 def create_training_artifacts(args, plan: dict) -> dict:
     from . import campaign_v16b as campaign
     from .v17_preflight import _write, bind_training
@@ -106,16 +215,23 @@ def create_training_artifacts(args, plan: dict) -> dict:
     protocol_version = plan["protocol"].get("version")
     if protocol_version not in TRAINING_VERSIONS:
         raise ValueError("v17 artifacts: unsupported training protocol")
-    binding = bind_training(args, plan)
-    if not binding.get("production_admitted"):
-        raise ValueError("v17 artifacts: local smoke cannot seal production artifacts")
     output = _safe(Path(args.output))
     ready = campaign.require_complete(output, evaluation_decision=getattr(args, "evaluation_decision", None))
     checkpoint = _safe(Path(ready["checkpoint"]))
     metadata = read_metadata(checkpoint, binding=campaign._binding(plan))
-    if metadata["protocol"] != plan["protocol"] or metadata["step"] != plan["total_slots"]:
+    partial = protocol_version == "error-note-v18b" and ready.get("status") == "PARTIAL_EVALUATION_CANDIDATE"
+    step = metadata["step"]
+    live_evidence: dict = {}
+    if protocol_version == "error-note-v18b":
+        binding, live_evidence = _v18b_training_evidence(output, plan, step, ready.get("evaluation_selection"))
+    else:
+        binding = bind_training(args, plan)
+    if not binding.get("production_admitted"):
+        raise ValueError("v17 artifacts: local smoke cannot seal production artifacts")
+    if (metadata["protocol"] != plan["protocol"] or (not partial and step != plan["total_slots"])
+            or partial and not 0 < step <= plan["total_slots"]):
         raise ValueError("v17 artifacts: final checkpoint identity changed")
-    reload_path = output / f"reload-{plan['total_slots']}.json"
+    reload_path = output / f"reload-{step}.json"
     reload = read_sealed(reload_path)
     if (reload.get("plan_sha256") != plan["sha256"] or reload.get("checkpoint") != ready["metadata_descriptor"]
             or reload.get("runtime_equal") is not True or reload.get("greedy_equal") is not True
@@ -137,7 +253,7 @@ def create_training_artifacts(args, plan: dict) -> dict:
             or model.get("dtype") != "bfloat16" or model.get("export", {}).get("binding") != campaign._binding(plan)
             or model.get("export", {}).get("campaign", {}).get("plan_sha256") != plan["sha256"]):
         raise ValueError("v17 artifacts: export is not the bound final unmerged model")
-    if protocol_version == "error-note-v18" and model["export"].get("training_protocol") != plan["protocol"]:
+    if protocol_version in ("error-note-v18", "error-note-v18b") and model["export"].get("training_protocol") != plan["protocol"]:
         raise ValueError("v18 artifacts: exported training protocol differs from sealed plan")
     for record in model["files"]:
         path = _safe(Path(args.export_output) / "model" / record["path"])
@@ -149,16 +265,23 @@ def create_training_artifacts(args, plan: dict) -> dict:
                   for name in sorted(plan["source"]["actual_files"])]
     if {r["path"]: r["file_sha256"] for r in code_files} != plan["source"]["actual_files"]:
         raise ValueError("v17 artifacts: training source files changed")
-    body = {"version": VERSION, "status": "SEALED", "training": {k: binding[k] for k in
+    body: dict = {"version": VERSION, "status": "SEALED", "training": {k: binding[k] for k in
             ("code_commit", "source_sha256", "campaign_plan_sha256", "protocol_sha256")},
         "training_code": {"root": str(code_root), "files": code_files, "files_sha256": digest(code_files)},
         "campaign_plan": _ref(output / "campaign-plan.json"),
         "checkpoint": _tree(checkpoint) | {"metadata": _ref(checkpoint / "metadata.json")},
         "export": export | {"model_ref": _ref(model_ref)}, "reload": _ref(reload_path),
-        "functional_receipt": binding["functional_receipt"], "update_cost_receipt": binding["update_cost_receipt"],
         "evaluation_admission": _ref(admission_path),
         "export_ready": _ref(output / "export-ready.json"), "protected_evaluation": protected_evaluation(ROOT)}
-    if protocol_version == "error-note-v18":
+    if protocol_version == "error-note-v18b":
+        body.update(live_evidence)
+    else:
+        body.update(functional_receipt=binding["functional_receipt"], update_cost_receipt=binding["update_cost_receipt"])
+    if partial:
+        body["status"] = "PARTIAL_EVALUATION_CANDIDATE"
+        body["evaluation_selection"] = model["export"]["campaign"].get("evaluation_selection")
+        _partial_selection(body, model)
+    if protocol_version in ("error-note-v18", "error-note-v18b"):
         body.update(training_protocol_version=protocol_version, monitor=_ref(output / "monitor-final.json"),
                     effect=_ref(output / "effect-final.json"))
         _v18_admission(body)
@@ -172,12 +295,20 @@ def create_training_artifacts(args, plan: dict) -> dict:
 
 def verify_training_artifacts(path: Path) -> dict:
     value = read_sealed(_safe(path))
-    if value.get("version") != VERSION or value.get("status") != "SEALED":
+    with _artifact_paths(value):
+        return _verify_training_artifacts(path)
+
+
+def _verify_training_artifacts(path: Path) -> dict:
+    value = read_sealed(_safe(path))
+    if value.get("version") != VERSION or value.get("status") not in ("SEALED", "PARTIAL_EVALUATION_CANDIDATE"):
         raise ValueError("v17 artifacts: sealed production training artifacts required")
-    for name in ("campaign_plan", "reload", "functional_receipt", "update_cost_receipt",
-                 "evaluation_admission", "export_ready"):
+    for name in ("campaign_plan", "reload", "evaluation_admission", "export_ready"):
         _check_ref(value[name])
-    if value.get("training_protocol_version") != "error-note-v18":
+    if value.get("training_protocol_version") != "error-note-v18b":
+        for name in ("functional_receipt", "update_cost_receipt"):
+            _check_ref(value[name])
+    if value.get("training_protocol_version") not in ("error-note-v18", "error-note-v18b"):
         _check_ref(value["evaluation_decision"])
     elif "evaluation_decision" in value:
         raise ValueError("v18 artifacts: training seal cannot authorize evaluation")
@@ -200,9 +331,17 @@ def verify_training_artifacts(path: Path) -> dict:
             raise ValueError("v17 artifacts: original training source changed")
     plan = read_sealed(Path(value["campaign_plan"]["path"]))
     protocol_version = plan["protocol"].get("version")
+    if protocol_version == "error-note-v18b":
+        metadata = json.loads(Path(value["checkpoint"]["metadata"]["path"]).read_text())
+        binding, evidence = _v18b_training_evidence(Path(value["campaign_plan"]["path"]).parent, plan, metadata["step"],
+                                                  value.get("evaluation_selection"))
+        if "stopped_run_timing" in evidence and any(key in value for key in ("first_main_update", "first_main_transaction")):
+            raise ValueError("v18b artifacts: stopped-run timing cannot be attributed to the preparation-only checkpoint")
+        if any(value.get(key) != item for key, item in evidence.items()) or any(value["training"][key] != binding[key] for key in value["training"]):
+            raise ValueError("v18b artifacts: actual producer or first-update evidence changed")
     model = json.loads(Path(value["export"]["model_ref"]["path"]).read_text(encoding="utf-8"))
     if (protocol_version not in TRAINING_VERSIONS
-            or (protocol_version == "error-note-v18" and (
+            or (protocol_version in ("error-note-v18", "error-note-v18b") and (
                 value.get("training_protocol_version") != protocol_version
                 or model.get("export", {}).get("training_protocol") != plan["protocol"]))
             or (protocol_version == "error-note-v17" and value.get("training_protocol_version") not in (None, protocol_version))):
@@ -220,12 +359,53 @@ def verify_training_artifacts(path: Path) -> dict:
                                    capture_output=True, text=True).stdout.strip()
     if observed != plan["source"]["actual_files"] or actual_commit != value["training"]["code_commit"]:
         raise ValueError("v17 artifacts: original training checkout changed")
-    if protocol_version == "error-note-v18":
+    if value.get("status") == "PARTIAL_EVALUATION_CANDIDATE":
+        if protocol_version != "error-note-v18b":
+            raise ValueError("v18b artifacts: only explicit v18b selection can be partial")
+        _partial_selection(value, model)
+    elif model.get("export", {}).get("campaign", {}).get("stage") == "partial":
+        raise ValueError("v18b artifacts: partial checkpoint mislabeled as complete")
+    if protocol_version in ("error-note-v18", "error-note-v18b"):
         _v18_admission(value)
     return value
 
 
+def _partial_selection(artifacts: dict, model: dict) -> dict:
+    selection = artifacts.get("evaluation_selection")
+    campaign = model.get("export", {}).get("campaign", {})
+    if (not isinstance(selection, dict) or campaign.get("stage") != "partial"
+            or campaign.get("evaluation_selection") != selection
+            or selection.get("reason") not in ("TRAINING_CUTOFF", "MONITOR_STOP")
+            or selection.get("authorized_action") != "evaluate_checkpoint"
+            or selection.get("source_checkpoint_sha256") != artifacts["checkpoint"]["metadata"]["file_sha256"]
+            or type(selection.get("consumed_items")) is not int
+            or not 0 <= selection["consumed_items"] <= 3000 or selection.get("total_items") != 3000):
+        raise ValueError("v18b artifacts: explicit partial checkpoint selection required")
+    contract = model.get("export", {}).get("training_protocol", {}).get("training_contract", {})
+    slot, prep, blocks, total = (campaign.get("slot"), contract.get("prep_updates"),
+                                contract.get("rl_blocks"), contract.get("total_slots"))
+    if selection["consumed_items"] == 3000 or type(slot) is int and type(total) is int and slot == total:
+        if (selection["consumed_items"] != 3000 or selection["reason"] != "TRAINING_CUTOFF"
+                or any(type(value) is not int for value in (slot, prep, blocks, total))
+                or not prep + blocks <= slot <= total):
+            raise ValueError("v18b artifacts: all parents at cutoff require a saved main or settlement boundary")
+    preparation_only = selection.get("preparation_only", False)
+    if type(preparation_only) is not bool or (selection["consumed_items"] == 0) != preparation_only:
+        raise ValueError("v18b artifacts: zero main-training items require explicit preparation-only selection")
+    if preparation_only:
+        contract = model.get("export", {}).get("training_protocol", {}).get("training_contract", {})
+        if (selection["reason"] != "MONITOR_STOP" or campaign.get("slot") != contract.get("prep_updates")
+                or type(campaign.get("slot")) is not int or campaign["slot"] <= 0):
+            raise ValueError("v18b artifacts: only a monitor stop may select the preparation checkpoint with zero main-training items")
+    return selection
+
+
 def _v18_admission(artifacts: dict) -> dict:
+    with _artifact_paths(artifacts):
+        return _bound_admission(artifacts)
+
+
+def _bound_admission(artifacts: dict) -> dict:
     """A training seal preserves the final admission, including failures, without approving an evaluation."""
     from .v17_eval import evaluation_gate
 
@@ -235,11 +415,11 @@ def _v18_admission(artifacts: dict) -> dict:
     effect = read_sealed(_check_ref(artifacts["effect"]))
     ready = read_sealed(_check_ref(artifacts["export_ready"]))
     checkpoint = artifacts["checkpoint"]["metadata"]
-    if (plan["protocol"]["version"] != "error-note-v18"
+    if (plan["protocol"]["version"] not in ("error-note-v18", "error-note-v18b")
             or artifacts["training"]["campaign_plan_sha256"] != plan["sha256"]
-            or any(row.get("plan_sha256") != plan["sha256"] or row.get("checkpoint") != checkpoint
+            or any(row.get("plan_sha256") != plan["sha256"] or not _same_ref(row.get("checkpoint"), checkpoint)
                    for row in (admission, monitor, effect))
-            or ready.get("plan_sha256") != plan["sha256"] or ready.get("metadata_descriptor") != checkpoint
+            or ready.get("plan_sha256") != plan["sha256"] or not _same_ref(ready.get("metadata_descriptor"), checkpoint)
             or admission.get("monitor_sha256") != monitor["sha256"] or admission.get("effect_sha256") != effect["sha256"]
             or admission.get("decision") != evaluation_gate(monitor["comparison"], effect["comparison"])):
         raise ValueError("v18 artifacts: final admission/monitor/effect/checkpoint binding differs")
@@ -259,6 +439,8 @@ def _v18_evaluation_decision(artifacts: dict, artifact_ref: dict, identity: dict
             "admission": artifacts["evaluation_admission"], "admission_sha256": admission["sha256"],
             "admission_status": status, "checkpoint": artifacts["checkpoint"]["metadata"],
             "model_ref": artifacts["export"]["model_ref"], "evaluation": identity}
+    if artifacts.get("status") == "PARTIAL_EVALUATION_CANDIDATE":
+        body["evaluation_selection"] = artifacts["evaluation_selection"]
     return body | {"sha256": digest(body)}
 
 
@@ -268,7 +450,7 @@ def verify_evaluation_authorization(path: Path, training_artifacts: Path, identi
     artifacts = verify_training_artifacts(training_artifacts)
     ref = _ref(training_artifacts)
     decision = verified.get("evaluation_decision", {})
-    if (artifacts.get("training_protocol_version") != "error-note-v18"
+    if (artifacts.get("training_protocol_version") not in ("error-note-v18", "error-note-v18b")
             or verified.get("version") != "v17-training-artifact-verification-v1" or verified.get("status") != "PASS"
             or verified.get("training_artifact") != ref or verified.get("training") != artifacts["training"]
             or verified.get("evaluation") != identity
@@ -299,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     body = {"version": "v17-training-artifact-verification-v1", "status": "PASS",
         "training_artifact": _ref(args.receipt), "training": value["training"], "evaluation": identity,
         "protected_evaluation_sha256": value["protected_evaluation"]["sha256"]}
-    if version == "error-note-v18":
+    if version in ("error-note-v18", "error-note-v18b"):
         if args.expected_protocol != version:
             raise ValueError("v18 evaluation: explicit --expected-protocol error-note-v18 required")
         body["evaluation_decision"] = _v18_evaluation_decision(value, _ref(args.receipt), identity, args.authorization)

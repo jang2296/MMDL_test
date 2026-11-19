@@ -585,6 +585,24 @@ python -m fine_tuning.error_note.plan resume-evaluation --params "$EVAL_PARAMS" 
 
 `v18_replay_receipt.json`에는 v17 저장 응답 3,000개를 새 규칙으로 재생한 집계가 있다. 새 Qwen 출력에서 노트가 실제로 교정을 만들었는지는 본학습의 고유 부모 수, 수용한 수정 토큰, N 단독 기울기와 저장한 갱신의 연결을 함께 확인한다.
 
+## v18b 오답노트와 로컬 인수 시험
+
+같은 Qwen이 이미지와 자기 관측 질문·응답을 다시 보고 원 풀이의 오류를 인용한다. 원자료로 확인되는 수정 토큰을 노트 SFT(N)에 사용한다. 검증되지 않은 교훈도 누설 검사를 통과하면 정답을 가린 한 번의 재풀이에 쓸 수 있다. 저장된 첫 풀이 RL, 정답 풀이 SFT, 재풀이 SFT, 교정 N의 수와 기울기는 각각 기록한다.
+
+```bash
+python -m fine_tuning.error_note.v18b_data prepare \
+  --cache-dir "$MMDL_V18_DATA_CACHE" --output "$V18B_DATA" --tokenizer "$MMDL_MODEL_PATH"
+python -m fine_tuning.error_note.v18b_smoke cpu --output "$V18B_CPU_RESULT"
+python -m fine_tuning.error_note.v18b_smoke run --output "$V18B_NEW_SMOKE_DIR" \
+  --data-root "$V18B_DATA" --model-path "$MMDL_MODEL_PATH" --nf4-cache "$V18B_NF4_CACHE" \
+  --native-root "$V18B_NATIVE_ROOT" --cpu-receipt "$V18B_CPU_RESULT/cpu-receipt.json" \
+  --monitoring-receipt "$V18B_MONITOR_REPLAY_RECEIPT"
+```
+
+로컬 시험의 입력은 기존 NF4 캐시와 회수본에서 재구성한 `native-plan.json`·`native-records.json`이다. 준비된 자료만 쓸 때에는 `prepare --offline`을 사용한다. 시험마다 새 비공개 출력 디렉터리를 사용한다. 로컬 GPU 예산은 최초 등록부터 총 1,800초이며 CPU 회귀는 이 시간 밖에서 먼저 수행한다. 종료 후 `acceptance-current.json`의 다섯 조건, 원문과 부모별 갱신 증거를 검토한다. 기회가 없었거나 모델이 수정값을 쓰지 않았으면 해당 원인을 기록한다.
+
+운영 계획은 `plan plan --stage v18b-train`과 `plan plan --stage v18b-eval`에 각 단계의 고정 매개변수 파일을 전달해 작성한다. 두 단계에 실제 첫 과금 시각과 전체 상한을 전달한다. 실행 설정에는 감시 정지 시 조치, 평가 포드 수 또는 학습 마감, F0 준비 원문 재사용 여부를 명시한다. 저장 시에는 외부 수신 장비의 해시 영수증을 확인한다. 외부 감시는 본학습 8·16묶음째에 149개 기존 문항과 별도 64개 추론 문항에서 실시한다. 공식 평가에서는 같은 등록으로 문항당 한 응답만 생성한다.
+
 ## 격리 원칙
 
 - 첫 풀이 프로세스는 정답 파일을 열 수 없다(프로세스 안 감사 훅, 운영체제 격리는 아님). 채점은 별도 프로세스의 채점 서비스가 한다.

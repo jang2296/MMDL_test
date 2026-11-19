@@ -620,7 +620,7 @@ def backward_single_block(bundle: PolicyBundle, encoded: list[dict], contract: d
     mass (no row cap); the LR schedule and the A2 minimum are fixed by the contract."""
     from .protocol import VERSION_CONTENT_V16, VERSION_V16B
 
-    if contract.get("version") == "error-note-v18":
+    if contract.get("version") in ("error-note-v18", "error-note-v18b"):
         from .train_v18 import backward_v18_block
 
         selected_v18 = tuple(components) if set(components) <= {"PG", "RL", "OBS", "KL", "A1", "C", "N", "PREP_SELF", "PREP_HUMAN"} else None

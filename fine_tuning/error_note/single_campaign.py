@@ -307,7 +307,7 @@ def warm_start_record(body: dict, *, plan_path: Path, plan_sha256: str, checkpoi
 
 
 def prepare(args: argparse.Namespace) -> dict:
-    if getattr(args, "version", None) in ("error-note-v16b", "error-note-v17", "error-note-v18"):
+    if getattr(args, "version", None) in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"):
         from .campaign_v16b import prepare as _prepare_v16b
         return _prepare_v16b(args)
     with single._runtime_lock(args.output, ".campaign.lock"):
@@ -1054,7 +1054,8 @@ def main(argv: list[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
     if ("--data-root" in values or "--version=error-note-v16b" in values
             or "error-note-v16b" in values or "--version=error-note-v17" in values
-            or "error-note-v17" in values or "--version=error-note-v18" in values or "error-note-v18" in values):
+            or "error-note-v17" in values or "--version=error-note-v18" in values or "error-note-v18" in values
+            or "--version=error-note-v18b" in values or "error-note-v18b" in values):
         from .campaign_v16b import main as main_v16b
         return main_v16b(values)
     from fine_tuning.notebook_rl.dataset import load_images

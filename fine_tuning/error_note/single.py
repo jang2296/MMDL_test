@@ -145,6 +145,11 @@ def _protocol_check(protocol: dict) -> None:
     from .protocol import (VERSION_CONTENT_V16, VERSION_V16B, _digest,
                            validate_content_protocol_v16, validate_protocol_v16b)
 
+    if protocol.get("version") == "error-note-v18b":
+        from .protocol import validate_protocol_v18b
+
+        validate_protocol_v18b(protocol)
+        return
     if protocol.get("version") == "error-note-v18":
         from .protocol import validate_protocol_v18
 
@@ -1009,7 +1014,7 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
     if allow_update is not True:
         raise ValueError("single runtime: parameter updates require explicit caller opt-in")
     slot = cursor["slot"]
-    is_v16b = contract.get("version") in (VERSION_V16B, "error-note-v17", "error-note-v18")
+    is_v16b = contract.get("version") in (VERSION_V16B, "error-note-v17", "error-note-v18", "error-note-v18b")
     prep_rows: list[str] = []
     if contract.get("version") == VERSION_CONTENT_V16:
         stage_a = slot < contract["stage_a_blocks"]
@@ -1042,7 +1047,7 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
         raise ValueError("single runtime: duplicate continuation cursor")
     optimizer.zero_grad(set_to_none=True)
     note_gradients: dict = {}
-    is_v18 = contract.get("version") == "error-note-v18"
+    is_v18 = contract.get("version") in ("error-note-v18", "error-note-v18b")
     if is_v18 and set(row["row_id"] for row in encoded) & set(cursor.get("consumed_row_ids", [])):
         raise ValueError("v18 runtime: repeated consumed supervised or policy row")
     try:
@@ -1060,7 +1065,7 @@ def run_joint_single_update(bundle: Any, optimizer: Any, scheduler: Any, encoded
             else:
                 stats = backward_single_block(bundle, encoded, contract, token_budget, capacity=capacity)
         step = bool(stats["has_gradient"])
-        if contract.get("version") in (VERSION_CONTENT_V16, VERSION_V16B, "error-note-v17", "error-note-v18"):
+        if contract.get("version") in (VERSION_CONTENT_V16, VERSION_V16B, "error-note-v17", "error-note-v18", "error-note-v18b"):
             step = step and stats.get("task_signal") is True
         if is_v16b:
             step = step and not bool(stats.get("hold") or stats.get("HOLD"))
@@ -1124,7 +1129,7 @@ def load_single_continuation(model_path: Path, path: Path, protocol: dict, *, bi
     from .protocol import VERSION_V16B
 
     if protocol["precision"] != "bf16" and not (
-            protocol["version"] in (VERSION_V16B, "error-note-v17", "error-note-v18")
+            protocol["version"] in (VERSION_V16B, "error-note-v17", "error-note-v18", "error-note-v18b")
             and protocol["training_contract"]["local_smoke"] is True
             and policy_factory is not None):
         raise ValueError("single runtime: NF4 reload requires the bounded v16b smoke and an explicit cache factory")

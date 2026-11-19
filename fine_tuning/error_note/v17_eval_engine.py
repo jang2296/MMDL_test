@@ -549,7 +549,7 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
         reference = llm_lora.hf_columns(bundle, prep, pairs)
         decode_reference = llm_lora.hf_columns(bundle, prep, decode_pairs)
         version = context.get("training_protocol_version", "error-note-v17")
-        tower_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version == "error-note-v18" else None
+        tower_reference = llm_lora.hf_vision_columns(bundle, prep, pairs) if version in ("error-note-v18", "error-note-v18b") else None
         bundle.model.to("cpu")
         torch.cuda.empty_cache()
         # Slots come from fresh-process discovery (discover_slots), so this process builds exactly one engine:
@@ -559,7 +559,7 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
             evaluation.verify_model(model_path, context["model_ref"])
             backend = VLLMBackend(str(model_path), cfg, hw, pe.LORA_KIND, str(args.base_path))
         observed = observe_engine(backend, mode, slots)
-        if version == "error-note-v18" and (slots != V18_SLOTS or observed["safe_slots"] < V18_SLOTS):
+        if version in ("error-note-v18", "error-note-v18b") and (slots != V18_SLOTS or observed["safe_slots"] < V18_SLOTS):
             raise ValueError("v18 engine: nine safe slots required; changing slot count requires a new admission")
         tower = (llm_lora.vision_tower_check(tower_reference, llm_lora.vllm_vision_columns(backend, bundle, prep, pairs))
                  if tower_reference is not None else None)
@@ -568,7 +568,7 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
             pf5 = {"format": "lora-preflight-v1", "model_ref_sha256": sha256_file(args.model_ref),
                    "protocol_id": cfg["protocol_id"], "files": files,
                    "engine": lora_preflight.engine_checks(backend, bundle, prep, pairs, reference,
-                                                          protocol_version=version, stage="trained", vision_tower=tower,
+                                                          protocol_version=("error-note-v18" if version == "error-note-v18b" else version), stage="trained", vision_tower=tower,
                                                           vision_exception=getattr(args, "pf5_vision_exception", None))}
             pf5["decode_engine"] = decode_pf5(backend, bundle, prep, decode_pairs, decode_reference,
                                                 timing, mode, root / "amplified-adapters",
@@ -584,7 +584,10 @@ def _attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only:
                 raise ValueError("v17 engine: final-model PF5 or amplified graph decode failed")
             report["probabilities"] = probability_columns(backend, context["requests"], args.requests.parent,
                                                             timing, mode)
-            if not reference_only:
+            if not reference_only and version == "error-note-v18b":
+                from .v18b_eval import live_calibration
+                report["calibration"] = live_calibration(observed, context["execution_settings"])
+            elif not reference_only:
                 load_seconds = time.monotonic() - started
                 long_ids = [item["sample_id"] for item in context["requests"]["items"][:min(slots, 16)]]
                 long = probe_generation(backend, context["requests"], args.requests.parent, root / "long-outputs",
@@ -622,11 +625,13 @@ def _attempt_worker(args: Any, mode: str, root: Path, context: dict, reference_o
     exclusive(root / "measurement.json", seal(report))
 
 
-def validation_timeout_seconds(max_seconds: float, mode: str = "auto") -> int:
+def validation_timeout_seconds(max_seconds: float, mode: str = "auto", *, training_protocol_version: str = "error-note-v17") -> int:
     if (mode not in ("auto", *MODES) or isinstance(max_seconds, bool)
             or not isinstance(max_seconds, (float, int)) or not math.isfinite(max_seconds)
             or not 0 < max_seconds <= PROBE_CAP_SECONDS):
         raise ValueError("v17 engine: invalid bounded validation timeout inputs")
+    if training_protocol_version == "error-note-v18b":
+        return math.ceil((2 if mode == "eager" else 4) * max_seconds + 60)
     full_attempts = 1 if mode == "eager" else 2
     reference_attempts = 1 if mode == "eager" else 2
     discovery = (1 + DISCOVERY_ROUNDS) * (DISCOVERY_SECONDS + 60)
@@ -635,18 +640,28 @@ def validation_timeout_seconds(max_seconds: float, mode: str = "auto") -> int:
 
 def _isolated_attempt(args: Any, mode: str, root: Path, context: dict, *, reference_only: bool = False) -> dict:
     """Fresh process per mode releases CUDA graphs, workers and HF models before the next engine."""
-    slots = V18_SLOTS if reference_only and context.get("training_protocol_version") == "error-note-v18" else 1
+    v18b = context.get("training_protocol_version") == "error-note-v18b"
+    slots = V18_SLOTS if v18b or (reference_only and context.get("training_protocol_version") == "error-note-v18") else 1
     discovery: list[dict] = []
-    if not reference_only:
+    if not reference_only and not v18b:
         try:
             slots, discovery = discover_slots(args, mode, root.parent / (root.name + "-capacity"), context)
         except Exception as exc:
             return {"version": "v17-engine-attempt-v1", "engine_mode": mode, "reference_only": reference_only,
                     "status": "FAIL", "reasons": [{"type": type(exc).__name__, "message": str(exc)}]}
+    timeout = (0 if reference_only else 2 * args.max_seconds) + 1800
+    if v18b:
+        from .v18b_execution import deadline_epoch
+        settings = context["execution_settings"]
+        timeout = min(args.max_seconds, deadline_epoch(settings, reserve_seconds=
+            settings["post_eval_reserve_seconds"]) - time.time())
+        if timeout <= 0:
+            return {"version": "v17-engine-attempt-v1", "engine_mode": mode, "reference_only": reference_only,
+                    "status": "FAIL", "reasons": [{"type": "DeadlineReached", "message": "first-billing deadline reached"}]}
     process = multiprocessing.get_context("spawn").Process(
         target=_attempt_worker, args=(args, mode, root, context, reference_only, slots, discovery))
     process.start()
-    process.join(timeout=(0 if reference_only else 2 * args.max_seconds) + 1800)
+    process.join(timeout=max(0, timeout))
     if process.is_alive():
         process.terminate()
         process.join(timeout=30)
@@ -743,8 +758,8 @@ def validate_engine_receipt(value: dict) -> dict:
     if not re.fullmatch(r"[a-f0-9]{40}", str(value.get("code_commit", ""))):
         raise ValueError("v17 engine: missing evaluation commit binding")
     observed = checked(value["observed_engine"])
-    v18 = value.get("training_protocol_version") == "error-note-v18"
-    if value.get("training_protocol_version", "error-note-v17") not in ("error-note-v17", "error-note-v18"):
+    v18 = value.get("training_protocol_version") in ("error-note-v18", "error-note-v18b")
+    if value.get("training_protocol_version", "error-note-v17") not in ("error-note-v17", "error-note-v18", "error-note-v18b"):
         raise ValueError("v17 engine: unsupported training protocol binding")
     if v18 and value["slots"] != V18_SLOTS:
         raise ValueError("v18 engine: nine registered slots required")
@@ -776,19 +791,26 @@ def validate_engine_receipt(value: dict) -> dict:
                 or decision.get("model_ref", {}).get("file_sha256") != value["model_ref_sha256"]
                 or not re.fullmatch(r"[a-f0-9]{64}", str(value.get("artifact_verification", {}).get("file_sha256", "")))):
             raise ValueError("v18 engine: separate user authorization is missing or bound to another model/evaluator")
-    actual, long = checked(selected["actual_length_probe"]), checked(selected["long_context_probe"])
-    scenario = calibration["scenario"]
+    v18b = value.get("training_protocol_version") == "error-note-v18b"
     lengths = value["baseline_generated_tokens"]
     if (len(lengths) != 900 or sum(lengths) != HISTORICAL_TOKENS
             or any(type(n) is not int or not 0 <= n <= OUTPUT for n in lengths)):
         raise ValueError("v17 engine: invalid historical B2 length evidence")
-    reconstructed = calibration_receipt(actual, long, lengths,
-        load_seconds=scenario["load_finalize_allowance_seconds"],
-        long_tail_seconds=scenario["long_tail_allowance_seconds"], long_tail_basis=scenario["long_tail_basis"])
+    if v18b:
+        from .v18b_eval import live_calibration
+        reconstructed = live_calibration(observed, value["execution_settings"])
+        length_evidence_ok = not any(key in selected for key in ("actual_length_probe", "long_context_probe", "quantiles"))
+    else:
+        actual, long = checked(selected["actual_length_probe"]), checked(selected["long_context_probe"])
+        scenario = calibration["scenario"]
+        reconstructed = calibration_receipt(actual, long, lengths,
+            load_seconds=scenario["load_finalize_allowance_seconds"],
+            long_tail_seconds=scenario["long_tail_allowance_seconds"], long_tail_basis=scenario["long_tail_basis"])
+        quantiles = quantile_lengths(lengths, [row["sample_id"] for row in selected["probabilities"]])
+        length_evidence_ok = (checked(selected["quantiles"]) == quantiles and actual.get("fixed_lengths") ==
+                              {row["sample_id"]: row["max_tokens"] for row in quantiles["items"]})
     comparison = compare_probabilities(selected["probabilities"], selected["eager_reference_probabilities"])
-    quantiles = quantile_lengths(lengths, [row["sample_id"] for row in selected["probabilities"]])
-    if (calibration != reconstructed or checked(selected["quantiles"]) != quantiles
-            or actual.get("fixed_lengths") != {row["sample_id"]: row["max_tokens"] for row in quantiles["items"]}
+    if (calibration != reconstructed or not length_evidence_ok
             or checked(selected["eager_comparison"]) != comparison
             or evidence.get("files_pass") is not True or evidence.get("historical_engine_pass") is not True
             or evidence["historical_pf5"].get("pass") is not True or evidence["historical_pf5"].get("power") is not True
@@ -806,7 +828,8 @@ def validate_engine_receipt(value: dict) -> dict:
     if (observed["engine_mode"] != value["engine_mode"] or observed["slots"] != value["slots"]
             or (observed["safe_slots"] < value["slots"] if v18 else observed["safe_slots"] != value["slots"])
             or observed["actual_kv_token_capacity"] != value["actual_kv_token_capacity"]
-            or calibration["status"] != "CALIBRATED" or calibration["throughput_source"] != "fixed_b2_quantile_lengths"
+            or calibration["status"] != ("LIVE_MONITORING_REQUIRED" if v18b else "CALIBRATED")
+            or calibration["throughput_source"] != ("evaluation_live_only" if v18b else "fixed_b2_quantile_lengths")
             or selected["status"] != "PASS" or selected["observed_engine"] != observed
             or selected["calibration"] != calibration or checked(selected["eager_comparison"])["pass"] is not True
             or value["evaluation_watchdog_seconds"] != calibration["evaluation_watchdog_seconds"]
@@ -818,7 +841,7 @@ def validate_engine_receipt(value: dict) -> dict:
 
 def load_engine_validation(path: Path) -> dict:
     value = validate_engine_receipt(read_json(path))
-    if value.get("training_protocol_version") == "error-note-v18":
+    if value.get("training_protocol_version") in ("error-note-v18", "error-note-v18b"):
         from .v17_artifacts import _check_ref, verify_evaluation_authorization
         authorization_path = _check_ref(value["artifact_verification"])
         authorized = verify_evaluation_authorization(authorization_path, Path(value["training_artifact_path"]),
@@ -869,9 +892,9 @@ def validate(args: Any) -> dict:
         raise ValueError("v17 engine: final model differs from training artifact seal")
     plan = read_json(Path(seal_value["campaign_plan"]["path"]))
     version = plan["protocol"].get("version")
-    if version not in ("error-note-v17", "error-note-v18"):
+    if version not in ("error-note-v17", "error-note-v18", "error-note-v18b"):
         raise ValueError("v17 engine: unsupported sealed training protocol")
-    if version == "error-note-v18" and getattr(args, "pf5_vision_exception", None) is not None:
+    if version in ("error-note-v18", "error-note-v18b") and getattr(args, "pf5_vision_exception", None) is not None:
         raise ValueError("v18 engine: PF5 vision exception is forbidden")
     if Path(plan["model_path"]).resolve() != args.base_path.resolve():
         raise ValueError("v17 engine: base differs from sealed training plan")
@@ -888,7 +911,7 @@ def validate(args: Any) -> dict:
     if args.source_hash is not None and source != args.source_hash:
         raise ValueError("v17 engine: evaluation source changed")
     authorization = None
-    if version == "error-note-v18":
+    if version in ("error-note-v18", "error-note-v18b"):
         from .v17_artifacts import verify_evaluation_authorization
         if getattr(args, "artifact_verification", None) is None:
             raise ValueError("v18 engine: --artifact-verification with separate user authorization required")
@@ -899,9 +922,19 @@ def validate(args: Any) -> dict:
     environment = collect_environment()
     if environment["torch"]["bf16_probe"]["passed"] is not True:
         raise ValueError("v17 engine: actual BF16 operation required")
+    settings = None
+    if version == "error-note-v18b":
+        from .v18b_execution import read_settings, deadline_epoch
+        if getattr(args, "execution_settings", None) is None:
+            raise ValueError("v18b engine: sealed execution settings required")
+        settings = read_settings(args.execution_settings)
+        if plan.get("execution_settings") != settings:
+            raise ValueError("v18b engine: execution settings differ from the sealed campaign")
+        if deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]) <= time.time():
+            raise TimeoutError("v18b engine: first-billing deadline already reached")
     context = {"seal": seal_value, "model_ref": ref, "config": cfg, "hardware": hw, "requests": requests,
                "lengths": lengths, "quantiles": quantile_lengths(lengths, [row["sample_id"] for row in requests["items"]]),
-               "training_protocol_version": version}
+               "training_protocol_version": version, "execution_settings": settings}
     root = args.output.parent / (args.output.stem + "-validation")
     root.mkdir(parents=True, exist_ok=False)
     selected, attempts = select_attempts(lambda mode, path, **kw: _isolated_attempt(args, mode, path, context, **kw), args.mode, root)
@@ -920,11 +953,13 @@ def validate(args: Any) -> dict:
             "diagnostic_only": True,
             "used_for_training_or_answer_selection": False,
             "execution_change": "B2 execution eager to graph, if validated; no bitwise B2 equivalence claim"}
-    if version == "error-note-v18":
+    if version in ("error-note-v18", "error-note-v18b"):
         from .v17_artifacts import _ref
         body["training_protocol_version"] = version
         body["artifact_verification"] = _ref(args.artifact_verification)
         body["evaluation_authorization"] = authorization
+    if version == "error-note-v18b":
+        body["execution_settings"] = settings
     if selected:
         observed, calibration = selected["observed_engine"], selected["calibration"]
         body |= {"selected_attempt": selected, "engine_mode": selected["engine_mode"], "selected_mode": selected["engine_mode"],
@@ -956,6 +991,7 @@ def main(argv: list[str] | None = None) -> int:
     command.add_argument("--code-commit", "--commit", required=True)
     command.add_argument("--source-hash")
     command.add_argument("--artifact-verification", type=Path)
+    command.add_argument("--execution-settings", type=Path)
     command.add_argument("--mode", choices=("auto", *MODES), default="auto")
     command.add_argument("--max-seconds", type=float, default=PROBE_CAP_SECONDS)
     command.add_argument("--long-tail-allowance-seconds", type=float, default=1800.)

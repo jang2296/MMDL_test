@@ -189,6 +189,7 @@ class Heartbeat:
         self.root, self.clock = Path(root), clock
         self.started = self.last_token = self.last_compute = self.last_emit = clock()
         self.steps = self.tokens = self.prefill = self.completed = 0
+        self.completed_output_tokens = 0
         self.preemptions: int | None = None
         self.previous_preemptions: int | None = None
         self.preemption_at_token = 0
@@ -198,6 +199,7 @@ class Heartbeat:
         self.waiting = None
         self.expected_count = expected_count
         self.emitted_tokens = self.emitted_prefill = 0
+        self.live_context: dict | None = None
         self.lock = threading.RLock()
 
     def observe(self, *, tokens: int | None = None, prefill: int | None = None,
@@ -240,6 +242,21 @@ class Heartbeat:
                    "pending_unsubmitted_count": (max(0, self.expected_count - self.completed - len(self.active))
                                                    if self.expected_count is not None else None),
                    "warnings": warnings}
+            if self.live_context is not None:
+                assert self.expected_count is not None
+                from .v18b_eval import progress
+                settings = self.live_context["settings"]
+                row["v18b_live"] = progress(elapsed=now - self.started, tokens=self.tokens,
+                    completed=self.completed, expected=self.expected_count,
+                    historical_tokens=self.live_context["historical_tokens"],
+                    remaining_seconds=self.live_context["deadline"] - time.time(), preemptions=self.preemptions,
+                    completed_output_tokens=self.completed_output_tokens,
+                    active_tokens=sum(self.lengths.get(sid, 0) for sid in self.active))
+                row["v18b_live"].update(first_billed_at=settings["first_billed_at"], run_id=settings["run_id"],
+                    execution_settings_sha256=digest(settings), deadline_epoch=self.live_context["deadline"])
+                if self.previous_preemptions is not None and self.preemptions is not None and self.preemptions > self.previous_preemptions:
+                    warnings.append("KV_PREEMPTION_INCREASE")
+                self.previous_preemptions = self.preemptions
             write_json(self.root / "heartbeat.json", row)
             append_event(self.root / "heartbeat.jsonl", row)
             self.last_emit = now
@@ -501,7 +518,7 @@ def split_execution_contract(validation: dict, ids: list[str]) -> dict:
 
     validate_engine_receipt(validation)
     rule = "floor(0.9 * actual_kv_token_capacity / 40960)"
-    if validation.get("training_protocol_version") == "error-note-v18":
+    if validation.get("training_protocol_version") in ("error-note-v18", "error-note-v18b"):
         rule = "min(9, " + rule + ")"
     return {"version": "v17-evaluation-execution-v2", "engine_mode": validation["selected_mode"],
             "slots": validation["slots"], "capacity_rule": rule,
@@ -523,7 +540,7 @@ def split_bindings(engine_validation: Path, training_artifacts: Path, model_ref:
 
     validation = load_engine_validation(engine_validation)
     artifacts = verify_training_artifacts(training_artifacts)
-    if artifacts.get("training_protocol_version") == "error-note-v18" and validation.get("training_protocol_version") != "error-note-v18":
+    if artifacts.get("training_protocol_version") in ("error-note-v18", "error-note-v18b") and validation.get("training_protocol_version") != artifacts["training_protocol_version"]:
         raise ValueError("v18: engine validation cannot reuse a v17 training seal")
     if (validation["training_artifact_sha256"] != sha256_file(training_artifacts)
             or validation["model_ref_sha256"] != sha256_file(model_ref)
@@ -623,6 +640,9 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
     slots = registration.get("slots", SLOTS)
     restores = []
     heartbeat = Heartbeat(run_dir, expected_count=len(registration["expected_ids"]))
+    if "execution_settings" in registration:
+        heartbeat.live_context = {"settings": registration["execution_settings"], "deadline": deadline,
+                                  "historical_tokens": math.ceil(4_116_922 * len(registration["expected_ids"]) / 900)}
     finished = threading.Event()
 
     def snapshot_loop():
@@ -657,6 +677,7 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
                 state["writer"] = self
                 recovered = recover_finals(self, registration_hash)
                 heartbeat.completed = len(self.completed)
+                heartbeat.completed_output_tokens = sum(row.get("generated_tokens", 0) for row in self.completed.values())
                 for sid, row in self.completed.items():
                     if row.get("seed") != sample_seed(3407, sid):
                         raise ValueError("v17: immutable sample seed mismatch")
@@ -816,6 +837,7 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
             with heartbeat.lock:
                 heartbeat.active.pop(sid, None)
                 heartbeat.completed += 1
+                heartbeat.completed_output_tokens += result["generated_tokens"]
             return result
 
         engine.add_request, engine.step, backend._row, backend._check_deadline = add, step, row, check_deadline
@@ -845,7 +867,8 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
 def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibration_path: Path,
                    preflight: Path, resume: bool = False, funding_deadline: float | None = None,
                    recovery_reserve_seconds: float = 0, engine_validation: Path | None = None,
-                   training_artifacts: Path | None = None) -> int:
+                   training_artifacts: Path | None = None, execution_settings: Path | None = None,
+                   partition_index: int = 0) -> int:
     invocation_started, started_at, invocation_id = time.monotonic(), utc(), uuid.uuid4().hex
     import yaml
     from fine_tuning.notebook_rl import proof_eval as pe
@@ -877,15 +900,32 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         raise ValueError("v17: preregistration and measured calibration differ")
     events, _ = pe.read_ledger(ledger)
     starts = [event for event in events if event["event"] == "START" and event["run_id"] == known.run_id]
+    settings = None
+    subset_tag = "all"
+    if prereg.get("training_protocol_version") == "error-note-v18b":
+        from .v18b_execution import read_settings, deadline_epoch, _epoch
+        if execution_settings is None:
+            raise ValueError("v18b evaluation: sealed execution settings required")
+        settings = read_settings(execution_settings)
+        if settings != prereg.get("execution_settings"):
+            raise ValueError("v18b evaluation: first billing or execution settings changed on resume")
+        tags = ("half-a", "half-b") if settings["evaluation_strategy"] == "two_pod" else ("all",)
+        if type(partition_index) is not int or not 0 <= partition_index < len(tags):
+            raise ValueError("v18b evaluation: partition index differs from the fixed strategy")
+        subset_tag = tags[partition_index]
+        if time.time() < _epoch(settings["billing"][partition_index]["first_billed_at"]):
+            raise ValueError("v18b evaluation: pod began before its declared earliest billing time")
+    elif execution_settings is not None or partition_index != 0:
+        raise ValueError("v18b evaluation: execution settings and partitions are v18b-only")
     if (len(starts) != 1 or starts[0]["preregistration_sha256"] != prereg_sha
             or (starts[0]["arm"], starts[0]["variant"], starts[0]["subset"]) !=
-            (pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, "all")
+            (pe.ARM_SINGLE, pe.FINAL_VARIANT_V8, subset_tag)
             or any(e["event"] == "FAIL" and e["run_id"] == known.run_id for e in events)):
         raise ValueError("v17: resume requires the one original, valid ledger START")
     ref, declared = pe._lora_model_ref(known.model_ref)
     version = ref["export"]["training_protocol"]["version"]
-    if (version not in ("error-note-v17", "error-note-v18")
-            or ref["export"]["campaign"]["stage"] != "final"
+    if (version not in ("error-note-v17", "error-note-v18", "error-note-v18b")
+            or ref["export"]["campaign"]["stage"] not in (("final", "partial") if version == "error-note-v18b" else ("final",))
             or any(prereg["arms"][pe.ARM_SINGLE].get(k) != v for k, v in declared.items())
             or known.model_path.resolve() != (known.model_ref.parent / "model").resolve()):
         raise ValueError("v17: evaluation requires its one declared final unmerged model and original path")
@@ -903,7 +943,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         slots = validation["slots"]
     else:
         slots = SLOTS
-    if version == "error-note-v18" and (not split or slots != 9 or prereg.get("training_protocol_version") != version
+    if version in ("error-note-v18", "error-note-v18b") and (not split or slots != 9 or prereg.get("training_protocol_version") != version
                                         or validation.get("training_protocol_version") != version):
         raise ValueError("v18: final evaluation requires its sealed protocol and nine validated slots")
     if not split and (calibration["probe"].get("config_sha256") != digest(cfg)
@@ -911,7 +951,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
             or calibration.get("code_commit") != known.require_commit
             or calibration["probe"].get("hardware") != yaml.safe_load(known.hardware.read_text())):
         raise ValueError("v17: calibrated configuration/source/hardware differs from the approved evaluation")
-    expected = prereg["evaluation_subsets"]["all"]["ids"]
+    expected = prereg["evaluation_subsets"][subset_tag]["ids"]
     if (known.mode != "partial" or known.limit is not None or known.subject is not None
             or known.run_role != "standalone" or sorted(known.sample_id) != expected
             or len(set(known.sample_id)) != len(expected)
@@ -950,6 +990,10 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
                              "training_artifacts_path": str(training_artifacts.resolve()),
                              "observed_engine": validation["observed_engine"],
                              "evaluation_commit": validation["evaluation_commit"]})
+    if settings is not None:
+        if validation.get("execution_settings") != settings:
+            raise ValueError("v18b evaluation: engine validation settings differ")
+        registration.update(execution_settings=settings, partition_index=partition_index, subset=subset_tag)
     run_dir = known.artifact_root / "runs" / known.run_id
     if split:
         submission_audit(run_dir, registration)
@@ -959,6 +1003,8 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
                                   funding_deadline=funding_deadline,
                                   recovery_reserve_seconds=recovery_reserve_seconds)
     deadline = now + remaining
+    if settings is not None:
+        deadline = min(deadline, deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]))
     if resume:
         if not run_dir.is_dir():
             raise ValueError("v17: cannot resume a missing logical run")
@@ -977,6 +1023,8 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         cpu_done = resume and cpu_resume_finalize(known, cfg, registration)
         recovery_seconds = time.monotonic() - recovery_started if resume else 0.
         if not cpu_done:
+            if settings is not None and time.time() >= deadline:
+                raise TimeoutError("v18b evaluation: first-billing deadline reached before model loading")
             with evaluation_hooks(run_dir, registration, deadline) as ready:
                 execution: Any = nullcontext()
                 if split:
@@ -986,10 +1034,10 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
                 with execution, pe.registered_variants(slots=slots, after_backend=ready, log_stats=True):
                     cli.main()
         run = pe.load_run(run_dir, prereg)
-        if len(run["items"]) != 900:
-            raise ValueError("v17: FULL900 requires exactly the original 900 completed IDs")
+        if len(run["items"]) != len(expected):
+            raise ValueError("v17: complete evaluation requires exactly the registered IDs")
         rows = {p.stem: read_json(p) for p in (run_dir / "samples").glob("*.json")}
-        comparison = paired_report(prereg["reference_finish_strata"], rows)
+        comparison = paired_report({sid: prereg["reference_finish_strata"][sid] for sid in expected}, rows)
         report_path = run_dir / "v17_reference_comparison.json"
         if report_path.exists() and read_json(report_path) != comparison:
             raise ValueError("v17: frozen reference comparison changed")
@@ -1003,9 +1051,9 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
                                  "actual_submission_sha256": audit["actual_submission_sha256"],
                                  "submission_intent_sha256": audit["submission_intent_sha256"]}
         write_json(run_dir / "summary.json", summary | {"reference_finish_strata": comparison})
-        write_json(run_dir / "v17_state.json", {"status": "FULL900_VERIFIED", "preregistration_sha256": prereg_sha,
+        write_json(run_dir / "v17_state.json", {"status": "FULL900_VERIFIED" if len(expected) == 900 else "PARTITION_VERIFIED", "preregistration_sha256": prereg_sha,
                    "run_id": known.run_id, "generation_repeated_for_completed_ids": False})
-        outcome = "FULL900_VERIFIED"
+        outcome = "FULL900_VERIFIED" if len(expected) == 900 else "PARTITION_VERIFIED"
     except BaseException as exc:
         if run_dir.is_dir():
             status = ("INVALID_IDENTITY" if isinstance(exc, ValueError) and "identity" in str(exc).lower() else
@@ -1030,6 +1078,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
                 "invocations": len(invocations), "invocation_wall_seconds": sum(r["wall_seconds"] for r in invocations),
                 "cpu_recovery_seconds": sum(r["cpu_recovery_seconds"] for r in invocations),
                 "logical_elapsed_including_downtime_seconds": time.time() - datetime.fromisoformat(starts[0]["time"]).timestamp(),
+                "first_billing_elapsed_seconds": (time.time() - _epoch(settings["first_billed_at"]) if settings is not None else None),
                 "sum_of_overlapping_sample_latencies_used": False})
             incremental_manifest(run_dir, force=True)
     return 0
@@ -1265,6 +1314,8 @@ def main(argv: list[str] | None = None) -> int:
             run.add_argument("--" + flag, type=Path, required=True)
         run.add_argument("--engine-validation", type=Path)
         run.add_argument("--training-artifacts", type=Path)
+        run.add_argument("--execution-settings", type=Path)
+        run.add_argument("--partition-index", type=int, default=0)
         run.add_argument("--funding-deadline-epoch", type=float)
         run.add_argument("--recovery-reserve-seconds", type=float, default=0)
     cal = sub.add_parser("calibrate")
@@ -1313,7 +1364,8 @@ def main(argv: list[str] | None = None) -> int:
                               calibration_path=args.calibration, preflight=args.preflight,
                               resume=args.command == "resume", funding_deadline=args.funding_deadline_epoch,
                               recovery_reserve_seconds=args.recovery_reserve_seconds,
-                              engine_validation=args.engine_validation, training_artifacts=args.training_artifacts)
+                              engine_validation=args.engine_validation, training_artifacts=args.training_artifacts,
+                              execution_settings=args.execution_settings, partition_index=args.partition_index)
     if args.command == "doctor":
         print(json.dumps(doctor_check(read_json(args.input))))
     elif args.command in ("calibrate", "probe"):
