@@ -402,14 +402,15 @@ def run(spec_path: str | Path, spec_sha256: str, *, grace: float = STOP_GRACE_SE
             if stop:
                 break
             if meta.get("protocol_version") == "error-note-v18b":
-                from fine_tuning.error_note.v18b_execution import remaining
+                from fine_tuning.error_note.v18b_execution import remaining, enforce_limits
                 settings = meta["execution_settings"]
-                seconds = int(remaining(settings, reserve_seconds=settings["recovery_reserve_seconds"])) - int(grace) - 1
-                if seconds < 1:
-                    code, failed = 124, item["name"]
-                    log.append("DEADLINE_REACHED", name=failed, recovery_seconds=settings["recovery_reserve_seconds"])
-                    break
-                item = dict(item, timeout_seconds=min(seconds, item.get("timeout_seconds", seconds)))
+                if enforce_limits(settings):
+                    seconds = int(remaining(settings, reserve_seconds=settings["recovery_reserve_seconds"])) - int(grace) - 1
+                    if seconds < 1:
+                        code, failed = 124, item["name"]
+                        log.append("DEADLINE_REACHED", name=failed, recovery_seconds=settings["recovery_reserve_seconds"])
+                        break
+                    item = dict(item, timeout_seconds=min(seconds, item.get("timeout_seconds", seconds)))
             code, status, elapsed = _run_step(item, log, stop, grace)
             present = {path: os.path.exists(path) for path in item["expect_files"]}
             if status == "OK" and not all(present.values()):

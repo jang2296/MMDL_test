@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import statistics
+import time
 from typing import Any
 
 from .audit import digest
@@ -24,9 +25,9 @@ def preparation_version(version: str) -> str:
 
 
 def preparation_stage(version: str, role: str) -> str:
-    # Prep/effect keep the original v18 RNG streams; the new B2 monitors have their own fixed streams.
+    # Accuracy monitoring keeps v18 seeds; short diagnostics use a separate fixed draw.
     if version == "error-note-v18b":
-        if role in {"monitor", "reasoning_monitor"}:
+        if role in {"short_monitor", "reasoning_monitor"}:
             return "v18b-b2-" + role.replace("_", "-")
         version = "error-note-v18"
     return version.removeprefix("error-note-") + "-" + role
@@ -126,10 +127,7 @@ def select(data_root: Path, output: Path, *, local_sequential: bool = False,
     preflight = seal(output / "data-contract-preflight.json", preflight_items(
         [item for items in splits.values() for item in items], version=version))
     frozen_role_ids = {role: [item["problem_id"] for item in entries] for role, entries in splits.items()}
-    excluded_ceiling_ids = []
-    if version == "error-note-v18b":
-        excluded_ceiling_ids = [item["problem_id"] for item in splits["monitor"] if item["source"] == "hf-scienceqa"]
-        splits["monitor"] = [item for item in splits["monitor"] if item["source"] != "hf-scienceqa"]
+    excluded_ceiling_ids: list[str] = []
     if version in MODERN and not local_sequential and version != "error-note-v18b":
         from .guard_v16b import SignalGateV17
         supported = [r["problem_id"] for r in preflight["items"] if r.get("repair_supported")
@@ -150,7 +148,7 @@ def select(data_root: Path, output: Path, *, local_sequential: bool = False,
         "monitor_ids": [x["problem_id"] for x in splits["monitor"]], "human_verified": False,
         **({"role_ids": {role: [x["problem_id"] for x in entries] for role, entries in splits.items()},
             "frozen_role_ids": frozen_role_ids, "excluded_ceiling_monitor_ids": excluded_ceiling_ids,
-            "monitor_generation_policy": "exclude_scienceqa_ceiling_preserve_frozen_data",
+            "monitor_generation_policy": "full_200_accuracy_8192_and_264_short_warning_64",
             "reasoning_monitor_ids": [x["problem_id"] for x in splits["reasoning_monitor"]]}
            if version == "error-note-v18b" else {})})
 
@@ -214,8 +212,24 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
             stage: str, protocol_sha256: str, sampling: dict, cap: int, version: int = 0,
             observation: bool = False, algorithm_version: str = "error-note-v16b",
             baseline_receipts: dict[str, dict] | None = None,
-            cached_records: list[dict] | None = None) -> list[dict]:
+            cached_records: list[dict] | None = None, resume_incomplete: bool = False) -> list[dict]:
     """One durable request per parent/stage; ambiguous interrupted requests require recovery."""
+    if resume_incomplete and not (algorithm_version == "error-note-v18b"
+                                 and split in {"monitor", "reasoning_monitor", "effect"}):
+        raise ValueError("only heldout v18b diagnostics may retry an unfinished draw")
+    started = time.perf_counter()
+    fresh_ids: set[str] = set()
+    def measured(result: list[dict]) -> list[dict]:
+        elapsed = time.perf_counter() - started
+        tokens = sum(len(row["output"]["generation"]["completion_token_ids"]) for row in result
+                     if row["problem_id"] in fresh_ids)
+        out.mkdir(parents=True, exist_ok=True)
+        append_jsonl(out / "collection-timing.jsonl", {"stage": stage, "split": split, "cap": cap,
+            "n": len(result), "new_draws": len(fresh_ids), "cached_draws": len(result) - len(fresh_ids),
+            "new_output_tokens": tokens, "elapsed_seconds": elapsed,
+            "tokens_per_second": tokens / elapsed if elapsed > 0 and fresh_ids else None,
+            "algorithm_version": algorithm_version, "sampling": sampling, "reportable": False})
+        return result
     from .rl import policy_sha256
     from .v16b_rows import build_obs_prompt_v16b, observation_eligibility_v16b
     observation_prompt: Any = build_obs_prompt_v16b
@@ -244,7 +258,7 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
                     or not row.get("reuse") or row.get("sha256") != digest({k: v for k, v in row.items() if k != "sha256"})):
                 raise ValueError("v18b preparation: imported record changed")
         if not observation and len(cached) == len(items):
-            return [cached[item["problem_id"]] for item in items]
+            return measured([cached[item["problem_id"]] for item in items])
     if algorithm_version == "error-note-v18b" and observation:
         skipped = [observation_eligibility_v16b(item) for item in items]
         if all(not receipt["eligible"] for receipt in skipped):
@@ -314,7 +328,7 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
             continue
         request = make_request(item, prompt, stage, cap=cap, sampling=sampling, version=version,
             protocol_sha256=protocol_sha256, policy_sha256=policy, engine_step=sampler.engine_steps,
-            evaluation_monitor=algorithm_version == "error-note-v18b" and split in {"monitor", "reasoning_monitor"})
+            evaluation_monitor=algorithm_version == "error-note-v18b" and stage.startswith("v18b-b2-"))
         if baseline_receipts is not None:
             from .collect import single_request_sha256
             key = "obs_baseline_receipt" if observation else "baseline_receipt"
@@ -324,15 +338,25 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
         path = out / "generations" / (rid + ".json")
         previous = [row for row in logged if row["request_id"] == rid]
         if previous:
-            if not path.is_file() or len([row for row in previous if row["status"] == "STARTED"]) != 1:
+            starts = [row for row in previous if row["status"] == "STARTED"]
+            if (resume_incomplete and algorithm_version == "error-note-v18b" and split in {"monitor", "reasoning_monitor", "effect"}
+                    and not path.exists() and starts and not any(row["status"] == "COMPLETED" for row in previous)):
+                if any(row.get("request_sha256") != request["request_sha256"] for row in starts):
+                    raise ValueError("v18b: interrupted diagnostic request identity changed")
+                append_jsonl(ledger, {"request_id": rid, "status": "RETRY_INTERRUPTED_DIAGNOSTIC",
+                    "request_sha256": request["request_sha256"], "prior_starts": len(starts), "reportable": False})
+                previous = []
+            elif not path.is_file() or len(starts) != 1 and not resume_incomplete:
                 raise ValueError("v16b: STARTED request lacks a durable single result; recovery required")
-            stored = read_sealed(path)
-            if (stored["request_sha256"] != request["request_sha256"] or stored["policy_sha256"] != policy
-                    or stored["protocol_sha256"] != protocol_sha256
-                    or any(row["sha256"] != stored["sha256"] for row in previous if row["status"] == "COMPLETED")):
-                raise ValueError("v16b: stored preparation request identity changed")
-            records[item["problem_id"]] = stored
-            continue
+            if previous:
+                stored = read_sealed(path)
+                if (not starts or any(row.get("request_sha256") != request["request_sha256"] for row in starts)
+                        or stored["request_sha256"] != request["request_sha256"] or stored["policy_sha256"] != policy
+                        or stored["protocol_sha256"] != protocol_sha256
+                        or any(row["sha256"] != stored["sha256"] for row in previous if row["status"] == "COMPLETED")):
+                    raise ValueError("v16b: stored preparation request identity changed")
+                records[item["problem_id"]] = stored
+                continue
         if path.exists():
             raise ValueError("v16b: result has no request ownership ledger")
         append_jsonl(ledger, {"request_id": rid, "status": "STARTED",
@@ -346,13 +370,14 @@ def collect(bundle: Any, sampler: Any, items: list[dict], *, data_root: Path, sp
             sampler.submit(request, prepared=prepared)
         else:
             sampler.submit(request)
+        fresh_ids.add(item["problem_id"])
         pending[rid] = (item, prompt)
         # Bound host image memory as well as the engine's active request count: keep one slot free.
         slots = getattr(sampler, "max_num_seqs", 1)
         if len(pending) >= slots:
             finish_pending(keep=slots - 1)
     finish_pending()
-    return [records[item["problem_id"]] for item in items if item["problem_id"] in records]
+    return measured([records[item["problem_id"]] for item in items if item["problem_id"] in records])
 
 
 
@@ -400,11 +425,19 @@ def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image:
     if phase in {"all", "monitor"}:
         monitor = collect(bundle, sampler, monitors, split="monitor", out=output / "monitor-f0",
             stage=preparation_stage(version, "monitor"), sampling=EVAL_SAMPLING_V16B,
-            **(kwargs | {"cap": 32768} if version == "error-note-v18b" and not local_sequential else kwargs))
+            **kwargs)
         result.update(monitor=monitor, monitor_summary=summary(monitor))
+        if version == "error-note-v18b":
+            short = collect(bundle, sampler, monitors, split="monitor", out=output / "short-monitor-f0",
+                stage=preparation_stage(version, "short_monitor"), sampling=EVAL_SAMPLING_V16B,
+                **(kwargs | {"cap": 64}))
+            result.update(short_monitor=short, short_monitor_summary=summary(short))
     if is_v17 and phase in {"all", "legacy"}:
         effects = data.load_items(data_root, "effect")
-        if local_sequential:
+        if "effect_ids" in selection:
+            effects_by_id = {item["problem_id"]: item for item in effects}
+            effects = [effects_by_id[pid] for pid in selection["effect_ids"]]
+        elif local_sequential:
             effects = effects[:2]
         effect = collect(bundle, sampler, effects, split="effect", out=output / "effect-f0",
                          stage=preparation_stage(version, "effect"), sampling=EVAL_SAMPLING_V16B, **kwargs,
@@ -415,7 +448,7 @@ def generate(data_root: Path, output: Path, bundle: Any, sampler: Any, *, image:
         records = collect(bundle, sampler, [panel[pid] for pid in selection["reasoning_monitor_ids"]],
             split="reasoning_monitor", out=output / "reasoning-monitor-f0",
             stage=preparation_stage(version, "reasoning_monitor"), sampling=EVAL_SAMPLING_V16B,
-            **(kwargs | {"cap": 256 if local_sequential else 32768}))
+            **(kwargs | {"cap": 64}))
         result.update(reasoning_monitor=records, reasoning_monitor_summary=summary(records))
     if reuse_records is not None:
         result["raw_reuse_receipt_sha256"] = read_sealed(output / "f0-reuse.json")["sha256"]

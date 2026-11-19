@@ -150,9 +150,12 @@ class SingleVllmSampler:
                  sleep: bool, eos_token_ids: Iterable[int], image: dict | None = None, lora: bool = False,
                  sampling: dict | None = None, version_registry: bool = False,
                  protocol_version: str = "error-note-v16b", preflight_stage: str = "trained",
-                 generation_context_limit: int | None = None):
+                 generation_context_limit: int | None = None, rehearsal_profile: str | None = None):
+        if rehearsal_profile not in (None, "tiny-bf16", "a100-bf16"):
+            raise ValueError("unknown vLLM rehearsal profile")
+        self.rehearsal_profile = rehearsal_profile
         self.protocol_version = protocol_version
-        self.context_limit = 40960 if protocol_version == "error-note-v18b" else CONTEXT_LIMIT
+        self.context_limit = CONTEXT_LIMIT
         if generation_context_limit is not None:
             if protocol_version != "error-note-v18b" or generation_context_limit not in (CONTEXT_LIMIT, 40960):
                 raise ValueError("only the fixed v18b prep and monitor context lengths are supported")
@@ -198,6 +201,10 @@ class SingleVllmSampler:
         engine = VLLMRolloutEngine.__new__(VLLMRolloutEngine)  # reuse prepare/_prompt/_load_weights, own LLM kwargs
         InputPreparation.__init__(engine, processor, AutoConfig.from_pretrained(str(model_path), local_files_only=True),
                                   self.image, self.context_limit)
+        if self.rehearsal_profile == "tiny-bf16" and (
+                engine.model_config.text_config.num_hidden_layers != 2 or engine.model_config.vision_config.depth != 3
+                or engine.model_config.text_config.hidden_size != 256 or engine.model_config.vision_config.hidden_size != 128):
+            raise ValueError("tiny rehearsal numerical admission requires the fixed synthetic model")
         engine._weight_shapes = _weight_inventory(engine.model_config)
         engine.model_dir = Path(model_path).resolve()
         kwargs = vllm_kwargs(Path(model_path), self.image, int(kv_cache_gib * 2**30), max_num_seqs, self.context_limit,
@@ -264,6 +271,8 @@ class SingleVllmSampler:
             raise RuntimeError("v16b vLLM: cannot remove a referenced policy")
         if self.engine.llm.llm_engine.remove_lora(entry["lora_int_id"]) is not True:
             raise RuntimeError("v16b vLLM: policy removal not acknowledged")
+        if self.lora_request is not None and self.lora_request.lora_int_id == entry["lora_int_id"]:
+            self.lora_request, self.loaded_policy = None, None
         shutil.rmtree(entry["request"].lora_path)
         del self.versions[version]
 
@@ -778,6 +787,9 @@ class SingleVllmSampler:
         reference: Any = llm_lora.hf_columns(bundle, self.engine, pairs)
         if getattr(self, "protocol_version", None) in ("error-note-v17", "error-note-v18", "error-note-v18b"):
             contract = llm_lora.pf5_contract_v17(bundle, self.preflight_stage)
+            if getattr(self, "rehearsal_profile", None) == "tiny-bf16":
+                contract = contract | {"reportable": False,
+                    "numerical_admission": "TINY_REHEARSAL_ONLY"}
             tower = None
             if self.protocol_version in ("error-note-v18", "error-note-v18b") and self.preflight_stage == "trained":
                 from types import SimpleNamespace
@@ -792,6 +804,8 @@ class SingleVllmSampler:
             report["transport_pass"] = report["pass"]
             report["effect_status"] = ("PASS" if report["power"] and report["pass"] else
                                        "UNMEASURED" if contract["require_power"] else "NOT_APPLICABLE_F0")
+            if getattr(self, "rehearsal_profile", None) == "tiny-bf16" and (not report["power"] or not report["pass"]):
+                report["effect_status"] = "NUMERICAL_INCONCLUSIVE_TINY_REHEARSAL"
             return report, restored
         return llm_lora.slope_check(**columns, **reference, cap=VLLMRolloutEngine.sync_threshold_cap,
                                     require_power=not self.version_registry), restored
@@ -824,6 +838,9 @@ class SingleVllmSampler:
             report["pf2_restored"] = llm_lora.check_identity(llm, bundle, restored.lora_int_id, self.vision_hooks)
         report["pass"] = bool(report["pf1"]["pass"]) and all(
             report[k]["pass"] is True for k in ("pf2", "pf3", "pf5", "pf2_restored")) and report["pf4"]["pass"] is not False
+        if getattr(self, "rehearsal_profile", None) == "tiny-bf16":
+            from .v18b_rehearsal import tiny_rehearsal_transport
+            tiny_rehearsal_transport(report)
         self._report(report)
         if not report["pass"]:
             raise RuntimeError("SINGLE vLLM: LoRA preflight failed")

@@ -249,11 +249,14 @@ class Heartbeat:
                 row["v18b_live"] = progress(elapsed=now - self.started, tokens=self.tokens,
                     completed=self.completed, expected=self.expected_count,
                     historical_tokens=self.live_context["historical_tokens"],
-                    remaining_seconds=self.live_context["deadline"] - time.time(), preemptions=self.preemptions,
+                    remaining_seconds=self.live_context["planning_deadline"] - time.time(), preemptions=self.preemptions,
                     completed_output_tokens=self.completed_output_tokens,
                     active_tokens=sum(self.lengths.get(sid, 0) for sid in self.active))
                 row["v18b_live"].update(first_billed_at=settings["first_billed_at"], run_id=settings["run_id"],
                     execution_settings_sha256=digest(settings), deadline_epoch=self.live_context["deadline"])
+                from .v18b_execution import planning_status
+                row["v18b_live"]["planning"] = planning_status(settings)
+                warnings.extend(row["v18b_live"]["planning"]["warnings"])
                 if self.previous_preemptions is not None and self.preemptions is not None and self.preemptions > self.previous_preemptions:
                     warnings.append("KV_PREEMPTION_INCREASE")
                 self.previous_preemptions = self.preemptions
@@ -626,7 +629,7 @@ def _submission_event(run_dir: Path, registration: dict, *, audit_state: dict | 
 
 
 @contextmanager
-def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iterator[Any]:
+def evaluation_hooks(run_dir: Path, registration: dict, deadline: float | None) -> Iterator[Any]:
     """Temporary hooks are scoped to this adapter invocation and always restored."""
     from mmdl.evaluation import engine as evaluation
     from mmdl.evaluation.writer import RunWriter, finalize, render
@@ -641,7 +644,9 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
     restores = []
     heartbeat = Heartbeat(run_dir, expected_count=len(registration["expected_ids"]))
     if "execution_settings" in registration:
+        from .v18b_execution import deadline_epoch
         heartbeat.live_context = {"settings": registration["execution_settings"], "deadline": deadline,
+                                  "planning_deadline": deadline if deadline is not None else deadline_epoch(registration["execution_settings"]),
                                   "historical_tokens": math.ceil(4_116_922 * len(registration["expected_ids"]) / 900)}
     finished = threading.Event()
 
@@ -690,7 +695,7 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
                           {"version": "v17-invocation-v1", "registration_sha256": registration_hash,
                            "identity": identity, "started_at": utc(), "recovered_ids": recovered,
                            "completed_ids_at_start": sorted(self.completed),
-                           "deadline_epoch": deadline, "remaining_seconds": deadline - time.time()})
+                           "deadline_epoch": deadline, "remaining_seconds": deadline - time.time() if deadline is not None else None})
                 if set(self.completed) == set(self.expected_ids) and not (self.run_dir / "summary.json").exists():
                     # This runs before engine.run's completed-summary shortcut and before any backend load.
                     summary = finalize(self.run_dir, self.expected_ids, identity["mode"])
@@ -765,7 +770,7 @@ def evaluation_hooks(run_dir: Path, registration: dict, deadline: float) -> Iter
                          (backend, "_row", original_row), (backend, "_check_deadline", original_deadline)])
 
         def check_deadline():
-            if time.time() >= deadline:
+            if deadline is not None and time.time() >= deadline:
                 write_json(run_dir / "v17_state.json", {"status": "INTERRUPTED_RESUMABLE",
                            "reason": "CUMULATIVE_APPROVED_DEADLINE", "deadline_epoch": deadline})
                 raise TimeoutError("v17: original cumulative evaluation deadline reached")
@@ -903,7 +908,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
     settings = None
     subset_tag = "all"
     if prereg.get("training_protocol_version") == "error-note-v18b":
-        from .v18b_execution import read_settings, deadline_epoch, _epoch
+        from .v18b_execution import read_settings, deadline_epoch, enforce_limits, _epoch
         if execution_settings is None:
             raise ValueError("v18b evaluation: sealed execution settings required")
         settings = read_settings(execution_settings)
@@ -1002,9 +1007,11 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
     remaining = deadline_seconds(starts[0], calibration_timeout(calibration), extensions, now=now,
                                   funding_deadline=funding_deadline,
                                   recovery_reserve_seconds=recovery_reserve_seconds)
-    deadline = now + remaining
+    bounded_deadline = now + remaining
+    deadline: float | None = bounded_deadline
     if settings is not None:
-        deadline = min(deadline, deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]))
+        deadline = (min(bounded_deadline, deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]))
+                    if enforce_limits(settings) else None)
     if resume:
         if not run_dir.is_dir():
             raise ValueError("v17: cannot resume a missing logical run")
@@ -1023,7 +1030,7 @@ def run_evaluation(argv: list[str], *, prereg_path: Path, ledger: Path, calibrat
         cpu_done = resume and cpu_resume_finalize(known, cfg, registration)
         recovery_seconds = time.monotonic() - recovery_started if resume else 0.
         if not cpu_done:
-            if settings is not None and time.time() >= deadline:
+            if settings is not None and deadline is not None and time.time() >= deadline:
                 raise TimeoutError("v18b evaluation: first-billing deadline reached before model loading")
             with evaluation_hooks(run_dir, registration, deadline) as ready:
                 execution: Any = nullcontext()

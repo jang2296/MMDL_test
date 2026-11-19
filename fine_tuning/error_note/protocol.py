@@ -910,6 +910,9 @@ V18B_IDENTIFIERS = {
     "observation_selection": "seeded-balanced-edge-label",
     "note_context": "public-observation-question-unit-and-actual-response",
     "external_monitor_blocks": [8, 16],
+    "external_short_monitor_tokens": 64,
+    "external_short_monitor_roles": ["monitor", "reasoning_monitor"],
+    "external_accuracy_monitor_tokens": 8192,
     "checkpoint_copy_interval": 16,
 }
 V18B_SPECIFICATION_SHA256 = _digest({"version": VERSION_V18B,
@@ -917,9 +920,14 @@ V18B_SPECIFICATION_SHA256 = _digest({"version": VERSION_V18B,
 
 
 def plain_protocol_v18b(precision: str, *, rl_blocks: int, prep_updates: int, contracts: dict[str, str],
-                        image: dict | None = None, local_smoke: bool = False) -> dict:
+                        image: dict | None = None, local_smoke: bool = False,
+                        rehearsal_profile: str | None = None) -> dict:
     from .v18b_rows import prompts_sha256
 
+    if rehearsal_profile is not None:
+        from .v18b_rehearsal import rehearsal_protocol
+        return rehearsal_protocol(precision, rl_blocks=rl_blocks, prep_updates=prep_updates,
+            contracts=contracts, image=image, local_smoke=local_smoke, profile=rehearsal_profile)
     body = plain_protocol_v18(precision, rl_blocks=rl_blocks, prep_updates=prep_updates,
                               contracts=contracts, image=image, local_smoke=local_smoke)
     del body["sha256"]
@@ -927,8 +935,6 @@ def plain_protocol_v18b(precision: str, *, rl_blocks: int, prep_updates: int, co
                 "prompts_sha256": prompts_sha256()}
     body.update(identity)
     body["training_contract"].update(copy.deepcopy(V18B_IDENTIFIERS), **identity)
-    if not local_smoke:
-        body["training_contract"]["max_tokens"]["monitor"] = 32768
     return body | {"sha256": _digest(body)}
 
 
@@ -937,7 +943,7 @@ def validate_protocol_v18b(protocol: dict) -> None:
         c = protocol["training_contract"]
         expected = plain_protocol_v18b(protocol["precision"], rl_blocks=c["rl_blocks"],
             prep_updates=c["prep_updates"], contracts=c["hashes"], image=protocol["image"],
-            local_smoke=c["local_smoke"])
+            local_smoke=c["local_smoke"], rehearsal_profile=c.get("rehearsal_profile"))
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("v18b: invalid sealed protocol") from exc
     if protocol != expected:

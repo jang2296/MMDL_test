@@ -11,10 +11,6 @@ import time
 
 from .audit import digest
 
-MAX_SECONDS = 14 * 3600
-MAX_USD = 22.
-
-
 def _epoch(value: str) -> float:
     if not isinstance(value, str):
         raise ValueError("v18b billing needs a UTC timestamp")
@@ -29,25 +25,32 @@ def _number(value: object) -> bool:
     return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value) and value > 0
 
 
-def validate_settings(settings: dict) -> dict:
+def validate_settings(settings: object) -> dict:
     keys = {"run_id", "first_billed_at", "total_timeout_seconds", "recovery_reserve_seconds",
             "post_eval_reserve_seconds", "evaluation_strategy", "training_cutoff_seconds",
             "monitor_stop_action", "reuse_f0_raw", "billing"}
-    if not isinstance(settings, dict) or set(settings) != keys:
+    optional = {"limit_action", "budget_limit_usd"}
+    if not isinstance(settings, dict) or not keys <= set(settings) <= keys | optional:
         raise ValueError("v18b requires the complete explicit run decisions and billing schedule")
     if not isinstance(settings["run_id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", settings["run_id"]):
         raise ValueError("invalid v18b run ID")
     start = _epoch(settings["first_billed_at"])
     total, recovery, post_eval = (settings[k] for k in (
         "total_timeout_seconds", "recovery_reserve_seconds", "post_eval_reserve_seconds"))
-    if not all(type(v) is int for v in (total, recovery, post_eval)) or not (0 < recovery <= post_eval < total <= MAX_SECONDS):
-        raise ValueError("expected positive recovery reservation within post-eval allowance and 14h")
+    if not all(type(v) is int for v in (total, recovery, post_eval)) or not (0 < recovery <= post_eval < total):
+        raise ValueError("expected positive recovery reservation within the declared planning allowance")
+    action = settings.get("limit_action", "stop")
+    budget = settings.get("budget_limit_usd", 22.)  # Legacy sealed settings retain their original ceiling.
+    if action not in {"warn", "stop"} or budget is not None and not _number(budget):
+        raise ValueError("choose a finite planning budget or null and limit_action warn/stop")
     strategy = settings["evaluation_strategy"]
     if strategy not in {"one_pod", "two_pod", "training_cutoff"} or type(settings["reuse_f0_raw"]) is not bool:
         raise ValueError("explicit evaluation strategy and F0 reuse decision required")
     if settings["monitor_stop_action"] not in {"evaluate_checkpoint", "stop"}:
         raise ValueError("choose how to handle a quality stop before training")
     cutoff = settings["training_cutoff_seconds"]
+    if action == "warn" and (strategy != "one_pod" or cutoff is not None):
+        raise ValueError("completion mode requires one pod with no training cutoff")
     if strategy == "training_cutoff":
         if type(cutoff) is not int or not 0 < cutoff < total - post_eval:
             raise ValueError("training cutoff must leave time for evaluation and recovery")
@@ -73,18 +76,39 @@ def projected_cost(settings: dict, at: float) -> float:
                for row in settings["billing"])
 
 
+def enforce_limits(settings: dict) -> bool:
+    """Old registrations retain their bounds; completion runs use the same clock for warnings."""
+    return settings.get("limit_action", "stop") == "stop"
+
+
+def planning_status(settings: dict, *, now: float | None = None) -> dict:
+    validate_settings(settings)
+    current = time.time() if now is None else now
+    elapsed = current - _epoch(settings["first_billed_at"])
+    cost = projected_cost(settings, current)
+    budget = settings.get("budget_limit_usd", 22.)
+    warnings = []
+    if elapsed >= settings["total_timeout_seconds"]:
+        warnings.append("PLANNING_TIME_TARGET_EXCEEDED")
+    if budget is not None and cost >= budget:
+        warnings.append("PLANNING_COST_TARGET_EXCEEDED")
+    return {"elapsed_seconds": elapsed, "estimated_cost_usd": cost,
+            "limit_action": settings.get("limit_action", "stop"), "warnings": warnings}
+
+
 def deadline_epoch(settings: dict, *, reserve_seconds: float = 0) -> float:
     validate_settings(settings)
     if type(reserve_seconds) not in (float, int) or not math.isfinite(reserve_seconds) or reserve_seconds < 0:
         raise ValueError("invalid time reservation")
     start = _epoch(settings["first_billed_at"])
     end = start + settings["total_timeout_seconds"]
-    if projected_cost(settings, end) > MAX_USD:
+    budget = settings.get("budget_limit_usd", 22.)
+    if enforce_limits(settings) and budget is not None and projected_cost(settings, end) > budget:
         # Price is monotonic and changes at most once (the second pod's earliest start).
         lo, hi = start, end
         for _ in range(48):
             mid = (lo + hi) / 2
-            if projected_cost(settings, mid) > MAX_USD:
+            if projected_cost(settings, mid) > budget:
                 hi = mid
             else:
                 lo = mid

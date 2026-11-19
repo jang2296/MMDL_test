@@ -40,7 +40,7 @@ plan=$(job) || exit 2
 job --require-repo-root "$repo_root" || exit 2
 financial_mode=$(job --get financial_mode)
 mapfile -d '' -t financial < <(job --financial-argv)
-[[ $financial_mode == legacy && ${#financial[@]} == 12 || $financial_mode == balance_reserve_only && ${#financial[@]} == 22 ]] || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
+[[ $financial_mode == legacy && ${#financial[@]} == 12 || $financial_mode == balance_reserve_only && ${#financial[@]} == 22 || $financial_mode == measured_balance_reserve && ${#financial[@]} == 20 ]] || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
 owned_pod_id=$(job --get owned_pod_id)
 commit=$(job --get commit)
 volume_root=$(job --get volume_root)
@@ -56,9 +56,11 @@ fi
 [[ -n ${RUNPOD_POD_ID:-} ]] || { printf '%s\n' 'RunPod only'; exit 2; }
 [[ $owned_pod_id == "$RUNPOD_POD_ID" ]] || { printf '%s\n' 'This Pod is not job.financial.owned_pod_id'; exit 2; }
 [[ ! -e $run_dir && ! -L $run_dir ]] || { printf '%s\n' 'Existing run dir refused; a new run needs a new run_dir'; exit 2; }
-if [[ $financial_mode == balance_reserve_only ]]; then mkdir -p "$(dirname -- "$run_dir")"; fi
+if [[ $financial_mode != legacy ]]; then mkdir -p "$(dirname -- "$run_dir")"; fi
+budget_seconds=$((max_main + smoke_timeout + preflight_timeout))
+[[ $financial_mode == measured_balance_reserve && $max_main == 0 ]] && budget_seconds=0
 budget_command=("$python" -m fine_tuning.budget "${financial[@]}"
-  --max-seconds "$((max_main + smoke_timeout + preflight_timeout))"
+  --max-seconds "$budget_seconds"
   --result-file "$run_dir/budget_result.json" -- bash "$here/start.sh" "${original_arguments[@]}")
 if [[ ${MMDL_BUDGET_WATCHDOG_PID:-} != "$PPID" ]]; then
   cd "$repo_root"

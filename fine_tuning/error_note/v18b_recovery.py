@@ -70,6 +70,55 @@ def _checked(record: dict, mappings: dict[str, str]) -> Path:
     return path
 
 
+def check_row_admission(root: Path, transaction: dict, update: dict) -> Path | None:
+    """Bind replay exclusions to the committed update, including restored histories."""
+    checksum = transaction.get("row_admission_sha256")
+    stats = update.get("result", {}).get("stats", {})
+    if checksum is None:
+        if "row_quarantine" in stats:
+            raise ValueError("v18b recovery: row quarantine has no bound admission")
+        return None
+    slot = transaction.get("slot")
+    if type(slot) is not int or slot < 0:
+        raise ValueError("v18b recovery: row admission has an invalid slot")
+    path = Path(root) / "row-admissions" / f"slot-{slot}.json"
+    if path.is_symlink() or path.parent.is_symlink():
+        raise ValueError("v18b recovery: unsafe row admission")
+    admission = read_sealed(path)
+    report = admission.get("report", {})
+    admitted, rejected = report.get("admitted_row_ids", []), report.get("rejected_rows", [])
+    rejected_ids = [row.get("row_id") for row in rejected]
+    attempted, optional = report.get("attempted_rows"), report.get("auxiliary_rows")
+    if (admission.get("sha256") != checksum or admission.get("slot") != slot
+            or update.get("global_slot") != slot or update.get("transaction_sha256") != transaction.get("sha256")
+            or update.get("plan_sha256") != transaction.get("plan_sha256")
+            or admission.get("plan_sha256") != transaction.get("plan_sha256")
+            or admission.get("parent_checkpoint") != transaction.get("parent_checkpoint")
+            or report != stats.get("row_quarantine") or report.get("schema") != "v18b-row-quarantine-v1"
+            or report.get("status") != "CONTINUE" or type(attempted) is not int or type(optional) is not int
+            or not 0 <= optional <= attempted or len(rejected) * 2 > optional
+            or any(not isinstance(rid, str) or not rid for rid in admitted + rejected_ids)
+            or len(set(admitted + rejected_ids)) != len(admitted) + len(rejected)
+            or len(admitted) + len(rejected) != attempted
+            or any(row.get("kind") not in {"A1", "C", "N"}
+                   or not re.fullmatch(r"[a-f0-9]{64}", str(row.get("source_row_sha256", "")))
+                   or not row.get("reason_code") for row in rejected)):
+        raise ValueError("v18b recovery: row admission or quarantine evidence differs")
+    counts, attempts = update.get("row_counts", {}), update.get("attempted_row_counts", {})
+    if (any(type(value) is not int or value < 0 for value in list(counts.values()) + list(attempts.values()))
+            or sum(counts.values()) != len(admitted) or sum(attempts.values()) != attempted
+            or sum(attempts.get(kind, 0) for kind in ("A1", "C", "N")) != optional
+            or any(attempts.get(kind, 0) != counts.get(kind, 0) + sum(row["kind"] == kind for row in rejected)
+                   for kind in set(counts) | set(attempts) | {row["kind"] for row in rejected})):
+        raise ValueError("v18b recovery: admitted row counts differ from the update")
+    consumed = stats.get("consumed_row_ids")
+    held = bool(stats.get("HOLD", stats.get("hold", False)))
+    if (not isinstance(consumed, list) or len(consumed) != len(set(consumed))
+            or set(consumed) - set(admitted) or held and consumed or not held and set(consumed) != set(admitted)):
+        raise ValueError("v18b recovery: row admission consumption differs")
+    return path
+
+
 def verify_closure(root: Path, *, external: bool = True, mappings: dict[str, str] | None = None) -> dict:
     """Verify inventory, both physical checkpoints and live resume references, without a GPU."""
     root = Path(root).absolute()
@@ -95,6 +144,12 @@ def verify_closure(root: Path, *, external: bool = True, mappings: dict[str, str
     state = read_sealed(root / "campaign-state.json")
     if state["plan_sha256"] != plan["sha256"] or state["cursor"]["slot"] != manifest["slot"]:
         raise ValueError("v18b recovery: campaign/plan/cursor mismatch")
+    for path in (root / "transactions").glob("slot-*.json"):
+        transaction = read_sealed(path)
+        update_path = root / "update-results" / path.name
+        if transaction.get("row_admission_sha256") is not None or update_path.exists():
+            update = read_sealed(update_path)
+            check_row_admission(root, transaction, update)
     for index_path in root.glob("*.json"):
         value = json.loads(index_path.read_text())
         latest = value.get("latest") if isinstance(value, dict) else None
@@ -186,7 +241,7 @@ def stage_closure(output: Path, state: dict, stage: Path) -> None:
             pin(source)
     for directory in output.iterdir():
         if directory.is_dir() and (directory.name == "training-bindings" or directory.name.startswith(
-                ("monitor-", "reasoning-monitor-", "effect-"))):
+                ("monitor-", "short-monitor-", "reasoning-monitor-", "effect-"))):
             for source in directory.rglob("*"):
                 if source.is_file() and not source.name.endswith(".tmp"):
                     pin(source)
@@ -205,7 +260,7 @@ def stage_closure(output: Path, state: dict, stage: Path) -> None:
         if resolve_recovery_path(descriptor["path"]).is_relative_to(output):
             pin(_checked(descriptor, _locations.get()))
     # These are append-only per-slot evidence; do not copy live logs or regenerated export models.
-    for evidence_directory in ("transactions", "update-results", "signal-reports", "supply-reports"):
+    for evidence_directory in ("transactions", "update-results", "row-admissions", "signal-reports", "supply-reports"):
         for source in (output / evidence_directory).glob("*.json"):
             match = re.fullmatch(r"(?:v18b-gate-|v18b-)?slot-(\d+)", source.stem)
             main_evidence = source.stem.startswith("v18b-") or evidence_directory == "supply-reports"

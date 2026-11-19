@@ -32,12 +32,20 @@ def _identity(args: Any, plan: dict) -> dict:
     commit = getattr(args, "code_commit", None)
     if not re.fullmatch(r"[a-f0-9]{40}", str(commit or "")):
         raise ValueError("v17 preflight: exact --code-commit required")
-    if (commit != current["base_commit"] or commit != plan["source"]["base_commit"]
-            or current["actual_files"] != plan["source"]["actual_files"]
+    if (commit != current["base_commit"]
             or plan["protocol"]["version"] not in ("error-note-v17", "error-note-v18", "error-note-v18b")):
         raise ValueError("v17 preflight: code commit, source bytes or protocol changed")
-    return {"code_commit": commit, "source_sha256": digest(current["actual_files"]),
+    source_changed = (commit != plan["source"]["base_commit"]
+                      or current["actual_files"] != plan["source"]["actual_files"])
+    execution = {}
+    if source_changed or getattr(args, "hotfix_resume", None) is not None:
+        if plan["protocol"]["version"] != "error-note-v18b":
+            raise ValueError("v17 preflight: code commit, source bytes or protocol changed")
+        from .v18b_hotfix import execution_source
+        execution = execution_source(args, plan, current)
+    return {"code_commit": plan["source"]["base_commit"], "source_sha256": digest(plan["source"]["actual_files"]),
             "campaign_plan_sha256": plan["sha256"], "protocol_sha256": plan["protocol"]["sha256"],
+            **execution,
             **({"training_protocol_version": plan["protocol"]["version"]}
                if plan["protocol"]["version"] in ("error-note-v18", "error-note-v18b") else {})}
 

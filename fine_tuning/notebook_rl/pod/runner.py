@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import signal
@@ -98,7 +99,7 @@ def run_logged(argv: list[str], log: str | Path, timeout: float, grace: float = 
         with open(log, "ab") as stream:
             process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + timeout if timeout else None
         while True:
             if disk_path is not None:
                 free = disk_sample(disk_path, disk_log)  # type: ignore[arg-type]
@@ -106,8 +107,8 @@ def run_logged(argv: list[str], log: str | Path, timeout: float, grace: float = 
                     record_state(state_file, "DISK_LOW",  # type: ignore[arg-type]
                                  free_gib=round(free, 3), min_free_gib=min_free_gib)
                     return DISK_LOW_CODE
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = deadline - time.monotonic() if deadline is not None else disk_interval
+            if deadline is not None and remaining <= 0:
                 return TIMEOUT_CODE
             try:
                 step = remaining if disk_path is None else min(disk_interval, remaining)
@@ -160,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             write_owner(args.file, args.pid)
             return 0
         cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
-        if not cmd or args.timeout <= 0:
+        if not cmd or args.timeout < 0 or args.timeout == 0 and not os.environ.get("MMDL_BUDGET_WATCHDOG_PID"):
             raise ValueError("a command after -- and a positive timeout are required")
         return run_logged(cmd, args.log, args.timeout, disk_path=args.disk_path,
                           min_free_gib=args.min_free_gib, disk_log=args.disk_log,

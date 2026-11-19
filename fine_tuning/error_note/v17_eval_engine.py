@@ -85,13 +85,16 @@ def observe_engine(backend: Any, mode: str, slots: int) -> dict:
 
 
 @contextmanager
-def engine_execution(mode: str, slots: int) -> Iterator[dict]:
+def engine_execution(mode: str, slots: int, *, gpu_memory_utilization: float | None = None) -> Iterator[dict]:
     """Wrap only LLM construction, and restore it even across registered_variants nesting."""
     from mmdl.evaluation.backends import vllm_backend
     from fine_tuning.notebook_rl import proof_eval as pe
 
     if mode not in MODES or type(slots) is not int or slots < 1:
         raise ValueError("v17 engine: invalid engine execution")
+    if gpu_memory_utilization is not None and (type(gpu_memory_utilization) is not float
+            or not math.isfinite(gpu_memory_utilization) or not 0 < gpu_memory_utilization <= 1):
+        raise ValueError("v17 engine: invalid explicit GPU memory fraction")
     previous = {key: os.environ.get(key) for key in (pe.SLOTS_ENV, pe.VLLM_INPROCESS_ENV)}
     original = vllm_backend._vllm
     state: dict[str, Any] = {"engine_mode": mode, "slots": slots, "constructor_calls": []}
@@ -101,6 +104,8 @@ def engine_execution(mode: str, slots: int) -> Iterator[dict]:
 
         def construct(**kwargs):
             kwargs = kwargs | {"enforce_eager": mode == "eager", "max_num_seqs": slots}
+            if gpu_memory_utilization is not None:
+                kwargs["gpu_memory_utilization"] = gpu_memory_utilization
             state["constructor_calls"].append({"enforce_eager": kwargs["enforce_eager"],
                                                 "max_num_seqs": kwargs["max_num_seqs"]})
             return llm_cls(**kwargs)
@@ -651,10 +656,12 @@ def _isolated_attempt(args: Any, mode: str, root: Path, context: dict, *, refere
                     "status": "FAIL", "reasons": [{"type": type(exc).__name__, "message": str(exc)}]}
     timeout = (0 if reference_only else 2 * args.max_seconds) + 1800
     if v18b:
-        from .v18b_execution import deadline_epoch
+        from .v18b_execution import deadline_epoch, enforce_limits
         settings = context["execution_settings"]
-        timeout = min(args.max_seconds, deadline_epoch(settings, reserve_seconds=
-            settings["post_eval_reserve_seconds"]) - time.time())
+        timeout = args.max_seconds
+        if enforce_limits(settings):
+            timeout = min(timeout, deadline_epoch(settings, reserve_seconds=
+                settings["post_eval_reserve_seconds"]) - time.time())
         if timeout <= 0:
             return {"version": "v17-engine-attempt-v1", "engine_mode": mode, "reference_only": reference_only,
                     "status": "FAIL", "reasons": [{"type": "DeadlineReached", "message": "first-billing deadline reached"}]}
@@ -924,13 +931,13 @@ def validate(args: Any) -> dict:
         raise ValueError("v17 engine: actual BF16 operation required")
     settings = None
     if version == "error-note-v18b":
-        from .v18b_execution import read_settings, deadline_epoch
+        from .v18b_execution import read_settings, deadline_epoch, enforce_limits
         if getattr(args, "execution_settings", None) is None:
             raise ValueError("v18b engine: sealed execution settings required")
         settings = read_settings(args.execution_settings)
         if plan.get("execution_settings") != settings:
             raise ValueError("v18b engine: execution settings differ from the sealed campaign")
-        if deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]) <= time.time():
+        if enforce_limits(settings) and deadline_epoch(settings, reserve_seconds=settings["post_eval_reserve_seconds"]) <= time.time():
             raise TimeoutError("v18b engine: first-billing deadline already reached")
     context = {"seal": seal_value, "model_ref": ref, "config": cfg, "hardware": hw, "requests": requests,
                "lengths": lengths, "quantiles": quantile_lengths(lengths, [row["sample_id"] for row in requests["items"]]),

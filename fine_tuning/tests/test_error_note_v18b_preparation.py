@@ -1,5 +1,6 @@
 """CPU cache and live-admission contracts; these are not BF16 execution evidence."""
 from copy import deepcopy
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
@@ -9,10 +10,52 @@ from unittest.mock import Mock, patch
 from fine_tuning.error_note import prep_v16b as prep, prep_reuse_v18b as reuse, v17_preflight as pf
 from fine_tuning.error_note.audit import digest
 from fine_tuning.error_note.protocol import EVAL_SAMPLING_V16B, SINGLE_IMAGE_V14
-from fine_tuning.tests.test_error_note_v16b_prep import item
+from fine_tuning.tests.test_error_note_v16b_prep import item, Sampler
 
 
 class PreparationDispatch(unittest.TestCase):
+    def test_interrupted_heldout_diagnostic_can_resume_but_completed_draw_is_reused(self):
+        with TemporaryDirectory() as directory, patch("fine_tuning.error_note.rl.policy_sha256", return_value="a" * 64), patch.object(
+                prep, "grader", return_value=lambda *args: ("CORRECT", "A")):
+            root, sampler = Path(directory), Sampler()
+            target = item("monitor0")
+            request = prep.make_request(target, prep.p0(target), "v18b-b2-short-monitor", cap=64,
+                sampling=EVAL_SAMPLING_V16B, protocol_sha256="b" * 64, policy_sha256="a" * 64,
+                evaluation_monitor=True)
+            start = {"request_id": request["request_id"], "status": "STARTED", "request_sha256": request["request_sha256"]}
+            (root / "requests.jsonl").write_text(json.dumps(start) + "\n")
+            kwargs = dict(data_root=root, split="monitor", out=root, stage=request["stage"], cap=64,
+                sampling=EVAL_SAMPLING_V16B, protocol_sha256="b" * 64,
+                algorithm_version="error-note-v18b", resume_incomplete=True)
+            records = prep.collect(NS(), sampler, [target], **kwargs)
+            replay = prep.collect(NS(), sampler, [target], **kwargs)
+            self.assertEqual(records, replay)
+            self.assertEqual(sampler.submitted, 1)
+            events = [json.loads(line) for line in (root / "requests.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(row["status"] == "RETRY_INTERRUPTED_DIAGNOSTIC" for row in events), 1)
+            timing = [json.loads(line) for line in (root / "collection-timing.jsonl").read_text().splitlines()]
+            self.assertEqual([(row["new_draws"], row["cached_draws"]) for row in timing], [(1, 0), (0, 1)])
+            with self.assertRaisesRegex(ValueError, "heldout"):
+                prep.collect(NS(), sampler, [target], **(kwargs | {"split": "prep"}))
+
+    def test_new_f0_monitor_draws_accuracy_and_short_diagnostics_with_distinct_caps(self):
+        roles = {name: [item(f"{name}{i}") | {"training_allowed": False} for i in range(count)]
+                 for name, count in (("prep", 2), ("monitor", 200), ("reasoning_monitor", 64))}
+        selection = {"sha256": "a" * 64, "prep_ids": [x["problem_id"] for x in roles["prep"]],
+                     "monitor_ids": [x["problem_id"] for x in roles["monitor"]],
+                     "reasoning_monitor_ids": [x["problem_id"] for x in roles["reasoning_monitor"]]}
+        calls = []
+        def collect(bundle, sampler, items, **kwargs):
+            calls.append((len(items), kwargs["stage"], kwargs["cap"]))
+            return []
+        with TemporaryDirectory() as directory, patch.object(prep, "select", return_value=selection), patch.object(
+                prep, "data_api", return_value=NS(load_items=lambda root, role: roles[role])), patch.object(
+                prep, "collect", side_effect=collect):
+            prep.generate(Path(directory), Path(directory) / "out", None, None, image={},
+                          version="error-note-v18b", phase="monitor")
+        self.assertEqual(calls, [(200, "v18-monitor", 8192), (200, "v18b-b2-short-monitor", 64),
+                                 (64, "v18b-b2-reasoning-monitor", 64)])
+
     def test_public_preflight_dispatches_every_supported_version_without_replacing_preflight(self):
         for version in ("error-note-v16b", "error-note-v17", "error-note-v18", "error-note-v18b"):
             with self.subTest(version=version):
@@ -23,7 +66,7 @@ class PreparationDispatch(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown"):
             prep.preflight_items([], version="error-note-unknown")
 
-    def test_v18b_selection_preserves_frozen_200_and_generates_only_149_plus_64(self):
+    def test_v18b_selection_includes_all_200_and_reasoning_64(self):
         roles = {name: [item(f"{name}{i}") | {"training_allowed": name in {"train", "prep"}}
                         for i in range(count)] for name, count in {
                             "train": 3000, "prep": 512, "monitor": 200,
@@ -37,8 +80,8 @@ class PreparationDispatch(unittest.TestCase):
             selected = prep.select(root, root / "production", version="error-note-v18b")
             smoke = prep.select(root, root / "smoke", version="error-note-v18b", local_sequential=True)
         self.assertEqual(len(selected["frozen_role_ids"]["monitor"]), 200)
-        self.assertEqual(len(selected["excluded_ceiling_monitor_ids"]), 51)
-        self.assertEqual(len(selected["monitor_ids"]), 149)
+        self.assertEqual(len(selected["excluded_ceiling_monitor_ids"]), 0)
+        self.assertEqual(len(selected["monitor_ids"]), 200)
         self.assertEqual(len(selected["reasoning_monitor_ids"]), 64)
         self.assertEqual(len(selected["prep_ids"]), 512)
         self.assertEqual(len(selected["role_ids"]["train"]), 3000)
@@ -88,7 +131,8 @@ class F0Reuse(unittest.TestCase):
     def test_stage_names_preserve_v18_prep_and_effect_seed_but_separate_b2_monitor(self):
         for role in ("prep", "effect"):
             self.assertEqual(prep.preparation_stage("error-note-v18b", role), "v18-" + role)
-        self.assertEqual(prep.preparation_stage("error-note-v18b", "monitor"), "v18b-b2-monitor")
+        self.assertEqual(prep.preparation_stage("error-note-v18b", "monitor"), "v18-monitor")
+        self.assertEqual(prep.preparation_stage("error-note-v18b", "short_monitor"), "v18b-b2-short-monitor")
         self.assertEqual(prep.preparation_stage("error-note-v18b", "reasoning_monitor"), "v18b-b2-reasoning-monitor")
 
     def test_import_off_is_default_and_source_requires_explicit_local_authorization(self):
@@ -156,6 +200,15 @@ class F0Reuse(unittest.TestCase):
                                                                version="error-note-v18b"))
         self.assertNotEqual(reuse._legacy_generator_ast("if side_effect() and False: pass", version="error-note-v18"),
                             reuse._legacy_generator_ast("if False: pass", version="error-note-v18b"))
+
+    def test_f0_reuse_permits_only_the_exact_acknowledged_deletion_alias_cleanup(self):
+        original = 'def release_version(self, version):\n    entry = self.versions[version]\n    remove(entry)\n'
+        cleanup = ('    if self.lora_request is not None and self.lora_request.lora_int_id == entry["lora_int_id"]:\n'
+                   '        self.lora_request, self.loaded_policy = None, None\n')
+        before = reuse._legacy_generator_ast(original, version="error-note-v18")
+        self.assertEqual(before, reuse._legacy_generator_ast(original + cleanup, version="error-note-v18b"))
+        self.assertNotEqual(before, reuse._legacy_generator_ast(original + cleanup.replace('None, None', 'None, "other"'),
+                                                               version="error-note-v18b"))
 
 
 class LiveAdmission(unittest.TestCase):

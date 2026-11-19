@@ -495,11 +495,26 @@ class V16bScheduler:
         consumed = stats.get("consumed_row_ids")
         if not isinstance(consumed, list) or len(ids) != len(set(ids)) or len(consumed) != len(set(consumed)):
             raise RuntimeError("v18 closure: unique row IDs and actual consumption telemetry required")
+        quarantine = stats.get("row_quarantine") or {}
+        rejected = quarantine.get("rejected_rows", [])
+        rejected_ids = [row["row_id"] for row in rejected]
+        originals = {row["row_id"]: row for row in rows}
+        if rejected and (not self.v18b or quarantine.get("status") != "CONTINUE"
+                or len(rejected_ids) != len(set(rejected_ids)) or set(rejected_ids) - set(ids)
+                or set(rejected_ids) & set(consumed)
+                or len(rejected_ids) * 2 > sum(row.get("kind") in {"A1", "C", "N"} for row in rows)
+                or quarantine.get("attempted_rows") != len(rows)
+                or quarantine.get("admitted_row_ids") != [rid for rid in ids if rid not in set(rejected_ids)]
+                or any(originals[row["row_id"]].get("kind") not in {"A1", "C", "N"}
+                       or row.get("kind") != originals[row["row_id"]].get("kind")
+                       or row.get("source_row_sha256") != _digest(originals[row["row_id"]]) for row in rejected)):
+            raise RuntimeError("v18b closure: invalid auxiliary quarantine evidence")
         held = bool(stats.get("HOLD", stats.get("hold", False)))
-        if set(consumed) - set(ids) or (held and consumed) or (not held and set(consumed) != set(ids)):
+        if set(consumed) - set(ids) or (held and consumed) or (not held and set(consumed) | set(rejected_ids) != set(ids)):
             raise RuntimeError("v18 closure: accepted rows are neither consumed nor explicitly held")
         self.row_settlements[str(version)] = {"row_ids": ids, "consumed_row_ids": consumed,
-            "discarded_row_ids": ids if held else [], "hold_reason": stats.get("hold_reason") if held else None,
+            "discarded_row_ids": ids if held else rejected_ids, "hold_reason": stats.get("hold_reason") if held else None,
+            **({"quarantined_row_ids": rejected_ids, "row_quarantine_sha256": _digest(quarantine)} if rejected else {}),
             "optimizer_step": stats.get("optimizer_step"),
             "generation_versions": {r["row_id"]: r.get("policy_version", r.get("generation", {}).get("policy_version")) for r in rows}}
 
@@ -516,12 +531,14 @@ class V16bScheduler:
         rows = [rid for entry in self.row_settlements.values() for rid in entry["row_ids"]]
         consumed = [rid for entry in self.row_settlements.values() for rid in entry["consumed_row_ids"]]
         discarded = [rid for entry in self.row_settlements.values() for rid in entry["discarded_row_ids"]]
+        quarantined = [rid for entry in self.row_settlements.values() for rid in entry.get("quarantined_row_ids", [])]
         if len(rows) != len(set(rows)) or set(rows) != set(consumed) | set(discarded) or set(consumed) & set(discarded):
             raise RuntimeError("v18 closure: duplicate or unsettled accepted rows")
         if consumed_row_ids is not None and not set(consumed) <= set(consumed_row_ids):
             raise RuntimeError("v18 closure: consumed rows are missing from the saved checkpoint cursor")
         return {"status": "DRAINED_AND_SETTLED", "pending_requests": 0, "unconsumed_rows": 0,
-                "accepted_rows": len(rows), "consumed_rows": len(consumed), "discarded_hold_rows": len(discarded),
+                "accepted_rows": len(rows), "consumed_rows": len(consumed),
+                "discarded_hold_rows": len(discarded) - len(quarantined), "quarantined_rows": len(quarantined),
                 "row_settlements_sha256": _digest(self.row_settlements), "last_version": self.version}
 
     def state(self) -> dict:

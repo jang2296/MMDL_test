@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import statistics
 import time
 from typing import Any
 
@@ -65,6 +64,10 @@ def _binding(plan: dict) -> dict:
 def _plan_check(plan: dict) -> None:
     from .protocol import validate_protocol_v16b
 
+    if plan.get("protocol", {}).get("training_contract", {}).get("rehearsal_profile") is not None:
+        from .v18b_rehearsal import validate_plan
+        validate_plan(plan)
+        return
     is_v17 = plan["protocol"].get("version") in MODERN_VERSIONS
     if is_v17:
         from .protocol import validate_protocol_v17
@@ -247,6 +250,11 @@ def _factory(args: argparse.Namespace):
     from fine_tuning.notebook_rl.policy import build_policy
     from fine_tuning.notebook_rl.quantized_policy import load_quantized_policy
 
+    if getattr(args, "rehearsal_profile", None) is not None:
+        from .v18b_rehearsal import policy_factory
+        if args.precision != "bf16" or args.engine != "vllm" or args.local_sequential:
+            raise ValueError("rehearsal requires BF16 and the actual vLLM engine")
+        return policy_factory
     if args.precision == "nf4":
         if not args.local_sequential or args.nf4_cache is None or args.engine != "hf":
             raise ValueError("v16b: NF4 requires the explicit local sequential path and an existing cache")
@@ -353,8 +361,14 @@ def make_sampler(bundle: Any, args: argparse.Namespace, protocol: dict, *, image
                 "preflight_stage": getattr(args, "_preflight_stage", "f0")} if protocol["version"] in MODERN_VERSIONS else {})
             if protocol["version"] == "error-note-v18b" and getattr(args, "_f0_legacy_generation", False):
                 v17_options["generation_context_limit"] = 24576
+            max_sequences = 16 if protocol["version"] in MODERN_VERSIONS else 32
+            rehearsal_profile = protocol["training_contract"].get("rehearsal_profile")
+            if rehearsal_profile is not None:
+                from .v18b_rehearsal import profile_settings
+                max_sequences = profile_settings(rehearsal_profile)["max_num_seqs"]
+                v17_options["rehearsal_profile"] = rehearsal_profile
             sampler = SingleVllmSampler(args.model_path, kv_cache_gib=kv_cache_gib,
-                max_num_seqs=16 if protocol["version"] in MODERN_VERSIONS else 32,
+                max_num_seqs=max_sequences,
                 gpu_memory_utilization=args.gpu_memory_utilization, sleep=False,
                 eos_token_ids=eos if isinstance(eos, list) else [eos], image=image,
                 lora=True, sampling=sampling, version_registry=True, **v17_options)
@@ -367,6 +381,31 @@ def _encode(bundle: Any, rows: list[dict], items: dict[str, dict], image: dict) 
     from .train_v4 import encode_single_row
     return [encode_single_row(bundle.processor, bundle.model.config, row, images(items[row["problem_id"]]), image=image)
             for row in rows]
+
+
+def _encode_update_rows(bundle: Any, rows: list[dict], items: dict[str, dict], image: dict) -> tuple[list[dict], dict]:
+    """Quarantine row-local auxiliary failures before any optimizer or cursor mutation."""
+    from .train_v17 import RowEncodingError
+
+    auxiliary = {"A1", "C", "N"}
+    identities = [row["row_id"] for row in rows]
+    if len(identities) != len(set(identities)):
+        raise ValueError("v18b: duplicate attempted update row")
+    encoded, rejected = [], []
+    for row in rows:
+        try:
+            encoded.extend(_encode(bundle, [row], items, image))
+        except RowEncodingError as error:
+            if row["kind"] not in auxiliary:
+                raise
+            rejected.append({"row_id": row["row_id"], "problem_id": row["problem_id"], "kind": row["kind"],
+                "source_row_sha256": digest(row), "reason_code": error.code, "reason": str(error)})
+    optional = sum(row["kind"] in auxiliary for row in rows)
+    report = {"schema": "v18b-row-quarantine-v1", "attempted_rows": len(rows), "auxiliary_rows": optional,
+        "admitted_row_ids": [row["row_id"] for row in encoded], "rejected_rows": rejected,
+        "status": "SYSTEMATIC_AUXILIARY_FAILURE" if len(rejected) * 2 > optional else "CONTINUE"}
+    return encoded, report
+
 
 def v17_stage_report(records: dict[str, dict], contract: dict, rows: list[dict], stats: dict,
                      items: dict[str, dict] | None = None) -> dict:
@@ -513,7 +552,7 @@ def _rollback(output: Path, slot: int, *, committed_checkpoint: Path | None = No
     marker = output / "prep-checkpoint.json"
     if marker.exists():
         protected.add(checked(json.loads(marker.read_text())).parent.resolve())
-    candidates = [path for directory in ("transactions", "update-results")
+    candidates = [path for directory in ("transactions", "update-results", "row-admissions")
                   for path in (output / directory).glob("slot-*.json")
                   if int(path.stem.split("-")[-1]) >= slot]
     inclusive = committed_checkpoint is not None
@@ -582,16 +621,28 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
             v17_rows = rows_v18b
             from .protocol import v18b_contract_for_update as v16b_contract_for_update
     _plan_check(plan)
-    if is_v17:
+    rehearsal = plan["protocol"]["training_contract"].get("rehearsal_profile") is not None
+    if rehearsal:
+        from .v18b_rehearsal import validate_execution
+        validate_execution(args, plan)
+    elif is_v17:
         from .v17_preflight import bind_execution, bind_training
         (bind_training if getattr(args, "execution_phase", "legacy") == "training" else bind_execution)(args, plan)
     for value in plan["inputs"].values():
         checked(value)
-    if digest(single.source_manifest()["actual_files"]) != digest(plan["source"]["actual_files"]):
+    execution_lineage = {}
+    if is_v18b:
+        from .v18b_hotfix import execution_source
+        execution_lineage = execution_source(args, plan, single.source_manifest())
+    elif digest(single.source_manifest()["actual_files"]) != digest(plan["source"]["actual_files"]):
         raise ValueError("v16b campaign: execution source differs from the prepared source")
     if not reload_only and not (args.allow_model_run and args.allow_update and args.allow_save):
         raise ValueError("v16b campaign: actual execution requires model/update/save opt-ins")
-    data_validation = validate(args.data_root)
+    if rehearsal:
+        from .v18b_rehearsal import validate_inputs
+        data_validation = validate_inputs(plan)
+    else:
+        data_validation = validate(args.data_root)
     _setup_execution(MASTER_SEED)
     protocol, image = plan["protocol"], plan["protocol"]["image"]
     cfg = protocol["training_contract"]
@@ -634,6 +685,8 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
             _rollback(output, cursor["slot"], committed_checkpoint=_checkpoint_path(state),
                 committed_probe=checked(state["probe"]["json"]).parent,
                 committed_runtime=checked(state["runtime"]) if state.get("runtime") is not None else None)
+    if execution_lineage:
+        state.update(execution_lineage)
     if reload_only:
         import torch
         path = _checkpoint_path(state)
@@ -674,10 +727,14 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
         sampler = make_sampler(bundle, args, protocol, image=image, sampling=TRAIN_SAMPLING_V16B)
     live_capacity = None
     if is_v18b and not args.local_sequential:
-        from .v17_preflight import live_training_preflight
         try:
-            live = live_training_preflight(args, plan, bundle, sampler,
-                capacity=lambda: calibrate_capacity(bundle, args, protocol, live_engine=True))
+            if rehearsal:
+                from .v18b_rehearsal import live_preflight
+                live = live_preflight(args, plan, bundle, sampler)
+            else:
+                from .v17_preflight import live_training_preflight
+                live = live_training_preflight(args, plan, bundle, sampler,
+                    capacity=lambda: calibrate_capacity(bundle, args, protocol, live_engine=True))
             live_capacity = live["capacity"]
         finally:
             sampler.release_idle_versions()
@@ -691,7 +748,7 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
     if is_v17:
         from .guard_v16b import SignalGateV17, SignalGateV18B
         signal_gate = (SignalGateV18B if is_v18b else SignalGateV17)(plan["blocks"], plan["signal_gate"]["supported_parent_ids"],
-            state.get("signal_gate"), local_smoke=args.local_sequential)
+            state.get("signal_gate"), local_smoke=args.local_sequential or rehearsal)
     runtime = None
 
     def commit(label: str, envelope: dict | None = None) -> dict:
@@ -758,14 +815,30 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
             torch.cuda.synchronize()
             torch.cuda.reset_peak_memory_stats()
         started = time.monotonic()
-        encoded = _encode(bundle, rows, all_items, image)
+        attempted_rows = rows
+        quarantine = None
+        if is_v18b:
+            encoded, quarantine = _encode_update_rows(bundle, rows, all_items, image)
+            admission = seal(output / "row-admissions" / f"slot-{slot}.json", {
+                "plan_sha256": plan["sha256"], "slot": slot, "parent_checkpoint": state["checkpoint"],
+                "report": quarantine})
+            if quarantine["status"] != "CONTINUE":
+                raise RuntimeError("v18b: more than half the auxiliary rows failed replay; "
+                                   "the last closed checkpoint is preserved")
+            admitted_ids = set(quarantine["admitted_row_ids"])
+            rows = [row for row in rows if row["row_id"] in admitted_ids]
+        else:
+            encoded = _encode(bundle, rows, all_items, image)
         transaction = seal(output / "transactions" / f"slot-{slot}.json", {
-            "plan_sha256": plan["sha256"], "slot": slot, "rows_sha256": digest(rows),
+            "plan_sha256": plan["sha256"], "slot": slot, "rows_sha256": digest(attempted_rows),
+            **({"admitted_rows_sha256": digest(rows), "row_admission_sha256": admission["sha256"]} if is_v18b else {}),
             "contract": contract, "parent_checkpoint": state["checkpoint"]})
         cursor["last_transaction_sha256"] = transaction["sha256"]
         result = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, contract,
             cursor=cursor, block_ids=contract["expected_problem_ids"], allow_update=True,
             token_budget=plan["capacity"]["token_budget"])
+        if quarantine is not None:
+            result["stats"]["row_quarantine"] = quarantine
         if cuda_initialized:
             torch.cuda.synchronize()
         generation_counts = {}
@@ -788,6 +861,8 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
             "transaction_sha256": transaction["sha256"], "phase": contract["phase"], "global_slot": slot,
             "result": result, "row_counts": {kind: sum(row["kind"] == kind for row in rows)
                                             for kind in sorted({row["kind"] for row in rows})},
+            **({"attempted_row_counts": {kind: sum(row["kind"] == kind for row in attempted_rows)
+                 for kind in sorted({row["kind"] for row in attempted_rows})}} if is_v18b else {}),
             "generation_counts": generation_counts, "wall_seconds": time.monotonic() - started,
             "cuda_peak_allocated_bytes": torch.cuda.max_memory_allocated() if cuda_initialized else None,
             "cuda_peak_reserved_bytes": torch.cuda.max_memory_reserved() if cuda_initialized else None})
@@ -828,22 +903,28 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
     selection = read_sealed(checked(plan["inputs"]["selection"]))
     monitors = [all_items[pid] for pid in selection["monitor_ids"]]
     def monitor(label: str, version: int, split: str = "monitor") -> dict:
+        path = output / (label + ".json")
+        if path.exists():
+            stored = read_sealed(path)
+            if stored.get("checkpoint") != state["checkpoint"] or stored.get("plan_sha256") != plan["sha256"]:
+                raise ValueError("campaign: monitor belongs to another checkpoint or plan")
+            return stored
+        if cfg.get("rehearsal_profile"):
+            from .v18b_rehearsal import before_final_monitor
+            before_final_monitor(args, plan, label)
         sampler.release_idle_versions()
         saved_rng = checkpoint.capture_rng()
-        targets = monitors if split == "monitor" else [all_items[row["problem_id"]] for row in generated[split]]
-        if is_v18b and plan.get("execution_settings"):
-            from .v18b_execution import remaining
-            settings = plan["execution_settings"]
-            if remaining(settings, reserve_seconds=settings["post_eval_reserve_seconds"]) <= 0:
-                raise TimeoutError("V18B_MONITOR_DEADLINE")
+        short = is_v18b and split in {"short_monitor", "reasoning_monitor"}
+        targets = monitors if split in {"monitor", "short_monitor"} else [all_items[row["problem_id"]] for row in generated[split]]
+        grade_split = "monitor" if split == "short_monitor" else split
         try:
             options = {"algorithm_version": algorithm_version} if is_v17 else {}
-            records = collect(bundle, sampler, targets, data_root=args.data_root, split=split, out=output / label,
-                stage=("v18b-b2-" + split.replace("_", "-")) if is_v18b and split in {"monitor", "reasoning_monitor"}
+            records = collect(bundle, sampler, targets, data_root=args.data_root, split=grade_split, out=output / label,
+                stage=("v18b-b2-" + split.replace("_", "-")) if short
                     else ("v18-" if is_v18 else "v17-" if is_v17 else "v16b-") + ("monitor" if split == "monitor" else "effect"),
                 protocol_sha256=protocol["sha256"], sampling=EVAL_SAMPLING_V16B,
-                cap=(256 if args.local_sequential else 32768) if is_v18b and split in {"monitor", "reasoning_monitor"}
-                    else cfg["max_tokens"]["monitor"], version=version, **options)
+                cap=64 if short else cfg["max_tokens"]["monitor"], version=version,
+                **(options | {"resume_incomplete": True} if is_v18b else options))
         finally:
             checkpoint.restore_rng(saved_rng)
             # collect() registers `version`; the signal-gate monitor uses the next policy version, which run_v16b
@@ -851,7 +932,7 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
             sampler.release_idle_versions()
         body = {"version": "v17-monitor-v1" if is_v17 else "v16b-monitor-v1", "records": records,
                 "summary": summary(records), "checkpoint": state["checkpoint"], "plan_sha256": plan["sha256"]}
-        if is_v17:
+        if is_v17 and not short:
             from .v17_eval import paired_report
             from .guard_v16b import length_distribution_v17
             def paired_input(values):
@@ -896,6 +977,7 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
                 raise ValueError("v18b partial monitor belongs to another checkpoint")
             return record
         final_monitor = selected_monitor("monitor-final")
+        selected_monitor("short-monitor-final", "short_monitor")
         selected_monitor("reasoning-monitor-final", "reasoning_monitor")
         effect = selected_monitor("effect-final", "effect")
         from .v17_eval import evaluation_gate
@@ -919,6 +1001,11 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
     if post.get("plan_sha256") != plan["sha256"] or post.get("checkpoint") != prep_checkpoint:
         raise ValueError("v16b campaign: post-preparation monitor binding changed")
     if is_v18b:
+        short_post_path = output / "short-monitor-post-prep.json"
+        short_post = (read_sealed(short_post_path) if short_post_path.exists() else
+                      monitor("short-monitor-post-prep", 0, split="short_monitor"))
+        if short_post.get("checkpoint") != prep_checkpoint or short_post.get("plan_sha256") != plan["sha256"]:
+            raise ValueError("V18B_SHORT_POST_PREP_BINDING")
         reasoning_post_path = output / "reasoning-monitor-post-prep.json"
         reasoning_post = (read_sealed(reasoning_post_path) if reasoning_post_path.exists() else
                           monitor("reasoning-monitor-post-prep", 0, split="reasoning_monitor"))
@@ -1184,11 +1271,12 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
         if recovery_hook is not None:
             recovery_hook.poll()
         if is_v18b and execution_settings is not None:
-            from .v18b_execution import _epoch, remaining
+            from .v18b_execution import _epoch, remaining, enforce_limits, planning_status
+            write_json(output / "execution-planning.json", planning_status(execution_settings))
             cutoff = execution_settings["training_cutoff_seconds"]
             if cutoff is not None and time.time() >= _epoch(execution_settings["first_billed_at"]) + cutoff:
                 reasons.append("TRAINING_CUTOFF")
-            if remaining(execution_settings, reserve_seconds=execution_settings["post_eval_reserve_seconds"]) <= 0:
+            if enforce_limits(execution_settings) and remaining(execution_settings, reserve_seconds=execution_settings["post_eval_reserve_seconds"]) <= 0:
                 reasons.append("RUN_DEADLINE")
         if is_v18b:
             eta = eta_v18b(state["block_seconds"], done=v + 1, total=len(plan["blocks"]) + 3)
@@ -1209,7 +1297,7 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
 
     def finish_signal_gate(v: int, envelope: dict, saved: dict) -> dict:
         if is_v18b:
-            from .v18b_monitor import monitor_comparison, monitor_stop_decision, project_mmmu_lengths, supply_report
+            from .v18b_monitor import monitor_comparison, short_monitor_comparison, monitor_stop_decision, supply_report
             supported = signal_gate.supported
             closed = [pid for pid in supported if runtime._closed_stage(signal_gate.positions[pid], "NOTE")
                       and runtime._closed_stage(signal_gate.positions[pid], "RESOLVE")]
@@ -1231,39 +1319,23 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
                 "plan_sha256": plan["sha256"], "checkpoint": saved,
                 "report": supply_report(runtime.records, plan["items"], updates, cursor["consumed_row_ids"], slot=v, block_size=plan["block_size"])})
             done = min(v + 1, len(plan["blocks"]))
-            if done in (8, 16) and str(done) not in state.get("v18b_monitor_blocks", []):
-                normal = monitor(f"monitor-block-{done}", v + 1)
+            if done in cfg.get("external_monitor_blocks", (8, 16)) and str(done) not in state.get("v18b_monitor_blocks", []):
+                short = monitor(f"short-monitor-block-{done}", v + 1, split="short_monitor")
                 reasoning = monitor(f"reasoning-monitor-block-{done}", v + 1, split="reasoning_monitor")
-                f0_records = generated["monitor"] + generated["reasoning_monitor"]
-                current_records = normal["records"] + reasoning["records"]
                 panel_items = monitors + [all_items[r["problem_id"]] for r in generated["reasoning_monitor"]]
-                comparison = monitor_comparison(f0_records, post["records"] + reasoning_post["records"],
-                    current_records, panel_items)
-                comparison.update(omitted_ceiling_generation_n=len(selection.get("excluded_ceiling_monitor_ids", [])),
-                    frozen_monitor_inventory_n=len(selection.get("frozen_role_ids", {}).get("monitor", [])))
+                comparison = short_monitor_comparison(generated["short_monitor"] + generated["reasoning_monitor"],
+                    short_post["records"] + reasoning_post["records"], short["records"] + reasoning["records"], panel_items)
                 seal(output / f"b2-monitor-block-{done}.json", comparison | {
                     "plan_sha256": plan["sha256"], "checkpoint": saved})
                 state.setdefault("v18b_monitor_blocks", []).append(str(done))
-                if done == 16:
-                    settings = plan.get("execution_settings")
-                    from .v18b_execution import _epoch
-                    elapsed = max(0., time.time() - _epoch(settings["first_billed_at"])) if settings else 0.
-                    remaining_slots = max(0, len(plan["blocks"]) + 3 - (v + 1))
-                    recent_seconds = statistics.mean(state["block_seconds"][-16:]) if state["block_seconds"] else 0.
-                    projection = project_mmmu_lengths(f0_records, current_records, panel_items,
-                        reference_mmmu_tokens=4120000, throughput_tokens_per_second=177.,
-                        hourly_usd=settings["billing"][0]["usd_per_hour"] if settings else 1.42,
-                        elapsed_seconds=elapsed, remaining_train_seconds=recent_seconds * remaining_slots,
-                        post_eval_seconds=settings["post_eval_reserve_seconds"] if settings else 1200,
-                        evaluation_pods=2 if settings and settings["evaluation_strategy"] == "two_pod" else 1,
-                        second_pod_overhead_seconds=2700,
-                        second_pod_hourly_usd=settings["billing"][1]["usd_per_hour"] if settings and len(settings["billing"]) == 2 else None,
-                        time_limit_seconds=settings["total_timeout_seconds"] if settings else 14 * 3600)
-                    projection.update(throughput_basis="V17_HISTORICAL_177TOKENS_PER_SECOND_UNMEASURED_ON_CURRENT_MODEL",
-                        reference_tokens_basis="B2_HISTORICAL_APPROX_4_12M_PLANNING_ONLY")
-                    seal(output / "mmmu-projection-block-16.json", projection)
+            if v >= signal_gate.due_slot and not state.get("v18b_accuracy_monitor_done"):
+                normal = monitor("monitor-signal-gate", v + 1)
+                comparison = monitor_comparison(generated["monitor"], post["records"], normal["records"], monitors)
                 decision = monitor_stop_decision(comparison, args.monitor_stop_action, saved,
                     state.get("v18b_normal_checkpoint"))
+                state["v18b_accuracy_monitor_done"] = True
+                seal(output / "accuracy-monitor-signal-gate.json", comparison | {
+                    "plan_sha256": plan["sha256"], "checkpoint": saved})
                 if comparison["status"] == "STOP_REQUESTED":
                     state["v18b_monitor_decision"] = decision
                     state.update(status="STOPPED", stop_reasons=["MONITOR_STOP"] + comparison["reasons"])
@@ -1328,15 +1400,18 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
                 "report": v18_supply_report(runtime.records, plan["items"], updates, cursor["consumed_row_ids"])})
         result = finish_signal_gate(v, envelope, saved) if is_v17 else saved
         if recovery_hook is not None and ((v + 1) % 16 == 0 or state["status"] == "STOPPED" or cursor["phase"] == "final"
-                or args.local_sequential and getattr(args, "checkpoint_after_main_blocks", None) == v + 1):
+                or (args.local_sequential or rehearsal) and getattr(args, "checkpoint_after_main_blocks", None) == v + 1):
             recovery_hook.checkpoint(state, force=True)
+        if rehearsal:
+            from .v18b_rehearsal import after_checkpoint
+            after_checkpoint(args, state)
         return result
 
     callbacks = RuntimeCallbacks(make_request=request, complete=complete, rows=build_rows, baseline=baseline,
                                 update=rl_update, checkpoint=save_runtime, guard=check_guard,
         **({"checkpoint_due": lambda v: signal_gate is not None and signal_gate.state["status"] == "WARMUP"
-            and v >= signal_gate.due_slot or is_v18b and (v + 1 in (8, 16) or
-            args.local_sequential and getattr(args, "checkpoint_after_main_blocks", None) == v + 1)} if is_v17 else {}))
+            and v >= signal_gate.due_slot or is_v18b and (v + 1 in cfg.get("external_monitor_blocks", (8, 16)) or
+            (args.local_sequential or rehearsal) and getattr(args, "checkpoint_after_main_blocks", None) == v + 1)} if is_v17 else {}))
     if state["runtime"] is None and (output / "runtime").exists():
         destination = output / "rolled-back" / f"runtime-{time.time_ns()}"
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1361,8 +1436,13 @@ def _run_campaign(plan: dict, *, output: Path, args: argparse.Namespace, reload_
         if selected is not None:
             return selected
     if result["status"] == "COMPLETE":
+        if is_v18b:
+            state["status"] = "TRAINED"
+            state["sha256"] = digest({k: value for k, value in state.items() if k != "sha256"})
+            write_json(state_path, state)
         final_monitor = monitor("monitor-final", result["version"])
         if is_v18b:
+            monitor("short-monitor-final", result["version"], split="short_monitor")
             monitor("reasoning-monitor-final", result["version"], split="reasoning_monitor")
         if is_v17:
             from .v17_eval import evaluation_gate
@@ -1516,6 +1596,8 @@ def require_complete(output: Path, *, evaluation_decision: Path | None = None,
 
 def export_metadata(metadata: dict, plan: dict, checkpoint: Path) -> dict:
     _plan_check(plan)
+    if plan["protocol"].get("training_contract", {}).get("rehearsal_profile") is not None:
+        raise ValueError("a non-reportable rehearsal cannot be exported for benchmark evaluation")
     if plan["local_sequential"]:
         raise ValueError("v16b campaign: local NF4 smoke cannot be exported for benchmark evaluation")
     cursor = metadata.get("cursor", {}).get("single", {})
@@ -1536,6 +1618,8 @@ def export_metadata(metadata: dict, plan: dict, checkpoint: Path) -> dict:
         raise ValueError("v16b campaign: incomplete final checkpoint")
     return {"version": plan["version"], "plan_sha256": plan["sha256"], "slot": cursor["slot"],
         "updates": cursor["updates"], "total_slots": plan["total_slots"], "stage": "partial" if partial else cursor["phase"],
+        **({"hotfix_resumes": state["hotfix_resumes"], "execution_code_commit": state["execution_code_commit"],
+            "hotfix_lineage_sha256": state["hotfix_lineage_sha256"]} if state.get("hotfix_resumes") else {}),
         **({"evaluation_selection": state["evaluation_selection"]} if partial else {}),
         "checkpoint": descriptor(checkpoint / "metadata.json"), "prep_updates": len(plan["prep_batches"]),
         "rl_blocks": len(plan["blocks"]), "finish_updates": 3, "local_sequential": plan["local_sequential"]}
@@ -1559,6 +1643,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", type=Path)
     parser.add_argument("--export-output", type=Path)
     parser.add_argument("--code-commit")
+    parser.add_argument("--hotfix-resume", type=Path, help="explicit verified operational hotfix authorization receipt")
     parser.add_argument("--execution-settings", type=Path)
     parser.add_argument("--backup-destination", type=Path)
     parser.add_argument("--backup-transfer-command", help="JSON argv; {archive}/{receipt}/{slot}/{bundle_sha256} placeholders")

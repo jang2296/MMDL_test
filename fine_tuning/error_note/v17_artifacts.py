@@ -119,10 +119,13 @@ def evaluation_identity(repo: Path, commit: str) -> dict:
 
 def _v18b_training_evidence(output: Path, plan: dict, step: int, selection: dict | None = None) -> tuple[dict, dict]:
     from .v17_preflight import _validate_live_capacity
+    from .v18b_hotfix import lineage
+    from .v18b_recovery import check_row_admission
 
     identity = {"code_commit": plan["source"]["base_commit"], "source_sha256": digest(plan["source"]["actual_files"]),
                 "campaign_plan_sha256": plan["sha256"], "protocol_sha256": plan["protocol"]["sha256"],
                 "training_protocol_version": "error-note-v18b"}
+    hotfixes = lineage(output, plan)
     preparation_only = bool(selection and selection.get("preparation_only") is True)
     evidence_end = step
     stopped_timing: dict = {}
@@ -170,6 +173,7 @@ def _v18b_training_evidence(output: Path, plan: dict, step: int, selection: dict
         if (row.get("transaction_sha256") != transaction["sha256"]
                 or transaction.get("plan_sha256") != plan["sha256"] or transaction.get("slot") != slot):
             raise ValueError("v18b artifacts: timing is not bound to its actual transaction")
+        check_row_admission(output, transaction, row)
         updates.append((slot, path, row, transaction_path))
     updates.sort()
     if [row[0] for row in updates] != list(range(evidence_end)):
@@ -183,7 +187,12 @@ def _v18b_training_evidence(output: Path, plan: dict, step: int, selection: dict
     for pid in sorted({row[2]["producer_pid"] for row in updates}):
         path = output / "training-bindings" / f"live-{pid}.json"
         value = read_sealed(_safe(path))
+        first_slot = min(row[0] for row in updates if row[2]["producer_pid"] == pid)
+        active_hotfixes = [row for row in hotfixes if row["slot"] <= first_slot]
+        execution = ({"execution_code_commit": active_hotfixes[-1]["new_commit"],
+                      "hotfix_lineage_sha256": digest(active_hotfixes)} if active_hotfixes else {})
         if (any(value.get(key) != item for key, item in identity.items())
+                or any(value.get(key) != item for key, item in execution.items())
                 or value.get("version") != "v18b-live-training-preflight-v1" or value.get("status") != "BOUND"
                 or value.get("production_admitted") is not True or value.get("producer_pid") != pid
                 or value.get("maximum_shape_measurements") != 1 or value.get("optimizer_steps") != 0
@@ -199,6 +208,10 @@ def _v18b_training_evidence(output: Path, plan: dict, step: int, selection: dict
         "live_training_preflights": preflights, "actual_update_results": [_ref(row[1]) for row in updates],
         "first_main_update": _ref(first[1]), "first_main_transaction": _ref(first[3]),
         "actual_update_timing_scope": "encode_backward_optimizer"}
+    if hotfixes:
+        state = read_sealed(output / "campaign-state.json")
+        evidence["hotfix_resumes"] = state["hotfix_resumes"]
+        identity.update(execution_code_commit=hotfixes[-1]["new_commit"], hotfix_lineage_sha256=digest(hotfixes))
     if preparation_only:
         stopped_timing.update(first_main_update=evidence.pop("first_main_update"),
                               first_main_transaction=evidence.pop("first_main_transaction"),
@@ -249,7 +262,7 @@ def create_training_artifacts(args, plan: dict) -> dict:
     export = _tree(Path(args.export_output))
     model_ref = _safe(Path(args.export_output) / "model_ref.json")
     model = json.loads(model_ref.read_text(encoding="utf-8"))
-    if (model.get("code_commit") != binding["code_commit"] or model.get("kind") != "unmerged-lora"
+    if (model.get("code_commit") != binding.get("execution_code_commit", binding["code_commit"]) or model.get("kind") != "unmerged-lora"
             or model.get("dtype") != "bfloat16" or model.get("export", {}).get("binding") != campaign._binding(plan)
             or model.get("export", {}).get("campaign", {}).get("plan_sha256") != plan["sha256"]):
         raise ValueError("v17 artifacts: export is not the bound final unmerged model")
@@ -261,12 +274,21 @@ def create_training_artifacts(args, plan: dict) -> dict:
                 or path.stat().st_size != record["bytes"] or file_sha(path) != record["sha256"]):
             raise ValueError("v17 artifacts: model-ref file inventory differs")
     code_root = ROOT / "fine_tuning"
+    code_identity = plan["source"]
+    execution: dict = {}
+    if binding.get("execution_code_commit"):
+        from types import SimpleNamespace
+        from . import single
+        from .v18b_hotfix import execution_source, lineage
+        execution = execution_source(SimpleNamespace(output=output, repo=ROOT), plan, single.source_manifest())
+        code_identity = lineage(output, plan)[-1]["new_source"]
     code_files = [{"path": name, "file_sha256": _ref(code_root / name)["file_sha256"]}
-                  for name in sorted(plan["source"]["actual_files"])]
-    if {r["path"]: r["file_sha256"] for r in code_files} != plan["source"]["actual_files"]:
+                  for name in sorted(code_identity["actual_files"])]
+    if {r["path"]: r["file_sha256"] for r in code_files} != code_identity["actual_files"]:
         raise ValueError("v17 artifacts: training source files changed")
     body: dict = {"version": VERSION, "status": "SEALED", "training": {k: binding[k] for k in
             ("code_commit", "source_sha256", "campaign_plan_sha256", "protocol_sha256")},
+        **execution,
         "training_code": {"root": str(code_root), "files": code_files, "files_sha256": digest(code_files)},
         "campaign_plan": _ref(output / "campaign-plan.json"),
         "checkpoint": _tree(checkpoint) | {"metadata": _ref(checkpoint / "metadata.json")},
@@ -340,6 +362,16 @@ def _verify_training_artifacts(path: Path) -> dict:
         if any(value.get(key) != item for key, item in evidence.items()) or any(value["training"][key] != binding[key] for key in value["training"]):
             raise ValueError("v18b artifacts: actual producer or first-update evidence changed")
     model = json.loads(Path(value["export"]["model_ref"]["path"]).read_text(encoding="utf-8"))
+    code_identity = plan["source"]
+    if value.get("hotfix_resumes"):
+        from types import SimpleNamespace
+        from . import single
+        from .v18b_hotfix import execution_source, lineage
+        output = Path(value["campaign_plan"]["path"]).parent
+        execution = execution_source(SimpleNamespace(output=output, repo=Path(code["root"]).parent), plan, single.source_manifest())
+        if any(value.get(key) != item for key, item in execution.items()) or model.get("code_commit") != execution["execution_code_commit"]:
+            raise ValueError("v18b artifacts: final execution source lineage changed")
+        code_identity = lineage(output, plan)[-1]["new_source"]
     if (protocol_version not in TRAINING_VERSIONS
             or (protocol_version in ("error-note-v18", "error-note-v18b") and (
                 value.get("training_protocol_version") != protocol_version
@@ -350,14 +382,14 @@ def _verify_training_artifacts(path: Path) -> dict:
             or plan["source"]["base_commit"] != value["training"]["code_commit"]
             or digest(plan["source"]["actual_files"]) != value["training"]["source_sha256"]
             or plan["protocol"]["sha256"] != value["training"]["protocol_sha256"]
-            or {r["path"]: r["file_sha256"] for r in code["files"]} != plan["source"]["actual_files"]):
+            or {r["path"]: r["file_sha256"] for r in code["files"]} != code_identity["actual_files"]):
         raise ValueError("v17 artifacts: training identity was relabeled")
     observed = {p.relative_to(Path(code["root"])).as_posix(): file_sha(_safe(p))
                 for p in Path(code["root"]).rglob("*.py")
                 if not {"tests", "runs", "generated", "__pycache__"}.intersection(p.relative_to(Path(code["root"])).parts)}
     actual_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=code["root"], check=True,
                                    capture_output=True, text=True).stdout.strip()
-    if observed != plan["source"]["actual_files"] or actual_commit != value["training"]["code_commit"]:
+    if observed != code_identity["actual_files"] or actual_commit != code_identity["base_commit"]:
         raise ValueError("v17 artifacts: original training checkout changed")
     if value.get("status") == "PARTIAL_EVALUATION_CANDIDATE":
         if protocol_version != "error-note-v18b":

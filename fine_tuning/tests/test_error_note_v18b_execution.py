@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -20,6 +23,24 @@ def settings():
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_outer_chain_runs_the_command_after_an_advisory_target(self):
+        from fine_tuning.notebook_rl.pod import chain
+        from fine_tuning.notebook_rl.pod.common import sha256_file
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec_path = root / "spec.json"
+            completed = root / "completed"
+            decisions = settings() | {"limit_action": "warn", "budget_limit_usd": None}
+            value = {"version": chain.SPEC_VERSION, "meta": {"protocol_version": "error-note-v18b",
+                     "execution_settings": decisions}, "steps": [{"name": "work", "argv": [sys.executable,
+                     "-c", "from pathlib import Path;Path(__import__('sys').argv[1]).write_text('done')", str(completed)],
+                     "expect_files": [str(completed)]}]}
+            spec_path.write_text(json.dumps(value))
+            with patch.dict("os.environ", MMDL_RUN_DIR=directory), \
+                    patch.object(policy, "remaining", return_value=-1):
+                self.assertEqual(chain.run(spec_path, sha256_file(spec_path)), 0)
+            self.assertEqual(completed.read_text(), "done")
+
     def test_one_clock_across_training_second_pod_and_recovery(self):
         decisions = settings()
         start = policy._epoch(decisions["first_billed_at"])
@@ -32,6 +53,21 @@ class ExecutionTests(unittest.TestCase):
         self.assertLess(policy.remaining(decisions, now=deadline, reserve_seconds=600), 0)
         with self.assertRaises(ValueError):
             policy.validate_settings(decisions | {"training_cutoff_seconds": 100})
+
+    def test_completion_mode_warns_after_time_and_money_targets(self):
+        decisions = settings() | {"limit_action": "warn", "budget_limit_usd": 22.,
+                                  "total_timeout_seconds": 48 * 3600}
+        start = policy._epoch(decisions["first_billed_at"])
+        self.assertEqual(policy.validate_settings(decisions), decisions)
+        self.assertFalse(policy.enforce_limits(decisions))
+        self.assertGreater(policy.projected_cost(decisions, start + 24 * 3600), 22)
+        self.assertEqual(policy.deadline_epoch(decisions), start + 48 * 3600)
+        self.assertLess(policy.remaining(decisions, now=start + 49 * 3600), 0)
+        self.assertFalse(policy.enforce_limits(decisions))
+        self.assertEqual(policy.planning_status(decisions, now=start + 49 * 3600)["warnings"],
+                         ["PLANNING_TIME_TARGET_EXCEEDED", "PLANNING_COST_TARGET_EXCEEDED"])
+        with self.assertRaises(ValueError):
+            policy.validate_settings(decisions | {"evaluation_strategy": "training_cutoff", "training_cutoff_seconds": 600})
 
     def test_public_train_chain_rebuilds_data_and_admits_in_same_process(self):
         p = split_params(Path("/private/train"), "v17-train")
@@ -58,14 +94,19 @@ class ExecutionTests(unittest.TestCase):
             p["f0_reuse_" + role + "_sha256"] = "a"*64
         self.assertIn("--allow-f0-raw-reuse", next(s["argv"] for s in plan.plan("v18b-train", p)["steps"]
                                                     if s["name"] == "prep-generate"))
+        p["execution_settings"].update(limit_action="warn", budget_limit_usd=None, total_timeout_seconds=86400)
+        spec = plan.plan("v18b-train", p)
+        self.assertEqual(spec["meta"]["financial_mode"], "measured_balance_reserve")
+        self.assertIsNone(spec["meta"]["total_timeout_seconds"])
+        self.assertEqual(spec["meta"]["planning_target_seconds"], 86400)
 
-    def test_only_held_out_b2_may_use_32k(self):
-        request = {"problem_id": "held", "request_id": "id", "stage": "v18b-b2-monitor",
-                   "block_id": "v18b-b2-monitor", "seed": 23, "max_tokens": 32768,
+    def test_only_held_out_b2_may_use_the_short_diagnostic_contract(self):
+        request = {"problem_id": "held", "request_id": "id", "stage": "v18b-b2-short-monitor",
+                   "block_id": "v18b-b2-short-monitor", "seed": 23, "max_tokens": 64,
                    "messages": [], "images": [], "evaluation_monitor": True,
                    "protocol_version": "error-note-v18b", "sampling": copy.copy(collect.SINGLE_SAMPLING)}
-        self.assertEqual(collect.single_request_binding(request)["max_tokens"], 32768)
-        for change in ({"stage": "T1"}, {"evaluation_monitor": False}, {"sampling": {}},
+        self.assertEqual(collect.single_request_binding(request)["max_tokens"], 64)
+        for change in ({"stage": "T1"}, {"max_tokens": 32768}, {"sampling": {}},
                        {"protocol_version": "error-note-v18"}):
             with self.assertRaises(ValueError):
                 collect.single_request_binding(request | change)

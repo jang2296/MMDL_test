@@ -1,6 +1,8 @@
 # v18b 오답노트 학습과 로컬 인수 시험
 
-## 2026-11-19 출발 전 운영 수정
+11월 19일 저녁 재실행의 기준은 [재실행 계획 §5–6](plan_v18b_retry_20261119.md)이다. 17시 28분 포드 종료 전에 사용한 감시 표본과 시간 마감은 아래에 당시 측정의 맥락으로 보존했다. 다음 실행은 3,000문항 완주를 목표로 하며, 8K 정확도 감시 200문항과 64토큰 단답 경고 264문항을 별도로 수집한다. 중단 뒤 이어 학습하는 명령과 게시 후 A100 예행 명령은 이 문서 마지막 두 절에 있다.
+
+## 2026-11-19 첫 포드 출발 전 운영 수정 기록
 
 현재 상위 실험 소스에서 CPU 회귀 200개가 통과했다. 실패·오류·생략은 0건이고 이전 155개 시험 ID가 전부 포함됐다. Claude Code가 게시할 소스 6개와 시험 파일 4개의 SHA256을 남겼다. 14시 15분의 RTX 인수 결과는 오답노트 학습 경로에서 얻은 별도 실측이다. [최종 회귀 결과](</home/jang2/mmdl-artifacts/v18b-implementation-20261119/prelaunch-guard-backup/release/cpu-receipt.json>) · [게시 전 파일 대조 목록](</home/jang2/mmdl-artifacts/v18b-implementation-20261119/prelaunch-guard-backup/release-handoff.json>)
 
@@ -120,3 +122,84 @@
 회수된 7회차 `f0-generations.json`은 20,898,793바이트이고 gzip 레벨 3에서는 1,413,350바이트다. 원본 SHA256은 `fff61c99a9e111aadd56c83175385ca9f2610b8e24c3850405c200b7aee22d17`이다. 파일에는 준비 512·효과 비교 128·옛 감시 200건이 있다. 정식 재사용 경로는 앞의 두 역할만 읽는다. 이 640개는 전부 이번 선정 문항과 ID가 일치한다. 새 감시 149+64건은 해당 단계의 B2 조건으로 새로 측정한다.
 
 처음 세 건을 확인한 뒤 전수 CPU 검사 한 번은 145초의 진단 한도에서 종료됐다. 같은 입력·채점기로 다시 시행한 정식 `reuse-f0`가 117.85초에 정상 종료했다. **준비 512/512와 효과 비교 128/128의 요청·입력·토큰·원문이 모두 일치해 현재 채점기로 재채점됐고, 재생성이 필요한 문항은 이 두 역할에서 0개였다.** 완료 근거는 비공개 `preparation/full-reuse-release/f0-reuse.json`이다. 파일 SHA256은 `ea7ba44991c16809720d75f8573b01d9cad2841f9d71dead3e3e54f9b4b9f516`이다. 영수증의 전체 상태명 `VERIFIED_PARTIAL`은 새 감시 응답까지 재사용한다는 뜻이 되지 않도록 역할별 수치와 함께 읽는다. 로컬 검사에서 네트워크·GPU 모델 생성은 사용하지 않았다. 승인을 권하는 범위는 이 고정 원문과 출처 증빙의 비공개 전송 및 현재 채점기로의 재채점이다. 효과 비교 자료의 학습 사용권이나 게시 권한을 부여하지 않는다.
+
+## 2026-11-19 — 운영 수정 후 저장 지점에서 재개
+
+`restart_v18b.sh`의 기존 프로세스 일괄 종료·캠페인 이동·소스 폴더 삭제 경로를 교체했다. 다음 명령은 실행 예정인 운영 명령이다. 로컬 검증에서는 SSH를 대역으로 바꾸어 원격 Python 구문의 파싱과 인자 전달만 확인했다.
+
+```bash
+# 기본 호출은 네트워크 접속 없이 수행할 단계를 출력한다.
+bash /home/jang2/mmdl-artifacts/self-note-single-20261105/v18b/pod-scripts/restart_v18b.sh \
+  HOST PORT POD_ID NEW_COMMIT
+
+# 운영자가 현재 실제 잔액 영수증 balance-latest.json을 전달한 뒤 실행한다.
+# APPROVAL에는 이미 받은 사용자 지시, HOTFIX_REASON에는 검토한 운영 결함과 수정 내용을 적는다.
+APPROVAL='기록된 사용자 실행 지시' HOTFIX_REASON='검토한 LoRA 등록 해제 오류 수정' \
+  bash /home/jang2/mmdl-artifacts/self-note-single-20261105/v18b/pod-scripts/restart_v18b.sh \
+  HOST PORT POD_ID NEW_COMMIT --execute
+```
+
+`--prepare`는 같은 검사를 수행해 새 작업 명세와 승인 기록을 만들고 `start.sh`의 dry run까지 수행한다. `--execute`는 그 뒤 새 tmux 세션을 시작한다. 원래 승인된 job의 포드 ID·소스 명세 해시를 확인하고, 기존 소유 작업·학습 잠금·엔진·GPU 작업이 남아 있으면 재개 준비를 거부한다. 원본 clone을 보존하며, 새 커밋을 fetch한 별도 clean worktree에서 고정 dependency lock을 대조한다. 실행 중 소스 수정과 프로세스 신호 전송은 없다.
+
+새 작업은 `v18b_hotfix resume-plan`으로 만든다. 마지막 닫힌 저장 경계와 원래 학습 계약을 검증하고 `advance → require-complete → reload → export → training-artifact-seal`만 이어 간다. 첫 과금 시각·학습 순서·기존 자료·준비 풀이·준비 SFT·회수 대상은 그대로 이어 사용한다. 작업 명세·로그·내보내기는 고유 경로를 쓰므로 이전 파일을 보존한다. 최종 평가 실행기는 새 학습 산출물 봉인의 `export.root`를 읽는다. 새 실행 로그와 커밋은 `/workspace/runs/v18b/active-training-attempt.json`에 남긴다.
+
+이 재개 경로는 허용 목록의 운영 함수 수정과 소스 주석 변경을 검증한다. 프롬프트·보상·마스크·자료·학습 설정 변경은 새 실험으로 처리한다. 따라서 최초 실패 커밋 `da57b50`을 이번에 바뀐 감시 계약으로 이어 학습하는 기능으로 해석하면 안 된다. 다음 정식 실행이 이번 계약으로 시작된 뒤 발생하는 호환 운영 수정에 쓰는 경로다. 허용한 함수 본문 내부가 실제로 운영 결함만 고치는지는 게시 전 코드 검토가 필요하다. 과거의 시간 마감 계약도 자동 변경하지 않는다.
+
+## 2026-11-19 — 설치 뒤 자료 복원과 A100 C2를 먼저 실행하는 순서
+
+`setup_v18b.sh`는 uv 설치와 원본 파일 사전 내려받기를 수행한다. 3,856개 기본 문항과 추가 감시 64개의 최종 복원은 학습 체인의 `prepare-data` 단계에 있다. C2는 이미 복원된 자료를 읽으므로, 아래 명령으로 같은 경로에 자료를 먼저 복원한 뒤 C2를 실행한다. 이후 정식 체인의 `prepare-data`는 기존 복원본을 검증하며 재수집·재복원을 반복하지 않는다. 설치가 출력한 `SETUP_DONE`과 `PREP_EXIT 0`을 확인한 뒤 포드 셸에서 실행한다.
+
+```bash
+set -euo pipefail
+cd /root/MMDL_test
+SHA='로컬 C1을 통과해 게시한 전체 40자리 커밋'
+test "$(git rev-parse HEAD)" = "$SHA"
+test -z "$(git status --porcelain --untracked-files=all)"
+export PYTHONPATH="$PWD/src:$PWD"
+export HF_HOME=/workspace/mmdl-volume/hf-cache
+V="$(python3 -c 'import json; print(json.load(open("/workspace/mmdl-volume/volume_manifest.json"))["venv"])')/bin/python"
+MODEL=/workspace/mmdl-volume/hf-cache/hub/models--Qwen--Qwen3-VL-4B-Instruct/snapshots/ebb281ec70b05090aa6165b016eac8ec08e71b17
+DATA=/workspace/mmdl-volume/v18b-data
+CACHE=/workspace/mmdl-volume/v18-cache
+
+# 같은 원본 캐시와 같은 최종 경로를 사용한다. 이 CPU 복원 시간은 C2의 25분과 별도로 기록한다.
+"$V" -B -m fine_tuning.error_note.v18b_data prepare \
+  --recipe "$PWD/fine_tuning/error_note/v18_recipe.json" \
+  --cache-dir "$CACHE" --output "$DATA" --tokenizer "$MODEL"
+
+# 설치 단계가 백그라운드로 시작한 공식 7B 판정기 내려받기도 완료돼야 C2를 오프라인으로 실행할 수 있다.
+grep -q '^CVDL_EXIT 0$' /workspace/cv-download.log
+C2_ROOT=/workspace/runs/v18b-c2-${SHA:0:12}
+test ! -e "$C2_ROOT"
+mkdir "$C2_ROOT"
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+  "$V" -B -m fine_tuning.error_note.v18b_rehearsal run --profile a100-bf16 \
+  --data-root "$DATA" --model-path "$MODEL" --output "$C2_ROOT/campaign" \
+  --deadline-seconds 1500 > "$C2_ROOT/c2.log" 2>&1
+
+# 같은 소스에서 예행 완료·외부 9개·판정기 호출 영수증을 확인한다.
+"$V" -B - "$SHA" "$C2_ROOT" <<'PY'
+from pathlib import Path
+import sys
+from fine_tuning.error_note.prep_v16b import read_sealed
+from fine_tuning.error_note.single import source_manifest
+sha, root = sys.argv[1], Path(sys.argv[2])
+plan = read_sealed(root / 'campaign/campaign-plan.json')
+receipt = read_sealed(root / 'campaign/rehearsal-receipt.json')
+source = source_manifest()
+assert source['base_commit'] == sha == plan['source']['base_commit']
+assert source['actual_files'] == plan['source']['actual_files']
+assert receipt['status'] == 'PASS' and receipt['reportable'] is False
+assert receipt['profile'] == 'a100-bf16'
+assert receipt['mechanical_note']['status'] == 'PASS'
+assert receipt['evaluation']['external_count'] == 9 and receipt['evaluation']['judge_receipt']
+print('C2_PASS', sha, receipt['wall_seconds'], root)
+PY
+test "$(git rev-parse HEAD)" = "$SHA"
+test -z "$(git status --porcelain --untracked-files=all)"
+printf 'VENV_FOR_LAUNCH %s\n' "$V"
+```
+
+이 명령은 A100의 실제 4B BF16·vLLM과 정식 캠페인 함수를 사용한다. 예행용 출력 상한·묶음 수·KV 크기는 축소된 `a100-bf16` 프로필의 값이다. 최대 길이 메모리 확인은 본실행의 기존 기능 검사에서 수행한다. C2는 감독 함수 진입부터 1,500초를 공통으로 적용한다. 각 작업자의 PyTorch 초기화·모델 로딩·생성·판정 시간을 이 기한에 포함한다. 실패·기한 초과는 해당 단계 로그에 보존하며 같은 폴더의 시험을 새 성공으로 덮어쓰지 않는다.
+
+`C2_PASS` 후 로컬 Claude 셸에서 기존 `launch_v18b_train.sh HOST PORT POD_ID SHA FIRST_BILL HOURLY GPU_TYPE VENV_FOR_LAUNCH`를 실행한다. `SHA`는 위와 같고 `FIRST_BILL`은 포드를 만든 원래 UTC다. `VENV_FOR_LAUNCH`에는 위에서 출력한 실제 포드 Python 경로를 넣는다. C2 출력은 `/workspace/runs/v18b-c2-...`에 있으며, 정식 학습 출력 `/workspace/runs/v18b/output`과 겹치지 않는다. 정식 학습은 같은 자료 경로와 원래 F0에서 시작한다.

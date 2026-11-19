@@ -210,7 +210,9 @@ class FakeLoraCore:
 
     def remove_lora(self, lora_id):
         self.calls.append(("remove", lora_id))
-        self.loaded.discard(lora_id)
+        if lora_id not in self.loaded:
+            return False
+        self.loaded.remove(lora_id)
         return True
 
     def add_lora(self, request):
@@ -258,6 +260,58 @@ class LoraSyncTests(unittest.TestCase):
                                  ("sleep", 1), ("wake",), ("hooks", 6), ("push", 3), ("remove", 2), ("add", 3)])
         self.assertEqual([r.lora_int_id for r in verified], [1])  # preflight once, before any generation
         self.assertEqual((value.lora_request.lora_int_id, core.list_loras()), (3, {3}))
+
+    def test_registry_cleanup_invalidates_the_current_pointer_before_another_swap(self):
+        from vllm.lora.request import LoRARequest
+
+        core = FakeLoraCore([])
+        value = SingleVllmSampler.__new__(SingleVllmSampler)
+        value.engine = SimpleNamespace(llm=SimpleNamespace(llm_engine=core))
+        value._lora_id, value.loaded_policy = 1, "a" * 64
+        with tempfile.TemporaryDirectory() as tmp:
+            value.lora_dir = Path(tmp)
+            old_path = Path(tmp) / "1"
+            old_path.mkdir()
+            value.lora_request = LoRARequest("old", 1, str(old_path))
+            core.add_lora(value.lora_request)
+            value.versions = {0: {"refcount": 0, "lora_int_id": 1, "request": value.lora_request}}
+            value.release_idle_versions()
+            self.assertIsNone(value.lora_request)
+            self.assertIsNone(value.loaded_policy)
+            with patch.object(llm_lora, "write_llm_adapter", lambda bundle, path, factor: path.mkdir()):
+                new = value._swap_adapter(None, "b" * 64)
+            self.assertEqual(core.list_loras(), {new.lora_int_id})
+            self.assertEqual(core.calls, [("add", 1), ("remove", 1), ("add", 2)])
+            self.assertFalse(old_path.exists())
+
+    def test_registry_cleanup_preserves_another_current_adapter_and_rejects_unconfirmed_removal(self):
+        from vllm.lora.request import LoRARequest
+
+        core = FakeLoraCore([])
+        value = SingleVllmSampler.__new__(SingleVllmSampler)
+        value.engine = SimpleNamespace(llm=SimpleNamespace(llm_engine=core))
+        with tempfile.TemporaryDirectory() as tmp:
+            first_path, second_path = Path(tmp) / "1", Path(tmp) / "2"
+            first_path.mkdir()
+            second_path.mkdir()
+            first, second = LoRARequest("first", 1, str(first_path)), LoRARequest("second", 2, str(second_path))
+            core.add_lora(first)
+            core.add_lora(second)
+            value.lora_request, value.loaded_policy = second, "b" * 64
+            value.versions = {0: {"refcount": 0, "lora_int_id": 1, "request": first},
+                              1: {"refcount": 1, "lora_int_id": 2, "request": second}}
+            value.release_version(0)
+            self.assertIs(value.lora_request, second)
+            self.assertEqual(value.loaded_policy, "b" * 64)
+            with self.assertRaisesRegex(RuntimeError, "referenced"):
+                value.release_version(1)
+            value.versions[1]["refcount"] = 0
+            core.loaded.remove(2)
+            with self.assertRaisesRegex(RuntimeError, "not acknowledged"):
+                value.release_version(1)
+            self.assertIs(value.lora_request, second)
+            self.assertTrue(second_path.is_dir())
+            self.assertIn(1, value.versions)
 
 
 class LoraFakeEngine(FakeEngine):

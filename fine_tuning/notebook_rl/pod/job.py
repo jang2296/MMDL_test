@@ -111,7 +111,7 @@ def _absolute(value: Any, name: str) -> str:
 
 def _financial(value: Any, now: dt.datetime, mode: str = "legacy") -> dt.datetime:
     """Validate the bounds the watchdog will use; return the effective deadline."""
-    keys = set(FINANCIAL_KEYS) | ({"balance_snapshot_utc"} if mode == "balance_reserve_only" else set())
+    keys = set(FINANCIAL_KEYS) | ({"balance_snapshot_utc"} if mode in ("balance_reserve_only", "measured_balance_reserve") else set())
     if not isinstance(value, dict) or set(value) != keys:
         raise JobError(f"financial must have exactly the keys {sorted(keys)}")
     if not isinstance(value["owned_pod_id"], str) or not POD_ID.match(value["owned_pod_id"]):
@@ -122,7 +122,7 @@ def _financial(value: Any, now: dt.datetime, mode: str = "legacy") -> dt.datetim
         cutoff = parse_utc(value["gpu_cutoff_utc"])
         start = parse_utc(value["billing_start_utc"])
         check_billing_start(start, now)
-        if mode == "balance_reserve_only":
+        if mode in ("balance_reserve_only", "measured_balance_reserve"):
             return reserve_deadline(parse_utc(value["balance_snapshot_utc"]),
                                     numbers[0], numbers[1], numbers[2], now=now)
         return effective_deadline(cutoff, start, *numbers)
@@ -191,16 +191,17 @@ def validate_job(job: Any, workspace: str = "/workspace",
     _workspace_child(job["volume_root"], workspace, "volume_root")
     now = now or dt.datetime.now(dt.timezone.utc)
     mode = job.get("financial_mode", "legacy")
-    if mode not in ("legacy", "balance_reserve_only"):
+    if mode not in ("legacy", "balance_reserve_only", "measured_balance_reserve"):
         raise JobError("unknown financial_mode")
-    if mode == "balance_reserve_only":
-        if prep or job.get("stage") not in ("single-main", "v18-main", "eval-course"):
+    if mode in ("balance_reserve_only", "measured_balance_reserve"):
+        measured_prep = prep and mode == "measured_balance_reserve"
+        if not measured_prep and (prep or job.get("stage") not in ("single-main", "v18-main", "eval-course")):
             raise JobError("reserve-only mode is for split training/evaluation jobs")
         if "repo_root" not in job:
             raise JobError("split jobs require repo_root")
     if "repo_root" in job:
         _absolute(job["repo_root"], "repo_root")
-        if mode == "balance_reserve_only" and job["stage"] == "eval-course" and job["repo_root"] != "/root/MMDL_test_eval":
+        if mode in ("balance_reserve_only", "measured_balance_reserve") and job.get("stage") == "eval-course" and job["repo_root"] != "/root/MMDL_test_eval":
             raise JobError("split evaluation repo_root must be /root/MMDL_test_eval")
     _financial(job["financial"], now, mode)
     if job["version"] == PREP_VERSION:
@@ -216,7 +217,7 @@ def validate_job(job: Any, workspace: str = "/workspace",
         _argv(job["main"], "main")
         seconds = job["max_main_seconds"]
         if (isinstance(seconds, bool) or not isinstance(seconds, int)
-                or not 0 < seconds <= MAX_MAIN_SECONDS):
+                or not (0 < seconds <= MAX_MAIN_SECONDS or seconds == 0 and mode == "measured_balance_reserve")):
             raise JobError(f"max_main_seconds must be an int in 1..{MAX_MAIN_SECONDS}")
         if _number(job["min_free_gib"], "min_free_gib") <= 0:
             raise JobError("min_free_gib must be positive")
@@ -262,7 +263,7 @@ def budget_fit(job: dict[str, Any], now: dt.datetime | None = None) -> dict[str,
     now = now or dt.datetime.now(dt.timezone.utc)
     mode = job.get("financial_mode", "legacy")
     deadline = _financial(job["financial"], now, mode)
-    remaining = (deadline - now).total_seconds() - (0 if mode == "balance_reserve_only" else RECOVERY_RESERVE_SECONDS)
+    remaining = (deadline - now).total_seconds() - (0 if mode != "legacy" else RECOVERY_RESERVE_SECONDS)
     required = required_seconds(job)
     return {"deadline_utc": deadline.isoformat(), "usable_seconds": math.floor(remaining),
             "required_seconds": required, "fits": required <= remaining}
@@ -278,6 +279,11 @@ def financial_argv(job: dict[str, Any]) -> list[str]:
                    "--extension-receipts", str(Path(job["run_dir"]) / "financial_extensions"),
                    "--extension-root-sha256", content_sha256(job),
                    "--reserve-stop-receipt", job["run_dir"] + ".reserve-stop.json"]
+    elif job.get("financial_mode") == "measured_balance_reserve":
+        result += ["--financial-mode", "measured_balance_reserve", "--balance-snapshot-utc",
+                   job["financial"]["balance_snapshot_utc"],
+                   "--balance-observation", str(Path(job["volume_root"]).parent / "jobs" / "balance-latest.json"),
+                   "--reserve-stop-receipt", job.get("run_dir", job["volume_root"] + ".prep") + ".reserve-stop.json"]
     return result
 
 
@@ -413,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         plan: dict[str, Any] = {"job_sha256": sha256_file(args.job), **job,
                                 "budget": budget_fit(job)}
-        if not plan["budget"]["fits"] and job.get("financial_mode") != "balance_reserve_only":
+        if not plan["budget"]["fits"] and job.get("financial_mode") not in ("balance_reserve_only", "measured_balance_reserve"):
             print(json.dumps(plan, indent=2), file=sys.stderr)
             raise JobError("job does not fit before the financial/GPU deadline")
         print(json.dumps(plan, indent=2))

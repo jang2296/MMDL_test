@@ -30,6 +30,14 @@ DENOMINATOR = 16 * 1024
 SFT_WEIGHTS = {"A1": .20, "C": .35, "N": .05, "PREP_SELF": 1., "PREP_HUMAN": 1.}
 
 
+class RowEncodingError(ValueError):
+    """An individual mask or replay-size failure, with provenance checks still enforced."""
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
+
+
 def _end_ids(tokenizer: Any) -> set[int]:
     end = tokenizer.convert_tokens_to_ids(END_TOKEN)
     if type(end) is not int or end == tokenizer.unk_token_id:
@@ -114,13 +122,14 @@ def encode_v17_row(processor: Any, model_config: Any, row: dict, images: list, *
     kind, prompt, target = row.get("kind"), row.get("prompt"), row.get("target")
     if (row.get("schema") != ROW_SCHEMA or kind not in KINDS
             or row.get("route") != (ROUTE_FULL if images else ROUTE_LM)
-            or not isinstance(prompt, str) or not prompt.strip() or not isinstance(target, str)
-            or kind in SFT_KINDS and not target.strip()
-            or any(token in text for token in tokenizer.all_special_tokens for text in (prompt, target))):
+            or not isinstance(prompt, str) or not prompt.strip() or not isinstance(target, str)):
         raise ValueError("v17: invalid row, route, prompt, target or control token")
     _validate_sft_receipt(row)
     if row.get("training_prompt_sha256") != hashlib.sha256(prompt.encode()).hexdigest():
         raise ValueError("v17: training prompt binding changed")
+    if (kind in SFT_KINDS and not target.strip()
+            or any(token in text for token in tokenizer.all_special_tokens for text in (prompt, target))):
+        raise RowEncodingError("UNREPLAYABLE_CONTENT", "v17: empty SFT target or literal control token")
     prepared = _prepare_row_inputs(processor, model_config, prompt, images, image)
     inputs = prepared["inputs"]
     ends = _end_ids(tokenizer)
@@ -152,17 +161,17 @@ def encode_v17_row(processor: Any, model_config: Any, row: dict, images: list, *
         if isinstance(supplied, torch.Tensor):
             supplied = supplied.tolist()
         if supplied is not None and supplied != mask:
-            raise ValueError("v17: independently recomputed token mask changed")
+            raise RowEncodingError("TOKEN_MASK", "v17: independently recomputed token mask changed")
     if kind == "N" and row.get("verified_content_token_mask") != mask:
-        raise ValueError("v17: note content mask changed")
+        raise RowEncodingError("NOTE_CONTENT_MASK", "v17: note content mask changed")
     if kind in {"A1", "C", "PREP_SELF"} and row.get("mask_mode") != "all-non-eos":
-        raise ValueError("v17: self SFT must use all nonterminal actions")
+        raise RowEncodingError("SFT_MASK_MODE", "v17: self SFT must use all nonterminal actions")
     if kind == "N" and row.get("mask_mode") != "verified-corrected-value-content-only-v1":
-        raise ValueError("v17: note SFT requires verified corrected content")
+        raise RowEncodingError("NOTE_MASK_MODE", "v17: note SFT requires verified corrected content")
     if (len(actions) > (1024 if kind in {"N", "OBS"} else 8192)
             or inputs["input_ids"].numel() + len(actions) > 24576
             or any(getattr(model_config, name, None) in actions for name in ("image_token_id", "video_token_id"))):
-        raise ValueError("v17: target/context limit or generated image/video token")
+        raise RowEncodingError("REPLAY_LIMIT", "v17: target/context limit or generated image/video token")
     result = row | {"input_ids": torch.cat([inputs["input_ids"][0], torch.tensor(actions, dtype=torch.long)]),
                     "target_len": len(actions), "loss_mask": torch.tensor(mask, dtype=torch.bool),
                     "loss_token_mask": torch.tensor(mask, dtype=torch.bool),

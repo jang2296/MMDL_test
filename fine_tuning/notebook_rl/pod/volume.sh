@@ -33,7 +33,8 @@ job() { "$python" -B -m fine_tuning.notebook_rl.pod.job "$job_file" --workspace 
 plan=$(job) || exit 2
 [[ $(job --get version) == pod-prep-v1 ]] || { printf '%s\n' 'volume.sh needs a pod-prep-v1 job' >&2; exit 2; }
 mapfile -d '' -t financial < <(job --financial-argv)
-((${#financial[@]} == 12)) || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
+financial_mode=$(job --get financial_mode)
+[[ $financial_mode == legacy && ${#financial[@]} == 12 || $financial_mode == measured_balance_reserve && ${#financial[@]} == 20 ]] || { printf '%s\n' 'Cannot derive the financial bounds from the job' >&2; exit 2; }
 owned_pod_id=$(job --get owned_pod_id)
 code_commit=$(job --get commit)
 volume_root=$(job --get volume_root)

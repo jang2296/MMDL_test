@@ -16,6 +16,22 @@ from pathlib import Path
 BILLING_SKEW_SECONDS = 300  # clock skew tolerated for a billing start in the future
 
 
+def measured_balance(path: str, owned_pod_id: str, *, now: dt.datetime | None = None) -> float:
+    """Read a fresh operator observation delivered over the existing authenticated SSH channel."""
+    observation = json.loads(Path(path).read_text())
+    if (not isinstance(observation, dict) or set(observation) != {"version", "owned_pod_id", "observed_at", "balance_usd"}
+            or observation["version"] != "v18b-balance-observation-v1" or observation["owned_pod_id"] != owned_pod_id):
+        raise ValueError("Balance observation belongs to a different owned pod or contract")
+    instant = now or dt.datetime.now(dt.timezone.utc)
+    age = (instant - utc(observation["observed_at"])).total_seconds()
+    if not -60 <= age <= 600:
+        raise ValueError("Balance observation must be recent and cannot be in the future")
+    value = observation["balance_usd"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError("RunPod returned an invalid measured balance")
+    return float(value)
+
+
 def utc(value: str) -> dt.datetime:
     parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -148,8 +164,9 @@ def main() -> int:
     for name in ("balance-usd", "reserve-usd", "hourly-usd"):
         parser.add_argument("--"+name, type=float, required=True)
     parser.add_argument("--max-seconds", type=float, default=3600)
-    parser.add_argument("--financial-mode", choices=("legacy", "balance_reserve_only"), default="legacy")
+    parser.add_argument("--financial-mode", choices=("legacy", "balance_reserve_only", "measured_balance_reserve"), default="legacy")
     parser.add_argument("--balance-snapshot-utc")
+    parser.add_argument("--balance-observation")
     parser.add_argument("--extension-receipts")
     parser.add_argument("--extension-root-sha256")
     parser.add_argument("--reserve-stop-receipt")
@@ -163,7 +180,7 @@ def main() -> int:
 
     def persist() -> None:
         paths = [args.result_file] if args.result_file else []
-        if result.get("status") == "BUDGET_STOP" and args.financial_mode == "balance_reserve_only":
+        if result.get("status") == "BUDGET_STOP" and args.financial_mode in ("balance_reserve_only", "measured_balance_reserve"):
             paths += [args.reserve_stop_receipt]
         for path in paths:
             try:
@@ -173,7 +190,8 @@ def main() -> int:
     try:
         if not args.owned_pod_id or os.environ.get("RUNPOD_POD_ID") != args.owned_pod_id:
             raise ValueError("Exact owned RunPod identity required")
-        if not math.isfinite(args.max_seconds) or args.max_seconds <= 0:
+        measured_only = args.financial_mode == "measured_balance_reserve"
+        if not math.isfinite(args.max_seconds) or args.max_seconds < 0 or args.max_seconds == 0 and not measured_only:
             raise ValueError("Positive finite maximum seconds required")
         command = args.command[1:] if args.command[:1] == ["--"] else args.command
         if not command:
@@ -181,7 +199,17 @@ def main() -> int:
         check_billing_start(utc(args.billing_start_utc))
         reserve_only = args.financial_mode == "balance_reserve_only"
         seen: tuple[str, ...] = ()
-        if reserve_only:
+        if measured_only:
+            if args.reserve_usd != 1.5 or not args.reserve_stop_receipt or not Path(args.reserve_stop_receipt).is_absolute():
+                raise ValueError("Measured balance watchdog needs the 1.5 USD reserve and an absolute stop receipt")
+            if not args.balance_observation or not Path(args.balance_observation).is_absolute():
+                raise ValueError("Measured balance watchdog requires an absolute observation path")
+            balance = measured_balance(args.balance_observation, args.owned_pod_id)
+            if balance <= args.reserve_usd:
+                raise TimeoutError("Measured balance reached the USD 1.5 reserve")
+            allowed = None
+            result.update(financial_mode=args.financial_mode, deadline_utc=None, timeout_seconds=None)
+        elif reserve_only:
             if (args.reserve_usd != 1.5 or not args.extension_receipts
                     or not Path(args.extension_receipts).is_absolute()
                     or not args.reserve_stop_receipt or not Path(args.reserve_stop_receipt).is_absolute()
@@ -199,8 +227,10 @@ def main() -> int:
             deadline = effective_deadline(utc(args.gpu_cutoff_utc), utc(args.billing_start_utc),
                                           args.balance_usd, args.reserve_usd, args.hourly_usd)
             allowed = min(args.max_seconds, (deadline-dt.datetime.now(dt.timezone.utc)).total_seconds()-120)
-        result.update(deadline_utc=deadline.isoformat(), timeout_seconds=max(0, allowed))
-        if allowed <= 0:
+        if not measured_only:
+            assert allowed is not None
+            result.update(deadline_utc=deadline.isoformat(), timeout_seconds=max(0, allowed))
+        if allowed is not None and allowed <= 0:
             raise TimeoutError("Measured balance reached the USD 1.5 reserve" if reserve_only else
                                "Budget cannot retain the 120-second recovery reserve")
         def interrupted(signum, _frame):
@@ -217,7 +247,35 @@ def main() -> int:
         process = subprocess.Popen(command, start_new_session=True, stdin=subprocess.DEVNULL,
                                    env=environment)
         result["pid"] = process.pid
-        if reserve_only:
+        if measured_only:
+            while True:
+                if args.max_seconds > 0 and time.monotonic() - started >= args.max_seconds:
+                    result.update(status="TECHNICAL_TIMEOUT", technical_timeout_seconds=args.max_seconds)
+                    code = 124
+                    break
+                try:
+                    balance = measured_balance(args.balance_observation, args.owned_pod_id)
+                except Exception as exc:
+                    result.update(balance_telemetry_warning=type(exc).__name__,
+                                  balance_telemetry_warning_at=dt.datetime.now(dt.timezone.utc).isoformat())
+                else:
+                    result.update(measured_balance_usd=balance,
+                                  balance_measured_at=dt.datetime.now(dt.timezone.utc).isoformat())
+                    result.pop("balance_telemetry_warning", None)
+                    if balance <= args.reserve_usd:
+                        raise TimeoutError("Measured balance reached the USD 1.5 reserve")
+                    if balance < args.reserve_usd + args.hourly_usd * 2:
+                        result["recharge_requested"] = True
+                    else:
+                        result.pop("recharge_requested", None)
+                persist()
+                try:
+                    wait = min(60, max(.001, args.max_seconds - (time.monotonic() - started))) if args.max_seconds > 0 else 60
+                    code = process.wait(timeout=wait)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        elif reserve_only:
             while True:
                 deadline, _, seen = balance_extensions(
                     args.extension_receipts, root_sha256=args.extension_root_sha256,
@@ -234,16 +292,17 @@ def main() -> int:
                     continue
         else:
             code = process.wait(timeout=allowed)
-        result.update(status="EXITED", returncode=code)
+        result.setdefault("status", "EXITED")
+        result["returncode"] = code
         code = code if code >= 0 else 128-code
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         result.update(status="BUDGET_STOP", reason=str(exc))
-        if args.financial_mode == "balance_reserve_only":
+        if args.financial_mode in ("balance_reserve_only", "measured_balance_reserve"):
             result.update(required_action="POD_STOP_REQUIRED", recovery_status="RECOVERY_REQUIRED",
                           owned_pod_id=args.owned_pod_id, result_file=args.result_file,
                           automatic_pod_stop=False)
         persist()  # before the group is stopped, so the child can record BUDGET_STOP, not a kill
-        if args.financial_mode == "balance_reserve_only":
+        if args.financial_mode in ("balance_reserve_only", "measured_balance_reserve"):
             try:
                 print(f"POD_STOP_REQUIRED: preserve results, then stop owned Pod {args.owned_pod_id}; "
                       f"receipt {args.reserve_stop_receipt}. Workload stop does not stop Pod billing.",

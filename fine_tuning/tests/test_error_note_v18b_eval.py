@@ -161,7 +161,7 @@ class OfficialDeadlineChecks(unittest.TestCase):
         self.assertGreater(heartbeat["v18b_live"]["generated_tokens_per_second"], 0)
         self.assertIn("preemptions_observed", heartbeat["v18b_live"])
 
-    def test_original_billing_caps_the_canonical_run_and_resume_before_model_load(self):
+    def clock_fixture(self, decisions):
         from fine_tuning.error_note.prep_v16b import seal as seal_file
         from fine_tuning.error_note.v18b_execution import deadline_epoch
         from mmdl.evaluation import cli
@@ -174,18 +174,18 @@ class OfficialDeadlineChecks(unittest.TestCase):
             cfg = {"protocol_id": pe.FINAL_VARIANT_V8}
             write_json(paths["protocol"], cfg)
             sealed_settings = root / "settings.json"
-            seal_file(sealed_settings, {"version": "v18b-execution-settings-v1", "settings": settings()})
+            seal_file(sealed_settings, {"version": "v18b-execution-settings-v1", "settings": decisions})
             ids = [f"item-{i:03}" for i in range(900)]
             declared = {"model_sha256": "a" * 64, "model_ref_sha256": sha256_file(paths["ref"])}
-            validation = {"slots": 9, "training_protocol_version": "error-note-v18b", "execution_settings": settings(),
+            validation = {"slots": 9, "training_protocol_version": "error-note-v18b", "execution_settings": decisions,
                 "selected_mode": "eager", "environment_sha256": "b" * 64, "observed_engine": {}, "evaluation_commit": "a" * 40}
-            prereg = {"format": pe.FORMAT_V12, "training_protocol_version": "error-note-v18b", "execution_settings": settings(),
+            prereg = {"format": pe.FORMAT_V12, "training_protocol_version": "error-note-v18b", "execution_settings": decisions,
                 "calibration_sha256": sha256_file(paths["calibration"]), "evaluation_watchdog_seconds": 50400,
                 "engine_validation": validation, "engine_validation_sha256": sha256_file(paths["calibration"]),
                 "training_artifacts_file_sha256": sha256_file(paths["seal"]), "arms": {pe.ARM_SINGLE: declared},
                 "evaluation_subsets": {"all": {"ids": ids}}, "execution_contract": {"version": "v17-evaluation-execution-v2"},
                 "protocol_variants": {pe.FINAL_VARIANT_V8: {"config_digest": digest(cfg)}}}
-            start = {"event": "START", "run_id": settings()["run_id"], "preregistration_sha256": "c" * 64,
+            start = {"event": "START", "run_id": decisions["run_id"], "preregistration_sha256": "c" * 64,
                 "arm": pe.ARM_SINGLE, "variant": pe.FINAL_VARIANT_V8, "subset": "all", "time": "2026-11-19T12:00:00+00:00"}
             for owner, name, result in ((pe, "load_preregistration", (prereg, "c" * 64)),
                     (pe, "read_ledger", ([start], "d" * 64)),
@@ -212,18 +212,33 @@ class OfficialDeadlineChecks(unittest.TestCase):
                 "--training-artifacts", str(paths["seal"]), "--execution-settings", str(sealed_settings), "--"]
             forwarded = ["--protocol", str(paths["protocol"]), "--hardware", str(paths["hardware"]), "--model-ref", str(paths["ref"]),
                 "--model-path", str(root / "model"), "--artifact-root", str(root), "--data-root", str(root / "data"),
-                "--base-path", str(root / "base"), "--run-id", settings()["run_id"], "--mode", "partial"]
+                "--base-path", str(root / "base"), "--run-id", decisions["run_id"], "--mode", "partial"]
             forwarded += [arg for sid in ids for arg in ("--sample-id", sid)]
-            hard = deadline_epoch(settings(), reserve_seconds=settings()["post_eval_reserve_seconds"])
+            hard = deadline_epoch(decisions, reserve_seconds=decisions["post_eval_reserve_seconds"])
             with mock.patch.object(ev.time, "time", return_value=hard - 60), self.assertRaisesRegex(RuntimeError, "model entry"):
                 ev.main(["run", *common, *forwarded])
-            run = root / "runs" / settings()["run_id"]
+            run = root / "runs" / decisions["run_id"]
             run.mkdir(parents=True)
-            with mock.patch.object(ev.time, "time", return_value=hard + 1), self.assertRaisesRegex(TimeoutError, "first-billing"):
+            error, message = ((RuntimeError, "model entry") if decisions.get("limit_action") == "warn" else
+                              (TimeoutError, "first-billing"))
+            with mock.patch.object(ev.time, "time", return_value=hard + 1), self.assertRaisesRegex(error, message):
                 ev.main(["resume", *common, *forwarded])
-            self.assertEqual(seen, [hard])
-            self.assertEqual(backend.call_count, 1)
+            if decisions.get("limit_action") == "warn":
+                self.assertEqual(seen, [None, None])
+                self.assertEqual(backend.call_count, 2)
+            else:
+                self.assertEqual(seen, [hard])
+                self.assertEqual(backend.call_count, 1)
             self.assertEqual(json.loads((run / "v17_state.json").read_text())["status"], "INTERRUPTED_RESUMABLE")
+
+
+    def test_original_billing_caps_the_canonical_run_and_resume_before_model_load(self):
+        self.clock_fixture(settings())
+
+    def test_completion_run_and_resume_load_after_the_planning_time(self):
+        decisions = settings() | {"limit_action": "warn", "budget_limit_usd": 22.,
+                                 "total_timeout_seconds": 86400}
+        self.clock_fixture(decisions)
 
 
 class ProductionArtifactChecks(unittest.TestCase):

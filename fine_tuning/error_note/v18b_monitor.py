@@ -44,8 +44,10 @@ def _pair(reference: dict[str, dict], candidate: dict[str, dict], ids: list[str]
     correct_a, correct_b = [x.get("status") == "CORRECT" for x in a], [x.get("status") == "CORRECT" for x in b]
     gain = sum(not x and y for x, y in zip(correct_a, correct_b, strict=True))
     loss = sum(x and not y for x, y in zip(correct_a, correct_b, strict=True))
-    added = sum(x >= 32 and y < 32 for x, y in zip(lengths_a, lengths_b, strict=True))
-    removed = sum(x < 32 and y >= 32 for x, y in zip(lengths_a, lengths_b, strict=True))
+    short_a = [length < 32 and row["finish_reason"] == "stop" for length, row in zip(lengths_a, a, strict=True)]
+    short_b = [length < 32 and row["finish_reason"] == "stop" for length, row in zip(lengths_b, b, strict=True)]
+    added = sum(not x and y for x, y in zip(short_a, short_b, strict=True))
+    removed = sum(x and not y for x, y in zip(short_a, short_b, strict=True))
     n = len(ids)
     return {"n": n, "reference_correct": sum(correct_a), "candidate_correct": sum(correct_b),
         "recovered": gain, "lost": loss, "net_change": gain - loss, "p_value": _sign_p(gain, loss),
@@ -53,13 +55,14 @@ def _pair(reference: dict[str, dict], candidate: dict[str, dict], ids: list[str]
         "candidate_lengths": length_distribution_v17(lengths_b),
         "short_added": added, "short_removed": removed,
         "short_delta": (added - removed) / n if n else 0, "short_p_value": _sign_p(added, removed),
+        "reference_natural_short": sum(short_a), "candidate_natural_short": sum(short_b),
         "reference_truncated": sum(x["finish_reason"] == "length" for x in a),
         "candidate_truncated": sum(x["finish_reason"] == "length" for x in b)}
 
 
 def monitor_comparison(f0_records: list[dict], post_prep_records: list[dict],
-                       candidate_records: list[dict], items: list[dict]) -> dict:
-    """Compare identical heldout IDs; ScienceQA remains descriptive, outside the decision panel."""
+                       candidate_records: list[dict], items: list[dict], *, warning_only: bool = False) -> dict:
+    """Compare matched draws; bounded short diagnostics can only produce warnings."""
     baseline, post, current = map(_indexed, (f0_records, post_prep_records, candidate_records))
     by_id = {x["problem_id"]: x for x in items}
     if (len(by_id) != len(items) or set(baseline) != set(post) or set(baseline) != set(current)
@@ -78,31 +81,45 @@ def monitor_comparison(f0_records: list[dict], post_prep_records: list[dict],
                 if row["output"]["generation"].get(field) != reference["output"]["generation"].get(field):
                     raise ValueError("V18B_MONITOR_GENERATION_CHANGED:" + field)
     ids = sorted(by_id)
-    decision_ids = [pid for pid in ids if by_id[pid]["source"] != "hf-scienceqa"]
+    decision_ids = ids
     if not decision_ids:
         raise ValueError("V18B_MONITOR_NO_DECISION_ITEMS")
     against_f0 = _pair(baseline, current, decision_ids)
     against_prep = _pair(post, current, decision_ids)
+    sources = {s: {"against_f0": _pair(baseline, current, [p for p in ids if by_id[p]["source"] == s]),
+                   "against_post_prep": _pair(post, current, [p for p in ids if by_id[p]["source"] == s])}
+               for s in sorted({x["source"] for x in items})}
     reasons = []
     warnings = []
-    if against_f0["net_change"] < 0 and against_f0["p_value"] < .05:
+    if not warning_only and against_f0["net_change"] < 0 and against_f0["p_value"] < .05:
         reasons.append("MONITOR_DEGRADED")
-    if all(x["short_delta"] >= .15 and x["short_p_value"] < .05 for x in (against_f0, against_prep)):
+    drift_sources = [source for source, values in sources.items()
+                     if all(x["short_delta"] >= .15 and x["short_p_value"] < .05 for x in values.values())]
+    if (all(x["short_delta"] >= .15 and x["short_p_value"] < .05 for x in (against_f0, against_prep))
+            or warning_only and drift_sources):
         warnings.append("B2_SHORT_DRIFT")
-    return {"version": "v18b-b2-monitor-v2", "ids_sha256": digest(ids), "decision_ids_sha256": digest(decision_ids),
+    return {"version": "v18b-short-monitor-v1" if warning_only else "v18b-accuracy-monitor-v1",
+        "ids_sha256": digest(ids), "decision_ids_sha256": digest(decision_ids),
         "status": "STOP_REQUESTED" if reasons else "CONTINUE", "reasons": reasons, "warnings": warnings,
         "against_f0": against_f0, "against_post_prep": against_prep,
         "all_items": _pair(baseline, current, ids),
-        "sources": {s: {"against_f0": _pair(baseline, current, [p for p in ids if by_id[p]["source"] == s]),
-                         "against_post_prep": _pair(post, current, [p for p in ids if by_id[p]["source"] == s])}
-                    for s in sorted({x["source"] for x in items})},
+        "sources": sources, "short_drift_sources": drift_sources,
         "generation_n": len(ids), "decision_n": len(decision_ids),
-        "excluded_ceiling_source": "hf-scienceqa", "excluded_ceiling_n": len(ids) - len(decision_ids),
-        "ceiling_generation_policy": "OMITTED_IN_V18B; historical replay may retain descriptive rows",
+        "excluded_ceiling_source": None, "excluded_ceiling_n": 0,
+        "ceiling_generation_policy": "ALL_FROZEN_MONITOR_SOURCES_INCLUDED",
         "thresholds": {"short_delta": .15, "paired_p_lt": .05, "references_required": ["F0", "post-prep"],
-            "short_drift_action": "WARNING", "stop_rule": "F0_PAIRED_NET_NEGATIVE_AND_P_LT_0_05"},
+            "short_drift_action": "WARNING", "stop_rule": "NONE" if warning_only else "F0_PAIRED_NET_NEGATIVE_AND_P_LT_0_05"},
         "false_alarm_calibration": "UNMEASURED_SINGLE_F0", "training_allowed": False,
         "effect_measured": False, "auto_evaluate": False}
+
+
+def short_monitor_comparison(f0_records: list[dict], post_prep_records: list[dict],
+                             candidate_records: list[dict], items: list[dict]) -> dict:
+    for row in f0_records + post_prep_records + candidate_records:
+        cap = row["output"]["generation"].get("max_tokens")
+        if cap is not None and cap != 64:
+            raise ValueError("V18B_SHORT_MONITOR_CAP_CHANGED")
+    return monitor_comparison(f0_records, post_prep_records, candidate_records, items, warning_only=True)
 
 
 def monitor_stop_decision(report: dict, action: str, current_checkpoint: dict,

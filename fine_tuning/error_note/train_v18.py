@@ -127,7 +127,7 @@ def _validate_masks(row: dict, tokenizer: Any) -> None:
             raise ValueError("v18: note mask differs from verified sampled bytes")
         return
     if supplied != full:
-        raise ValueError("v18: self SFT must use every nonterminal sampled action")
+        raise previous.RowEncodingError("SFT_CONTENT_MASK", "v18: self SFT must use every nonterminal sampled action")
     if kind not in {"A1", "C"}:
         return
     receipt = row["verification_receipt"]
@@ -136,17 +136,19 @@ def _validate_masks(row: dict, tokenizer: Any) -> None:
     grade = receipt.get("evidence_grade")
     if (grade not in {"RESULT_ONLY", "SOURCE_GROUNDED"}
             or receipt.get("verified_process_byte_spans", []) != spans
-            or _list(row.get("verified_process_token_mask")) != expected
             or (grade == "SOURCE_GROUNDED") != any(expected)
             or any(expected) and receipt.get("verified_evidence_count", 0) < 1):
         raise ValueError("v18: source-grounded process mask or admission grade changed")
+    if _list(row.get("verified_process_token_mask")) != expected:
+        raise previous.RowEncodingError("PROCESS_MASK", "v18: source-grounded process mask differs from verified bytes")
     use_spans = row.get("corrected_use_byte_spans", [])
     used = _mask(tokenizer, row, use_spans)
     if (receipt.get("corrected_use_byte_spans", []) != use_spans
-            or _list(row.get("corrected_use_token_mask", [False] * len(actions))) != used
             or kind != "C" and any(used)
             or any(value and not verified for value, verified in zip(used, expected, strict=True))):
         raise ValueError("v18: corrected-use mask lacks verified source use")
+    if _list(row.get("corrected_use_token_mask", [False] * len(actions))) != used:
+        raise previous.RowEncodingError("CORRECTED_USE_MASK", "v18: corrected-use mask differs from verified bytes")
 
 
 def encode_v18_row(processor: Any, model_config: Any, row: dict, images: list, *, image: dict = IMAGE) -> dict:
@@ -162,7 +164,7 @@ def encode_v18_row(processor: Any, model_config: Any, row: dict, images: list, *
     supplied = [_list(row[key]) for key in ("loss_mask", "loss_token_mask") if key in row]
     if any(not isinstance(mask, list) or len(mask) != result["target_len"]
            or any(type(bit) is not bool for bit in mask) or mask != supplied[0] for mask in supplied):
-        raise ValueError("v18: supplied raw-token masks differ or contain non-booleans")
+        raise previous.RowEncodingError("TOKEN_MASK", "v18: supplied raw-token masks differ or contain non-booleans")
     if supplied:
         result["loss_mask"] = torch.tensor(supplied[0], dtype=torch.bool)
         result["loss_token_mask"] = result["loss_mask"].clone()

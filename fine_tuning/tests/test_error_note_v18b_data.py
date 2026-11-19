@@ -18,9 +18,9 @@ class PanelTests(unittest.TestCase):
         self.assertTrue(all(x["training_allowed"] is False for x in recipe["items"]))
         self.assertEqual(data.ROLES, ("train", "prep", "monitor", "effect", "performance", "reasoning_monitor"))
 
-    def test_public_panel_is_disjoint_from_all_base_roles_and_live_monitor_has_213_ids(self):
+    def test_public_panel_is_disjoint_and_short_warning_includes_all_264_ids(self):
         from fine_tuning.error_note.v18_recipe import load_recipe
-        from fine_tuning.error_note.v18b_monitor import monitor_comparison
+        from fine_tuning.error_note.v18b_monitor import short_monitor_comparison
         from fine_tuning.tests.test_error_note_v18b_monitor import record
         base = load_recipe()
         panel = data.panel_recipe()
@@ -29,14 +29,14 @@ class PanelTests(unittest.TestCase):
                 "image_sha256": [x["sha256"] for x in row["images"]],
                 "pixel_sha256": [x["pixel_sha256"] for x in row["images"]]}
         data._isolated([identity(x) for x in panel["items"]], [identity(x) for x in base["items"]])
-        live = [x for x in base["items"] if x["role"] == "monitor" and x["source"] != "hf-scienceqa"]
-        self.assertEqual(len(live), 149)
+        live = [x for x in base["items"] if x["role"] == "monitor"]
+        self.assertEqual(len(live), 200)
         self.assertEqual(len([x for x in base["items"] if x["role"] == "monitor"]), 200)
         items = [dict(identity(x), training_allowed=False, benchmark_derived=False) for x in live + panel["items"]]
         records = [record(x["problem_id"]) for x in items]
-        comparison = monitor_comparison(records, records, records, items)
-        self.assertEqual((comparison["generation_n"], comparison["decision_n"]), (213, 213))
-        self.assertNotIn("hf-scienceqa", comparison["sources"])
+        comparison = short_monitor_comparison(records, records, records, items)
+        self.assertEqual((comparison["generation_n"], comparison["decision_n"]), (264, 264))
+        self.assertIn("hf-scienceqa", comparison["sources"])
 
     def test_id_family_native_byte_pixel_and_transitive_bridges_are_excluded(self):
         panel = {"problem_id": "panel", "source": "s", "native_id": "one", "family_id": "family",

@@ -79,6 +79,47 @@ class ClosureFixture:
 
 
 class RecoveryTests(unittest.TestCase):
+    def test_row_admission_receipts_restore_and_remain_bound_to_the_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = ClosureFixture(root / "campaign")
+            rejected = {"row_id": "bad:N", "problem_id": "bad", "kind": "N",
+                        "source_row_sha256": "a" * 64, "reason_code": "TOKEN_MASK", "reason": "synthetic bad mask"}
+            report = {"schema": "v18b-row-quarantine-v1", "status": "CONTINUE", "attempted_rows": 3,
+                      "auxiliary_rows": 3, "admitted_row_ids": ["good:N", "other:N"], "rejected_rows": [rejected]}
+            for name in ("row-admissions", "transactions", "update-results"):
+                (original.root / name).mkdir()
+            short = original.root / "short-monitor-post-prep/generations"
+            short.mkdir(parents=True)
+            (short / "sample.json").write_text('{"synthetic_short_probe": true}')
+            admission = sealed(original.root / "row-admissions/slot-0.json", {
+                "plan_sha256": original.plan["sha256"], "slot": 0, "parent_checkpoint": None, "report": report})
+            transaction = sealed(original.root / "transactions/slot-0.json", {
+                "plan_sha256": original.plan["sha256"], "slot": 0, "parent_checkpoint": None,
+                "row_admission_sha256": admission["sha256"]})
+            update = sealed(original.root / "update-results/slot-0.json", {
+                "global_slot": 0, "transaction_sha256": transaction["sha256"], "plan_sha256": original.plan["sha256"],
+                "row_counts": {"N": 2}, "attempted_row_counts": {"N": 3}, "result": {"stats": {
+                    "consumed_row_ids": report["admitted_row_ids"], "row_quarantine": report}}})
+            hook = recovery.RecoveryCopyHook(original.root, root / "backups")
+            hook.checkpoint(original.state, force=True)
+            archive = Path(hook.close()[0]["archive"])
+            shutil.rmtree(original.root)
+            restored = root / "restored"
+            self.assertEqual(recovery.restore_bundle(archive, restored)["status"], "RESUME_REFERENCES_VERIFIED")
+            path = recovery.check_row_admission(restored, transaction, update)
+            self.assertEqual(read_sealed(path), admission)
+            self.assertEqual((restored / "short-monitor-post-prep/generations/sample.json").read_text(),
+                             '{"synthetic_short_probe": true}')
+            bad = deepcopy(update)
+            bad["row_counts"]["N"] = 3
+            with self.assertRaisesRegex(ValueError, "row counts"):
+                recovery.check_row_admission(restored, transaction, bad)
+            bad = deepcopy(update)
+            bad["result"]["stats"]["consumed_row_ids"] = bad["result"]["stats"]["consumed_row_ids"] + ["bad:N"]
+            with self.assertRaisesRegex(ValueError, "consumption"):
+                recovery.check_row_admission(restored, transaction, bad)
+
     def test_archive_restores_delayed_results_and_consumes_same_next_slots(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -30,7 +30,19 @@ DEPENDENCIES = ("error_note/single_vllm.py", "error_note/llm_lora.py",
 def _legacy_generator_ast(source: str, *, version: str) -> str:
     """Compare complete generator code specialized to the fixed, non-monitor 24K F0 path."""
     class FixedF0(ast.NodeTransformer):
+        def visit_FunctionDef(self, node):
+            if node.name == "release_version":
+                cleanup = ast.parse('if self.lora_request is not None and self.lora_request.lora_int_id == entry["lora_int_id"]:\n'
+                                    '    self.lora_request, self.loaded_policy = None, None').body[0]
+                expected = ast.dump(cleanup, include_attributes=False)
+                # The acknowledged deletion only clears a stale alias; F0 token generation is identical.
+                node.body = [statement for statement in node.body
+                             if ast.dump(statement, include_attributes=False) != expected]
+            return self.generic_visit(node)
+
         def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Load) and node.id == "rehearsal_profile":
+                return ast.Constant(None)
             if isinstance(node.ctx, ast.Load) and node.id in {"protocol_version", "generation_context_limit", "CONTEXT_LIMIT"}:
                 return ast.Constant(version if node.id == "protocol_version" else 24576)
             return node
@@ -41,6 +53,8 @@ def _legacy_generator_ast(source: str, *, version: str) -> str:
                     return ast.Constant(version)
                 if node.attr == "context_limit":
                     return ast.Constant(24576)
+                if node.attr == "rehearsal_profile":
+                    return ast.Constant(None)
             return self.generic_visit(node)
 
         def visit_Call(self, node):
@@ -51,6 +65,8 @@ def _legacy_generator_ast(source: str, *, version: str) -> str:
                     return ast.Constant(version)
                 if node.args[1].value == "context_limit":
                     return ast.Constant(24576)
+                if node.args[1].value == "rehearsal_profile":
+                    return ast.Constant(None)
             if (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name)
                     and node.func.value.id == "request" and node.func.attr == "get"
                     and node.args and isinstance(node.args[0], ast.Constant)
@@ -62,6 +78,7 @@ def _legacy_generator_ast(source: str, *, version: str) -> str:
             node = self.generic_visit(node)
             if any(isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id == "self"
                    and ((t.attr == "protocol_version" and isinstance(node.value, ast.Constant) and node.value.value == version)
+                        or (t.attr == "rehearsal_profile" and isinstance(node.value, ast.Constant) and node.value.value is None)
                         or (t.attr == "context_limit" and isinstance(node.value, ast.Constant)
                             and node.value.value in (24576, 40960))) for t in node.targets):
                 return None
@@ -69,7 +86,7 @@ def _legacy_generator_ast(source: str, *, version: str) -> str:
 
         def visit_arguments(self, node):
             pairs = [(a, d) for a, d in zip(node.kwonlyargs, node.kw_defaults, strict=True)
-                     if a.arg != "generation_context_limit"]
+                     if a.arg not in {"generation_context_limit", "rehearsal_profile"}]
             node.kwonlyargs, node.kw_defaults = [a for a, _ in pairs], [d for _, d in pairs]
             return self.generic_visit(node)
 
@@ -350,7 +367,7 @@ def reuse_f0(args: Any, *, processor: Any = None, model_config: Any = None) -> d
         "generator_code_comparison": code_comparison,
         "role_permissions": {"prep": "training", "effect": "evaluation_only", "monitor": "evaluation_only",
                              "reasoning_monitor": "evaluation_only"},
-        "monitor_reuse": "NEW_B2_CAP_REQUIRES_NEW_F0_DRAW", "decisions": decisions,
+        "monitor_reuse": "SEPARATE_ACCURACY_8192_AND_SHORT_64_REQUIRE_MATCHED_DRAWS", "decisions": decisions,
         "upload_authorized": False, "model_loaded": False, "records": accepted})
     return receipt
 

@@ -1025,6 +1025,7 @@ def _check_v17_split(stage: str, p: dict[str, Any]) -> dict[str, Any]:
     if v18 and not training and (not isinstance(p.get("evaluation_authorization"), str) or not p["evaluation_authorization"].strip()):
         raise ValueError("v18 evaluation plan requires the operator's actual evaluation decision")
     if v18b:
+        optional.add("generation_timing")
         if training:
             keys.add("backup_transfer_command")
         else:
@@ -1108,6 +1109,7 @@ def _check_v17_split(stage: str, p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _split_meta(stage: str, p: dict[str, Any], estimate: float | None) -> dict[str, Any]:
+    from .v18b_generation_plan import generation_plan
     from .protocol import VERSION_V17, V17_IDENTIFIERS, V17_SPECIFICATION_SHA256
     if stage.startswith("v18b-"):
         from .protocol import VERSION_V18B, V18B_IDENTIFIERS, V18B_SPECIFICATION_SHA256
@@ -1120,13 +1122,16 @@ def _split_meta(stage: str, p: dict[str, Any], estimate: float | None) -> dict[s
     funding = dict(p["funding"])
     estimated_cost = None if estimate is None else (
         (estimate + funding["recovery_seconds"]) * (p["hourly_usd"] + funding["storage_usd_per_hour"]) / 3600)
-    financial_mode = "first_bill_22usd_and_recovery" if stage.startswith("v18b-") else "balance_reserve_only"
+    from .v18b_execution import enforce_limits
+    completion = stage.startswith("v18b-") and not enforce_limits(p["execution_settings"])
+    financial_mode = "measured_balance_reserve" if completion else "first_bill_22usd_and_recovery" if stage.startswith("v18b-") else "balance_reserve_only"
     funding |= {"financial_mode": financial_mode, "hourly_usd": p["hourly_usd"],
                 "estimated_cost_usd": estimated_cost, "estimated_cost_stops_execution": False,
                 "initial_snapshot_decision": ("PENDING_ENGINE_VALIDATION" if estimated_cost is None else
                     "RECHARGE_REQUESTED" if funding["balance_usd"] < estimated_cost + 1.5 else "CONTINUE")}
     job_stage = ("v18-main" if stage in ("v18-train", "v18b-train") else "single-main") if stage.endswith("-train") else "eval-course"
     return {"stage": stage, "job_stage": job_stage,
+            **({"generation_workload": generation_plan(stage, p)} if stage.startswith("v18b-") else {}),
             "params_sha256": sha256_bytes(json.dumps(p, sort_keys=True, separators=(",", ":")).encode()),
             "generator": "fine_tuning.error_note.plan", "repo_root": p["repo_root"], "code_commit": p["commit"],
             "protocol_version": version, "protocol_contract": deepcopy(contract),
@@ -1134,7 +1139,8 @@ def _split_meta(stage: str, p: dict[str, Any], estimate: float | None) -> dict[s
             "training_elapsed_cutoff": None, "evaluation_watchdog_seconds": None,
             "financial_mode": financial_mode, "funding": funding, "gpu_type": p["gpu_type"],
             "cloud_execution": False, "guard_stop_auto_evaluate": False,
-            **({"execution_settings": p["execution_settings"], "total_timeout_seconds": p["execution_settings"]["total_timeout_seconds"],
+            **({"execution_settings": p["execution_settings"], "total_timeout_seconds": None if completion else p["execution_settings"]["total_timeout_seconds"],
+                "planning_target_seconds": p["execution_settings"]["total_timeout_seconds"],
                 "training_elapsed_cutoff": p["execution_settings"]["training_cutoff_seconds"]} if stage.startswith("v18b-") else {})}
 
 
@@ -1366,8 +1372,10 @@ def _evaluation_continuation(p: dict[str, Any], validation_path: Path) -> dict[s
         "--base-path", p["model_path"], "--data-root", p["eval_data_root"], "--artifact-root", artifact,
         "--run-id", run_id, "--mode", "partial", "--run-role", "standalone", "--no-download",
         "--require-commit", p["commit"], *(arg for sid in ids for arg in ("--sample-id", sid))]
-    steps.append({"name": "evaluate-900", "argv": evaluate, "expect_files": [f"{run}/summary.json"],
-                  "timeout_seconds": watchdog})
+    step: dict[str, Any] = {"name": "evaluate-900", "argv": evaluate, "expect_files": [f"{run}/summary.json"]}
+    if not v18b or settings.get("limit_action", "stop") != "warn":
+        step["timeout_seconds"] = watchdog
+    steps.append(step)
     add("v8-analyze", [py, "-m", PROOF, "analyze", "--prereg", prereg, "--ledger", ledger, "--runs", run,
         "--ft-single-model-ref", model_ref, "--output", f"{proof}/v8"], [f"{proof}/v8.json"])
     if not (v18b and settings["evaluation_strategy"] == "two_pod"):

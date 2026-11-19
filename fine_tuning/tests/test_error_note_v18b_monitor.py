@@ -28,17 +28,19 @@ class MonitorTests(unittest.TestCase):
         base = [record(x["problem_id"]) for x in items]
         return items, base
 
-    def test_b2_drift_detects_sampler_collapse_and_excludes_ceiling_scienceqa(self):
+    def test_b2_drift_detects_sampler_collapse_including_scienceqa(self):
         items, base = self.fixture()
         collapsed = [record(x["problem_id"], length=7 if x["source"] == "hf-gvlqa" else 100) for x in items]
         report = m.monitor_comparison(base, base, collapsed, items)
         self.assertEqual(report["status"], "CONTINUE")
         self.assertEqual(report["reasons"], [])
         self.assertEqual(report["warnings"], ["B2_SHORT_DRIFT"])
-        self.assertEqual(report["excluded_ceiling_n"], 51)
+        self.assertEqual(report["excluded_ceiling_n"], 0)
         self.assertEqual(report["false_alarm_calibration"], "UNMEASURED_SINGLE_F0")
         only_science = [record(x["problem_id"], length=7 if x["source"] == "hf-scienceqa" else 100) for x in items]
-        self.assertEqual(m.monitor_comparison(base, base, only_science, items)["status"], "CONTINUE")
+        science = m.short_monitor_comparison(base, base, only_science, items)
+        self.assertEqual(science["status"], "CONTINUE")
+        self.assertEqual(science["warnings"], ["B2_SHORT_DRIFT"])
         self.assertEqual([i for i in range(20) if m.monitor_due(i)], [8, 16])
 
     def test_short_drift_continues_with_insignificant_loss_or_accuracy_gain(self):
@@ -85,6 +87,37 @@ class MonitorTests(unittest.TestCase):
         items[0]["training_allowed"] = True
         with self.assertRaisesRegex(ValueError, "TRAINING_LEAK"):
             m.monitor_comparison(base, base, base, items)
+
+    def test_short_diagnostic_never_stops_for_accuracy_and_censors_length_limit(self):
+        items, base = self.fixture()
+        current = deepcopy(base)
+        for index, row in enumerate(current):
+            row["output"]["status"] = "WRONG"
+            row["output"]["generation"]["completion_token_ids"] = [1] * (31 if index < 40 else 32)
+        report = m.short_monitor_comparison(base, base, current, items)
+        self.assertEqual(report["status"], "CONTINUE")
+        self.assertEqual(report["reasons"], [])
+        self.assertEqual(report["against_f0"]["candidate_natural_short"], 40)
+        self.assertEqual(report["thresholds"]["stop_rule"], "NONE")
+        for row in current[:40]:
+            row["output"]["finish_reason"] = "length"
+        censored = m.short_monitor_comparison(base, base, current, items)
+        self.assertEqual(censored["against_f0"]["candidate_natural_short"], 0)
+        self.assertEqual(censored["against_f0"]["candidate_truncated"], 40)
+        current[0]["output"]["generation"]["max_tokens"] = 32768
+        with self.assertRaisesRegex(ValueError, "CAP_CHANGED"):
+            m.short_monitor_comparison(base, base, current, items)
+
+    def test_scienceqa_short_collapse_warns_even_when_264_item_average_dilutes_it(self):
+        items = [{"problem_id": str(i), "source": "hf-scienceqa" if i < 51 else "other",
+                  "training_allowed": False, "benchmark_derived": False} for i in range(264)]
+        base = [record(str(i), length=7 if i < 4 else 64) for i in range(264)]
+        current = [record(str(i), length=7 if i < 43 else 64) for i in range(264)]
+        report = m.short_monitor_comparison(base, base, current, items)
+        self.assertLess(report["against_f0"]["short_delta"], .15)
+        self.assertEqual(report["warnings"], ["B2_SHORT_DRIFT"])
+        self.assertEqual(report["short_drift_sources"], ["hf-scienceqa"])
+        self.assertEqual(report["status"], "CONTINUE")
 
     def test_stop_uses_previous_normal_boundary_or_terminates(self):
         stopped = {"status": "STOP_REQUESTED"}

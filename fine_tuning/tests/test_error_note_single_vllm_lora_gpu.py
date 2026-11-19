@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -31,9 +32,9 @@ SMALL = 2.0 ** -5  # LoRA B factor of the small-adapter case: real effect near M
 LINEAR = 2.0 ** -8  # LoRA B factor of the alpha-16 control: its x AMPLIFY copy stays in the tiny model's linear range
 
 
-def build_tiny(dest: Path) -> Path:
+def build_tiny(dest: Path, *, printable_output: bool = False) -> Path:
     import torch
-    from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
+    from transformers import AutoTokenizer, Qwen3VLConfig, Qwen3VLForConditionalGeneration
 
     config = json.loads((SNAPSHOT / "config.json").read_text())
     config["text_config"].update(hidden_size=256, intermediate_size=512, num_hidden_layers=2, num_attention_heads=4,
@@ -41,13 +42,116 @@ def build_tiny(dest: Path) -> Path:
     config["text_config"]["rope_scaling"]["mrope_section"] = [8, 12, 12]
     config["vision_config"].update(depth=3, hidden_size=128, intermediate_size=256, num_heads=2, out_hidden_size=256,
                                    deepstack_visual_indexes=[0, 1, 2])
+    if printable_output:
+        config["tie_word_embeddings"] = False
+        config["text_config"]["tie_word_embeddings"] = False
     torch.manual_seed(3407)
     model = Qwen3VLForConditionalGeneration(Qwen3VLConfig(**config)).to(torch.bfloat16)
+    fixture = None
+    if printable_output:
+        import string
+        tokenizer = AutoTokenizer.from_pretrained(str(SNAPSHOT), local_files_only=True)
+        safe = [tokenizer.encode(char, add_special_tokens=False) for char in string.ascii_letters + string.digits]
+        if any(len(tokens) != 1 for tokens in safe):
+            raise ValueError("printable fixture requires single-token ASCII letters and digits")
+        token_ids = [tokens[0] for tokens in safe] + EOS
+        generator = torch.Generator().manual_seed(3407)
+        vectors = torch.randn((len(token_ids) // 2, config["text_config"]["hidden_size"]), generator=generator)
+        vectors = vectors / vectors.norm(dim=1, keepdim=True) * 64
+        weights = model.get_output_embeddings().weight
+        with torch.no_grad():
+            weights.zero_()
+            weights[token_ids[::2]] = vectors.to(weights.dtype)
+            weights[token_ids[1::2]] = -vectors.to(weights.dtype)
+        fixture = {"reportable": False, "profile": "tiny-bf16", "kind": "synthetic-printable-output-head",
+                   "sampling_filter": False, "output_head_row_norm": 64, "safe_token_ids": token_ids}
     model.save_pretrained(dest, safe_serialization=True)
     for name in ("chat_template.json", "merges.txt", "preprocessor_config.json", "tokenizer.json",
                  "tokenizer_config.json", "video_preprocessor_config.json", "vocab.json"):
         shutil.copyfile(SNAPSHOT / name, dest / name)
+    if fixture is not None:
+        shutil.copyfile(SNAPSHOT / "generation_config.json", dest / "generation_config.json")
+        (dest / "rehearsal-fixture.json").write_text(json.dumps(fixture, sort_keys=True))
     return dest
+
+
+def printable_fixture_cpu_check(path: Path, data_root: Path, output: Path) -> dict:
+    """Check full-vocabulary sampled bytes before and after one actual masked-note update."""
+    import torch
+    from transformers import GenerationConfig, LogitsProcessorList
+    from mmdl.runtime.generation import GeneratedOnlyPresencePenalty
+    from fine_tuning.error_note import campaign_v16b as campaign, rl, single
+    from fine_tuning.error_note.protocol import ARM, V16B_CONTRACT_HASHES, plain_protocol_v18b, v18b_contract_for_update
+    from fine_tuning.error_note.prep_v16b import images, p0, seal
+    from fine_tuning.error_note.train_v17 import _sample_mask, _end_ids
+    from fine_tuning.error_note.v18b_data import load_items
+    from fine_tuning.error_note.v18b_rehearsal import policy_factory
+    from fine_tuning.notebook_rl import checkpoint
+    from fine_tuning.notebook_rl.input_preparation import prepare_protocol_inputs
+    from fine_tuning.notebook_rl.prompts import user_message
+    from fine_tuning.tests.test_error_note_v18b_row_quarantine import mechanical_note_row
+
+    torch.set_num_threads(4)
+    torch.manual_seed(3407)
+    started = time.monotonic()
+    marker = json.loads((path / "rehearsal-fixture.json").read_text())
+    termination = GenerationConfig.from_pretrained(str(path), local_files_only=True)
+    if ((path / "generation_config.json").read_bytes() != (SNAPSHOT / "generation_config.json").read_bytes()
+            or not isinstance(termination.eos_token_id, list)
+            or set(termination.eos_token_id) != set(EOS) or termination.pad_token_id != 151643):
+        raise ValueError("printable fixture must preserve the pinned Qwen generation configuration")
+    safe = set(marker["safe_token_ids"])
+    protocol = plain_protocol_v18b("bf16", rl_blocks=8, prep_updates=1,
+        contracts={key: "0" * 64 for key in V16B_CONTRACT_HASHES}, rehearsal_profile="tiny-bf16")
+    bundle = policy_factory(path, ARM, protocol)
+    candidates = load_items(data_root, "train")
+    items = [item for item in candidates if item.get("layer") == "graph"][:8]
+    if len(items) != 8:
+        raise ValueError("the printable fixture needs eight fixed graph inputs")
+    unsafe = torch.ones(bundle.model.config.text_config.vocab_size, dtype=torch.bool)
+    unsafe[list(safe)] = False
+    reports = []
+    for phase in ("before-update", "after-update"):
+        bundle.model.eval()
+        for index, item in enumerate(items):
+            torch.manual_seed(3407 + index)
+            prepared, _ = prepare_protocol_inputs(bundle.processor, bundle.model.config,
+                [user_message(p0(item), len(item["image_paths"]))], images(item), protocol["image"])
+            count = prepared["input_tokens"]
+            cfg = GenerationConfig(do_sample=True, temperature=.7, top_p=1., top_k=0,
+                max_new_tokens=32, eos_token_id=EOS, pad_token_id=EOS[0], repetition_penalty=1., num_beams=1)
+            processor = LogitsProcessorList([GeneratedOnlyPresencePenalty(count, 1.5)])
+            with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+                generated = bundle.model.generate(**prepared["inputs"], generation_config=cfg,
+                    logits_processor=processor, use_model_defaults=False, use_cache=True,
+                    return_dict_in_generate=True, output_scores=True)
+            actions = generated.sequences[0, count:].tolist()
+            text = bundle.processor.tokenizer.decode(actions, skip_special_tokens=True)
+            _sample_mask(bundle.processor.tokenizer, actions, text, _end_ids(bundle.processor.tokenizer))
+            mass = max((float(score.float().softmax(-1)[0, unsafe].sum()) for score in generated.scores), default=0.)
+            if not set(actions) <= safe or mass > 1e-10:
+                raise AssertionError({"phase": phase, "unsafe_sampled_ids": sorted(set(actions) - safe), "unsafe_mass": mass})
+            reports.append({"phase": phase, "problem_id": item["problem_id"], "tokens": len(actions),
+                            "max_unsafe_probability_mass": mass, "sampled_byte_binding": True})
+        if phase == "before-update":
+            row, item = mechanical_note_row(bundle, "printable-fixture-note", block_index=7)
+            encoded, _ = campaign._encode_update_rows(bundle, [row], {item["problem_id"]: item}, protocol["image"])
+            optimizer, scheduler = checkpoint.make_optimizer(bundle, protocol)
+            for _ in range(9):
+                optimizer.step()
+                scheduler.step()
+            cursor = {"slot": 9, "updates": 0, "policy_sha256": rl.policy_sha256(bundle), "consumed_problem_ids": []}
+            definition = v18b_contract_for_update(protocol, 9, phase="rl", policy_sha256=rl.policy_sha256(bundle),
+                expected_problem_ids=[], note_problem_ids=[item["problem_id"]])
+            bundle.model.train()
+            with torch.autocast("cpu", dtype=torch.bfloat16):
+                update = single.run_joint_single_update(bundle, optimizer, scheduler, encoded, definition,
+                    cursor=cursor, block_ids=[], allow_update=True)
+            if update["optimizer_steps"] != 1 or update["stats"].get("n_content_gradient_finite_nonzero") is not True:
+                raise AssertionError("the printable fixture was not tested after actual note learning")
+    return seal(output, {"status": "PASS", "reportable": False, "model_path": str(path),
+        "source": marker, "sampling": "full-vocabulary top-p=1 top-k=0 temperature=.7 presence=1.5",
+        "actual_gradient_updates": 1, "inputs": reports, "seconds": time.monotonic() - started})
 
 
 def sampler(path: Path):
@@ -104,6 +208,74 @@ def report_line(text: str) -> dict:
     if not lines:
         raise AssertionError("no SINGLE_LORA_PREFLIGHT line")
     return json.loads(lines[-1].removeprefix("SINGLE_LORA_PREFLIGHT "))
+
+
+def registry_lifecycle(path: Path) -> dict:
+    """Replay the live-preflight cleanup and trained monitor on one real vLLM engine."""
+    import torch
+
+    from fine_tuning.error_note import rl
+    from fine_tuning.error_note.collect import single_request_sha256
+    from fine_tuning.error_note.single_vllm import SingleVllmSampler, probe_requests
+
+    started = time.monotonic()
+    image = {"min_pixels": 4096, "max_pixels": 16384, "preprocessing": "qwen_vl_utils_0_0_14"}
+    sampling = {"temperature": .7, "top_p": 1., "top_k": 0, "presence_penalty": 1.5}
+    value = SingleVllmSampler(path, kv_cache_gib=.25, max_num_seqs=2, gpu_memory_utilization=.3,
+        sleep=False, eos_token_ids=EOS, image=image, lora=True, version_registry=True,
+        sampling=sampling, protocol_version="error-note-v18b", preflight_stage="f0")
+    bundle = policy(path)
+    trained = {name: p.detach().clone() for name, p in bundle.model.named_parameters() if ".lora_B." in name}
+    scale_lora_b(bundle, 0.)
+    try:
+        value.add_version(bundle, 0)
+        value.add_version(bundle, 1)
+        f0 = value.preflight_report
+        assert f0["pass"] and f0["pf5"]["stage_contract"]["stage"] == "f0"
+        value.release_idle_versions()
+        value.set_preflight_stage_v17("trained")
+        with torch.no_grad():
+            for name, parameter in bundle.model.named_parameters():
+                if name in trained:
+                    parameter.copy_(trained[name])
+        print("LORA_REGISTRY_STAGE trained-monitor", file=sys.stderr, flush=True)
+        value.add_version(bundle, 0)
+        trained_report = value.preflight_report
+        assert trained_report["pass"] and trained_report["pf5"]["stage_contract"]["stage"] == "trained"
+        value.release_idle_versions()
+        admitted_policy = value.add_version(bundle, 3)
+        probe = probe_requests(image)[0]
+        request = {"request_id": "registry-lifecycle:T1", "problem_id": "registry-lifecycle", "block_id": 0,
+            "stage": "v18b-t1", "seed": 3407, "max_tokens": 32, "messages": probe.messages,
+            "images": probe.images, "kind": "T1", "sampling": sampling, "policy_version": 3,
+            "policy_sha256": admitted_policy, "protocol_sha256": "a" * 64, "admit_step": value.engine_steps}
+        request["request_sha256"] = single_request_sha256(request)
+        value.submit(request)
+        outputs = []
+        while not value.prefill_barrier():
+            outputs.extend(value.step())
+        assert value.pending, "the lifetime regression must preserve an unfinished request"
+        old_id = value.versions[3]["lora_int_id"]
+        with torch.no_grad():
+            next(p for n, p in bundle.model.named_parameters() if ".lora_B." in n).add_(.001)
+        next_policy = value.add_version(bundle, 4)
+        assert next_policy != admitted_policy and old_id in value.engine.llm.llm_engine.list_loras()
+        assert value.versions[3]["refcount"] == 1
+        while value.has_unfinished_requests():
+            outputs.extend(value.step())
+        assert len(outputs) == 1
+        generation = outputs[0][1]["generation"]
+        assert generation["policy_sha256"] == admitted_policy and generation["lora_int_id"] == old_id
+        assert rl.policy_sha256(bundle) == next_policy
+        value.release_idle_versions()
+        assert value.lora_request is None and value.loaded_policy is None
+        report = {"status": "PASS", "reportable": False, "engine": "vllm-0.11.0", "precision": "bf16",
+            "f0_pf5": f0["pf5"], "trained_pf5": trained_report["pf5"], "generated_tokens": len(generation["completion_token_ids"]),
+            "preserved_admission_policy": True, "seconds": time.monotonic() - started}
+        print("LORA_REGISTRY_LIFECYCLE " + json.dumps(report, sort_keys=True), file=sys.stderr, flush=True)
+        return report
+    finally:
+        shutil.rmtree(value.lora_dir, ignore_errors=True)
 
 
 @unittest.skipUnless(ENABLED, "vLLM LoRA GPU check requires explicit MMDL_TEST_VLLM_LORA_CUDA=1")
@@ -189,6 +361,9 @@ class TinyQwenLoraTests(unittest.TestCase):
         self.assertEqual(value.lora_request.lora_int_id, 14 if SLEEP else 13)
         self.assertTrue(value.verify_lora(bundle)["pass"])
         self.check_stream(value, bundle)
+
+    def test_c_registry_preflight_cleanup_then_trained_monitor(self):
+        self.assertEqual(registry_lifecycle(self.path)["status"], "PASS")
 
     def check_stream(self, value, bundle):
         """The campaign's own stream (continuous add_request/step through _LoraEngine) samples the unmerged-LoRA
